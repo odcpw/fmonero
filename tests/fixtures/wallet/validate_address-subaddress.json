@@ -1,0 +1,9 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# fields: COMMAND_RPC_VALIDATE_ADDRESS::response_t,\n#         src/wallet/wallet_rpc_server_commands_defs.h:2592-2607. See\n#         validate_address-standard.json for the request flags and the _request_address dispatch rule.\n# A VALID MAINNET SUBADDRESS: prefix 42, 95 characters, leading '8'\n#         (src/cryptonote_config.h:229, CRYPTONOTE_PUBLIC_SUBADDRESS_BASE58_PREFIX).\n# THE ADDRESS is a real, checksum-valid vector from upstream's own test suite --\n#         tests/functional_tests/validate_address.py:73, where upstream asserts\n#         valid, not integrated, SUBADDRESS TRUE, nettype \"mainnet\", openalias_address \"\" (:85-90).\n#         The same string is get_address.json's address_index 1 and get_balance.json's funded\n#         subaddress, so a test can validate the wallet's OWN subaddress and get a coherent answer.\n# `integrated` AND `subaddress` ARE INDEPENDENT BOOLEANS, not an enum, and both can be false (a\n#         standard address). They are never both true: an integrated address carries a payment id on\n#         top of a STANDARD address, and subaddresses cannot carry one.\n# A SUBADDRESS IS A LEGITIMATE `wallet send` DESTINATION. Nothing in DESIGN.md §2a refuses one; the\n#         only refusals are a structural parse failure, validate_address saying no, and a nettype\n#         that differs from the wallet's (§2a.6).",
+  "_request_address": "8AsN91rznfkBGTY8psSNkJBg9SZgxxGGRUhGwRptBhgr5XSQ1XzmA9m8QAnoxydecSh5aLJXdrgXwTDMMZ1AuXsN1EX5Mtm",
+  "valid": true,
+  "integrated": false,
+  "subaddress": true,
+  "nettype": "mainnet",
+  "openalias_address": ""
+}

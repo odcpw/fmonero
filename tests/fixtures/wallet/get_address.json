@@ -1,0 +1,24 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# fields: COMMAND_RPC_GET_ADDRESS::response_t, src/wallet/wallet_rpc_server_commands_defs.h:151-160\n#         { address string, addresses[] = address_info (:136-149) }\n#         address_info = { address string, label string, address_index u32, used bool }\n# `address` is the PRIMARY address of the requested account -- upstream's own comment at :153 is\n#         \"to remain compatible with older RPC format\". addresses[0] is the same string with\n#         address_index 0.\n# NO status/untrusted: the wallet RPC has no rpc_response_base.\n# request: { account_index u32, address_index[] vector<u32> } (:125-133); an empty address_index\n#         returns every generated subaddress of the account.\n# THIS CALL IS THE SOURCE OF THREE THINGS, which is why it is on DESIGN.md §5's hot path:\n#   1. status.wallet.primary_address = this `address` (public by construction, not a secret, §2b)\n#   2. status.wallet.subaddress_count = addresses.len() = 3 here -- EVERY generated subaddress, not\n#      just the funded ones. get_balance.json's per_subaddress has ONE entry; using its length would\n#      report 1 for this wallet and 0 for a freshly restored one (§5).\n#   3. THE WALLET'S OWN NETTYPE, the §2a.6 send-path authority: wallet_session::open records\n#      address::parse(get_address{account}.address)?.net, never settings.node.network. All three\n#      addresses here are mainnet, so that parse yields NetType::Mainnet.\n# addresses are real, checksum-valid mainnet vectors from upstream's own test suite:\n#   index 0 (standard,   prefix 18) tests/functional_tests/validate_address.py:68\n#   index 1 (subaddress, prefix 42) tests/functional_tests/validate_address.py:73\n#   index 2 (subaddress, prefix 42) tests/functional_tests/validate_address.py:74\n# index 0 matches get_balance.json's per_subaddress[0].address byte for byte; index 1 matches it too\n#         in kind (both prefix 42) but carries no balance row, which is the join §7a's Wallet screen\n#         must render as an em dash. index 2 is `used: false` -- a generated but never-paid-to\n#         subaddress, the state a fresh `wallet new-address` leaves behind.\n# labels: index 0's is wallet2's own default for account 0 (\"Primary account\"); a subaddress with no\n#         label carries the empty string, not null.",
+  "address": "42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm",
+  "addresses": [
+    {
+      "address": "42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm",
+      "label": "Primary account",
+      "address_index": 0,
+      "used": true
+    },
+    {
+      "address": "8AsN91rznfkBGTY8psSNkJBg9SZgxxGGRUhGwRptBhgr5XSQ1XzmA9m8QAnoxydecSh5aLJXdrgXwTDMMZ1AuXsN1EX5Mtm",
+      "label": "donations",
+      "address_index": 1,
+      "used": true
+    },
+    {
+      "address": "86kKnBKFqzCLxtK1Jmx2BkNBDBSMDEVaRYMMyVbeURYDWs8uNGDZURKCA5yRcyMxHzPcmCf1q2fSdhQVcaKsFrtGRsdGfNk",
+      "label": "",
+      "address_index": 2,
+      "used": false
+    }
+  ]
+}

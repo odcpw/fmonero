@@ -1,0 +1,35 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# fields: COMMAND_RPC_SWEEP_ALL's response is split_transfer_response,\n#         src/wallet/wallet_rpc_server_commands_defs.h:634-661 -- EVERY FIELD IS A LIST:\n#           tx_hash_list, tx_key_list, amount_list, amounts_by_dest_list (OPT, :652),\n#           fee_list, weight_list, tx_blob_list, tx_metadata_list,\n#           multisig_txset string, unsigned_txset string, spent_key_images_list\n#         amounts_by_dest_list[] = amounts_list (:556-565) = { amounts: [u64] }\n#         spent_key_images_list[] = key_image_list (:547-554) = { key_images: [string] }\n# NO status/untrusted.\n# TWO TRANSACTIONS, deliberately: DESIGN.md §8 Phase 0 asks for \"a split_transfer_response with TWO\n#   transactions, so the list path is exercised\". A one-entry list would let a consumer that reads\n#   only [0] pass every test, and §2a.4's partial-sweep rule -- \"a relay_tx that fails at entry k of\n#   N aborts the loop, drops the metadata of entries k..N, leaves the record in place and exits 16\n#   naming 'k-1 of N broadcast'\" -- would have no N > 1 to be written against. send::relay calls\n#   relay_tx ONCE PER ENTRY of tx_metadata_list, IN ORDER, under one pending.json record.\n# ALL EIGHT LISTS ARE INDEX-ALIGNED, and nothing on the wire enforces that. Entry i's hash, amount,\n#   fee, weight, metadata and key images are tx_hash_list[i], amount_list[i], fee_list[i],\n#   weight_list[i], tx_metadata_list[i], spent_key_images_list[i]. §5c turns them into ONE array of\n#   objects (`txs`), never parallel arrays, precisely because two arrays that must stay in lockstep\n#   are two arrays that will not.\n# tx_key_list AND tx_blob_list ARE EMPTY LISTS, not lists of empty strings: the request sends\n#   get_tx_keys: false and get_tx_hex: false (:909, :912), and upstream only pushes onto those lists\n#   when the corresponding flag is set. THE TRANSACTION SECRET KEY IS A SECRET (§2b.2) and fmonero\n#   never asks for it.\n# THE REQUEST ALWAYS CARRIES subaddr_indices_all: true (§2a.10), and SweepRequest has no field that\n#   could turn it off. With it absent (KV_SERIALIZE_OPT default FALSE, :903) and subaddr_indices\n#   empty, on_sweep_all hands an EMPTY SET to create_transactions_all (:1786-1795), which then picks\n#   ONE SUBADDRESS AT RANDOM -- \"in case subaddress index wasn't specified, choose non-empty\n#   subaddress randomly (with index=0 being chosen last)\" (src/wallet/wallet2.cpp:11846-11853). A\n#   command documented as the way to empty an account would move one random subaddress's funds,\n#   report success, and leave the rest. NO FIXTURE CAN CATCH THAT: this file is served either way.\n#   The assertion is on the RECORDED REQUEST in the --log file, and §2a's test list says so.\n# `outputs` defaults to 1 for sweep_all (KV_SERIALIZE_OPT (uint64_t)1, :906), which is the value\n#   fmonero wants, so it is never sent. COMMAND_RPC_TRANSFER has no `outputs` field at all in\n#   0.18.5.1 (:596-627).\n# AMOUNTS: the two transactions sweep 1234567891234 - 61440000 = 1234506451234 piconero in total\n#   (the balance of get_balance.json less both fees), split 800000000000 + 434506451234. The fees are\n#   the 30720000 of transfer-do-not-relay.json each, so a consumer summing fee_list gets 61440000 and\n#   §5's PendingStatus.total_fee_pico has a non-trivial sum to compute with Piconero::checked_add.\n# tx_metadata values are 512-character deterministic hex blobs, distinct per entry and distinct from\n#   transfer-do-not-relay.json's, so a test that relays the wrong entry fails on the bytes.\n#   They are NOT real serialized pending_tx structures -- no mock can produce one.",
+  "tx_hash_list": [
+    "5c2e0b8317a94df60b1ae35c927d40f8a6b1c05e3d29847fb0c6a1e53829d74b",
+    "b7301fa5c28e64d90b5a1c37e2d980f4a6c1b035e7d92846f0b1c5a3e28d7409"
+  ],
+  "tx_key_list": [],
+  "amount_list": [800000000000, 434506451234],
+  "amounts_by_dest_list": [
+    { "amounts": [800000000000] },
+    { "amounts": [434506451234] }
+  ],
+  "fee_list": [30720000, 30720000],
+  "weight_list": [2812, 1974],
+  "tx_blob_list": [],
+  "tx_metadata_list": [
+    "3c09da5165cbfa7816dd8286ebd7dd4fdc23defb6f22ffb0c9a7c295d8f52f9d95b1e6f721212f48671cea40c4eb057055af564949c1bcb7f2698fc97e9b1358138f5aa038ec04f4724b0b0199515876e307ef940aa1511017295bb1109af01d927fb632a8c10c2d3fc625f8e78f469e64d56c238289ff3ec67dec1ecc142cb722dbc5b24fa5d0c09ee8abbaa47f238bdc302613b7e4ed5af17d8ad09d92ee57fff74099e3a5c17693a655abae05dd11118773fa11b46376e3edb2965551192697fbed109fc8fc02a7188f88131b4f34297e3eb63cd328b89d87ab5e7af70a087ef42be3566f2fd6d5909e64c930ed63bf45d6c303474f93bcd43f90fc4d311a",
+    "169037d55eb5a9194afed7596636908697eae1b29d0360a2e1ff0ff790c1eb720ce159ad9ac8c1b618c99be47aecf718405fae7dc83ff08adb51ed6bead44d9dda7f7c680285157f46de6ea7855cfd7e5aead978e09874f44e678ea9beb5b4ed0bd2b47a0f82ddd02b3416ba30d429f722489ff8707aa7db8f5c811efa4a1949a369a8f876da9f499e6844b0df8ffc24591a1d71f8b5dbc4cf1c79eee9a8a0fa5fc3bed6f85f60fbb7cc7b48539bf9bf650f8644f07db9c2fef19ebfae7d0e36fbbb959bfd726dc022bd2d537d4234173cd6aff534452d3c71edf52f516afd18afcdc1b8981240eede868cfc4e82f9661f6d7e9d28f6df28fdb7548874f58691"
+  ],
+  "multisig_txset": "",
+  "unsigned_txset": "",
+  "spent_key_images_list": [
+    {
+      "key_images": [
+        "18c3e0a52d7b946f01ae35c8d2f74b6019ac3e50b8d1247fa6b0c9e5382d1f74",
+        "e51a0c83b2d7496f10ab3c5e8d7294f60b1ac35e2d90847fb6c0a1e5382d7f49"
+      ]
+    },
+    {
+      "key_images": [
+        "7f4b0a1c53e29d86b0f1ae35c927d4086ab1c035e7d2948fb0c6a1e5382d947b"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,77 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# ONE OBJECT PER ROW OF address::PREFIXES (DESIGN.md §5b), and a unit test asserts the two have the\n# SAME ROW COUNT, so adding a form to one without the other fails the build (§1b.1). THE NINE FORMS.\n# THIS IS THE FILE THAT MAKES THE FCMP++ / CARROT FORK A ONE-LINE CHANGE: when a v17 fork ships new\n# address forms, adding each one is ONE row in PREFIXES plus ONE object here -- no `if`, no new\n# function, no change to any caller (§1b.1, §5b).\n#\n# KEYS: { net, kind, prefix, leading, len, example } -- exactly the six DESIGN.md §8 Phase 0 names.\n#\n# `prefix` -- the base58 prefix VARINT, src/cryptonote_config.h:227-229 (mainnet), :270-272 (testnet),\n#   :285-287 (stagenet). All nine are below 128, so each is a single varint byte.\n#     CRYPTONOTE_PUBLIC_ADDRESS_BASE58_PREFIX             18 / 53 / 24\n#     CRYPTONOTE_PUBLIC_INTEGRATED_ADDRESS_BASE58_PREFIX  19 / 54 / 25\n#     CRYPTONOTE_PUBLIC_SUBADDRESS_BASE58_PREFIX          42 / 63 / 36\n#\n# `len` -- follows from Monero's base58, which encodes in BLOCKS: encoded_block_sizes[] =\n#   {0,2,3,5,6,7,9,10,11} (src/common/base58.cpp:48), i.e. 8 bytes -> 11 characters and a trailing\n#   partial block of 5 bytes -> 7. So:\n#     standard / subaddress: 1 prefix + 32 public spend + 32 public view + 4 checksum = 69 bytes\n#                            = 8 full blocks + 5 -> 8*11 + 7 =  95 characters\n#     integrated:            the same plus an 8-byte payment id                       = 77 bytes\n#                            = 9 full blocks + 5 -> 9*11 + 7 = 106 characters\n#   The 4-byte checksum is the first 4 bytes of Keccak-256 over the preceding bytes. address::parse\n#   does NOT verify it -- DESIGN.md §3.1 takes no Keccak dependency, because §2a.6 gets a stronger\n#   guarantee from validate_address for free -- so a string can pass address::parse and still be a\n#   bad address. validate_address-invalid.json is exactly that string.\n#\n# `leading` IS AN ARRAY BECAUSE THE LEADING CHARACTER IS A SET, NOT A CHARACTER (§1b.8). It is the\n#   base58 digit of the WHOLE FIRST 8-BYTE BLOCK -- the prefix varint plus the first SEVEN bytes of\n#   the public spend key -- so for some prefixes the block value straddles a digit boundary. Dividing\n#   each prefix's block range [p<<56, (p<<56)|0x00FF_FFFF_FFFF_FFFF] by 58^10 over Monero's alphabet\n#   (123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz, base58.cpp:46) gives the sets below.\n#   RECOMPUTED FOR THIS FILE, not copied: eight prefixes yield one digit and TESTNET STANDARD (53)\n#   yields TWO, '9' and 'A'. The switch happens when the first seven key bytes reach\n#   0xceb74b07d8c400, i.e. for roughly one testnet standard address in five -- so a hard\n#   leading-character check would reject about 20% of them. address::parse therefore uses `leading`\n#   only as a display hint and as a fast reject WHEN THE SET HAS ONE MEMBER; length and base58\n#   decodability decide, and the decoded prefix varint names the form.\n#   NOTE mainnet standard and mainnet integrated share '4', and stagenet standard and stagenet\n#   integrated share '5': within a network the leading character does NOT distinguish standard from\n#   integrated at all -- only `len` does.\n#\n# `example` -- EVERY ONE IS A REAL, CHECKSUM-VALID ADDRESS TAKEN FROM MONERO'S OWN TEST SUITE, not\n#   synthesised, so each is a valid input to a real monero-wallet-rpc `validate_address` as well as to\n#   address::parse. Eight come from one upstream table,\n#   tests/functional_tests/validate_address.py:67-81, where upstream asserts for each the very\n#   net/integrated/subaddress verdict recorded here (:85-90); the mainnet subaddress\n#   (888tNkZrPN...) is src/simplewallet/simplewallet.h:56, upstream's donate@getmonero.org address,\n#   which validate_address.py:97-107 asserts is mainnet and `subaddress`.\n#     mainnet  standard   validate_address.py:68\n#     mainnet  integrated validate_address.py:72\n#     mainnet  subaddress simplewallet.h:56\n#     testnet  standard   validate_address.py:70\n#     testnet  integrated validate_address.py:75\n#     testnet  subaddress validate_address.py:76\n#     stagenet standard   validate_address.py:71\n#     stagenet integrated validate_address.py:78\n#     stagenet subaddress validate_address.py:79\n#   Each example's first character was checked against its `leading` set and each decodes to `len`\n#   characters and to `prefix` as its first varint byte. THE TESTNET STANDARD EXAMPLE BEGINS '9', the\n#   first member of its two-element set; no upstream vector begins 'A' for that form, so the 'A' half\n#   of the set is proved by the arithmetic above and not by an example. A test that asserts\n#   `example[0] == leading[0]` would pass today and is the wrong assertion; the right one is\n#   `leading.contains(example[0])`.",
+  "forms": [
+    {
+      "net": "mainnet",
+      "kind": "standard",
+      "prefix": 18,
+      "leading": ["4"],
+      "len": 95,
+      "example": "42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm"
+    },
+    {
+      "net": "mainnet",
+      "kind": "integrated",
+      "prefix": 19,
+      "leading": ["4"],
+      "len": 106,
+      "example": "4BxSHvcgTwu25WooY4BVmgdcKwZu5EksVZSZkDd6ooxSVVqQ4ubxXkhLF6hEqtw96i9cf3cVfLw8UWe95bdDKfRQeYtPwLm1Jiw7AKt2LY"
+    },
+    {
+      "net": "mainnet",
+      "kind": "subaddress",
+      "prefix": 42,
+      "leading": ["8"],
+      "len": 95,
+      "example": "888tNkZrPN6JsEgekjMnABU4TBzc2Dt29EPAvkRxbANsAnjyPbb3iQ1YBRk1UXcdRsiKc9dhwMVgN5S9cQUiyoogDavup3H"
+    },
+    {
+      "net": "testnet",
+      "kind": "standard",
+      "prefix": 53,
+      "leading": ["9", "A"],
+      "len": 95,
+      "example": "9ujeXrjzf7bfeK3KZdCqnYaMwZVFuXemPU8Ubw335rj2FN1CdMiWNyFV3ksEfMFvRp9L9qum5UxkP5rN9aLcPxbH1au4WAB"
+    },
+    {
+      "net": "testnet",
+      "kind": "integrated",
+      "prefix": 54,
+      "leading": ["A"],
+      "len": 106,
+      "example": "AApMA1VuhiCaHzr5X2KXi2Zc9oJ3VaGjkfChxxpRpxkyKf1NetvbRbQTbFMrGkr85DjnEH7JsBaoUFsgKwZnmtnVWnoB8MDotCsLb7eWwz"
+    },
+    {
+      "net": "testnet",
+      "kind": "subaddress",
+      "prefix": 63,
+      "leading": ["B"],
+      "len": 95,
+      "example": "BdKg9udkvckC5T58a8Nmtb6BNsgRAxs7uA2D49sWNNX5HPW5Us6Wxu8QMXrnSx3xPBQQ2iu9kwEcRGAoiz6EPmcZKbF62GS"
+    },
+    {
+      "net": "stagenet",
+      "kind": "standard",
+      "prefix": 24,
+      "leading": ["5"],
+      "len": 95,
+      "example": "53teqCAESLxeJ1REzGMAat1ZeHvuajvDiXqboEocPaDRRmqWoVPzy46GLo866qRFjbNhfkNckyhST3WEvBviDwpUDd7DSzB"
+    },
+    {
+      "net": "stagenet",
+      "kind": "integrated",
+      "prefix": 25,
+      "leading": ["5"],
+      "len": 106,
+      "example": "5K8mwfjumVseCcQEjNbf59Um6R9NfVUNkHTLhhPCmNvgDLVS88YW5tScnm83rw9mfgYtchtDDTW5jEfMhygi27j1QYphX38hg6m4VMtN29"
+    },
+    {
+      "net": "stagenet",
+      "kind": "subaddress",
+      "prefix": 36,
+      "leading": ["7"],
+      "len": 95,
+      "example": "73LhUiix4DVFMcKhsPRG51QmCsv8dYYbL6GcQoLwEEFvPvkVvc7BhebfA4pnEFF9Lq66hwvLqBvpHjTcqvpJMHmmNjPPBqa"
+    }
+  ]
+}
