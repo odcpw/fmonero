@@ -17,7 +17,9 @@ use serde::{Deserialize, Serialize};
 use crate::amount::Piconero;
 use crate::context::Context;
 use crate::error::Error;
+use crate::rpc::jsonrpc::{self, Deadline, Transport};
 use crate::rpc::Login;
+use crate::state::Daemon;
 
 /// `GET_INFO` (`core_rpc_server_commands_defs.h:709-745`). The node's hot-path call and
 /// the reachability probe: it is **not** gated by `CHECK_CORE_READY()`, which is why
@@ -319,88 +321,188 @@ pub struct Limits {
 /// forgotten check is a compile error rather than a working `node down` against Arch's
 /// system daemon (§2i).
 pub struct NodeClient {
-    /* Phase 1b adds the private state §5b names: agent, base, auth, timeout, and the
-    Digest session behind a Mutex (§2c). Nothing here is part of the frozen API. */
+    t: Transport,
 }
 
 impl NodeClient {
     /// Rejects any non-http scheme and any non-loopback host with `Error::Usage`, through
     /// `rpc::require_loopback` — the same function `WalletClient::new` calls (§2c). That
-    /// check is this constructor's **first statement**, and it is implemented at the 1a
-    /// gate because it needs no daemon.
-    pub fn new(url: &str, _auth: Option<Login>, _timeout: Duration) -> Result<NodeClient, Error> {
+    /// check is this constructor's **first statement**.
+    ///
+    /// A client built this way consults and arms **no** §2d breaker: it has no `Context`,
+    /// so it has no state directory. `from_ctx` is the one that does.
+    pub fn new(url: &str, auth: Option<Login>, timeout: Duration) -> Result<NodeClient, Error> {
         crate::rpc::require_loopback(url)?;
-        Ok(NodeClient {})
+        Ok(NodeClient {
+            t: Transport::new(url, auth, timeout, Daemon::Node),
+        })
     }
 
     /// The client `settings.node.url` and `timeouts.node` describe, with the credential
-    /// from `~/.config/fmonero/monerod.conf` when there is one (§2c).
-    pub fn from_ctx(_ctx: &Context) -> Result<NodeClient, Error> {
-        Err(Error::unimplemented("NodeClient::from_ctx"))
+    /// from `~/.config/fmonero/monerod.conf` when there is one (§2c). A node with no
+    /// credentials still works, unauthenticated: Arch's system unit has none.
+    pub fn from_ctx(ctx: &Context) -> Result<NodeClient, Error> {
+        Self::build(ctx, true)
+    }
+
+    /// The client `status` uses: **it never arms a §2d breaker and is never blocked by one**
+    /// (§2d). Crate-private, so the frozen API is unchanged and no other caller can pick it.
+    pub(crate) fn for_status(ctx: &Context) -> Result<NodeClient, Error> {
+        Self::build(ctx, false)
+    }
+
+    fn build(ctx: &Context, breaker: bool) -> Result<NodeClient, Error> {
+        let url = &ctx.settings.node.url;
+        crate::rpc::require_loopback(url)?;
+        let auth = Login::from_monerod_conf(&ctx.paths.monerod_conf())?;
+        Ok(NodeClient {
+            t: Transport::from_ctx(ctx, url, auth, Daemon::Node, breaker),
+        })
+    }
+
+    fn rpc<T: serde::de::DeserializeOwned>(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<T, Error> {
+        let v = self
+            .t
+            .rpc(method, params, Deadline::Probe)
+            .map_err(|e| jsonrpc::node_error(method, e))?;
+        jsonrpc::typed(method, v)
+    }
+
+    fn legacy<T: serde::de::DeserializeOwned>(
+        &self,
+        name: &str,
+        params: serde_json::Value,
+    ) -> Result<T, Error> {
+        let v = self
+            .t
+            .legacy(name, params, Deadline::Probe)
+            .map_err(|e| jsonrpc::node_error(name, e))?;
+        jsonrpc::typed(name, v)
     }
 
     pub fn get_info(&self) -> Result<GetInfo, Error> {
-        Err(Error::unimplemented("NodeClient::get_info"))
+        self.rpc("get_info", serde_json::json!({}))
     }
 
     pub fn get_last_block_header(&self) -> Result<BlockHeader, Error> {
-        Err(Error::unimplemented("NodeClient::get_last_block_header"))
+        #[derive(Deserialize)]
+        struct Wrap {
+            block_header: BlockHeader,
+        }
+        // `fill_pow_hash` stays false: it is expensive (§1b.3).
+        let w: Wrap = self.rpc(
+            "get_last_block_header",
+            serde_json::json!({"fill_pow_hash": false}),
+        )?;
+        Ok(w.block_header)
     }
 
-    pub fn hard_fork_info(&self, _version: u8) -> Result<HardForkInfo, Error> {
-        Err(Error::unimplemented("NodeClient::hard_fork_info"))
+    /// `version: 0` asks about the **next** fork for the voting fields and about the
+    /// **current** one for `version` — the opposite of "0 = the current one" (§1b.3).
+    pub fn hard_fork_info(&self, version: u8) -> Result<HardForkInfo, Error> {
+        self.rpc("hard_fork_info", serde_json::json!({"version": version}))
     }
 
     pub fn get_version(&self) -> Result<NodeVersion, Error> {
-        Err(Error::unimplemented("NodeClient::get_version"))
+        self.rpc("get_version", serde_json::json!({}))
     }
 
     /// `grace_blocks` is **always 10**, the `FEE_ESTIMATE_GRACE_BLOCKS` wallet2 itself uses
     /// (`wallet2.cpp:123`, applied at `:8597`), so the chips fmonero draws are computed
     /// exactly as the fee the build will charge (§1b.3).
-    pub fn get_fee_estimate(&self, _grace_blocks: u64) -> Result<FeeEstimate, Error> {
-        Err(Error::unimplemented("NodeClient::get_fee_estimate"))
+    pub fn get_fee_estimate(&self, grace_blocks: u64) -> Result<FeeEstimate, Error> {
+        self.rpc(
+            "get_fee_estimate",
+            serde_json::json!({"grace_blocks": grace_blocks}),
+        )
     }
 
     pub fn get_txpool_stats(&self) -> Result<TxpoolStats, Error> {
-        Err(Error::unimplemented("NodeClient::get_txpool_stats"))
+        #[derive(Deserialize)]
+        struct Wrap {
+            pool_stats: TxpoolStats,
+        }
+        // The wire name is `get_transaction_pool_stats` on BOTH transports (§1b.3); the
+        // legacy endpoint is the open one, so that is the one fmonero uses.
+        let w: Wrap = self.legacy("get_transaction_pool_stats", serde_json::json!({}))?;
+        Ok(w.pool_stats)
     }
 
     /// `Upstream(-32601)` on a restricted node (§1b.2).
     pub fn sync_info(&self) -> Result<SyncInfo, Error> {
-        Err(Error::unimplemented("NodeClient::sync_info"))
+        self.rpc("sync_info", serde_json::json!({}))
     }
 
     pub fn get_connections(&self) -> Result<Vec<Connection>, Error> {
-        Err(Error::unimplemented("NodeClient::get_connections"))
+        #[derive(Default, Deserialize)]
+        #[serde(default)]
+        struct Wrap {
+            connections: Vec<Connection>,
+        }
+        let w: Wrap = self.rpc("get_connections", serde_json::json!({}))?;
+        Ok(w.connections)
     }
 
-    pub fn get_peer_list(&self, _public_only: bool) -> Result<PeerLists, Error> {
-        Err(Error::unimplemented("NodeClient::get_peer_list"))
+    pub fn get_peer_list(&self, public_only: bool) -> Result<PeerLists, Error> {
+        self.legacy(
+            "get_peer_list",
+            serde_json::json!({"public_only": public_only, "include_blocked": false}),
+        )
     }
 
     pub fn get_bans(&self) -> Result<Vec<Ban>, Error> {
-        Err(Error::unimplemented("NodeClient::get_bans"))
+        #[derive(Default, Deserialize)]
+        #[serde(default)]
+        struct Wrap {
+            bans: Vec<Ban>,
+        }
+        let w: Wrap = self.rpc("get_bans", serde_json::json!({}))?;
+        Ok(w.bans)
     }
 
     pub fn get_net_stats(&self) -> Result<NetStats, Error> {
-        Err(Error::unimplemented("NodeClient::get_net_stats"))
+        self.legacy("get_net_stats", serde_json::json!({}))
     }
 
     pub fn get_limit(&self) -> Result<Limits, Error> {
-        Err(Error::unimplemented("NodeClient::get_limit"))
+        self.legacy("get_limit", serde_json::json!({}))
     }
 
     /// Read-only: always sends `set: false` (§1b.3). The writing form lives on
     /// [`NodeMutators`]. Returns `(out_peers, in_peers)`.
     pub fn peers_count(&self) -> Result<(u32, u32), Error> {
-        Err(Error::unimplemented("NodeClient::peers_count"))
+        #[derive(Default, Deserialize)]
+        #[serde(default)]
+        struct Count {
+            out_peers: u32,
+            in_peers: u32,
+        }
+        let out: Count = self.legacy(
+            "out_peers",
+            serde_json::json!({"set": false, "out_peers": 0u32}),
+        )?;
+        let inc: Count = self.legacy(
+            "in_peers",
+            serde_json::json!({"set": false, "in_peers": 0u32}),
+        )?;
+        Ok((out.out_peers, inc.in_peers))
     }
 
     /// One call, classifying the answer: `Ok(false)` = unrestricted, `Ok(true)` = the
     /// `-32601` of a gated `sync_info` (§1b.2). The cheapest unambiguous probe there is.
     pub fn is_restricted(&self) -> Result<bool, Error> {
-        Err(Error::unimplemented("NodeClient::is_restricted"))
+        match self
+            .t
+            .rpc("sync_info", serde_json::json!({}), Deadline::Probe)
+        {
+            Ok(_) => Ok(false),
+            Err(crate::rpc::RpcError::Rpc { code: -32601, .. }) => Ok(true),
+            Err(e) => Err(jsonrpc::node_error("sync_info", e)),
+        }
     }
 
     /// Whether the last **completed** request went through a Digest handshake
@@ -413,50 +515,77 @@ impl NodeClient {
     /// feeds §5's `node.authenticated`, the `auth_missing` warning and the doctor's
     /// `node_auth` (§7.1).
     pub fn authenticated(&self) -> Option<bool> {
-        None
+        self.t.authenticated()
     }
 
     /// **The §2i layout gate, as a type rather than as a comment.** `Error::Safety` with
     /// the `sudo systemctl …` hint unless `units::detect_layout(ctx) == Layout::UserUnit`.
     /// There is no `--force` override.
-    pub fn mutators<'a>(&'a self, _ctx: &Context) -> Result<NodeMutators<'a>, Error> {
-        Err(Error::unimplemented("NodeClient::mutators"))
+    pub fn mutators<'a>(&'a self, ctx: &Context) -> Result<NodeMutators<'a>, Error> {
+        if crate::units::may_mutate_node(ctx)? {
+            return Ok(NodeMutators { client: self });
+        }
+        Err(Error::safety(
+            "fmonero does not mutate a node it does not own: this monerod is not fmonero's user unit",
+        )
+        .with_reason("foreign_node")
+        .with_hint("sudo systemctl <verb> monerod   # fmonero does not mutate a node it does not own"))
     }
 }
 
 /// The five mutating node calls, reachable only through [`NodeClient::mutators`] (§2i).
 pub struct NodeMutators<'a> {
-    /// Private state, not part of the frozen API: Phase 1b replaces it with the
-    /// `&'a NodeClient` §5b names. Allowed dead for exactly as long as the bodies below
-    /// are `Error::unimplemented` (§8's sanctioned handover).
-    #[allow(dead_code)]
-    client: std::marker::PhantomData<&'a NodeClient>,
+    client: &'a NodeClient,
 }
 
 impl NodeMutators<'_> {
     pub fn stop_daemon(&self) -> Result<(), Error> {
-        Err(Error::unimplemented("NodeMutators::stop_daemon"))
+        // The answer is the bare `{status, untrusted}` base; `check_status` has already
+        // vetted it, so there is nothing to deserialize.
+        let _: serde_json::Value = self.client.legacy("stop_daemon", serde_json::json!({}))?;
+        Ok(())
     }
 
-    pub fn set_log_level(&self, _level: i8) -> Result<(), Error> {
-        Err(Error::unimplemented("NodeMutators::set_log_level"))
+    pub fn set_log_level(&self, level: i8) -> Result<(), Error> {
+        let _: serde_json::Value = self
+            .client
+            .legacy("set_log_level", serde_json::json!({"level": level}))?;
+        Ok(())
     }
 
-    pub fn set_bans(&self, _bans: &[BanRequest]) -> Result<(), Error> {
-        Err(Error::unimplemented("NodeMutators::set_bans"))
+    pub fn set_bans(&self, bans: &[BanRequest]) -> Result<(), Error> {
+        let _: serde_json::Value = self
+            .client
+            .rpc("set_bans", serde_json::json!({"bans": bans}))?;
+        Ok(())
     }
 
     /// kB/s; `-1` restores the default, `0` leaves a side unchanged (§1b.3).
-    pub fn set_limit(&self, _down_kbps: i64, _up_kbps: i64) -> Result<Limits, Error> {
-        Err(Error::unimplemented("NodeMutators::set_limit"))
+    pub fn set_limit(&self, down_kbps: i64, up_kbps: i64) -> Result<Limits, Error> {
+        self.client.legacy(
+            "set_limit",
+            serde_json::json!({"limit_down": down_kbps, "limit_up": up_kbps}),
+        )
     }
 
-    pub fn set_peers_count(
-        &self,
-        _out: Option<u32>,
-        _inc: Option<u32>,
-    ) -> Result<(u32, u32), Error> {
-        Err(Error::unimplemented("NodeMutators::set_peers_count"))
+    /// `None` leaves that side alone: the read form (`set: false`) is asked for instead, so
+    /// `node limit --out-peers 16` does not silently rewrite `in_peers` (§1b.3).
+    pub fn set_peers_count(&self, out: Option<u32>, inc: Option<u32>) -> Result<(u32, u32), Error> {
+        #[derive(Default, Deserialize)]
+        #[serde(default)]
+        struct Count {
+            out_peers: u32,
+            in_peers: u32,
+        }
+        let o: Count = self.client.legacy(
+            "out_peers",
+            serde_json::json!({"set": out.is_some(), "out_peers": out.unwrap_or(0)}),
+        )?;
+        let i: Count = self.client.legacy(
+            "in_peers",
+            serde_json::json!({"set": inc.is_some(), "in_peers": inc.unwrap_or(0)}),
+        )?;
+        Ok((o.out_peers, i.in_peers))
     }
 }
 

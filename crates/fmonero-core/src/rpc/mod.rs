@@ -9,6 +9,7 @@
 //! `amount.rs` and `address.rs` are.
 
 pub mod digest;
+pub mod jsonrpc;
 pub mod node;
 pub mod wallet;
 
@@ -36,6 +37,15 @@ pub enum RpcError {
     Rpc { code: i32, message: String },
     /// The daemon required a credential we do not have, or refused the one we sent.
     Unauthorized,
+    /// The call was killed at its deadline (§2d). Distinct from [`RpcError::Transport`]
+    /// because only this one arms a breaker and only this one is `killed_at_deadline`.
+    Killed,
+    /// A §2d breaker is armed for this daemon: `n` seconds of backoff left.
+    Stalled(u64),
+    /// A **legacy** endpoint answered HTTP 404, which is how epee reports a `!m_restricted`
+    /// endpoint that was never registered (`http_protocol_handler.inl:664`, §1b.2). The
+    /// json_rpc form of the same refusal is `Rpc { code: -32601 }`.
+    NotRegistered(String),
     /// Nothing answered, or the answer was not usable.
     Transport(String),
 }
@@ -129,6 +139,24 @@ pub fn agent(timeout: std::time::Duration) -> ureq::Agent {
         .into()
 }
 
+/// `n` bytes from `/dev/urandom`, as lowercase hex.
+///
+/// The one randomness source in the crate, and it lives beside [`Login`] because both its
+/// consumers are credentials: Digest's per-request `cnonce` (§1b.7, 16 bytes) and the node's
+/// `rpc-login` token (§2c, 16 bytes → the 32 hex characters §4.2 specifies).
+pub fn random_hex(n: usize) -> Result<String, Error> {
+    use std::io::Read;
+    let mut buf = vec![0u8; n];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut buf))
+        .map_err(|e| Error::failure(format!("cannot read /dev/urandom: {e}")))?;
+    Ok(buf.iter().fold(String::with_capacity(n * 2), |mut s, b| {
+        use std::fmt::Write;
+        let _ = write!(s, "{b:02x}");
+        s
+    }))
+}
+
 /// A `user:pass` pair for HTTP Digest (§2c). fmonero never generates, writes or rotates
 /// either daemon's credential: it reads them.
 #[derive(Clone)]
@@ -152,14 +180,74 @@ impl Login {
     /// Read `user:pass` from `monero-wallet-rpc`'s own 0400 login file (§2c).
     /// `Ok(None)` when the file is absent, which means "the daemon is not running" —
     /// never an error, because no constructor may decide a money-path exit code (§2a.1).
-    pub fn from_wallet_login_file(_path: &Path) -> Result<Option<Login>, Error> {
-        Err(Error::unimplemented("rpc::Login::from_wallet_login_file"))
+    pub fn from_wallet_login_file(path: &Path) -> Result<Option<Login>, Error> {
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => {
+                return Err(
+                    Error::backend(format!("cannot read {}: {e}", path.display()))
+                        .with_reason("auth_refused")
+                        .with_hint("systemctl --user restart fmonero-wallet-rpc.service"),
+                )
+            }
+        };
+        // `monero-wallet-rpc` writes exactly `<user>:<pass>` with no newline
+        // (`wallet_rpc_server.cpp:351-380`); tolerate a trailing newline anyway.
+        let line = text.trim_end_matches(['\n', '\r']);
+        match line.split_once(':') {
+            Some((user, pass)) if !user.is_empty() => Ok(Some(Login {
+                user: user.to_string(),
+                pass: pass.to_string(),
+            })),
+            // A file that exists but says nothing usable is not "the daemon is not running":
+            // it is a credential we cannot use, and §2c's answer to that is exit 4.
+            _ => Err(
+                Error::backend(format!("{} is not user:pass", path.display()))
+                    .with_reason("auth_refused")
+                    .with_hint("systemctl --user restart fmonero-wallet-rpc.service"),
+            ),
+        }
     }
 
     /// Read `rpc-login=` from a monerod config file (§2c). `Ok(None)` when absent — the
     /// Arch `system_unit` layout has no credential at all.
-    pub fn from_monerod_conf(_path: &Path) -> Result<Option<Login>, Error> {
-        Err(Error::unimplemented("rpc::Login::from_monerod_conf"))
+    pub fn from_monerod_conf(path: &Path) -> Result<Option<Login>, Error> {
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => {
+                return Err(Error::failure(format!(
+                    "cannot read {}: {e}",
+                    path.display()
+                )))
+            }
+        };
+        Ok(Login::from_monerod_conf_text(&text))
+    }
+
+    /// The parsing half of [`Login::from_monerod_conf`], so `units::existing_or_new_node_login`
+    /// can decide whether an existing line is valid without reading the file twice.
+    pub(crate) fn from_monerod_conf_text(text: &str) -> Option<Login> {
+        for line in text.lines() {
+            let line = line.trim();
+            if line.starts_with('#') {
+                continue;
+            }
+            let Some(value) = line.strip_prefix("rpc-login") else {
+                continue;
+            };
+            let value = value.trim_start().strip_prefix('=')?.trim();
+            let (user, pass) = value.split_once(':')?;
+            if user.is_empty() || pass.is_empty() {
+                return None;
+            }
+            return Some(Login {
+                user: user.to_string(),
+                pass: pass.to_string(),
+            });
+        }
+        None
     }
 }
 
@@ -210,6 +298,42 @@ mod tests {
         );
         assert_eq!(a.config().max_idle_connections_per_host(), 1);
         assert!(!a.config().http_status_as_error());
+    }
+
+    #[test]
+    fn the_wallet_login_file_is_read_and_an_absent_one_is_not_an_error() {
+        let dir = std::env::temp_dir().join(format!("fmonero-login-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("monero-wallet-rpc.18083.login");
+        // §2c: an absent file means "the daemon is not running", never a construction error.
+        assert!(Login::from_wallet_login_file(&path).unwrap().is_none());
+        // The daemon writes `<user>:<pass>` with no newline.
+        std::fs::write(&path, b"monero:Zm9vYmFy").unwrap();
+        let l = Login::from_wallet_login_file(&path).unwrap().unwrap();
+        assert_eq!((l.user.as_str(), l.pass.as_str()), ("monero", "Zm9vYmFy"));
+        std::fs::write(&path, b"fmonero:t3st\n").unwrap();
+        let l = Login::from_wallet_login_file(&path).unwrap().unwrap();
+        assert_eq!((l.user.as_str(), l.pass.as_str()), ("fmonero", "t3st"));
+        // A file that exists but is unusable is exit 4 `auth_refused`, not "not running".
+        std::fs::write(&path, b"nonsense").unwrap();
+        let e = Login::from_wallet_login_file(&path).unwrap_err();
+        assert_eq!(e.exit_code(), 4);
+        assert_eq!(e.reason(), Some("auth_refused"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_node_credential_is_read_from_the_conf_and_a_bad_line_is_none() {
+        let good = "data-dir=/home/x/.bitmonero\nrpc-login=fmonero:0123456789abcdef0123456789abcdef\nno-zmq=1\n";
+        let l = Login::from_monerod_conf_text(good).expect("a valid line");
+        assert_eq!(l.user, "fmonero");
+        assert_eq!(l.pass.len(), 32);
+        // A commented-out line is not a credential, and neither is a half-written one.
+        assert!(Login::from_monerod_conf_text("# rpc-login=fmonero:dead").is_none());
+        assert!(Login::from_monerod_conf_text("rpc-login=fmonero:").is_none());
+        assert!(Login::from_monerod_conf_text("rpc-login=nocolon").is_none());
+        // The Arch `system_unit` layout has no credential at all (§2i).
+        assert!(Login::from_monerod_conf_text("data-dir=/var/lib/monero\n").is_none());
     }
 
     #[test]

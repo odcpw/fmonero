@@ -17,8 +17,10 @@ use crate::context::Context;
 use crate::error::Error;
 use crate::history::Transfer;
 use crate::proc::CancelToken;
+use crate::rpc::jsonrpc::{self, Deadline, Transport};
 use crate::rpc::Login;
 use crate::send::{BuiltTx, TransferRequest};
+use crate::state::Daemon;
 
 /// `get_balance` (`:60`), with the per-subaddress rows of `:77-99`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -147,17 +149,18 @@ pub struct TransferQuery {
 
 /// A client for one `monero-wallet-rpc`.
 pub struct WalletClient {
-    /* Phase 1b adds the private state §5b names: agent, base, auth, timeout, and the
-    Digest session behind a Mutex (§2c). Nothing here is part of the frozen API. */
+    t: Transport,
 }
 
 impl WalletClient {
     /// Rejects any non-http scheme and any non-loopback host with `Error::Usage`, through
     /// the same `rpc::require_loopback` `NodeClient::new` calls (§2c). The wallet client is
     /// the one that carries a credential and moves money, so the rule is not relaxed here.
-    pub fn new(url: &str, _auth: Option<Login>, _timeout: Duration) -> Result<WalletClient, Error> {
+    pub fn new(url: &str, auth: Option<Login>, timeout: Duration) -> Result<WalletClient, Error> {
         crate::rpc::require_loopback(url)?;
-        Ok(WalletClient {})
+        Ok(WalletClient {
+            t: Transport::new(url, auth, timeout, Daemon::Wallet),
+        })
     }
 
     /// Reads `user:pass` from the login file (§2c). **An absent file is `Ok` with
@@ -165,71 +168,237 @@ impl WalletClient {
     /// order, so no constructor may decide a money-path exit code. The absence surfaces at
     /// the first request as exit 4 — `reason: unreachable` for a refused connect,
     /// `auth_refused` for a 401.
-    pub fn from_ctx(_ctx: &Context) -> Result<WalletClient, Error> {
-        Err(Error::unimplemented("WalletClient::from_ctx"))
+    pub fn from_ctx(ctx: &Context) -> Result<WalletClient, Error> {
+        Self::build(ctx, true)
+    }
+
+    /// The client `status` uses: it never arms a §2d breaker and is never blocked by one
+    /// (§2d). Crate-private, so the frozen API is unchanged.
+    pub(crate) fn for_status(ctx: &Context) -> Result<WalletClient, Error> {
+        Self::build(ctx, false)
+    }
+
+    fn build(ctx: &Context, breaker: bool) -> Result<WalletClient, Error> {
+        let url = &ctx.settings.wallet.url;
+        crate::rpc::require_loopback(url)?;
+        // An absent login file is `None`, not an error (§2c): the absence must surface at
+        // the first request, so that §2a.1's refusal order decides the exit code.
+        let auth =
+            Login::from_wallet_login_file(&ctx.paths.wallet_login_file(ctx.settings.wallet.port))
+                .unwrap_or(None);
+        Ok(WalletClient {
+            t: Transport::from_ctx(ctx, url, auth, Daemon::Wallet, breaker),
+        })
+    }
+
+    fn call<T: serde::de::DeserializeOwned>(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+        d: Deadline,
+    ) -> Result<T, Error> {
+        let v = self
+            .t
+            .rpc(method, params, d)
+            .map_err(|e| jsonrpc::wallet_error(method, e))?;
+        jsonrpc::typed(method, v)
+    }
+
+    /// The methods whose answer is `{}` and whose only information is "it did not fail".
+    fn ack(&self, method: &str, params: serde_json::Value, d: Deadline) -> Result<(), Error> {
+        let _: serde_json::Value = self.call(method, params, d)?;
+        Ok(())
     }
 
     /// As `NodeClient::authenticated`: what the wire did on the last completed request.
     pub fn authenticated(&self) -> Option<bool> {
-        None
+        self.t.authenticated()
     }
 
     /// `(major, minor, release)` — `WALLET_RPC_VERSION` is packed `major<<16|minor` (`:2554`).
     pub fn get_version(&self) -> Result<(u16, u16, bool), Error> {
-        Err(Error::unimplemented("WalletClient::get_version"))
+        #[derive(Default, Deserialize)]
+        #[serde(default)]
+        struct V {
+            version: u32,
+            release: bool,
+        }
+        let v: V = self.call("get_version", serde_json::json!({}), Deadline::Probe)?;
+        Ok((
+            (v.version >> 16) as u16,
+            (v.version & 0xffff) as u16,
+            v.release,
+        ))
     }
 
     /// The wallet's own blockchain height (`:455`) — simultaneously the reachability probe
     /// and the open/closed probe (§5). `Error::WalletLocked` on `-13 NOT_OPEN`.
     pub fn get_height(&self) -> Result<u64, Error> {
-        Err(Error::unimplemented("WalletClient::get_height"))
+        #[derive(Default, Deserialize)]
+        #[serde(default)]
+        struct H {
+            height: u64,
+        }
+        let h: H = self.call("get_height", serde_json::json!({}), Deadline::Probe)?;
+        Ok(h.height)
     }
 
     /// Maps **any** `-1` to `Error::WalletLocked` (exit 9): `on_open_wallet` overwrites the
     /// mapped code, so a wrong password never arrives as `-22` (§1b.4). The caller
     /// pre-checks that the `.keys` file exists (exit 6), which is what makes that mapping
     /// unambiguous. Called only from `wallet_session::open`.
-    pub fn open_wallet(&self, _name: &str, _password: &str) -> Result<(), Error> {
-        Err(Error::unimplemented("WalletClient::open_wallet"))
+    pub fn open_wallet(&self, name: &str, password: &str) -> Result<(), Error> {
+        self.ack(
+            "open_wallet",
+            serde_json::json!({
+                "filename": name, "password": password, "autosave_current": true
+            }),
+            // Opening a large wallet is slow: this is the one long deadline (§2d).
+            Deadline::Open,
+        )
     }
 
     pub fn close_wallet(&self) -> Result<(), Error> {
-        Err(Error::unimplemented("WalletClient::close_wallet"))
+        self.ack(
+            "close_wallet",
+            serde_json::json!({"autosave_current": true}),
+            Deadline::Open,
+        )
     }
 
     /// `language` is **required** by the daemon and an unknown value comes back as a bare
     /// `-1`, so it is validated locally first (`settings::validate_seed_language`, §1b.4).
-    pub fn create_wallet(
-        &self,
-        _name: &str,
-        _password: &str,
-        _language: &str,
-    ) -> Result<(), Error> {
-        Err(Error::unimplemented("WalletClient::create_wallet"))
+    pub fn create_wallet(&self, name: &str, password: &str, language: &str) -> Result<(), Error> {
+        self.ack(
+            "create_wallet",
+            serde_json::json!({"filename": name, "password": password, "language": language}),
+            Deadline::Open,
+        )
     }
 
-    pub fn get_balance(&self, _account: u32) -> Result<Balance, Error> {
-        Err(Error::unimplemented("WalletClient::get_balance"))
+    pub fn get_balance(&self, account: u32) -> Result<Balance, Error> {
+        // The wire names differ from fmonero's (`unlocked_balance` vs `unlocked`,
+        // `time_to_unlock` vs `time_to_unlock_sec`), so the wire shape is its own type.
+        #[derive(Default, Deserialize)]
+        #[serde(default)]
+        struct WireSub {
+            address_index: u32,
+            address: String,
+            label: String,
+            balance: Piconero,
+            unlocked_balance: Piconero,
+            num_unspent_outputs: u64,
+            blocks_to_unlock: u64,
+        }
+        #[derive(Default, Deserialize)]
+        #[serde(default)]
+        struct Wire {
+            balance: Piconero,
+            unlocked_balance: Piconero,
+            blocks_to_unlock: u64,
+            time_to_unlock: u64,
+            per_subaddress: Vec<WireSub>,
+        }
+        let w: Wire = self.call(
+            "get_balance",
+            serde_json::json!({
+                "account_index": account, "all_accounts": false, "strict": false
+            }),
+            Deadline::Probe,
+        )?;
+        Ok(Balance {
+            balance: w.balance,
+            unlocked: w.unlocked_balance,
+            blocks_to_unlock: w.blocks_to_unlock,
+            time_to_unlock_sec: w.time_to_unlock,
+            per_subaddress: w
+                .per_subaddress
+                .into_iter()
+                .map(|s| SubaddressBalance {
+                    address_index: s.address_index,
+                    address: s.address,
+                    label: s.label,
+                    balance: s.balance,
+                    unlocked: s.unlocked_balance,
+                    num_unspent_outputs: s.num_unspent_outputs,
+                    blocks_to_unlock: s.blocks_to_unlock,
+                })
+                .collect(),
+        })
     }
 
     pub fn get_accounts(&self) -> Result<Vec<AccountRow>, Error> {
-        Err(Error::unimplemented("WalletClient::get_accounts"))
+        #[derive(Default, Deserialize)]
+        #[serde(default)]
+        struct Wire {
+            subaddress_accounts: Vec<AccountRow>,
+        }
+        let w: Wire = self.call("get_accounts", serde_json::json!({}), Deadline::Probe)?;
+        Ok(w.subaddress_accounts)
     }
 
-    pub fn get_address(&self, _account: u32) -> Result<AddressSet, Error> {
-        Err(Error::unimplemented("WalletClient::get_address"))
+    pub fn get_address(&self, account: u32) -> Result<AddressSet, Error> {
+        #[derive(Default, Deserialize)]
+        #[serde(default)]
+        struct Wire {
+            address: String,
+            addresses: Vec<SubaddressRow>,
+        }
+        let w: Wire = self.call(
+            "get_address",
+            serde_json::json!({"account_index": account}),
+            Deadline::Probe,
+        )?;
+        Ok(AddressSet {
+            primary: w.address,
+            addresses: w.addresses,
+        })
     }
 
-    pub fn create_address(&self, _account: u32, _label: &str) -> Result<NewAddress, Error> {
-        Err(Error::unimplemented("WalletClient::create_address"))
+    pub fn create_address(&self, account: u32, label: &str) -> Result<NewAddress, Error> {
+        self.call(
+            "create_address",
+            serde_json::json!({"account_index": account, "count": 1, "label": label}),
+            Deadline::Probe,
+        )
     }
 
-    pub fn label_address(&self, _account: u32, _index: u32, _label: &str) -> Result<(), Error> {
-        Err(Error::unimplemented("WalletClient::label_address"))
+    pub fn label_address(&self, account: u32, index: u32, label: &str) -> Result<(), Error> {
+        self.ack(
+            "label_address",
+            // `index` is the `{major, minor}` object `subaddress_index.h:38-55` serializes
+            // (§1b.4) — never a scalar.
+            serde_json::json!({"index": {"major": account, "minor": index}, "label": label}),
+            Deadline::Probe,
+        )
     }
 
-    pub fn get_transfers(&self, _q: &TransferQuery) -> Result<Vec<Transfer>, Error> {
-        Err(Error::unimplemented("WalletClient::get_transfers"))
+    pub fn get_transfers(&self, q: &TransferQuery) -> Result<Vec<Transfer>, Error> {
+        #[derive(Default, Deserialize)]
+        #[serde(default)]
+        struct Lists {
+            r#in: Vec<WireTransfer>,
+            out: Vec<WireTransfer>,
+            pending: Vec<WireTransfer>,
+            failed: Vec<WireTransfer>,
+            pool: Vec<WireTransfer>,
+        }
+        let lists: Lists = self.call(
+            "get_transfers",
+            serde_json::to_value(q).map_err(Error::from)?,
+            Deadline::Refresh,
+        )?;
+        let mut rows = Vec::new();
+        for list in [
+            lists.r#in,
+            lists.out,
+            lists.pending,
+            lists.failed,
+            lists.pool,
+        ] {
+            rows.extend(list.into_iter().map(WireTransfer::into_transfer));
+        }
+        Ok(rows)
     }
 
     /// `Ok(None)` when wallet-rpc answers `-8` with "Transaction not found." — the normal
@@ -237,10 +406,31 @@ impl WalletClient {
     /// `Err(Usage)` for the malformed-txid variants of `-8` (§1b.4).
     pub fn get_transfer_by_txid(
         &self,
-        _txid: &str,
-        _account: u32,
+        txid: &str,
+        account: u32,
     ) -> Result<Option<Transfer>, Error> {
-        Err(Error::unimplemented("WalletClient::get_transfer_by_txid"))
+        #[derive(Default, Deserialize)]
+        #[serde(default)]
+        struct Wire {
+            transfer: WireTransfer,
+        }
+        let params = serde_json::json!({"txid": txid, "account_index": account});
+        match self
+            .t
+            .rpc("get_transfer_by_txid", params, Deadline::Refresh)
+        {
+            Ok(v) => {
+                let w: Wire = jsonrpc::typed("get_transfer_by_txid", v)?;
+                Ok(Some(w.transfer.into_transfer()))
+            }
+            // The one `-8` that is an answer rather than an error (§1b.4).
+            Err(crate::rpc::RpcError::Rpc { code: -8, message })
+                if message.contains("not found") =>
+            {
+                Ok(None)
+            }
+            Err(e) => Err(jsonrpc::wallet_error("get_transfer_by_txid", e)),
+        }
     }
 
     /// ALWAYS called with `do_not_relay: true` and `get_tx_metadata: true` (§2a.2); the
@@ -248,10 +438,40 @@ impl WalletClient {
     /// `send::build`** (§2a.3).
     pub fn build_transfer(
         &self,
-        _req: &TransferRequest,
-        _cancel: &CancelToken,
+        req: &TransferRequest,
+        cancel: &CancelToken,
     ) -> Result<BuiltTx, Error> {
-        Err(Error::unimplemented("WalletClient::build_transfer"))
+        if cancel.is_cancelled() {
+            return Err(Error::Interrupted);
+        }
+        #[derive(Default, Deserialize)]
+        #[serde(default)]
+        struct Wire {
+            tx_hash: String,
+            amount: Piconero,
+            fee: Piconero,
+            weight: u64,
+            tx_metadata: String,
+        }
+        let w: Wire = self.call(
+            "transfer",
+            serde_json::to_value(req).map_err(Error::from)?,
+            Deadline::Transfer,
+        )?;
+        if w.tx_metadata.is_empty() {
+            // Without it there is nothing to relay: `relay_tx` wants a serialized
+            // `wallet2::pending_tx`, not `tx_blob` (§1b.4).
+            return Err(Error::failure(
+                "monero-wallet-rpc built a transaction but returned no tx_metadata, so it cannot be relayed",
+            ));
+        }
+        Ok(BuiltTx {
+            txid: w.tx_hash,
+            amount: w.amount,
+            fee: w.fee,
+            weight: w.weight,
+            metadata: w.tx_metadata,
+        })
     }
 
     /// `sweep_all` returns a **list** (`split_transfer_response`, §1b.4), and its request
@@ -259,17 +479,73 @@ impl WalletClient {
     /// `send::build_sweep`** (§2a.3).
     pub fn build_sweep_all(
         &self,
-        _req: &TransferRequest,
-        _cancel: &CancelToken,
+        req: &TransferRequest,
+        cancel: &CancelToken,
     ) -> Result<Vec<BuiltTx>, Error> {
-        Err(Error::unimplemented("WalletClient::build_sweep_all"))
+        if cancel.is_cancelled() {
+            return Err(Error::Interrupted);
+        }
+        #[derive(Default, Deserialize)]
+        #[serde(default)]
+        struct Wire {
+            tx_hash_list: Vec<String>,
+            amount_list: Vec<Piconero>,
+            fee_list: Vec<Piconero>,
+            weight_list: Vec<u64>,
+            tx_metadata_list: Vec<String>,
+        }
+        let w: Wire = self.call(
+            "sweep_all",
+            serde_json::to_value(req).map_err(Error::from)?,
+            Deadline::Transfer,
+        )?;
+        // Five parallel arrays that must stay in lockstep: a shorter `tx_metadata_list`
+        // would silently drop a transaction the record already promises to relay (§2a.4).
+        let n = w.tx_hash_list.len();
+        if n == 0 {
+            return Err(Error::tx_rejected("the sweep built no transaction")
+                .with_reason("not_possible")
+                .with_hint("fmonero wallet balance"));
+        }
+        if w.tx_metadata_list.len() != n
+            || w.amount_list.len() != n
+            || w.fee_list.len() != n
+            || w.weight_list.len() != n
+        {
+            return Err(Error::failure(format!(
+                "monero-wallet-rpc answered sweep_all with {n} txids but {} metadata, {} amounts, {} fees and {} weights",
+                w.tx_metadata_list.len(),
+                w.amount_list.len(),
+                w.fee_list.len(),
+                w.weight_list.len()
+            )));
+        }
+        Ok((0..n)
+            .map(|i| BuiltTx {
+                txid: w.tx_hash_list[i].clone(),
+                amount: w.amount_list[i],
+                fee: w.fee_list[i],
+                weight: w.weight_list[i],
+                metadata: w.tx_metadata_list[i].clone(),
+            })
+            .collect())
     }
 
     /// Returns the server's `tx_hash`, which the caller compares with the built txid
     /// (§2a.9). `metadata_hex` is a serialized `wallet2::pending_tx` — **not** `tx_blob`
     /// (§1b.4). **Callable only from `send::relay`** (§2a.3).
-    pub fn relay_tx(&self, _metadata_hex: &str) -> Result<String, Error> {
-        Err(Error::unimplemented("WalletClient::relay_tx"))
+    pub fn relay_tx(&self, metadata_hex: &str) -> Result<String, Error> {
+        #[derive(Default, Deserialize)]
+        #[serde(default)]
+        struct Wire {
+            tx_hash: String,
+        }
+        let w: Wire = self.call(
+            "relay_tx",
+            serde_json::json!({"hex": metadata_hex}),
+            Deadline::Relay,
+        )?;
+        Ok(w.tx_hash)
     }
 
     /// Persists the wallet file. Its ONLY caller is `send::relay`, after the last
@@ -277,42 +553,104 @@ impl WalletClient {
     /// `stop()` (`wallet_rpc_server.cpp:294-302`) or on this call (`:2060-2077`) — the
     /// auto-refresh idle handler never stores (`:210-285`).
     pub fn store(&self) -> Result<(), Error> {
-        Err(Error::unimplemented("WalletClient::store"))
+        self.ack("store", serde_json::json!({}), Deadline::Relay)
     }
 
     /// Always `{ any_net_type: true, allow_openalias: false }` (§2a.6).
-    pub fn validate_address(&self, _address: &str) -> Result<AddressCheck, Error> {
-        Err(Error::unimplemented("WalletClient::validate_address"))
+    pub fn validate_address(&self, address: &str) -> Result<AddressCheck, Error> {
+        self.call(
+            "validate_address",
+            serde_json::json!({
+                "address": address,
+                // Load-bearing: with it false a foreign address comes back
+                // `valid: false, nettype: ""` and the user is told "invalid address" when
+                // the truth is "that is a stagenet address" (§2a.6).
+                "any_net_type": true,
+                // Always false: it does DNS (§2a.6).
+                "allow_openalias": false
+            }),
+            Deadline::Probe,
+        )
     }
 
-    pub fn refresh(&self, _start_height: u64, _cancel: &CancelToken) -> Result<Refreshed, Error> {
-        Err(Error::unimplemented("WalletClient::refresh"))
+    pub fn refresh(&self, start_height: u64, cancel: &CancelToken) -> Result<Refreshed, Error> {
+        if cancel.is_cancelled() {
+            return Err(Error::Interrupted);
+        }
+        self.call(
+            "refresh",
+            serde_json::json!({"start_height": start_height}),
+            Deadline::Refresh,
+        )
     }
 
     /// Issued once immediately after a successful `open_wallet`, with the upstream default
     /// period of 20 s — explicit rather than inherited (§2d).
-    pub fn auto_refresh(&self, _enable: bool, _period_sec: u32) -> Result<(), Error> {
-        Err(Error::unimplemented("WalletClient::auto_refresh"))
+    pub fn auto_refresh(&self, enable: bool, period_sec: u32) -> Result<(), Error> {
+        self.ack(
+            "auto_refresh",
+            serde_json::json!({"enable": enable, "period": period_sec}),
+            Deadline::Probe,
+        )
     }
 
     pub fn get_address_book(&self) -> Result<Vec<BookEntry>, Error> {
-        Err(Error::unimplemented("WalletClient::get_address_book"))
+        #[derive(Default, Deserialize)]
+        #[serde(default)]
+        struct Wire {
+            entries: Vec<BookEntry>,
+        }
+        // An empty `entries` request means "all of them" (§1b.4).
+        let w: Wire = self.call(
+            "get_address_book",
+            serde_json::json!({"entries": []}),
+            Deadline::Probe,
+        )?;
+        Ok(w.entries)
     }
 
-    pub fn add_address_book(&self, _address: &str, _description: &str) -> Result<u64, Error> {
-        Err(Error::unimplemented("WalletClient::add_address_book"))
+    pub fn add_address_book(&self, address: &str, description: &str) -> Result<u64, Error> {
+        #[derive(Default, Deserialize)]
+        #[serde(default)]
+        struct Wire {
+            index: u64,
+        }
+        let w: Wire = self.call(
+            "add_address_book",
+            serde_json::json!({"address": address, "description": description}),
+            Deadline::Probe,
+        )?;
+        Ok(w.index)
     }
 
-    pub fn delete_address_book(&self, _index: u64) -> Result<(), Error> {
-        Err(Error::unimplemented("WalletClient::delete_address_book"))
+    pub fn delete_address_book(&self, index: u64) -> Result<(), Error> {
+        self.ack(
+            "delete_address_book",
+            serde_json::json!({"index": index}),
+            Deadline::Probe,
+        )
     }
 
-    pub fn set_tx_notes(&self, _txids: &[String], _notes: &[String]) -> Result<(), Error> {
-        Err(Error::unimplemented("WalletClient::set_tx_notes"))
+    pub fn set_tx_notes(&self, txids: &[String], notes: &[String]) -> Result<(), Error> {
+        self.ack(
+            "set_tx_notes",
+            serde_json::json!({"txids": txids, "notes": notes}),
+            Deadline::Probe,
+        )
     }
 
-    pub fn get_tx_notes(&self, _txids: &[String]) -> Result<Vec<String>, Error> {
-        Err(Error::unimplemented("WalletClient::get_tx_notes"))
+    pub fn get_tx_notes(&self, txids: &[String]) -> Result<Vec<String>, Error> {
+        #[derive(Default, Deserialize)]
+        #[serde(default)]
+        struct Wire {
+            notes: Vec<String>,
+        }
+        let w: Wire = self.call(
+            "get_tx_notes",
+            serde_json::json!({"txids": txids}),
+            Deadline::Probe,
+        )?;
+        Ok(w.notes)
     }
 
     /// `login` carries the **node's** `rpc-login` credential (§4.2). Without it a wallet
@@ -323,11 +661,62 @@ impl WalletClient {
     /// `wallet_session::open` and from `wallet set-daemon`.
     pub fn set_daemon(
         &self,
-        _address: &str,
-        _trusted: bool,
-        _login: Option<&Login>,
+        address: &str,
+        trusted: bool,
+        login: Option<&Login>,
     ) -> Result<(), Error> {
-        Err(Error::unimplemented("WalletClient::set_daemon"))
+        let mut params = serde_json::json!({"address": address, "trusted": trusted});
+        // The two credential fields are **omitted** when there is none — the §2i
+        // `system_unit` layout has no `rpc-login` at all (§4.2).
+        if let (Some(l), Some(map)) = (login, params.as_object_mut()) {
+            map.insert("username".into(), serde_json::json!(l.user));
+            map.insert("password".into(), serde_json::json!(l.pass));
+        }
+        self.ack("set_daemon", params, Deadline::Probe)
+    }
+}
+
+/// `transfer_entry` as it arrives (`wallet_rpc_server_commands_defs.h:1446-1487`).
+///
+/// A separate type from [`Transfer`] for one reason: `confirmations`, `locked` and
+/// `suggested_confirmations_threshold` are on the wire and are **dropped here**, because
+/// wallet-rpc recomputes them per response from the wallet's own height and a cached copy is
+/// a wrong answer about money one block later (§1b.4, §5b).
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct WireTransfer {
+    txid: String,
+    payment_id: String,
+    height: u64,
+    timestamp: i64,
+    amount: Piconero,
+    fee: Piconero,
+    note: String,
+    destinations: Vec<crate::history::Destination>,
+    r#type: crate::history::TransferKind,
+    unlock_time: u64,
+    subaddr_index: crate::history::SubaddrIndex,
+    address: String,
+    double_spend_seen: bool,
+}
+
+impl WireTransfer {
+    fn into_transfer(self) -> Transfer {
+        Transfer {
+            txid: self.txid,
+            kind: self.r#type,
+            height: self.height,
+            timestamp: self.timestamp,
+            amount: self.amount,
+            fee: self.fee,
+            note: self.note,
+            address: self.address,
+            subaddr_index: self.subaddr_index,
+            destinations: self.destinations,
+            unlock_time: self.unlock_time,
+            payment_id: self.payment_id,
+            double_spend_seen: self.double_spend_seen,
+        }
     }
 }
 

@@ -10,6 +10,48 @@ use crate::error::Error;
 ///
 /// **No wallet bytes are read** (§2b.6): fmonero reads the *directory* and nothing else.
 /// Only `monero-wallet-rpc` ever touches a wallet file.
-pub fn list(_ctx: &Context) -> Result<Vec<String>, Error> {
-    Err(Error::unimplemented("wallet_dir::list"))
+pub fn list(ctx: &Context) -> Result<Vec<String>, Error> {
+    let dir = &ctx.settings.wallet.dir;
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        // A directory that does not exist yet is an empty list, not a failure: `wallet list`
+        // on a freshly installed machine is a GREEN row (§4b), and its own output names the
+        // command that creates the first wallet.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => {
+            return Err(
+                Error::failure(format!("cannot read {}: {e}", dir.display()))
+                    .with_hint("fmonero settings get wallet.dir"),
+            )
+        }
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            name.strip_suffix(".keys").map(str::to_string)
+        })
+        .filter(|n| !n.is_empty())
+        .collect();
+    names.sort();
+    Ok(names)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_keys_basenames_are_listed_sorted_and_a_missing_dir_is_empty() {
+        let root = std::env::temp_dir().join(format!("fmonero-wdir-{}", std::process::id()));
+        let mut ctx = Context::for_test(&root).unwrap();
+        ctx.settings.wallet.dir = root.join("wallets/mainnet");
+        assert!(list(&ctx).unwrap().is_empty(), "a missing dir is empty");
+        std::fs::create_dir_all(&ctx.settings.wallet.dir).unwrap();
+        for name in ["main.keys", "main", "zeta.keys", "notes.txt", ".keys"] {
+            std::fs::write(ctx.settings.wallet.dir.join(name), b"").unwrap();
+        }
+        assert_eq!(list(&ctx).unwrap(), vec!["main", "zeta"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

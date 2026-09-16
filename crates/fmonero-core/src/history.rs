@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::amount::Piconero;
 use crate::context::Context;
 use crate::error::Error;
+use crate::rpc::wallet::TransferQuery;
 use crate::rpc::WalletClient;
 
 /// `CRYPTONOTE_DEFAULT_TX_SPENDABLE_AGE` (`cryptonote_config.h:49`) — the age half of
@@ -176,15 +177,27 @@ pub const CACHE_FORMAT_VERSION: u32 = 1;
 
 /// Load the snapshot for one account. A header mismatch is **STALE, not corrupt**:
 /// ignored and refetched, never an error (§5b).
-pub fn load(_ctx: &Context, _account: u32) -> Result<Vec<Transfer>, Error> {
-    Err(Error::unimplemented("history::load"))
+pub fn load(ctx: &Context, account: u32) -> Result<Vec<Transfer>, Error> {
+    let snap = read_snapshot(ctx);
+    if !snap.usable_for(None) {
+        return Ok(Vec::new());
+    }
+    Ok(snap.accounts.get(&account).cloned().unwrap_or_default())
 }
 
 /// The incremental top-up. **Its only caller is [`query`]** (§5b rule 1): the top-up, the
 /// `get_height` and the row merge are one operation, and splitting them across callers is
 /// how the node's height ends up in `confirmations`.
-pub fn refresh(_ctx: &Context, _w: &WalletClient, _account: u32) -> Result<usize, Error> {
-    Err(Error::unimplemented("history::refresh"))
+pub fn refresh(ctx: &Context, w: &WalletClient, account: u32) -> Result<usize, Error> {
+    let before = load(ctx, account)?.len();
+    let mut q = HistoryQuery {
+        account_index: account,
+        limit: usize::MAX,
+        kinds: vec![TransferKind::In, TransferKind::Block, TransferKind::Out],
+        ..HistoryQuery::default()
+    };
+    query(ctx, Some(w), &mut q)?;
+    Ok(load(ctx, account)?.len().saturating_sub(before))
 }
 
 /// The one place the top-up happens. `w` is `Some` unless `q.cached`.
@@ -197,11 +210,122 @@ pub fn refresh(_ctx: &Context, _w: &WalletClient, _account: u32) -> Result<usize
 /// hand it the NODE's height. With `w: None` it serves the snapshot alone, issues nothing,
 /// leaves both `None`, and both derived fields render `null` (§2l (d)).
 pub fn query(
-    _ctx: &Context,
-    _w: Option<&WalletClient>,
-    _q: &mut HistoryQuery,
+    ctx: &Context,
+    w: Option<&WalletClient>,
+    q: &mut HistoryQuery,
 ) -> Result<Vec<Transfer>, Error> {
-    Err(Error::unimplemented("history::query"))
+    // Ignored on input, always written here (§5b): that is what makes handing this function
+    // the NODE's height unrepresentable.
+    q.wallet_height = None;
+    q.adjusted_now = None;
+    q.pool_unavailable = false;
+
+    let mut snap = read_snapshot(ctx);
+    let mut live: Vec<Transfer> = Vec::new();
+
+    if let Some(w) = w {
+        // The wallet's own height, which is the clock wallet-rpc recomputes `confirmations`
+        // and `locked` against (§1b.4).
+        let wh = w.get_height()?;
+        q.wallet_height = Some(wh);
+        q.adjusted_now = Some(crate::now_unix());
+
+        let primary = w.get_address(q.account_index)?.primary;
+        let fp = fingerprint(&primary);
+        if !snap.usable_for(Some(fp)) {
+            snap = Snapshot::fresh(fp);
+        }
+
+        // Re-read a day's worth rather than starting at the high-water mark, so a reorg
+        // inside that window is corrected instead of being cached forever (§5b).
+        let min_height = snap.high_water.saturating_sub(REFETCH_WINDOW_BLOCKS);
+        // `pool` only when the caller asked for pool rows: that branch alone runs
+        // `update_pool_state`, a daemon round trip that throws when the node is unreachable
+        // and turns the WHOLE response into epee's `code: 0` (§1b.4).
+        let want_pool = q.kinds.contains(&TransferKind::Pool);
+        let mut wire = TransferQuery {
+            account_index: q.account_index,
+            r#in: true,
+            out: true,
+            pending: true,
+            failed: true,
+            pool: want_pool,
+            // Mandatory: without it the bound is silently ignored and the daemon returns the
+            // whole history (§1b.4).
+            filter_by_height: true,
+            min_height,
+            subaddr_indices: Vec::new(),
+        };
+        let rows = match w.get_transfers(&wire) {
+            Ok(rows) => rows,
+            // Retried EXACTLY ONCE without `pool`: the rows are then complete except for the
+            // pool, which is not a failure of a read-only command (§4.1).
+            Err(e) if want_pool => {
+                wire.pool = false;
+                q.pool_unavailable = true;
+                w.get_transfers(&wire).map_err(|_| e)?
+            }
+            Err(e) => return Err(e),
+        };
+
+        // Confirmed `in`/`out`/`block` rows are merged into the snapshot; `pending`, `failed`
+        // and `pool` are returned from this response and NEVER cached (§5b).
+        let confirmed_below = wh.saturating_sub(SPENDABLE_AGE);
+        let cached = snap.accounts.entry(q.account_index).or_default();
+        for row in rows {
+            let cacheable = matches!(
+                row.kind,
+                TransferKind::In | TransferKind::Out | TransferKind::Block
+            ) && row.height != 0
+                && row.height <= confirmed_below;
+            if cacheable {
+                match cached.iter().position(|c| c.txid == row.txid) {
+                    Some(i) => cached[i] = row,
+                    None => cached.push(row),
+                }
+            } else {
+                live.push(row);
+            }
+        }
+        cached.sort_by(|a, b| {
+            b.height
+                .cmp(&a.height)
+                .then_with(|| b.timestamp.cmp(&a.timestamp))
+                .then_with(|| a.txid.cmp(&b.txid))
+        });
+        // `high_water` is the highest CONFIRMED height in the snapshot, never the tip (§5b).
+        snap.high_water = cached.iter().map(|t| t.height).max().unwrap_or(0);
+        snap.built_at = crate::now_unix();
+        write_snapshot(ctx, &snap)?;
+    } else if !snap.usable_for(None) {
+        // `--cached` with a stale or absent snapshot: an empty answer, not an error (§5b).
+        snap = Snapshot::default();
+    }
+
+    let mut rows: Vec<Transfer> = snap
+        .accounts
+        .get(&q.account_index)
+        .cloned()
+        .unwrap_or_default();
+    rows.extend(live);
+    // The kind filter, then `--since`, then the newest `limit` rows.
+    if !q.kinds.is_empty() {
+        rows.retain(|t| q.kinds.contains(&t.kind));
+    }
+    if let Some(since) = q.since_height {
+        // A pending/pool row has height 0 and is by definition not below any height the user
+        // asked about, so it survives the filter (it is the newest thing there is).
+        rows.retain(|t| t.height == 0 || t.height >= since);
+    }
+    rows.sort_by(|a, b| {
+        // Unconfirmed rows (height 0) are the newest; below them, newest height first.
+        let key = |t: &Transfer| (t.height == 0, t.height, t.timestamp);
+        key(b).cmp(&key(a))
+    });
+    if rows.len() > q.limit {
+        rows.truncate(q.limit);
+    }
+    Ok(rows)
 }
 
 /// The ONLY implementation of `confirmations` (§1b.4, `wallet_rpc_server.cpp:162-167`):
@@ -209,8 +333,12 @@ pub fn query(
 ///
 /// `wh` is the **WALLET's** height; `None` (a `--cached` read) renders JSON `null` and `—`
 /// in a table, never `0` (§5's shape rules).
-pub fn confirmations(_t: &Transfer, _wh: Option<u64>) -> Option<u64> {
-    None
+pub fn confirmations(t: &Transfer, wh: Option<u64>) -> Option<u64> {
+    let wh = wh?;
+    if t.height == 0 || t.height >= wh {
+        return Some(0);
+    }
+    Some(wh - t.height)
 }
 
 /// The ONLY implementation of `locked` (§1b.4, `wallet2.cpp:7308-7344`).
@@ -228,15 +356,125 @@ pub fn confirmations(_t: &Transfer, _wh: Option<u64>) -> Option<u64> {
 /// `unlock_time` is therefore **never a delta added to `height`**: treating it as one marks
 /// every timestamp-unlocked incoming transfer locked until the year 55 000. `pending` and
 /// `pool` rows are unconditionally locked (`wallet_rpc_server.cpp:551`, `:581`).
-pub fn locked(_t: &Transfer, _wh: Option<u64>, _adjusted_now: Option<i64>) -> Option<bool> {
-    None
+pub fn locked(t: &Transfer, wh: Option<u64>, adjusted_now: Option<i64>) -> Option<bool> {
+    let wh = wh?;
+    let adjusted_now = adjusted_now?;
+    // `pending` and `pool` rows are unconditionally locked (`wallet_rpc_server.cpp:551`, `:581`).
+    if matches!(t.kind, TransferKind::Pending | TransferKind::Pool) {
+        return Some(true);
+    }
+    // A `failed` row was never accepted; it is not spendable and not "unlocked".
+    if t.kind == TransferKind::Failed {
+        return Some(true);
+    }
+    let age_ok = t.height != 0 && t.height + SPENDABLE_AGE <= wh;
+    let spendtime_ok = if t.unlock_time == 0 {
+        true
+    } else if t.unlock_time < MAX_BLOCK_NUMBER {
+        // An absolute BLOCK INDEX, never a delta added to `height` (`wallet2.cpp:7319-7344`).
+        wh >= t.unlock_time
+    } else {
+        // A unix TIMESTAMP, with the V2 leeway of 120 s (§1b.4).
+        adjusted_now + LOCK_LEEWAY_SEC >= t.unlock_time as i64
+    };
+    Some(!(age_ok && spendtime_ok))
 }
 
 /// `Ok(None)` when the file is absent; never an error. Exists because the doctor's
 /// `history_cache_fresh` check (§7.1) must read the header and may not touch core's
 /// internals.
-pub fn header(_ctx: &Context) -> Result<Option<CacheHeader>, Error> {
-    Err(Error::unimplemented("history::header"))
+pub fn header(ctx: &Context) -> Result<Option<CacheHeader>, Error> {
+    let path = ctx.paths.history_cache();
+    let bytes = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            return Err(Error::failure(format!(
+                "cannot read {}: {e}",
+                path.display()
+            )))
+        }
+    };
+    // A file that does not decode has no header to report, and postcard is not
+    // self-describing so a version bump lands here: `magic_ok: false` says so without
+    // pretending the numbers beside it mean anything.
+    Ok(Some(
+        postcard::from_bytes::<Snapshot>(&bytes)
+            .map(|s| s.header())
+            .unwrap_or_default(),
+    ))
+}
+
+// ---- the snapshot ------------------------------------------------------------
+
+/// The whole on-disk snapshot: a header plus the confirmed rows, postcard-encoded.
+///
+/// One struct rather than a hand-rolled header and a body, because postcard is **not
+/// self-describing**: a field added to either half changes the byte layout, which is exactly
+/// what [`CACHE_FORMAT_VERSION`] exists to notice.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct Snapshot {
+    magic: [u8; 4],
+    format_version: u32,
+    wallet_fp: [u8; 16],
+    high_water: u64,
+    built_at: i64,
+    /// Keyed by account index, because one `history.bin` serves every account of the wallet
+    /// and `wallet history --account 1` must not discard account 0's rows.
+    accounts: std::collections::BTreeMap<u32, Vec<Transfer>>,
+}
+
+impl Snapshot {
+    fn header(&self) -> CacheHeader {
+        CacheHeader {
+            magic_ok: &self.magic == CACHE_MAGIC,
+            format_version: self.format_version,
+            wallet_fp: self.wallet_fp,
+            high_water: self.high_water,
+            built_at: self.built_at,
+        }
+    }
+    fn fresh(fp: [u8; 16]) -> Snapshot {
+        Snapshot {
+            magic: *CACHE_MAGIC,
+            format_version: CACHE_FORMAT_VERSION,
+            wallet_fp: fp,
+            ..Snapshot::default()
+        }
+    }
+    /// `true` when the header says this file is about this wallet and this format. A mismatch
+    /// is **STALE, not corrupt**: ignored and refetched, never an error (§5b).
+    fn usable_for(&self, fp: Option<[u8; 16]>) -> bool {
+        &self.magic == CACHE_MAGIC
+            && self.format_version == CACHE_FORMAT_VERSION
+            && fp.is_none_or(|f| f == self.wallet_fp)
+    }
+}
+
+/// Read the snapshot, or an empty one. Never an error: a cache is not a result.
+fn read_snapshot(ctx: &Context) -> Snapshot {
+    std::fs::read(ctx.paths.history_cache())
+        .ok()
+        .and_then(|b| postcard::from_bytes::<Snapshot>(&b).ok())
+        .unwrap_or_default()
+}
+
+fn write_snapshot(ctx: &Context, s: &Snapshot) -> Result<(), Error> {
+    ctx.paths.ensure_dirs()?;
+    let bytes = postcard::to_stdvec(s)
+        .map_err(|e| Error::failure(format!("cannot encode the history snapshot: {e}")))?;
+    // 0600: the snapshot holds the whole transfer history, with addresses and notes (§2b.7).
+    crate::write_private(&ctx.paths.history_cache(), &bytes)
+}
+
+/// The first 16 bytes of `sha256(primary_address)`. The address is public (§2b); the
+/// fingerprint only has to notice that this is a **different wallet**.
+fn fingerprint(primary_address: &str) -> [u8; 16] {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(primary_address.as_bytes());
+    let mut fp = [0u8; 16];
+    fp.copy_from_slice(&digest[..16]);
+    fp
 }
 
 #[cfg(test)]
