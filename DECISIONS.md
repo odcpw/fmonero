@@ -1993,6 +1993,26 @@ test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 132 filtered out; fi
 exit=0
 ```
 
+#### `systemd-analyze --user verify` on the rendered units (§2b's test 4)
+
+Not one of §8's Phase 1b gate lines — §2b's tests are Phase 3's gate — but the tool exists on this
+machine and the units do not need installing to be checked, so it was run on the two files
+`setup --units --dry-run` renders, extracted from its own diff:
+
+```
+$ systemd-analyze --user verify <rendered fmonero-wallet-rpc.service> <rendered fmonero-monerod.service>
+fmonero-wallet-rpc.service: Command /usr/bin/monero-wallet-rpc is not executable: No such file or directory
+fmonero-monerod.service: Command /usr/bin/monerod is not executable: No such file or directory
+exit=1
+```
+
+Both units **parse** with no complaint: the only two findings are the absent binaries, which is
+§1.1's state of this machine and not a defect in the units. The other half of §2b's test 4 —
+`StateDirectoryMode=0700` in the rendered wallet unit — is asserted on the text by
+`units::tests::the_units_carry_the_specifiers_and_the_literal_wallet_dir`, so it needs no systemd
+run at all. The line is recorded here as **run with a known, explained failure**, not as a pass
+(§2j); it becomes clean the moment `omarchy pkg add monero` has run.
+
 ### §4b verification matrix, filled from the run above
 
 Columns are §4b's: `command | scenario | class | how verified | evidence`. The sixth column,
