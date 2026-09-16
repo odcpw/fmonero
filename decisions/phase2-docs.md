@@ -11,7 +11,7 @@ Phase 3 concatenates this file into `DECISIONS.md` (§8 preamble) and then delet
 
 | File | Lines | Shape it follows |
 |---|---|---|
-| `scripts/install.sh` | 310 | `fproton/scripts/install.sh`, plus the `installer-workmanship` substance named in §8 |
+| `scripts/install.sh` | 299 | `fproton/scripts/install.sh`, plus the `installer-workmanship` substance named in §8 |
 | `scripts/uninstall.sh` | 403 | `fproton/scripts/uninstall.sh`, extended with the two systemd user units fmonero's `setup` creates |
 | `README.md` | 424 | `fproton/README.md`, `readme-writing` + `de-slopify` (§9) |
 | `plugin/oliver.monero/README.md` | 151 | `fproton/plugin/oliver.protonvpn/README.md`, against §6 |
@@ -124,7 +124,10 @@ function variable, `[ ... ]` tests with quoted operands, `rm`/`mv`/`cp`/`install
 before paths, `$*` used only inside the `plan`/`info` printers, and no unquoted array or glob.
 The one construct shellcheck would flag on sight, a backtick inside a double-quoted `skip`
 message, was found by reading and removed before the first commit; it would have run
-`node down` as a command substitution.
+`node down` as a command substitution. A second read, standing in for shellcheck's unused-name
+warnings, removed a `run()` helper and a `PLUGIN_ID` variable from `install.sh` that fproton's
+copy also carries unused: every step of this installer prints its own `plan`/`info` line, so the
+generic wrapper had no call site.
 
 ### 3.3 `scripts/install.sh --dry-run` prints every step and touches nothing — PASS
 

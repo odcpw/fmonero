@@ -18,7 +18,6 @@ umask 077
 REPO="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 PREFIX="${FMONERO_PREFIX:-$HOME/.local/bin}"
 BIN="fmonero"
-PLUGIN_ID="oliver.monero"
 
 ASSUME_YES=0
 DRY_RUN=0
@@ -103,16 +102,6 @@ skip() { [ "$QUIET" -eq 1 ] || printf '%s\n' "${C_DIM}--   $*${C_OFF}"; }
 warn() { printf '%s\n' "${C_YEL}warn${C_OFF} $*" >&2; }
 err() { printf '%s\n' "${C_RED}error${C_OFF} $*" >&2; }
 plan() { [ "$QUIET" -eq 1 ] || printf '%s\n' "${C_DIM}would${C_OFF} $*"; }
-
-# Show the exact argv of anything that changes the machine, then run it (or not).
-run() {
-  if [ "$DRY_RUN" -eq 1 ]; then
-    plan "$*"
-    return 0
-  fi
-  info "$*"
-  "$@"
-}
 
 cleanup() {
   if [ -n "$TMP_BIN" ] && [ -e "$TMP_BIN" ]; then rm -f -- "$TMP_BIN"; fi
