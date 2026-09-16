@@ -1,4 +1,4 @@
-# fmonero — design brief v4 (source of truth for every agent working on this repo)
+# fmonero — design brief v5 (source of truth for every agent working on this repo)
 
 A fast Monero node + wallet front end for Omarchy: a Rust CLI + engine (`crates/fmonero-core`,
 `crates/fmonero`), a FrankenTUI app (`fmonero tui`), a `doctor`, and a thin Quickshell bar widget
@@ -587,6 +587,7 @@ is the authority; its four entries are the four levels, in order.
 | -7 | `DENIED`, -48 `DISABLED` | 4 `backend` |
 | -50 | `NONZERO_UNLOCK_TIME` (`wallet_rpc_server_error_codes.h:83`; raised at `wallet_rpc_server.cpp:1249`, `:1309`, `:1762`, `:1828` **before** any other validation) | 1 `failure` — fmonero never sends the field, so this means our request builder is wrong (§2a.8) |
 | -51/-52 | `IS_BACKGROUND_WALLET`, `IS_BACKGROUND_SYNCING` | 9 `wallet_locked` |
+| 0 | *no name — epee's catch-all.* `MAP_JON_RPC_WE_IF` wraps every handler in `try { res = callback_f(…); } catch (const std::exception &e) { MERROR(…) }` over a value-initialised `fail_resp` (`contrib/epee/include/net/http_server_handlers_map2.h:213-232`, the `AUTO_VAL_INIT` at `:217`, the catch at `:223`), so an exception the handler did not catch itself is serialized as `{"error":{"code":0,"message":""}}`. **`on_get_transfers` (`wallet_rpc_server.cpp:2880-2955`) and `on_get_transfer_by_txid` (`:2957-3048`) have no try/catch of their own**, and both call `update_pool_state` (`:2942`, `:3025`), which throws whenever wallet-rpc cannot reach the daemon (`THROW_ON_RPC_RESPONSE_ERROR` in `update_pool_state_by_pool_query`, `src/wallet/wallet2.cpp:3776-3794`). So this is the ordinary answer to a §2a.4 resolve step with the node down, not a corner case. | 5 `upstream`, `reason: rpc_error`, with a **synthesised** message: `"monero-wallet-rpc failed without a message (usually: it cannot reach the daemon)"` and `hint: fmonero status --json`. A verbatim empty `error` string would break §4's envelope and is the §2j failure — an error report that reports nothing. |
 | anything else | — | 5 `upstream`, message verbatim |
 
 ### 1b.5 `monero-wallet-rpc` command line
@@ -740,10 +741,17 @@ Each of these is a testable statement, and the test that proves it is named. Pha
    in this order:
 
    1. argument and amount parsing (§2a.5) — exit **2 `usage`**;
-   2. `address::parse` (§1b.8) — exit **15 `invalid_address`**;
+   2. `address::parse` (§1b.8) — exit **15 `invalid_address`**; **skipped when `dest` begins with
+      `@`**, which is resolved at step 5a and parsed there;
    3. the §2a.11 `send.lock` acquisition — exit **3 `safety`**, `reason: send_in_progress`;
    4. the §2a.4 `pending_send` entry check — exit **3 `safety`**, `reason: pending_send`;
    5. the wallet-daemon reachability probe — exit **4 `backend`**;
+   5a. **`@label` resolution (§4)**: one `get_address_book` on the open wallet, matched
+       case-insensitively against `description`; zero matches exit **6 `not_found`**, more than one
+       exits **7 `ambiguous`** listing them; the resolved address then runs through
+       `address::parse`. The resolved **address** — never the label — is what `Plan.dest`, every
+       line `send::relay` announces, the `pending.json` record and §5c's `dest` key carry. The
+       TUI's `@` picker yields a literal address and never reaches this step.
    6. `validate_address` and the nettype check (§2a.6) — exit **15**;
    7. the `get_info.synchronized` gate — exit **10 `node_syncing`**;
    8. the build (`do_not_relay`);
@@ -751,8 +759,16 @@ Each of these is a testable statement, and the test that proves it is named. Pha
    10. the `--yes` check — exit **3 `safety`**, `reason: needs_yes`, now able to print the real fee.
 
    So a no-`--yes` send with the wallet daemon down exits **4, not 3**: §2a.1's "print the fee
-   first" is reachable only once a fee exists. §4b's GREEN row and the Phase 1a gate assert exactly
+   first" is reachable only once a fee exists. §4b's GREEN row and the Phase 1b gate assert exactly
    that.
+
+   **Client construction is never step 0.** `WalletClient::from_ctx` succeeds even when
+   `monero-wallet-rpc`'s login file is absent — it returns a client with `auth: None` (§2c) — so
+   steps 1–4 always run in their stated order and the absence of a wallet daemon surfaces at step 5
+   as exit **4**, with `reason: unreachable` for a refused connect and `reason: auth_refused` for a
+   401 from a daemon whose credential we could not read. A constructor that failed instead would
+   decide the exit code of the money path from outside the refusal order, turning a bad address
+   (15) and an unresolved `pending_send` (3) into 4.
 2. **The fee the user sees is the real fee.** `--dry-run`, the no-`--yes` refusal and the TUI's
    confirm modal all obtain it the same way: one `transfer` call with
    `do_not_relay: true, get_tx_metadata: true, get_tx_key: false`, whose `fee` is the fee of the
@@ -765,9 +781,11 @@ Each of these is a testable statement, and the test that proves it is named. Pha
    or a different `adjust_priority` outcome after a pool backlog (`wallet2.cpp:8688-8708`). The user
    would otherwise confirm fee A and pay fee B, with fee B appearing only in the JSON payload after
    the money has moved, which is the §2j failure on a money surface. So:
-   - fmonero prints the built recipient, amount, fee, total, priority and account **to stderr
-     immediately before the first `relay_tx`**, on every `--yes` run, so the number that is paid is
-     always displayed. stdout stays the JSON envelope (§4).
+   - `send::relay` emits the built recipient, amount, fee, total, priority and account as one line
+     through its `announce` sink **immediately before the first `relay_tx`**, on every `--yes` run,
+     so the number that is paid is always displayed. The CLI's sink writes that line to stderr and
+     the TUI's appends it to the log pane; core itself stays silent (§2g). stdout stays the JSON
+     envelope (§4).
    - **`--max-fee AMOUNT`** (§4.1, on `wallet send` and `wallet sweep`) refuses with exit
      **3 `safety`**, `reason: fee_above_max`, when the built total fee exceeds it. It is the only
      bound that survives the rebuild, and it lives on `SendRequest`/`SweepRequest` so the CLI and
@@ -852,10 +870,15 @@ Each of these is a testable statement, and the test that proves it is named. Pha
      transaction and it did not make it, which is not a double-spend risk; omitting that type from
      the accepted set would leave the record in place forever and force the user to type
      `clear-pending` out of habit, which is the one thing §2a.4 exists to prevent. All found ⇒ clear
-     the record and proceed. Any answered as not found (`-8` "Transaction not found.", §1b.4) ⇒
-     leave the record and exit 3.
-     The wallet unreachable ⇒ leave the record and **do not block**: an unreachable wallet is not
-     evidence of a second spend, and every entry's `relay_tx` already returned.
+     the record and proceed. Any entry answered as **not found** (`-8` "Transaction not found.",
+     §1b.4) ⇒ leave the record and exit 3 — a positive "not found" is the only answer allowed to
+     block.
+     **Any other failure of a resolve call ⇒ leave the record and do not block**: the wallet
+     unreachable, `-38 NO_DAEMON_CONNECTION`, or epee's `code: 0` catch-all (§1b.4, the ordinary
+     answer when wallet-rpc cannot reach the daemon). None of them is evidence of a second spend,
+     and every entry's `relay_tx` already returned. Blocking on them would arm the interlock
+     exactly when the node hiccups after a send — the state in which a user most wants the next
+     command to work.
 
    The resolve step also runs immediately after the last successful `relay_tx` of a send, so a
    normal successful send leaves nothing behind. `relay_tx` calls `commit_tx` internally
@@ -923,7 +946,7 @@ Each of these is a testable statement, and the test that proves it is named. Pha
    as `integrated`. fmonero exposes no flag for either.
 9. **The relayed txid must be the txid we showed.** `relay_tx`'s `tx_hash` is compared against the
    `BuiltTx.txid` recorded in `pending_send`. On a mismatch the entry is **not** marked relayed, the
-   command exits **1 `failure`** printing both hashes, with
+   command exits **1 `failure`**, `reason: txid_mismatch` (§4), printing both hashes, with
    `hint: fmonero wallet history --limit 5   # two transaction ids differ; check which one landed`,
    and `send_may_be_in_flight` is raised. The response already carries the check for free, and the
    whole §2a.3/§2a.4 chain rests on one transaction's identity holding across build → record →
@@ -979,8 +1002,13 @@ Each of these is a testable statement, and the test that proves it is named. Pha
 
     A lock already held means another fmonero process is between a build and a relay: exit
     **3 `safety`**, `reason: send_in_progress`,
-    `error: "another fmonero send is building or relaying (pid <N>)"`,
-    `hint: fmonero status --json   # wait for pending to clear, then retry`. This lock is distinct
+    `error: "another fmonero send is building or relaying"`,
+    `hint: fmonero status --json   # wait for pending to clear, then retry`. **`flock` does not
+    name the holder** and the lock file stays empty, so the message carries no pid; the holder is
+    identified through `fmonero status --json`'s `pending` record, which is what the hint points
+    at. (`fcntl(F_GETLK)` would name one, but §2i's `flock`-vs-`fcntl` choice is load-bearing and
+    the two are independent namespaces — a probe in the other family proves nothing about this
+    lock.) This lock is distinct
     from §5's `state.json` `flock` and from the `pending.json` record, which covers the *post*-relay
     window.
 
@@ -1003,8 +1031,12 @@ a unit test asserts `TransferRequest`'s sweep constructor sets it unconditionall
 against the mock, and asserts `pending.json` is present and complete after every iteration**
 (§2a.4) — which requires the mock's thread-per-connection accept loop (§8 Phase 0), since fmonero
 holds its socket for the life of the process (§2c);
-**a second concurrency test starts two `send --yes` processes against one mock at the same time and
-asserts exactly one `transfer` in the mock's request log, one exit 0, one exit 3 with
+**a second concurrency test starts two `send --yes` processes against one mock started with
+`--delay-ms 1500`**, so the first process is provably still holding `send.lock` when the second
+reaches it (against an instant mock the first can finish build → relay → resolve before the second
+reaches `flock`, both legitimately succeed, and the only test of the one interlock that can
+double-spend becomes a coin flip that gets marked known-flaky and then deleted), **and asserts
+exactly one `transfer` in the mock's request log, one exit 0, one exit 3 with
 `reason: send_in_progress`, and that `pending.json` afterwards holds exactly the successful
 process's txids** (§2a.11);
 **`--force` is proved *not* to widen**, one case per sentence of §4's `--force` paragraph: with a
@@ -1082,6 +1114,11 @@ no hit outside the doctor's read-only probes (§2a.3);
    `rpc-login=`, `--rpc-login`, `--daemon-login`, `--password`, `login` or `password` to
    `<key>=<redacted>` **before** the bytes reach `runs/<id>/probes/`. A `backups/` copy keeps the
    file's own bytes verbatim — `undo` needs them — and is written 0600.
+   **`probes.rs` never captures the *contents* of `paths.monerod_conf()` or
+   `paths.wallet_login_file(port)` — only their modes.** Key-name redaction cannot fire on a login
+   file whose single line is `monero:<base64>`: there is no key to match. The only safe rule is not
+   to read it into a probe at all, and nothing needs to — `wallet_rpc_auth` (§7.1) needs a stat and
+   an authenticated `get_version`, never the bytes.
 
 *Tests:* (1) a **key-name** grep over the full `--json` and `-v` output of every command run against
 the mock, failing on the keys `seed`, `spend_key`, `view_key`, `tx_key`, `tx_metadata`, `password`,
@@ -1102,8 +1139,16 @@ rendered wallet unit in `setup --units --dry-run`'s output contains `StateDirect
 Both units bind `127.0.0.1` (the default, §1b.5/§1b.6) and fmonero never binds a port itself. The
 `ureq` agent is built with `default-features = false, features = ["json"]`, so **the binary
 contains no TLS stack at all** — "loopback plaintext only" is a compile-time property, not a
-runtime check. `NodeClient::new` rejects any URL whose scheme is not `http`, and accepts as host only a **literal**
-address in `127.0.0.0/8` or `::1`; the name `localhost` is accepted only after resolution and only
+runtime check. **Both `NodeClient::new` and `WalletClient::new`** reject any URL whose scheme is not `http`, and
+accept as host only a **literal** address in `127.0.0.0/8` or `::1`, through one shared
+`rpc::require_loopback(url)` (§5b) that both constructors call as their first statement;
+`settings set node.url` **and `settings set wallet.url`** validate through that same function
+(exit 2, `reason: non_loopback_url`). The wallet client is the one that carries a credential and
+moves money — it sends `open_wallet` with the wallet password's HA1, and `transfer`/`relay_tx`
+bodies — so exempting it would leave the rule true only where it costs nothing, and the
+compile-time "no TLS stack" property above does not help: plaintext `http://` to an arbitrary host
+is exactly what `ureq` with no TLS still does.
+The name `localhost` is accepted only after resolution and only
 when *every* returned address is loopback. (`localhost` is a name, not an address: an edited
 `/etc/hosts` or a name-service module can point it anywhere, which would turn the one property this
 paragraph claims back into an assumption.) Anything else exits 2 with the hint
@@ -1129,9 +1174,13 @@ Option 2 is also nearly free here, because of §1b.5:
   not a literal mode, so it stays right if upstream changes the dance. The unit sets
   `WorkingDirectory=%S/fmonero/run`, so the file lands at
   `~/.local/state/fmonero/run/monero-wallet-rpc.18083.login`. **fmonero never generates, writes or
-  rotates this secret** — it reads `user:pass` from that file at client-construction time, keeps it
-  in memory, and treats "file absent" as "the wallet daemon is not running" (which is exactly what
-  it means).
+  rotates this secret** — it reads `user:pass` from that file at client-construction time and keeps
+  it in memory. **An absent file is not a construction failure**: `WalletClient::from_ctx` returns
+  `Ok` with `auth: None`, so the local checks of §2a.1 steps 1–4 still run in their stated order and
+  no constructor decides a money-path exit code. The absence surfaces at the first request — a
+  refused connect is exit 4 `reason: unreachable`, and a 401 from a daemon whose credential we could
+  not read is exit 4 `reason: auth_refused`, the same class of answer ("the wallet daemon is not
+  usable") with a discriminator that says which.
 
   **How a test supplies the credential.** This rule is the single precondition standing between the
   design and roughly half of §4b, and it is invisible from any one section — §2c states it, §4b
@@ -1141,9 +1190,11 @@ Option 2 is also nearly free here, because of §1b.5:
   writes that same `fmonero:<pass>` to `$FMONERO_STATE_DIR/run/monero-wallet-rpc.<port>.login` at
   mode 0600 *before* the first fmonero invocation.** That is one helper — `mock_wallet_up()` in
   `tests/e2e.sh` — and the same three lines in the in-process test helper. There is **no
-  unauthenticated wallet path**: an absent file stays "the daemon is not running" (the §4b GREEN row
-  for `wallet open` with no unit), so a test that omits the file is testing exit 4, not the command
-  it named. The §4.2 escape ("a test never installs a unit: it points `WalletClient::new` at
+  unauthenticated wallet path that works**: with no login file the client sends unauthenticated
+  requests, a daemon that requires Digest answers 401 twice and the command exits 4
+  `reason: auth_refused` (§2a.1), so a test that omits the file is testing exit 4, not the command
+  it named. (The §4b GREEN row for `wallet open` with no unit is still exit 4 `reason: unreachable`:
+  nothing is listening at all.) The §4.2 escape ("a test never installs a unit: it points `WalletClient::new` at
   `fmonero-mock --auth` instead") covers in-process unit tests only — not `tests/e2e.sh`, not the
   Phase 2 doctor gate, and not the TUI's `ProgramSimulator` send test, all of which go through a
   `Context`.
@@ -1187,7 +1238,8 @@ Option 2 is also nearly free here, because of §1b.5:
 carries `nc=00000002`, and (iii) after the mock rotates the nonce the next request carries
 `nc=00000001` again; a unit test asserts `NodeClient::new("https://example.com")`,
 `NodeClient::new("http://10.0.0.5:18081")` and a `localhost` that resolves off-loopback all fail
-with exit 2; `grep -rn 'rpc-login' crates/*/src` shows it only in the config-file writer, never in
+with exit 2, **and the same three cases against `WalletClient::new`**, plus
+`fmonero settings set wallet.url http://10.0.0.5:18083` exiting 2 with `reason: non_loopback_url`; `grep -rn 'rpc-login' crates/*/src` shows it only in the config-file writer, never in
 an argv array. **The two compile-time claims of this section get greps in `scripts/check.sh`, each
 with a self-test fixture proving it fires, as §2f's has** — an unenforced compile-time property is
 one `Cargo.toml` edit away from being false, and §3.1 already names an escape hatch that would take
@@ -1223,8 +1275,22 @@ port" half.
 - **`poll_inflight` guard.** One `AtomicBool` per poller. The TUI's 1 s `Every` and the plugin's
   timer both skip a tick while the previous call is in flight, so `refresh` calls can never pile up
   (FEASIBILITY §7 names this as the wallet-rpc quirk to design around).
-- **A 60 s breaker after a deadline kill.** When a client's call is killed at its deadline, state
-  records `{node|wallet}.stall = { at, backoff_until }`. During the backoff every command that
+- **A 60 s breaker after a deadline kill.** When a call made by a **command that needed that
+  daemon** is killed at its deadline, state records `{node|wallet}.stall = { at, backoff_until }`.
+  **`status` never arms a breaker — it only reports one.** `monero-wallet-rpc` serves RPC on
+  **one** thread (`epee::http_server_impl_base<wallet_rpc_server, connection_context>::run(1, true)`,
+  `src/wallet/wallet_rpc_server.cpp:291-292`, under upstream's own comment "DO NOT START THIS SERVER
+  IN MORE THEN 1 THREADS WITHOUT REFACTORING"), so every probe issued while another caller holds a
+  long call — `open_wallet` (300 s), a `transfer`/`sweep_all` build (120 s), `refresh` (120 s) — is
+  killed at its 5 s deadline **by construction**, not exceptionally. The plugin polls `status` every
+  3–8 s and the TUI every second, so letting those probes arm the breaker would raise
+  `wallet_stalled` at severity *error* during every successful send and every wallet open and refuse
+  wallet commands for 60 s afterwards; the `blocks_behind > 100` exemption below does not rescue it,
+  because a wallet blocked inside `open_wallet` answers nothing and `blocks_behind` is then `null`.
+  A breaker that fires on correct behaviour is the breaker an agent disables.
+  **`send::relay` likewise never consults a breaker**: once a plan is built the §2a.11 `send.lock`
+  is held and the transaction exists, so exiting 5 there would abandon a built transaction rather
+  than protect anything. During the backoff every command that
   needs that daemon exits **5 `upstream`** immediately with the doctor hint, rather than queueing
   another 120 s wait. **`--force`** (a global flag, §4) on the affected command overrides it for
   that invocation; it bypasses nothing else. `status` is never blocked by a breaker: it reports it.
@@ -1269,7 +1335,8 @@ port" half.
 asserts exit 5 and wall clock between 1.5 s and 5 s; a second invocation in the same state dir
 asserts the fast breaker path; a third with `--force` asserts the call is attempted; a fourth points
 the wallet URL at a slow route while the mock reports a large `blocks_behind` and asserts that no
-breaker is armed and `status` still exits 0; a fifth runs
+breaker is armed and `status` still exits 0 — asserted on a foreground `wallet balance` as well,
+since `status` never arms a breaker at all and the classification would otherwise be untested; a fifth runs
 `node up --wait --wait-timeout 2` against a mock whose `get_info` never reports `synchronized` and
 asserts **exit 8** with wall clock under 4 s.
 
@@ -1402,9 +1469,16 @@ same text (§7a).
 machine can create `/etc/monerod.conf` or a system unit (§1.1). So `Paths` carries
 `proc_root: PathBuf` (`/proc`, overridden by `FMONERO_PROC_ROOT`) and `Context` carries
 `systemctl: Systemctl` — `Real`, or `Fixture(PathBuf)` from `FMONERO_SYSTEMCTL_FIXTURE`, a file of
-`<unit> <is-active> <is-enabled>` lines. **Both overrides are honoured only when
-`FMONERO_STATE_DIR` is also set**, the same guard `units::install` already uses to refuse running
-under a test state dir.
+`<unit> <is-active> <is-enabled> <exists> <main-pid>` lines (`-` for an absent pid). Under
+`Fixture`, `units::state`, `units::main_pid` **and `detect_layout`'s unit-file-exists test** all
+read that file instead of stat'ing `paths.systemd_user_dir` or spawning `systemctl`, and
+`units::{start, stop}` and the daemon-reload are **no-ops that rewrite the `<is-active>` column of
+the named line** and return `Ok`. Without those four, nothing can reach `Layout::UserUnit` in a test
+at all — `units::install` refuses to run under `FMONERO_STATE_DIR` (§4.2), so no test may write a
+real unit — and §2d's `node up --wait --wait-timeout 2` case, the `user_unit` + write-lock case
+below and §4b's AMBER `node up`/`node down` rows would have no way to run. **Both overrides are
+honoured only when `FMONERO_STATE_DIR` is also set**, the same guard `units::install` already uses
+to refuse running under a test state dir.
 
 *Tests:* a doctor fixture supplies a synthetic `/proc` tree plus a systemctl fixture and asserts the
 `node_layout` verdict for all four cases; **a unit test holds an `fcntl` READ lock (`F_RDLCK`,
@@ -1636,7 +1710,10 @@ exit 2 the values are `bad_args` · `unknown_key` · `bad_amount` · `non_loopba
 `foreign_node` · `data_dir_in_use` · `wallet_exists` · `full_chain_refused`; for exit 4,
 `not_installed` · `unit_missing` · `unreachable` · `auth_refused`; for exit 5, `stalled` ·
 `rpc_error` · `restricted` · `killed_at_deadline`; for exit 9, `not_open` · `bad_password` ·
-`background_sync`; for exit 16, `too_large` · `not_possible` · `relay_refused` · `txid_mismatch`;
+`background_sync`; for exit 16, `too_large` · `not_possible` · `relay_refused`; **for exit 1,
+`txid_mismatch`** (§2a.9 — the one exit-1 path where retrying is the wrong reflex, and
+`capabilities.reasons` is generated from `Error::REASONS`, so a documented pair that cannot be
+constructed would be a drift this table exists to prevent);
 `null` for every other code. **An agent branches on
 `code_name` + `reason` and never on prose.** It is the difference between "append `--yes`" and "a
 transaction may be in flight". Exit 5 is the case that makes this load-bearing off the money path:
@@ -1673,6 +1750,11 @@ and zero `relay_tx`.
 **Recipient syntax.** Either a Monero address, or `@label` — an address-book entry, matched
 case-insensitively against `description` from `get_address_book`; zero matches exit 6, more than
 one exits 7 listing them. A bare word that is not `@`-prefixed is never guessed at as a label.
+**The resolution has one owner and one position**: `send::build` performs it at step 5a of §2a.1's
+refusal order, on the open wallet, and replaces `dest` with the resolved address before
+`address::parse` runs (which is why step 2 skips a `@`-prefixed `dest` instead of rejecting it as
+exit 15). `main.rs` never resolves a label — it is frozen at the 1a gate and the call needs an open
+wallet.
 
 ### 4.1 The table
 
@@ -1695,11 +1777,11 @@ one exits 7 listing them. A bare word that is not `@`-prefixed is never guessed 
 | `wallet list` | — | `wallet_dir::list` (§5b): `*.keys` basenames in `settings.wallet.dir`, sorted; no RPC, no wallet bytes read (§2b.6). A NAME containing `/` is exit 2 (§1b.5). An empty list (and a `-23 NO_WALLET_DIR`) prints, besides `fmonero wallet create <name> --yes`, the one command that brings an existing seed back: `hint: monero-wallet-cli --restore-deterministic-wallet --wallet-file <wallet.dir>/<name>   # then: fmonero wallet open <name>` (§0 cuts `wallet restore`). | no | – | no | no |
 | `wallet open` | `NAME [--password-file P]` | `wallet_session::open` (§5b) — the single implementation of the §4.2 sequence, shared with the TUI's open modal: `units::ensure_running`, then `open_wallet{filename, password}` (§2b.1), **then** exactly one `set_daemon{address, trusted, username, password}` (§4.2), then `auto_refresh{enable:true, period:20}` (§2d). The order is not free: `on_set_daemon` answers `-13 NOT_OPEN` with no wallet loaded (`wallet_rpc_server.cpp:4692`), so issuing it first would fail silently and leave the wallet unable to reach fmonero's own authenticated node. Records `state::set_last_open(name, net)` — the wallet's own nettype, read from its primary address, being the §2a.6 send-path authority — so `status` can name it. A NAME containing `/` is exit 2 (§1b.5); a missing `<wallet.dir>/<NAME>.keys` is exit **6 `not_found`**, checked locally because wallet-rpc collapses that case into the same `-1` a wrong password gives (§1b.4). | yes | no | – | no |
 | `wallet close` | — | `wallet_session::close` (§5b): `close_wallet{autosave_current:true}` then `state::clear_last_open` | yes | no | yes | no |
-| `wallet create` | `NAME [--language L] [--allow-empty-password]` | `units::ensure_running(wallet.unit)` — the same first step as `wallet open`, because the units are written **disabled** and started on demand (§4.2), so without it `wallet create` on a freshly `setup`-ed machine exits 4 `backend` and §4b's RED rehearsal stops at its sixth line — then `create_wallet`; `--language` is validated locally against `SEED_LANGUAGES` (§1b.4) and defaults to `"English"` (the field is required and an unknown value comes back as a bare `-1`). Refuses if the file exists (exit 3, `reason: wallet_exists`). The password is read as §2b.1 says and, **on a TTY, prompted twice and compared** — a mismatch exits 2 without creating anything; an **empty** password is refused with exit 2 unless `--allow-empty-password` is passed, because an unencrypted wallet is a deliberate choice and never a typo; with no TTY the password must come from `--password-file` or `$FMONERO_WALLET_PASSWORD`, where there is nothing to mistype. Does not print the seed, and ends with the `seed_backup_hint` of §2b.2. | yes | **yes** | no | no |
+| `wallet create` | `NAME [--language L] [--allow-empty-password]` | `units::ensure_running(wallet.unit)` — the same first step as `wallet open`, because the units are written **disabled** and started on demand (§4.2), so without it `wallet create` on a freshly `setup`-ed machine exits 4 `backend` and §4b's RED rehearsal stops at its sixth line — then `create_wallet`. **`create_wallet` leaves the new wallet open** — `on_create_wallet` ends `m_wallet = wal.release()` (`wallet_rpc_server.cpp:3639`) — so `wallet create` must finish the same post-open steps `wallet_session::open` performs, or the wallet it just made is open with no daemon credential and no recorded name: `status` would report `wallet.open: true` with `wallet.name: null` (§5 sources that from `state::last_open`), every wallet→daemon call would 401 (§4.2), and the §2a send path would accept a nameless wallet. Those steps are exactly the last three of `wallet_session::open`, called on the wallet `create_wallet` left open — no new API: one `set_daemon{address, trusted, username, password}` carrying `Login::from_monerod_conf` (§4.2), then `auto_refresh{enable:true, period:20}` (§2d), then `state::set_last_open(name, net)` with the nettype read from the new wallet's own primary address (§2a.6). `--language` is validated locally against `SEED_LANGUAGES` (§1b.4) and defaults to `"English"` (the field is required and an unknown value comes back as a bare `-1`). Refuses if the file exists (exit 3, `reason: wallet_exists`). The password is read as §2b.1 says and, **on a TTY, prompted twice and compared** — a mismatch exits 2 without creating anything; an **empty** password is refused with exit 2 unless `--allow-empty-password` is passed, because an unencrypted wallet is a deliberate choice and never a typo; with no TTY the password must come from `--password-file` or `$FMONERO_WALLET_PASSWORD`, where there is nothing to mistype. Does not print the seed, and ends with the `seed_backup_hint` of §2b.2. | yes | **yes** | leaves one open | no |
 | `wallet balance` | `[--account N] [--subaddresses]` | `get_balance{account_index, all_accounts:false}` | no | – | yes | no |
 | `wallet address` | `[--account N] [--index N] [--qr]` | `get_address`; `--qr` renders the primary/selected address as a half-block QR on stdout (skipped when not a TTY) | no | – | yes | no |
 | `wallet new-address` | `[--account N] [--label TEXT]` | `create_address` | yes | no | yes | no |
-| `wallet history` | `[--account N] [--limit N] [--in] [--out] [--pending] [--failed] [--pool] [--since HEIGHT] [--cached]` | postcard cache of confirmed `in`/`out` rows, topped up by one `get_transfers` (§5b `history`). **`--in` selects `in` *and* `block` (coinbase) rows** — they arrive in the same list and there is no separate request flag (§1b.4) — and the cache may hold confirmed `block` rows on the same terms as `in`. **`--since HEIGHT` sends `filter_by_height: true`**; without that flag the bound is silently ignored and the daemon returns the whole history (§1b.4). Without `--cached` it also issues one wallet `get_height` — already needed for the top-up — and renders `confirmations`/`locked` through `history::confirmations` / `history::locked` (§5b, never recomputed in `output.rs`) against that **wallet** height, which is the clock wallet-rpc itself uses (§1b.4). **With `--cached` it issues nothing at all**: the cache is served alone, `confirmations` and `locked` are **`null`** (human output shows `—` in those columns plus a footer `cached: confirmations unknown (no daemon call)`), and `cache_age_sec`/`high_water` carry what is known. Zero RPC and a live confirmation count are mutually exclusive; saying which one `--cached` gives up, and showing `—` rather than `0`, is what keeps §5's "never a zero standing in for unknown" true on a money table. `--cached` is the invocation the §2l 50 ms budget measures. Raises `history_cache_stale` when the high-water height is more than 1 000 blocks behind. The `N` column stays `no`: the node is never contacted by this command. | no | – | yes | no |
+| `wallet history` | `[--account N] [--limit N] [--in] [--out] [--pending] [--failed] [--pool] [--since HEIGHT] [--cached]` | postcard cache of confirmed `in`/`out` rows, topped up by one `get_transfers` (§5b `history`). **`--in` selects `in` *and* `block` (coinbase) rows** — they arrive in the same list and there is no separate request flag (§1b.4) — and the cache may hold confirmed `block` rows on the same terms as `in`. **`--since HEIGHT` sends `filter_by_height: true`**; without that flag the bound is silently ignored and the daemon returns the whole history (§1b.4). Without `--cached` it also issues one wallet `get_height` — already needed for the top-up — and renders `confirmations`/`locked` through `history::confirmations` / `history::locked` (§5b, never recomputed in `output.rs`) against that **wallet** height, which is the clock wallet-rpc itself uses (§1b.4). **With `--cached` it issues nothing at all**: the cache is served alone, `confirmations` and `locked` are **`null`** (human output shows `—` in those columns plus a footer `cached: confirmations unknown (no daemon call)`), and `cache_age_sec`/`high_water` carry what is known. Zero RPC and a live confirmation count are mutually exclusive; saying which one `--cached` gives up, and showing `—` rather than `0`, is what keeps §5's "never a zero standing in for unknown" true on a money table. `--cached` is the invocation the §2l 50 ms budget measures. Raises `history_cache_stale` when the high-water height is more than 1 000 blocks behind. **The `N` column is `no` except with `--pool`**: `on_get_transfers` reads `min_height`/`max_height` locally, but its `pool` branch runs `update_pool_state`/`process_pool_state` — a daemon round trip (`wallet_rpc_server.cpp:2939-2950`). `history::query` therefore sends `pool` **only when the caller asked for pool rows**, never unconditionally; `pending` and `failed` are local (`get_unconfirmed_payments_out`) and stay on. A `get_transfers` that fails **because** that branch could not reach the daemon (epee's `code: 0`, §1b.4) is retried **exactly once without `pool`**, and the command returns the rows it does have with `pool_unavailable: true` in the payload (§5c) plus a footer line in human mode — not a failure of a read-only command, and not an empty `error` string. | no | – | yes | only with `--pool` |
 | `wallet send` | `TO AMOUNT [--account N] [--priority 0-4] [--note TEXT] [--max-fee AMOUNT] [--yes] [--dry-run]` | `send::build` then, with `--yes` and without `--dry-run`, `send::relay` (§5b) — the CLI calls nothing else on the money path. `--note` and `--max-fee` travel on `SendRequest` and are applied by `send::relay`, not by the caller (§2a.2, §5b). Payload shape: §5c | yes | **yes** | yes | yes |
 | `wallet sweep` | `TO [--account N] [--priority 0-4] [--below AMOUNT] [--max-fee AMOUNT] [--yes] [--dry-run]` | same two calls with `is_sweep: true`; the build response is a **list**, so the confirmation prints every tx and the total fee, and `send::relay` calls `relay_tx` once per `tx_metadata_list` entry in order under the §2a.4 record. Payload shape: §5c | yes | **yes** | yes | yes |
 | `wallet clear-pending` | `[--yes]` | clears the `pending.json` record after the user has checked (§2a.4). Prints the record and what to check first. | yes | **yes** | no | no |
@@ -1729,7 +1811,8 @@ operations where a mistake costs money or a resync — `wallet send`, `wallet sw
 `node.url` (default `http://127.0.0.1:18081`, loopback-checked per §2c) ·
 `node.unit` (`fmonero-monerod.service`) · `node.data_dir` (`~/.bitmonero`) ·
 `node.log_file` (`~/.bitmonero/bitmonero.log`) · `node.prune` (`true`) ·
-`wallet.url` (`http://127.0.0.1:18083`) · `wallet.unit` (`fmonero-wallet-rpc.service`) ·
+`wallet.url` (default `http://127.0.0.1:18083`, **loopback-checked per §2c**) ·
+`wallet.unit` (`fmonero-wallet-rpc.service`) ·
 `wallet.dir` (`~/.local/share/fmonero/wallets/<network>`) · `wallet.port` (`18083`) ·
 `wallet.account` (`0`) · `wallet.priority` (`2` — *normal*; `0` is accepted but is an alias for the
 lowest tier, not a "wallet default", §1b.4) ·
@@ -1835,7 +1918,8 @@ WantedBy=default.target
 ```
 
 ```ini
-# ~/.config/fmonero/monerod.conf   (mode 0600 — it carries rpc-login, §2c)
+# ~/.config/fmonero/monerod.conf   (mode 0600 — it carries rpc-login, §2c;
+#  everything `setup` PRINTS redacts that value — see below)
 # NOTE: this file is read by monerod through boost::program_options (--config-file,
 # src/daemon/command_line_args.h:40-53, applied in src/daemon/main.cpp:215-241), NOT by systemd.
 # systemd specifiers (%h, %S) are NOT expanded here: every path must be ABSOLUTE.
@@ -1857,6 +1941,16 @@ out-peers=16
 in-peers=32
 # stagenet=1 / testnet=1 and the 38081 / 28081 port when settings.node.network says so (§4)
 ```
+
+**Everything `setup` prints redacts the credential.** The `rpc-login=` value is replaced by
+`<redacted>` in the human diff, in `FileAction.diff` under `--json`, and in any `-v` line. The
+byte-for-byte comparison that decides `Written`/`Unchanged` runs on the **real** rendered bytes
+inside `units::install`, so idempotence and the empty second-run diff are unaffected; only the
+displayed diff is redacted. Without this the node credential is printed to stdout by §8's own
+Phase 1b gate command (`fmonero setup --units --dry-run | grep -n '%[hSt]'`), becomes a key of the
+`setup` JSON payload, and is pasted into DECISIONS.md — which §2b's known-value grep then fails on,
+on correct behaviour, and §2c's claim that the token never appears in `--json`, `-v` or a doctor
+probe would be false.
 
 **`out-peers=16` / `in-peers=32` narrow monerod's `-1` auto default (§1b.6) deliberately**: the
 desktop is the primary workload, connection count is the main driver of monerod's CPU and socket use
@@ -1903,7 +1997,7 @@ WorkingDirectory=%S/fmonero/run
 ExecStart=/usr/bin/monero-wallet-rpc \
   --rpc-bind-ip 127.0.0.1 \
   --rpc-bind-port 18083 \
-  --wallet-dir %h/.local/share/fmonero/wallets/mainnet \
+  --wallet-dir /home/<user>/.local/share/fmonero/wallets/mainnet \
   --daemon-address 127.0.0.1:18081 \
   --trusted-daemon \
   --non-interactive \
@@ -1916,6 +2010,15 @@ RestartSec=5
 [Install]
 WantedBy=default.target
 ```
+
+**`%h` is deliberately not used for `--wallet-dir`.** `settings.wallet.dir` is an absolute path
+once `Settings` has loaded it (a `~` in `config.toml` is expanded there, once), and the doctor's
+`wallet_dir_matches_unit` compares the unit's argument against that path **literally** — so a unit
+carrying `%h/...` would make the check report `fail` on a perfectly correct machine, its class-B
+fixer rewrite the unit to bytes systemd expands identically, and the next run fail again. A check
+that fails on a correct machine is the check an agent relaxes. `%S` stays in
+`StateDirectory=`/`WorkingDirectory=`/`--log-file`, which nothing compares against a setting, and
+`%h` stays in the node unit's `--config-file`, likewise uncompared.
 
 **`--wallet-dir` is rendered from `settings.wallet.dir` and therefore always carries the network
 segment**, never from a template constant. It is the daemon that resolves
@@ -2050,8 +2153,9 @@ appeared in two or three — and a gate its own document fails is a gate an agen
   `undo latest`, byte-compare) and `doctor undo` against a run whose backup hash mismatches
   (exit 13),
   `tui` (opens, renders every screen in its empty state, quits cleanly), `node up` with no units
-  (exit 4), `wallet open` with no unit (exit 4), `wallet send` with no wallet daemon (**exit 4**
-  before any RPC and before any build — steps 1–4 of §2a.1's refusal order run first, so a bad
+  (exit 4), `wallet open` with no unit (exit 4), `wallet send` with no wallet daemon (**exit 4
+  `reason: unreachable`**, at step 5 and before any build — steps 1–4 of §2a.1's refusal order run
+  first, which they can because `WalletClient::from_ctx` succeeds with no login file (§2c), so a bad
   address is still exit 15 and an unresolved `pending_send` is still exit 3, but a valid address
   with the daemon down is exit 4, *not* the no-`--yes` 3),
   `wallet send --dry-run --yes` with no daemon (same, and proof the flag pair cannot relay),
@@ -2089,7 +2193,7 @@ appeared in two or three — and a gate its own document fails is a gate an agen
   Every AMBER row runs in its own `FMONERO_STATE_DIR` with `--timeout 3`, and every row that reaches
   the wallet starts the mock with `--auth fmonero:<pass>` **and writes the matching
   `$FMONERO_STATE_DIR/run/monero-wallet-rpc.<port>.login` first** (§2c) — without it every wallet row
-  exits 4 instead of testing what it names.
+  exits 4 `auth_refused` instead of testing what it names.
 
 - **RED — cannot be verified at all today; must not be claimed working anywhere:**
   a real `node up`, `node down` and `node restart` against `monerod` (they need a unit and a real
@@ -2259,7 +2363,7 @@ Field-by-field, with the RPC each one comes from and what makes it null:
 | `node.url` | string | `settings.node.url` | never |
 | `node.reachable` | bool | any answer at all from `get_info` | never (false, not null) |
 | `node.restricted` | bool \| null | `get_info.restricted` — a field of the hot-path call, so `status` never needs the `sync_info` probe; `node info` and the doctor cross-check it with `is_restricted()` (§1b.2) | node unreachable |
-| `node.authenticated` | bool \| null | whether a credential was used and accepted | node unreachable |
+| `node.authenticated` | bool \| null | `NodeClient::authenticated()` (§5b) — whether the hot-path call went through a Digest handshake (`true`) or was accepted with no challenge at all (`false`). What the wire did, never what `monerod.conf` holds (§2j) | node unreachable |
 | `node.height`, `target_height`, `synchronized`, `busy_syncing`, `offline`, `tx_pool_size`, `alt_blocks_count`, `*_connections_count`, `*_peerlist_size`, `database_size`, `free_space`, `version`, `nettype` | | `get_info` (§1b.3) | node unreachable |
 | `node.update_available` | bool \| null | `get_info.update_available`, and **always `false` under fmonero's own unit**, which sets `check-updates=disabled` (§4.2) because the check is a DNS lookup: `core::check_updates()` returns before `m_update_available` is ever set (`cryptonote_core.cpp:1653-1654`, `:1663`, `:1669`) and `get_info` reports `is_update_available()` verbatim (`core_rpc_server.cpp:568`). The field — and the `node_update_available` warning — are therefore meaningful **only** under the `system_unit` layout. Naming that here is §2j: a field that can never be true under the default layout is the quiet version of claiming something works. | node unreachable |
 | `node.sync_percent` | f64 \| null | `100.0` when `synchronized`; else `height / max(target_height, height) * 100`, because `target_height` is **0 when synced** (§1b.3) | node unreachable |
@@ -2273,18 +2377,18 @@ Field-by-field, with the RPC each one comes from and what makes it null:
 | `wallet.unit_active` | bool | `systemctl --user is-active` | never |
 | `wallet.url` | string | `settings.wallet.url` | never |
 | `wallet.reachable` | bool | the hot-path `get_height` produced **any** JSON-RPC answer, `-13` included | never (false, not null) |
-| `wallet.authenticated` | bool \| null | whether the hot-path `get_height` completed a Digest handshake (§2c) | wallet unreachable |
+| `wallet.authenticated` | bool \| null | `WalletClient::authenticated()` (§5b) — whether the hot-path `get_height` completed a Digest handshake (§2c) | wallet unreachable |
 | `wallet.account_index` | int | `settings.wallet.account`, overridden by `--account` | never |
 | `wallet.open` | bool | `get_height` succeeded vs `-13 NOT_OPEN` (§1b.4) | never |
 | `wallet.name` | string \| null | `state::last_open(ctx)?.0` (§5b — the record is `(name, NetType)`, the nettype being the §2a.6 send-path authority), written by `wallet_session::open` and cleared by `wallet_session::close` and by any hot-path `get_height` that answers `-13 NOT_OPEN` | no wallet open |
 | `wallet.primary_address` | string \| null | `get_address{account_index}.address`. Public by construction; not a secret (§2b). | no wallet open |
-| `wallet.height`, `blocks_behind` | int \| null | wallet `get_height`, minus `node.height` | wallet closed or node unreachable |
+| `wallet.height`, `blocks_behind` | int \| null | `height` is the wallet's own `get_height`; **`blocks_behind` is `node.height - wallet.height`, clamped at 0** — *positive means the wallet is behind*, which is the sign every consumer assumes (§5's `wallet_behind`, §2d's `WALLET_BEHIND_BLOCKS` classification, §7.1's `wallet_daemon_link` and `wallet_daemon_auth`). The two heights are the same convention — wallet `get_height` returns `get_blockchain_current_height()` (`wallet_rpc_server.cpp:938-944`) and `get_info.height` is top+1 (`core_rpc_server.cpp:521`) — so the subtraction is well defined in either direction; it is `Option<i64>` rather than `u64` only so that a wallet transiently ahead of a restarting node reads as a small negative rather than wrapping. Written the other way round the `wallet_behind` warning and §2d's syncing exemption could never fire. | wallet closed or node unreachable |
 | `wallet.balance_*`, `unlocked_*`, `blocks_to_unlock`, `time_to_unlock_sec` | | `get_balance{account_index}` (§1b.4) | no wallet open |
 | `wallet.subaddress_count` | int \| null | **`get_address{account_index}.addresses.len()`** — every generated subaddress of the account (§1b.4 `:123-160`). **Not** `get_balance.per_subaddress.len()`, which `wallet2::balance_per_subaddress` builds only from subaddresses holding unspent, unfrozen outputs (`src/wallet/wallet2.cpp:7037-7060`): a wallet with 20 generated subaddresses and funds on one would report 1, and a freshly restored wallet would report 0. `get_address` is already a hot-path call, so this costs nothing. | no wallet open |
 | `wallet.accounts` | int \| null | `get_accounts.subaddress_accounts.len()`, cached 60 s in state | no wallet open |
 | `wallet.rpc_version` | string \| null | wallet `get_version`, **cold path** | no cold pass yet, or wallet unreachable |
 | `units.*` | | `systemctl --user is-active` / `is-enabled` / file exists | never |
-| `pending` | object \| null | `pending.json` (§2a.4), rendered by `PendingStatus::from_record` (§5b): `{kind, dest, account_index, built_at, elapsed_sec, relayed_count, total_count, txs: [{txid, amount_pico, amount_xmr, fee_pico, fee_xmr, relayed}]}`. The on-disk record and this document are **different types**: the record stays minimal (§2a.4's "the tx metadata is NEVER part of it") while the document carries the derived counts and the rendered `*_xmr` strings the plugin and the TUI display. An array of objects, never parallel arrays — the plugin, the TUI and agents all index it, and two arrays that must stay in lockstep are two arrays that will not. | no unresolved record |
+| `pending` | object \| null | `pending.json` (§2a.4), rendered by `PendingStatus::from_record` (§5b): `{kind, dest, account_index, built_at, elapsed_sec, relayed_count, total_count, total_amount_pico, total_amount_xmr, total_fee_pico, total_fee_xmr, txs: [{txid, amount_pico, amount_xmr, fee_pico, fee_xmr, relayed}]}`. **The four totals are summed in Rust with `Piconero::checked_add` and pre-rendered**, because a sweep's record holds several transactions, §6.5's pending row asks for a total, and the plugin may not do arithmetic on money (§2a.5, §6.5) — without them the QML's only route to that number is `parseFloat` over `txs[]`, which §6.7's grep then fails on. The on-disk record and this document are **different types**: the record stays minimal (§2a.4's "the tx metadata is NEVER part of it") while the document carries the derived counts and the rendered `*_xmr` strings the plugin and the TUI display. An array of objects, never parallel arrays — the plugin, the TUI and agents all index it, and two arrays that must stay in lockstep are two arrays that will not. | no unresolved record |
 | `last_error` | object \| null | `{at, code, code_name, text, hint}`; any successful mutating command clears it | never errored since |
 | `staleness.node_probe_ms`, `wallet_probe_ms` | ints | measured | never |
 | `staleness.node_extras_age_sec` | int \| null | age of the 60 s cold cache | before the first cold pass |
@@ -2377,7 +2481,8 @@ never `anyhow` — so `main.rs` maps a failure to its §4a code without downcast
    wrong spelling would ship into the plugin's parser, the doctor's output and the e2e assertions
    before anyone noticed. "Compile against exactly these signatures" makes the derive attributes
    part of the contract. **A round-trip unit test in Phase 1a asserts every variant against the
-   literal string §5/§5c/§7 promises.**
+   literal string §5/§5c/§7 promises** — except the doctor's `Verdict` status, whose type lives in
+   `crates/fmonero/src/doctor/checks.rs` and therefore belongs to the Phase 2 doctor gate (§8).
 
 ```rust
 // ---- fmonero-core -------------------------------------------------------------
@@ -2596,8 +2701,11 @@ pub struct HistoryQuery { pub account_index: u32, pub limit: usize,
                           /// wallet behind the node is the normal state for hours after
                           /// `wallet open` (§2d), and against the node's height fmonero would
                           /// report a payment as more settled than the wallet can see.
-                          /// `None` with `--cached` (no RPC at all, §4.1), in which case
-                          /// `confirmations` and `locked` are both rendered `null`.
+                          /// **Written by `history::query` from its own `get_height`, never by a
+                          /// caller** — it is ignored on input, which is what makes handing it the
+                          /// node's height unrepresentable. Stays `None` with `--cached` (no RPC at
+                          /// all, §4.1), in which case `confirmations` and `locked` render `null`.
+                          /// Callers read it back after `query` to render those two columns.
                           pub wallet_height: Option<u64>,
                           /// The clock the timestamp branch of `locked` uses. **Local time**,
                           /// which is upstream's own fallback when no daemon answers
@@ -2607,7 +2715,8 @@ pub struct HistoryQuery { pub account_index: u32, pub limit: usize,
                           /// would break that row's `N: no`. The doctor's `node_clock` check
                           /// (§7.1) is what makes local time trustworthy here, and the column is
                           /// labelled `locked (est.)` for exactly this reason.
-                          /// `None` with `--cached`, in which case `locked` is `null` like
+                          /// Written by `history::query` alongside `wallet_height` and ignored on
+                          /// input; `None` with `--cached`, in which case `locked` is `null` like
                           /// `confirmations`.
                           pub adjusted_now: Option<i64> }
 
@@ -2736,6 +2845,14 @@ pub fn parse(s: &str) -> Result<Address, Error>;        // Error::InvalidAddress
 
 // ---- RPC ----------------------------------------------------------------------
 pub mod rpc {
+    /// The §2c loopback rule, in one place: `Ok(())` only for scheme `http` with a LITERAL host in
+    /// `127.0.0.0/8` or `::1`, or a `localhost` whose every resolved address is loopback.
+    /// `NodeClient::new` and `WalletClient::new` each call it as their first statement, and
+    /// `settings set node.url` / `settings set wallet.url` validate through it —
+    /// `Error::Usage{reason:"non_loopback_url"}`. One function rather than a rule restated per
+    /// client: the wallet client is the one that carries a credential and moves money.
+    pub fn require_loopback(url: &str) -> Result<(), Error>;
+
     #[derive(Clone)] pub struct Login { pub user: String, pub pass: String }
     impl Login {
         /// Reads `user:pass` from monero-wallet-rpc's own 0600 login file (§2c).
@@ -2757,7 +2874,8 @@ pub mod rpc {
 
 pub struct NodeClient { /* agent, base, auth, timeout */ }
 impl NodeClient {
-    /// Rejects any non-http scheme and any non-loopback host with Error::Usage (§2c).
+    /// Rejects any non-http scheme and any non-loopback host with Error::Usage, through
+    /// `rpc::require_loopback` — the same function `WalletClient::new` calls (§2c).
     pub fn new(url: &str, auth: Option<Login>, timeout: Duration) -> Result<NodeClient, Error>;
     pub fn from_ctx(ctx: &Context) -> Result<NodeClient, Error>;
     pub fn get_info(&self) -> Result<GetInfo, Error>;
@@ -2776,6 +2894,15 @@ impl NodeClient {
     pub fn peers_count(&self) -> Result<(u32, u32), Error>;      // out_peers + in_peers
     /// One call, classifying the answer: Ok(false) = unrestricted, Ok(true) = -32601 (§1b.2).
     pub fn is_restricted(&self) -> Result<bool, Error>;
+    /// Whether the last COMPLETED request went through a Digest handshake (`Some(true)`), was
+    /// accepted with no challenge at all (`Some(false)`), or has not been attempted (`None`).
+    /// Feeds §5's `node.authenticated`, the `auth_missing` warning and the doctor's `node_auth`
+    /// (§7.1). **It reports what the wire did, never what a config file says**: inferring it from
+    /// `Login::from_monerod_conf` returning `Some` would report `authenticated: true` against a
+    /// node that never challenged us, which is the false claim §2j forbids. Without this method
+    /// those three consumers have no producer and a Phase 1b agent must either add an unfrozen
+    /// public method or reach into the client's private `auth` field from `crates/fmonero/src/doctor`.
+    pub fn authenticated(&self) -> Option<bool>;
     /// **The §2i layout gate, as a type rather than as a comment.** Returns `Error::Safety` with
     /// the `sudo systemctl …` hint unless `units::detect_layout(ctx) == Layout::UserUnit`.
     /// There is no `--force` override. The five mutators exist ONLY on `NodeMutators`, so a caller
@@ -2795,8 +2922,17 @@ impl<'a> NodeMutators<'a> {
 
 pub struct WalletClient { /* agent, base, auth, timeout */ }
 impl WalletClient {
+    /// Rejects any non-http scheme and any non-loopback host with Error::Usage, through the same
+    /// `rpc::require_loopback` `NodeClient::new` calls (§2c).
     pub fn new(url: &str, auth: Option<Login>, timeout: Duration) -> Result<WalletClient, Error>;
-    pub fn from_ctx(ctx: &Context) -> Result<WalletClient, Error>;   // reads the login file (§2c)
+    /// Reads `user:pass` from the login file (§2c). **An absent file is `Ok` with `auth: None`,
+    /// never an error**: steps 1–4 of §2a.1's refusal order must still run in order, so no
+    /// constructor may decide a money-path exit code. The absence surfaces at the first request as
+    /// exit 4 — `reason: unreachable` for a refused connect, `auth_refused` for a 401.
+    pub fn from_ctx(ctx: &Context) -> Result<WalletClient, Error>;
+    /// As `NodeClient::authenticated`: what the wire did on the last completed request. Feeds §5's
+    /// `wallet.authenticated`, §5c's `wallet set-daemon.authenticated` and the doctor (§7.1).
+    pub fn authenticated(&self) -> Option<bool>;
     pub fn get_version(&self) -> Result<(u16, u16, bool), Error>;    // (major, minor, release)
     pub fn get_height(&self) -> Result<u64, Error>;                  // WalletLocked if -13
     /// Maps ANY `-1` to `Error::WalletLocked` (exit 9): `on_open_wallet` overwrites the mapped
@@ -2903,9 +3039,12 @@ pub mod node_session {
 /// callers; every §2a guarantee lives here so that one unit test proves it for both.
 pub mod send {
     /// Runs §2a.1's refusal order, which is the order the exit code depends on: amount rules
-    /// (§2a.5) → `address::parse` → the §2a.11 `send.lock` → the §2a.4 entry check and resolve
-    /// step → the wallet-daemon
-    /// probe → `validate_address` with the nettype check (§2a.6) → `Error::NodeSyncing` (exit 10)
+    /// (§2a.5) → `address::parse` (skipped for a `@`-prefixed `dest`) → the §2a.11 `send.lock` →
+    /// the §2a.4 entry check and resolve step → the wallet-daemon
+    /// probe → **`@label` resolution through one `get_address_book`, which replaces `dest` with the
+    /// resolved address and then parses it (step 5a: exit 6 on no match, 7 on several; the TUI's
+    /// `@` picker yields a literal address and never reaches this path)** →
+    /// `validate_address` with the nettype check (§2a.6) → `Error::NodeSyncing` (exit 10)
     /// when `get_info.synchronized` is false → build. Then builds
     /// **once** with `do_not_relay: true, get_tx_metadata: true`, and raises
     /// `Error::Safety{reason:"fee_above_max"}` when `req.max_fee` is `Some` and the built total fee
@@ -2926,18 +3065,22 @@ pub mod send {
     /// Re-checks `Error::Safety{reason:"fee_above_max"}` when `plan.max_fee` is `Some` and
     /// `plan.total_fee` exceeds it (§2a.2 — `build` raised it first; this is the enforcing gate,
     /// so a caller that builds a plan by other means still cannot relay past it),
-    /// prints the built recipient/amount/fee/total/priority/
-    /// account to **stderr**, writes and fsyncs the whole `pending.json` record BEFORE the first
+    /// formats the built recipient/amount/fee/total/priority/account as one line and hands it to
+    /// `announce` **before** the first `relay_tx` — **core stays silent (§2g)**: `main.rs` passes
+    /// `&|s| eprintln!("{s}")` and the TUI passes a closure that appends to its log pane. A
+    /// `println!` here would sit in `crates/fmonero-core/src` and fail the Phase 3 grep, and §2a.2
+    /// deliberately puts the announcement in `relay` rather than in each caller.
+    /// Then writes and fsyncs the whole `pending.json` record BEFORE the first
     /// `relay_tx`, relays every transaction of the plan in order, compares each returned `tx_hash`
     /// with the built txid (§2a.9), marks each entry relayed and re-fsyncs, issues one wallet
     /// `store` after the last relay (§2a.4), runs the resolve step, and finally — when `plan.note`
     /// is `Some` — one `set_tx_notes { txids, notes }` over every relayed txid.
     /// **A failure of that `set_tx_notes` is a warning, never a failure of the send**: the money has
-    /// moved, and an exit code that says otherwise sends the user to re-run the command. It is
-    /// reported on stderr and in `last_error`, and the command still exits 0.
+    /// moved, and an exit code that says otherwise sends the user to re-run the command. It goes
+    /// through the same `announce` sink and into `last_error`, and the command still exits 0.
     /// Returns the txids in relay order. The `Plan` is consumed, so its `send.lock` is released here.
-    pub fn relay(ctx: &Context, w: &WalletClient, plan: Plan, cancel: &CancelToken)
-        -> Result<Vec<String>, Error>;
+    pub fn relay(ctx: &Context, w: &WalletClient, plan: Plan, announce: &dyn Fn(&str),
+                 cancel: &CancelToken) -> Result<Vec<String>, Error>;
     /// A built, unbroadcast plan. Holds `BuiltTx`, so it is never serialized (see below).
     pub struct Plan { pub txs: Vec<BuiltTx>, pub total_amount: Piconero,
                       pub total_fee: Piconero, pub total_weight: u64,
@@ -3000,8 +3143,12 @@ pub mod units {
     pub fn install(ctx: &Context, dry_run: bool) -> Result<Vec<FileAction>, Error>;
     pub fn start(ctx: &Context, unit: &str, cancel: &CancelToken) -> Result<(), Error>;
     pub fn stop(ctx: &Context, unit: &str, cancel: &CancelToken) -> Result<(), Error>;
-    /// Starts the unit if needed, then polls `probe` until it succeeds or the deadline.
-    /// fbittorrent's `backend::ensure_running` shape (fbittorrent/src/backend.rs:17-29).
+    /// **Probes first, and starts the unit only when the probe fails**, then polls `probe` until
+    /// it succeeds or the deadline. That order is what lets every AMBER wallet row of §4b
+    /// (`wallet open|close|balance|…`) run against `fmonero-mock` with no unit installed at all;
+    /// "start, then probe" would spawn `systemctl start` against a unit that does not exist on
+    /// every one of them. fbittorrent's `backend::ensure_running` shape
+    /// (fbittorrent/src/backend.rs:17-29).
     pub fn ensure_running(ctx: &Context, unit: &str, probe: &dyn Fn() -> bool,
                           deadline: Duration, cancel: &CancelToken) -> Result<bool, Error>;
     /// Two probes (§2i): `<paths.proc_root>/*/cmdline` for a monerod already serving `data_dir`,
@@ -3017,7 +3164,8 @@ pub mod units {
     /// the moment our own node starts.
     pub fn data_dir_in_use(ctx: &Context, data_dir: &Path) -> Result<Option<i32>, Error>;
     /// `systemctl --user show -p MainPID <unit>`, so `node up` can tell "our node is already
-    /// running" (exit 0) from "someone else's monerod holds this data dir" (exit 3, §2i).
+    /// running" (exit 0) from "someone else's monerod holds this data dir" (exit 3, §2i). Under
+    /// `Systemctl::Fixture` it reads the `<main-pid>` column of that file instead (§2i).
     pub fn main_pid(ctx: &Context, unit: &str) -> Result<Option<i32>, Error>;
     /// True only for Layout::UserUnit. Read by `NodeClient::mutators` (§2i) and by the doctor;
     /// it is not the thing callers check by hand — the mutators live on a type they cannot
@@ -3131,9 +3279,14 @@ pub mod history {
     ///   never as 0 (§5's shape rules, §4.1). The authority on spendable funds is always
     ///   `get_balance.unlocked_balance`; the history column is labelled `locked (est.)`.
     /// - NEVER `pending`, `failed` or `pool` rows. `get_transfers` applies its height filter only
-    ///   to `in` and `out`; those three lists come back in full every time and the `pool` branch
-    ///   costs a daemon round trip. They are fetched fresh and replace, never merge; a cached row
-    ///   whose txid reappears in a fresh list is replaced.
+    ///   to `in` and `out`; those three lists come back in full every time. `pending` and `failed`
+    ///   are local (`get_unconfirmed_payments_out`) and are fetched fresh on every top-up and
+    ///   replace, never merge; a cached row whose txid reappears in a fresh list is replaced.
+    ///   **`pool` is sent only when the query asks for pool rows**, because that branch alone runs
+    ///   `update_pool_state`/`process_pool_state` — a daemon round trip (`:2939-2950`) that throws
+    ///   when the node is unreachable and turns the WHOLE response into epee's `code: 0` (§1b.4).
+    ///   Sending it unconditionally would make `wallet history` — a read-only command documented
+    ///   `N: no` — fail whenever the node is down.
     /// - `refresh` fetches from `high_water.saturating_sub(720)` (≈ one day) rather than from
     ///   `high_water`, so a reorg inside that window is corrected instead of being cached
     ///   forever; the server's rows are authoritative for the re-read window. It **must send
@@ -3144,9 +3297,23 @@ pub mod history {
     /// - Confirmed `block` (coinbase) rows are cached on the same terms as `in` rows; they arrive
     ///   inside the same `in` list (§1b.4).
     pub fn load(ctx: &Context, account: u32) -> Result<Vec<Transfer>, Error>;
+    /// The incremental top-up. **Its only caller is `query`** (§5b rule 1): the top-up, the
+    /// `get_height` and the row merge are one operation and splitting them across callers is how
+    /// the node's height ends up in `confirmations`.
     pub fn refresh(ctx: &Context, w: &WalletClient, account: u32) -> Result<usize, Error>;
-    /// `q.cached` serves the snapshot alone and issues no RPC — the §2l (d) budget.
-    pub fn query(ctx: &Context, q: &HistoryQuery) -> Result<Vec<Transfer>, Error>;
+    /// `w` is `Some` unless `q.cached`. With `Some(w)` this is the ONE place the top-up happens:
+    /// one wallet `get_height`, one `get_transfers` with `filter_by_height: true` (and `pool` only
+    /// when `q.kinds` asks for it), confirmed `in`/`out`/`block` rows merged into the snapshot, and
+    /// the `pending`/`failed`/`pool` rows returned straight from that response and never cached.
+    /// It **writes** `q.wallet_height` from its own `get_height` and `q.adjusted_now` from the local
+    /// clock, so no caller can hand it the NODE's height; with `w: None` it serves the snapshot
+    /// alone, issues nothing, leaves both `None`, and both derived fields render `null` (§2l (d)).
+    /// A `get_transfers` that failed because of the `pool` branch (epee's `code: 0` with the node
+    /// down, §1b.4) is retried **once** without `pool`; the rows are returned and the caller renders
+    /// `pool_unavailable: true` (§5c). `&mut` only so those two derived fields can be filled — the
+    /// query itself is not mutated.
+    pub fn query(ctx: &Context, w: Option<&WalletClient>, q: &mut HistoryQuery)
+        -> Result<Vec<Transfer>, Error>;
     /// The ONLY implementation of §1b.4's two derived fields. `wh` is the WALLET's height (never
     /// the node's); `None` when there is none (`--cached`), in which case both render as JSON
     /// `null` and as `—` in a table — never 0 (§5's shape rules). `output.rs` (Phase 1b) and the
@@ -3222,13 +3389,25 @@ and `*_xmr` (string). A list command puts its rows under a single plural key. Ab
 never a missing key (§5's shape rules apply everywhere). A failure payload is always the §4 error
 envelope — `ok`, `schema`, `code`, `code_name`, `error`, `hint`, `reason` — whatever the command.
 
+**One exception, and it is exact, because it is the money surface.** `wallet send` and
+`wallet sweep` refused at §2a.1 step 9 (`reason: fee_above_max`) or step 10 (`reason: needs_yes`)
+emit the failure envelope **plus the complete `wallet send` key set of the table below**, with
+`relayed: false`, `dry_run: false`, `txids: []`, and `fee_pico`/`fee_xmr`/`total_pico`/`total_xmr`/
+`weight`/`txs` carrying the **built** transaction's real numbers: the fee §2a.1 exists to show may
+not be human-mode-only, and `--json` is mandatory on a non-TTY (§4), so an agent asked to confirm a
+fee would otherwise have to parse the human stderr line to learn it. `ok` is `false` and the exit
+code is 3. Every **other** failure of these two commands (exits 2, 4, 10, 14, 15, 16, and exit 3
+with `reason: pending_send` or `send_in_progress`) carries the plain envelope, because no
+transaction was built and there is no fee to report. The Phase 1b gate therefore asserts **three**
+key sets for `wallet send`: dry-run success, relayed success, and this refusal union.
+
 **`tui` and `robot-docs` are exempt**: one is interactive (and exits 2 on a non-TTY stdout), the
 other is plain text by contract (§4). The Phase 1b gate skips exactly those two and no others.
 
 | Command | Keys |
 |---|---|
 | `wallet send`, `wallet sweep` | `relayed` (bool), `dry_run` (bool), `txids` (array, one entry per transaction — empty when nothing was relayed), `amount_pico`/`amount_xmr`, `fee_pico`/`fee_xmr`, `total_pico`/`total_xmr`, `dest`, `account_index`, `priority`, `weight` (the **sum** of the built transactions' weights — `Plan.total_weight`, §5b; a sweep has no single weight), `txs` (array of `{txid, amount_pico, amount_xmr, fee_pico, fee_xmr, weight, relayed}`, one entry per built transaction — the shape §5's `pending.txs` already uses, so a sweep's per-transaction amounts and fees are not invisible in JSON; `txids` stays as the flat array for agents that only need identifiers). **The keys are identical for a dry run, for the no-`--yes` refusal and for a relayed success**, so an agent parses one shape and reads `relayed` to learn what happened. |
-| `wallet history` | `transfers` (array of `{txid, type, height, timestamp, amount_pico, amount_xmr, fee_pico, fee_xmr, confirmations, locked, note, address, subaddr_index, destinations}`), `cache_age_sec`, `high_water`, `cached` (bool). `type` is `in`\|`out`\|`pending`\|`failed`\|`pool`\|`block` (§5b rule 3; `block` is a coinbase row, §1b.4). `confirmations` and `locked` come from `history::confirmations` / `history::locked` (§5b) and are **never recomputed locally**. `subaddr_index` is the object `{major, minor}` — `major` **is** the account index, so there is no separate `account_index` key (§1b.4). `destinations` is an array of `{address, amount_pico, amount_xmr}`, empty for `in` rows. **`confirmations` and `locked` are `null` with `--cached`**, where no wallet height is available (§4.1); they are never 0 standing in for unknown. |
+| `wallet history` | `transfers` (array of `{txid, type, height, timestamp, amount_pico, amount_xmr, fee_pico, fee_xmr, confirmations, locked, note, address, subaddr_index, destinations}`), `cache_age_sec`, `high_water`, `cached` (bool), `pool_unavailable` (bool — `true` only when `--pool` was asked for and the daemon round trip inside `get_transfers` failed, so the rows are complete except for the pool, §4.1). `type` is `in`\|`out`\|`pending`\|`failed`\|`pool`\|`block` (§5b rule 3; `block` is a coinbase row, §1b.4). `confirmations` and `locked` come from `history::confirmations` / `history::locked` (§5b) and are **never recomputed locally**. `subaddr_index` is the object `{major, minor}` — `major` **is** the account index, so there is no separate `account_index` key (§1b.4). `destinations` is an array of `{address, amount_pico, amount_xmr}`, empty for `in` rows. **`confirmations` and `locked` are `null` with `--cached`**, where no wallet height is available (§4.1); they are never 0 standing in for unknown. |
 | `wallet balance` | `account_index`, `balance_pico`/`balance_xmr`, `unlocked_pico`/`unlocked_xmr`, `blocks_to_unlock`, `time_to_unlock_sec`, `subaddresses` (array of `{address_index, address, label, balance_pico, balance_xmr, unlocked_pico, unlocked_xmr, num_unspent_outputs}`, present only with `--subaddresses`, else `null`) |
 | `wallet address`, `wallet new-address` | `primary`, `addresses` (array of `{address_index, address, label, used}`), `selected` (the address `--index` chose, or the primary) |
 | `wallet list` | `wallets` (array of names), `dir` |
@@ -3240,7 +3419,7 @@ other is plain text by contract (§4). The Phase 1b gate skips exactly those two
 | `wallet notes get`/`set` | `txids` (array), `notes` (array, index-aligned) |
 | `wallet open` | `name`, `open` (bool), `unit_started` (bool), `nettype` (the wallet's own, §2a.6) |
 | `wallet close` | `name` (the wallet that was closed), `open` (always false), `unit_started` (always false) |
-| `wallet create` | `name`, `open` (always false — `create_wallet` does not open it), `unit_started`, `seed_backup_hint` (§2b.2); **never** `seed` |
+| `wallet create` | `name`, `open` (**true** — `on_create_wallet` ends `m_wallet = wal.release()`, so the new wallet is left open and `wallet create` finishes `wallet_session::open`'s last three steps on it, §4.1), `unit_started`, `seed_backup_hint` (§2b.2); **never** `seed` |
 | `wallet set-daemon` | `address`, `trusted` (bool), `authenticated` (bool \| null) |
 | `node info` | `node` — the §5 `node` object verbatim, so one parser serves both — plus `txpool` (`{txs_total, bytes_total, fee_total_pico, fee_total_xmr, oldest, num_10m, num_double_spends}`), `sync` (`{height, target_height, spans, peers}` or `null` on a restricted node) and `hard_fork` (`{current_version, state, voting_on: {version, enabled, earliest_height, votes, threshold, window, voting}}` — **two different fork versions, kept apart**, §1b.3) and `rpc` (`{version_major, version_minor, release, hard_forks: [{hf_version, height}]}` from json_rpc `get_version`, §1b.3 `:2173` — where `version` is the **RPC** version packed `major<<16\|minor`, not the software version, which is `node.version` from `get_info`). That last key is why `NodeClient::get_version` exists: without a place to land, a frozen call with no consumer forces a Phase 1b agent either to break the §5c exact-key-set gate or to break the §5b freeze. The block-header fields of `node` are **`null`, not zeros**, when `get_last_block_header` answered `"BUSY"` (§1b.3). |
 | `node peers` | `connections` (array of `{address, host, port, state, height, pruning_seed, incoming, live_time, avg_download, avg_upload}` — `port` is parsed from the daemon's **string** and rendered as an **integer**, so both arrays agree, §1b.3), `white` and `gray` (arrays of `{host, port, last_seen}`), each `null` on a restricted node |
@@ -3390,7 +3569,8 @@ down", the sync state phrase, a `ToggleSwitch` bound to `nodeUp`/`busy`) → **n
 `fmonero doctor`, else copies it) → **wallet** (when `walletOpen`: balance and unlocked, `↑ locked
 for N blocks` when `blocks_to_unlock > 0`, the shortened primary address with a copy action, and a
 Refresh row; when reachable but closed: one row "No wallet open — open it in the TUI"; when the
-unit is down: "Wallet daemon is not running") → **pending** (when `status.pending`: `bar.urgent`, `Model.pendingLabel(status.pending)` —
+unit is down: "Wallet daemon is not running") → **pending** (when `status.pending`: `bar.urgent`,
+`Model.pendingLabel(status.pending, showBalance === "on")` —
 "Send in flight: <`total_amount_xmr`> → <short dest>" plus "· 1 of 3 relayed" when
 `relayed_count < total_count`; Enter opens the TUI) → **footer** (Open TUI · Send ·
 Doctor).
@@ -3534,7 +3714,7 @@ touches something foreign but reversible gets its own class then, with its first
 | `wallet_daemon_auth` | wallet | error | D | one-shot and honest about what it cannot distinguish, because §7's architecture makes every detector a pure `fn detect(&Probes) -> Verdict` over **one** run's probes — "stuck while the node advances" is a two-sample-over-time observation and would force either a sleep inside a probe or a quiet weakening to "the wallet is behind", which fires on every normal sync. So: `fail` when our `monerod.conf` carries `rpc-login`, the wallet is reachable, the node is reachable, `node.synchronized == true` **and** `wallet_height + 100 < node_height`; `skip:node_syncing` when the node is not synchronized; `pass` otherwise. The detail says that a synced node with a wallet far behind is the signature of a missing daemon credential (§4.2) and that the check cannot distinguish it from a wallet still catching up on a large restore height. | no | `fmonero wallet set-daemon 127.0.0.1:18081 --trusted --yes` |
 | `wallet_nettype_matches` | wallet | warn | D | the open wallet's own nettype, recorded by `wallet_session::open` from its primary address (§2a.6), equals `settings.node.network`; `skip:wallet_closed` when nothing is open. The send path follows the **wallet**, so a mismatch is a configuration fact and not a money risk — but it means `wallet.dir`, the unit's ports and the node the wallet talks to were rendered for a different network | no | `fmonero settings set node.network <the wallet's> && fmonero setup --units --yes` |
 | `wallet_dir_exists` | wallet | warn | B | `settings.wallet.dir` **and every ancestor** exists, mode 0700. A missing *ancestor* is what stops the unit from starting: `monero-wallet-rpc` creates only the leaf, with one `mkdir(dir, 0700)`, and treats any failure but `EEXIST` as fatal (`wallet_rpc_server.cpp:325-340`, §4.2) | **yes** | `CreateDir{path, mode: 0o700}` **applied to each missing ancestor in turn, one `FileAction` per level**, so each stays individually undoable |
-| `wallet_dir_matches_unit` | units | error | B | the wallet unit's `--wallet-dir` argument equals `settings.wallet.dir` byte for byte (§4.2) — the daemon resolves `<wallet-dir>/<filename>` and a name may not contain `/`, so a mismatch is unbridgeable and makes `wallet list` read a directory `open_wallet` never writes | **yes** | rewrite the unit from the setting (backup first) |
+| `wallet_dir_matches_unit` | units | error | B | the wallet unit's `--wallet-dir` argument equals `settings.wallet.dir` byte for byte — both absolute, which is why the unit renders the path rather than `%h` (§4.2) — the daemon resolves `<wallet-dir>/<filename>` and a name may not contain `/`, so a mismatch is unbridgeable and makes `wallet list` read a directory `open_wallet` never writes | **yes** | rewrite the unit from the setting (backup first) |
 | `wallet_port_consistent` | units | error | B | the wallet unit's `--rpc-bind-port` equals `settings.wallet.port` and the port in `settings.wallet.url`; otherwise `Paths::wallet_login_file(port)` looks for a login file the daemon never wrote (§4.2) | **yes** | **`settings.node.network` is the authority, not either observed value** (§4): the expected port is 18083 \| 38083 \| 28083 for mainnet \| stagenet \| testnet. The fixer rewrites `settings.wallet.port`, the port inside `settings.wallet.url` and the unit's `--rpc-bind-port` to that one value, in that order, each through `mutate` with a backup. Three-way disagreement with no stated authority is a coin flip inside a class-B fixer, and one side of it — rewriting the settings to match the unit — changes `Paths::wallet_login_file(port)` under a *running* daemon and produces exactly the symptom this check exists to prevent. **Refused (`skip:wallet_rpc_active`, no mutation) while the wallet unit is active**: rebinding a live daemon's port from under it is how a running wallet becomes unreachable mid-send. The detail then names the three observed values and `systemctl --user stop fmonero-wallet-rpc.service` as the precondition. |
 | `pending_send` | wallet | error | D | the `pending.json` record has **any** entry with `relayed == false`; a fully-relayed record that the next `send` would resolve is reported `info`, not `fail` (§2a.4) | **no — class D** | `fmonero wallet history --limit 5` then `fmonero wallet clear-pending --yes`. Never automated: only a human can decide whether that transaction landed (§2a.4). |
 | `units_present` | units | warn | B | both unit files exist and match `units::render_*` byte-for-byte | **yes** | rewrite them (backup first) |
@@ -3543,7 +3723,7 @@ touches something foreign but reversible gets its own class then, with its first
 | `unit_no_node_wants` | units | error | B | neither unit's `Wants=` or `Requires=` names a `monerod` unit — `Wants=` would start a node around the §2i single-writer check (§4.2) | **yes** | rewrite (backup first) |
 | `unit_enabled_state` | units | info | B | both units are **disabled** (on-demand, §4.2) | **yes** | `systemctl --user disable <unit>` |
 | `monerod_conf_mode` | security | error | B | `~/.config/fmonero/monerod.conf` is mode 0600 (§2c) | **yes** | `chmod 600` |
-| `node_auth` | security | warn | D | the node required and accepted a credential | no | `fmonero setup --units` (skipped with a note for a `system_unit` layout, which is not ours to change) |
+| `node_auth` | security | warn | D | the node required and accepted a credential — read from `NodeClient::authenticated()` (§5b), which reports the handshake and not the presence of an `rpc-login=` line | no | `fmonero setup --units` (skipped with a note for a `system_unit` layout, which is not ours to change) |
 | `state_perms` | security | error | A | every file under `state_dir`, `cache_dir` and `config_dir` **that fmonero itself writes** is 0600 and every directory 0700 (§2b.7) — these hold recipient addresses, amounts and the wallet name. The run directory's contents are **excluded by name**: `monero-wallet-rpc.*.login` settles at 0400 by `private_file`'s own dance (§2c) and `monero-wallet-rpc.log` is whatever the daemon chose, so a literal "every file is 0600" would report `fail` on a perfectly healthy machine — and a check that fails on correct systems is the check an agent relaxes. Those two are checked instead for **no group and no other permission bits**, and a violation is reported `fail` with `fix_cmd: systemctl --user restart fmonero-wallet-rpc.service`, **class D — never chmod'd**, because the daemon recreates them on every start and `StateDirectoryMode=0700` (§4.2) is the real fix | **yes**, for fmonero's own files only | `RunArgv` chmod, with the prior modes as `inverse_argv` |
 | `ports_owned` | security | warn | D | who listens on 18080 / 18081 / `wallet.port`, read **through `paths.proc_root`** (`<proc_root>/net/tcp`, `<proc_root>/*/fd`) so the §7.1 fixture drives it: `pass` when it is our unit's PID or nothing, `warn` when it is another process, **`fail` when anything is bound to a non-loopback address** | no | detail names the PID and the bind address |
 | `disk_space` | storage | warn | D | free bytes on `node.data_dir`'s filesystem ≥ 120 GB for a pruned chain (§1.3), measured locally — **never** from `get_info.free_space`, which a restricted node reports as `2^64-1` (§1b.3) | no | detail says the floor is an **estimate, AMBER**, and names the measured free space |
@@ -3635,7 +3815,23 @@ two-minute block time, so nothing visible is ever more than a second stale. `Eve
 `Msg::Tick`, which is a **spinner frame budget, not a data poll** — it touches no daemon — used for
 the busy indicator and the QR's blink-free redraw.
 Long actions are a **cancellable `Subscription`, never a `Cmd::task`**, because a `Cmd` cannot be
-cancelled — fproton's `ActionSub` verbatim (`fproton/crates/fproton/src/tui/subs.rs`):
+cancelled — fproton's `ActionSub` shape (`fproton/crates/fproton/src/tui/subs.rs`), with one
+deliberate difference. fmonero's `Action` is **not** `Clone` (it carries a password and a `Plan`
+that owns the §2a.11 lock), while `Subscription::run` takes `&self`
+(`ftui-runtime-0.7.0/src/subscription.rs:46`) and fproton's `subscriptions(&self)` therefore
+constructs its `ActionSub` with `action: action.clone()` (`fproton/crates/fproton/src/tui/mod.rs:740`).
+From a shared borrow nothing can be moved out, and `send::relay` takes its `Plan` **by value**, so
+the action is held behind interior mutability and moved out once: the model holds
+`action: Option<(SubId, Arc<Mutex<Option<Action>>>, Instant)>`, `subscriptions()` clones the `Arc`
+and never the `Action`, and `run` does
+`let Some(action) = self.action.lock().unwrap().take() else { return; };` before consuming it —
+which is also exactly what makes "the variant is dropped and its `String` zeroed as soon as the
+subscription takes it" true rather than aspirational. The runtime de-duplicates by `SubId` and does
+not restart an unchanged subscription, so `run` is entered once per action; an empty slot returns
+without sending a message. Without this the three constraints — `run(&self)`, a by-value `Plan` and
+a non-`Clone` `Action` — cannot all hold, and a Phase 2 agent resolves it in its first hour by
+deriving `Clone` (a second copy of the password and of the lock's owner) or by rewriting a frozen
+signature.
 
 ```rust
 pub enum Action {
@@ -3679,8 +3875,8 @@ the TUI agent, and it is the screen that empties an account.
 never writes the `pending.json` record itself.** Those are `send::build` and `send::relay`, which the CLI
 also calls; §2a's guarantees are properties of core, not of two independently written callers.
 
-The model holds `action: Option<(SubId, Action, Instant)>` and `subscriptions()` returns the
-`ActionSub` only while it is `Some`. `Esc`/quit sets it to `None` → `StopSignal` → `CancelToken` →
+The model holds `action: Option<(SubId, Arc<Mutex<Option<Action>>>, Instant)>` (above) and
+`subscriptions()` returns the `ActionSub` only while it is `Some`. `Esc`/quit sets it to `None` → `StopSignal` → `CancelToken` →
 core returns `Interrupted`. **`Action::Relay` is the one action that ignores the StopSignal**: once
 `relay_tx` is on the wire, cancelling it tells you nothing about whether the node got it, and
 the `pending.json` record (§2a.4) is the mechanism that covers it. The help overlay says so.
@@ -3710,7 +3906,9 @@ Form ──validate──▶ Validated ──▶ Building ──▶ Built ──
    in piconero *from the built transaction*, **Total**, **Account**, **Priority** and **Weight**;
    then the literal line `Type "send" and press Enter to broadcast · Esc to discard`. The modal
    requires typing the word, not just Enter — this is the TUI's `--yes`.
-5. **Relaying.** `ActionSub(Action::Relay(Plan))` → `send::relay`, which writes and fsyncs
+5. **Relaying.** `ActionSub(Action::Relay(Plan))` → `send::relay`, passing an `announce` closure
+   that appends to the Log screen's pane (§5b — core never prints, §2g; the CLI's sink is stderr).
+   `relay` announces the built recipient/amount/fee/total/priority/account, writes and fsyncs
    the `pending.json` record, relays, compares each returned `tx_hash` with the built txid (§2a.9), marks
    each entry relayed and resolves the record. On success: a toast with the txid, jump to Wallet with
    that row selected, and the form clears. On failure: the record stays, the error is shown with its
@@ -3838,9 +4036,19 @@ very first command of the very first phase.
    "untrusted":false}` — the `CHECK_CORE_READY()` answer of §1b.3, selected by `--scenario syncing`,
    without which nothing in this plan can fail on a 56-year-old block),
    `sync_info.json`, `get_connections.json`, `get_peer_list.json`,
-   `get_bans.json`, `get_txpool_stats.json`, `get_fee_estimate.json`, `get_version.json`,
-   `hard_fork_info.json`, `get_net_stats.json`, `get_limit.json`, and
+   `get_bans.json`, **`get_transaction_pool_stats.json`** (the wire name — the json_rpc method and
+   the legacy endpoint are both `get_transaction_pool_stats`, §1b.3; naming it after
+   `NodeClient::get_txpool_stats` would be a silent 404 that this phase's `get_info` smoke test
+   cannot catch), `get_fee_estimate.json`, `get_version.json`,
+   `hard_fork_info.json`, `get_net_stats.json`, `get_limit.json`,
+   **`set_limit.json`** (echoes `limit_up`/`limit_down`), **`out_peers.json`** and
+   **`in_peers.json`** (each echoing the count), **`set_bans.json`** (the bare
+   `{status, untrusted}` base) — the four without which `node limit --up 1024`,
+   `node limit --out-peers N`, `node ban` and `node unban` are AMBER rows with no response to serve
+   and no way to fill §5c's `limit_up_kbps`/`out_peers`/`in_peers`/`banned` keys —, and
    `error-restricted.json` (`{"jsonrpc":"2.0","id":"0","error":{"code":-32601,"message":"Method not found"}}`).
+   **Fixture file names are exactly the json_rpc method name or the legacy endpoint name**, so the
+   dispatcher needs no translation table.
 2. `tests/fixtures/wallet/*.json` — `get_balance.json` (with `per_subaddress`, `blocks_to_unlock`
    and `time_to_unlock` populated), `get_address.json`, `get_accounts.json`, `get_height.json`,
    `get_transfers.json` (at least one row of every `type`: in, out, **block**, pending, failed,
@@ -3867,7 +4075,7 @@ very first command of the very first phase.
 
    ```
    fmonero-mock --role node|wallet --port N --fixtures DIR --log FILE
-                [--restricted] [--auth USER:PASS] [--delay-ms N]
+                [--restricted] [--auth USER:PASS] [--delay-ms N] [--rotate-nonce-after N]
                 [--scenario NAME] [--fail METHOD=CODE:MESSAGE]…
    ```
 
@@ -3880,6 +4088,9 @@ very first command of the very first phase.
    - **`--scenario NAME`** makes a method prefer `<method>-<scenario>.json` when it exists and fall
      back to `<method>.json`; `--scenario syncing` and `--scenario restricted` are what select
      `get_info-syncing.json` and `get_info-restricted.json`.
+   - **`--delay-ms N`** delays every answer by N ms. §2a.11's two-process test needs it: against an
+     instant mock the first `send --yes` can finish build → relay → resolve before the second reaches
+     `flock`, and the only test of the interlock that can double-spend becomes a coin flip.
    - **`--fail get_balance=-13:'No wallet file'`**, repeatable, makes that method answer that
      JSON-RPC error until the process exits. **This is the only way the §1b.4 error-code → exit-code
      table can be tested**, and that table is a money surface; `--restricted` covers only `-32601`.
@@ -3958,7 +4169,11 @@ five hours or marks it green dishonestly, which is the failure §2j exists to pr
 
 ### Phase 1a — API freeze (one agent; first; ~2 h)
 
-**Owns** all three `Cargo.toml` files, `crates/fmonero-core/src/{lib,error,context,paths,settings,
+**Owns** all **four** `Cargo.toml` files — the workspace root and one per crate,
+`crates/fmonero-mock/Cargo.toml` included (§8 Phase 0); the `members` list names three crates plus
+the root manifest (§3.1), and writing three leaves `members` pointing at a directory with no
+manifest, so `cargo build --release` — the first command of the first gate — fails before anything
+else runs —, `crates/fmonero-core/src/{lib,error,context,paths,settings,
 state,proc,amount,address}.rs`, compiling **signature-only** modules for everything else in §5b
 (bodies return `Err(Error::unimplemented("…"))` or empty data), `crates/fmonero/src/main.rs` (the
 **full** clap tree for every command in §4.1, with every flag, every `after_help`, dispatch into
@@ -3972,27 +4187,32 @@ apply, and without it 1a's own `cargo build --release` cannot run at all).
 `error.rs`, `context.rs`, `paths.rs` and `proc.rs` are ports of fproton's, adapted to the §5b
 names; `amount.rs` and `address.rs` are new and are **fully implemented here, with tests**, because
 Phase 2's TUI needs the live validators on day one and they touch no daemon.
+**`Settings::get`/`set`/`KEYS` are fully implemented here too** (including the Levenshtein
+suggestion of §4), which is what makes this phase's `reason` assertion closable; everything else in
+`settings.rs` and `state.rs` beyond the types is 1b's.
 
 **Gate.** `cargo build --release`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`
 all green; `fmonero --help`, `fmonero wallet --help`, `fmonero node --help`,
 `fmonero doctor --help`, `fmonero tui --help` print the real §4 surface; `fmonero status --json`
 prints a schema-1-valid object (mostly null);
-`fmonero wallet send 4AdUndXHHZ6cfufTMvppY6JwXNJ2XZ7kBQ… 0.1` exits **4** (no wallet daemon) and
-`fmonero wallet send addr 0.1` exits **15** (`address::parse` is fully implemented here and runs
-before the daemon probe, §2a.1) — both before any network call;
-**the `reason` key is present and correct on the two failure paths this phase can reach**:
-`fmonero wallet send <valid addr> 0.1` with no wallet daemon prints `"reason":"unreachable"` and
+**the `reason` key is present and correct on the failure path this phase can reach**:
 `fmonero settings set nope 1` prints `"reason":"unknown_key"` (§4 — a frozen `Error` that cannot
-carry `reason` is the defect this asserts against); `cargo test -p fmonero-core amount
+carry `reason` is the defect this asserts against). The two `wallet send` exit codes of §2a.1 are
+**not** asserted here: both run through `send::build`, whose body at 1a is a signature-only
+`Err(Error::unimplemented(…))` → exit 1, and §2a.1 places `address::parse` inside `build` rather
+than in `main.rs`. They are §4b GREEN rows and are asserted by the Phase 1b gate's §5c key-set run;
+an agent that cannot close its own gate either blocks the pipeline or marks it green dishonestly
+(§8 Phase 0). `cargo test -p fmonero-core amount
 address` passes, including the
 `PREFIXES.len() == address-forms.json.len()` assertion, the testnet-standard two-digit `leading`
 case (§1b.8), and **the `to_xmr_string` round trip** —
 `Piconero::parse(x.to_xmr_string()) == x` for every sampled `u64`, plus the three worked examples of
 §5b;
 **the §5b rule-3 round-trip test passes** — every variant of `Layout`, `Severity`,
-`PendingKind`, `TransferKind` (`Block` ↔ `"block"` included), `Network`, `NetType`, `AddrKind`,
-`FileStatus` and the doctor's
-`Verdict` status asserted against the literal string §5/§5c/§7 promises;
+`PendingKind`, `TransferKind` (`Block` ↔ `"block"` included), `Network`, `NetType`, `AddrKind` and
+`FileStatus` asserted against the literal string §5/§5c/§7 promises — the doctor's `Verdict` status
+is **not** here: it lives in `crates/fmonero/src/doctor/checks.rs`, which this phase does not own and
+which does not exist until Phase 2, whose doctor gate asserts it instead;
 **`cargo doc -p fmonero-core` lists every type named in §5b**, which is what makes
 "compile against exactly these signatures" true rather than aspirational. **After this gate nobody edits a
 `Cargo.toml`** (§2k). **Last step of the gate: `git tag -a gate-1a -m 'API freeze'`** — Phase 2's
@@ -4025,14 +4245,18 @@ and is not measured or claimed;
 hunk** (grep exits 1), and `cargo test -p fmonero-core units::render_node_conf_has_no_systemd_specifiers`
 passes — a unit test that calls `units::render_node_conf` directly, so the check survives
 `--dry-run` writing no file;
-`grep -o -- '--wallet-dir [^ ]*' ~/.config/systemd/user/fmonero-wallet-rpc.service` (from the
-`--dry-run` output) equals `fmonero settings get wallet.dir` (§4.2);
+`fmonero setup --units --dry-run | grep -o -- '--wallet-dir [^ ]*' | cut -d' ' -f2` equals
+`fmonero settings get wallet.dir` (§4.2) — read from the `--dry-run` **output**, because `--dry-run`
+writes no file and `units::install` refuses to run under `FMONERO_STATE_DIR` at all, so grepping
+`~/.config/systemd/user/fmonero-wallet-rpc.service` would exit 2 with no output and the gate could
+not fail;
 **with `fmonero-mock --role wallet --port 18083 --auth fmonero:t3st
 --fail get_balance=-17:'not enough money'` running *and the matching login file written* —
 `printf 'fmonero:t3st' > $FMONERO_STATE_DIR/run/monero-wallet-rpc.18083.login; chmod 600 …` —
 `fmonero wallet balance` exits 14** (the §1b.4 error map, proven end to end, moved here from the
-Phase 0 gate because it cannot be closed until these bodies exist; without the login file
-`WalletClient::from_ctx` builds no client at all and it exits 4, §2c);
+Phase 0 gate because it cannot be closed until these bodies exist; without the login file the client
+sends unauthenticated requests, the mock answers 401 twice and it exits 4 `reason: auth_refused`,
+§2c);
 `cargo test -p fmonero-core history::locked` passes — `locked` is false for `unlock_time == 0` at
 `wh = height + 10`, true at `wh = height + 9`, and `unlock_time = 1_900_000_000` is read as a
 timestamp and not as a height (§1b.4);
@@ -4055,7 +4279,7 @@ outside its list.
 |---|---|---|
 | **tui** (~4 h) | `crates/fmonero/src/tui/**`, `tests/tui_tmux.sh` | clippy clean; ≤ 1 800 lines; `fmonero tui` opens and quits cleanly on a real pty (`script -qc` or a tmux pane); every screen renders with the mock up and with both daemons absent; the four resize tiers have render tests; the `ProgramSimulator` send test asserts one `transfer` + one `relay_tx` with identical metadata, driven against `fmonero-mock --auth` **with the matching login file written first** (§2c); the `Action` redaction test (§7a); no `println!`; no literal colour outside `theme.rs`; a text capture of each screen in **`decisions/phase2-tui.md`** (§8 preamble), taken **against `fmonero-mock` serving `tests/fixtures/` only, never against a real wallet** — §2b.2's rule covers DECISIONS.md, and the Wallet screen renders a balance, a primary address and counterparty addresses; the capture's header states which mock scenario produced it |
 | **plugin** (~3 h) | `plugin/oliver.monero/**` except README, `tests/plugin-smoke.sh`. **Works in the main checkout on branch `phase2/plugin`**, not a worktree — see the §8 preamble | `omarchy-plugin-validate plugin/oliver.monero` clean; `tests/plugin-smoke.sh` green with the plugin symlinked and enabled on this machine; the §6.7 money-grep and the `parseFloat`/`Number(`/`/ 1e` grep pass **and each fires on its own positive fixture**; real line counts recorded against the §6.1 budgets (sum ≤ 1 310) in **`decisions/phase2-plugin.md`** (§8 preamble) |
-| **doctor** (~4 h) | `crates/fmonero/src/doctor/**`, `tests/fixtures/doctor/**` (handed over by Phase 0, and this agent may edit them) | `fmonero doctor --json \| jq` lists every §7.1 check with a real verdict on this machine and **exits 11** (binaries `fail:not_installed`, node/wallet/storage `skip:*`, install and security real); `doctor --fix --dry-run` changes nothing (`git status` + a state-dir checksum); class-A round trips (`corrupt → --fix → assert → undo latest → compare`) under `FMONERO_STATE_DIR`; `doctor capabilities --json` valid; `doctor --only security` works; evidence goes to **`decisions/phase2-doctor.md`** (§8 preamble) |
+| **doctor** (~4 h) | `crates/fmonero/src/doctor/**`, `tests/fixtures/doctor/**` (handed over by Phase 0, and this agent may edit them) | `fmonero doctor --json \| jq` lists every §7.1 check with a real verdict on this machine and **exits 11** (binaries `fail:not_installed`, node/wallet/storage `skip:*`, install and security real); `doctor --fix --dry-run` changes nothing (`git status` + a state-dir checksum); class-A round trips (`corrupt → --fix → assert → undo latest → compare`) under `FMONERO_STATE_DIR`; `doctor capabilities --json` valid; `doctor --only security` works; **the `Verdict` status round trip (`pass`/`warn`/`fail`/`skip`) asserted against the literal strings of §7** (§5b rule 3 — moved here from the Phase 1a gate, which does not own `checks.rs`); evidence goes to **`decisions/phase2-doctor.md`** (§8 preamble) |
 | **docs** (~2 h; starts after 1a) | `README.md`, `plugin/oliver.monero/README.md`, `scripts/{install,uninstall}.sh` | `bash -n` and `shellcheck` clean on both scripts; `scripts/install.sh --dry-run` prints every step it would take and touches nothing (verified by `git status` plus a `$HOME` checksum); the script follows `installer-workmanship` (set -euo pipefail, umask 077, a lock, `cargo build --release -p fmonero` only, atomic rename into `~/.local/bin`, never sudo, never outside `$HOME`, exit codes mirroring §4a) and its `--yes` path is **read for** idempotence, not executed — at `gate-1a` `setup::run` is still a stub returning `Error::unimplemented`, so `install.sh --yes` would exit 1 on its first real step and this agent could not close its own gate, and §4b already reserves the one real `setup` run for the Phase 4 verifier; README follows `readme-writing` + `de-slopify`, has a "Status" section mirroring §4b, and claims nothing RED; a reviewer can find every README claim in code or in the matrix; evidence goes to **`decisions/phase2-docs.md`** (§8 preamble) |
 
 ### Phase 3 — integrate (one agent; ~2 h)
