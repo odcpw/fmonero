@@ -1,0 +1,13 @@
+// fmonero menu entries, merged into ~/.config/omarchy/extensions/omarchy-menu.jsonc by
+// `fmonero setup --menu`. Every entry is ONE line: the merge inserts lines textually before
+// the file's final `}` and never rewrites what is already there (DESIGN.md §4.2).
+// The docs agent may change labels and glyphs; ids and actions are the contract.
+// Every action is a CONSTANT LITERAL: `omarchy-launch-or-focus-tui` ends in an `eval`, so
+// nothing derived from Status JSON or user input may ever reach one (§1.5).
+{
+  "monero": {"icon":"󰗠","label":"Monero","aliases":["monero","xmr","wallet"]},
+  "monero.open": {"icon":"󰆍","label":"Open","action":"omarchy-launch-or-focus-tui --app-id=fmonero fmonero tui"},
+  "monero.send": {"icon":"󰧧","label":"Send","action":"omarchy-launch-or-focus-tui --app-id=fmonero fmonero tui --send"},
+  "monero.node": {"icon":"󰒋","label":"Node","action":"omarchy-launch-or-focus-tui --app-id=fmonero fmonero tui --node"},
+  "monero.doctor": {"icon":"󰩺","label":"Doctor","action":"omarchy-launch-or-focus-tui --app-id=fmonerodoctor fmonero doctor"}
+}
