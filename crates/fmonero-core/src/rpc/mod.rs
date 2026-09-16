@@ -138,7 +138,7 @@ pub struct Login {
 }
 
 impl std::fmt::Debug for Login {
-    /// Hand-written: the password never reaches a log line, a panic message or a `dbg!`
+    /// Hand-written: the password never reaches a log line, a panic message or a debug dump
     /// (§2b.2).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Login")

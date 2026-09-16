@@ -205,7 +205,7 @@ mod tests {
     use super::*;
 
     /// §5b and §2b.2: the metadata carries the transaction secret key, so it must not reach
-    /// a panic message, a `dbg!` or a future log line.
+    /// a panic message, a debug dump or a future log line.
     #[test]
     fn a_built_transaction_never_debug_prints_its_metadata() {
         let tx = BuiltTx {

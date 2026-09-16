@@ -135,18 +135,25 @@ impl Out {
 // ---------------------------------------------------------------- formatters
 
 /// `1.5 GB`, `842 kB` — decimal units, the way a disk meter reads.
+///
+/// Integer arithmetic, with one decimal place carried by hand. Bytes are not money, but
+/// §2a.5's enforcement is a grep for float casts across `crates/*/src`, and a formatter that
+/// makes that grep fire is a formatter somebody later exempts — at which point the grep no
+/// longer protects the amount paths it exists for.
 pub fn human_bytes(n: u64) -> String {
     const UNITS: [&str; 5] = ["B", "kB", "MB", "GB", "TB"];
-    let mut value = n as f64;
     let mut unit = 0;
-    while value >= 1000.0 && unit < UNITS.len() - 1 {
-        value /= 1000.0;
+    let mut scale: u64 = 1;
+    while unit + 1 < UNITS.len() && n / scale >= 1000 {
+        scale *= 1000;
         unit += 1;
     }
     if unit == 0 {
         format!("{n} B")
     } else {
-        format!("{value:.1} {}", UNITS[unit])
+        let whole = n / scale;
+        let tenths = (n % scale) * 10 / scale;
+        format!("{whole}.{tenths} {}", UNITS[unit])
     }
 }
 

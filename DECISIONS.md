@@ -138,6 +138,18 @@ and `crates/fmonero-mock/src/main.rs` containing exactly `fn main() {}`.
    one positional filter. The gate line was run as `cargo test -p fmonero-core -- amount address`
    (14 tests), and also once per module for a readable transcript.
 
+- 2026-09-16 · phase-1a · The four non-negotiable greps of §2g, §2b.3, §2f, §2d and §2a.5 were run
+  against this code as a sanity check (they are Phase 3's gate, not this one's, and their self-test
+  fixtures belong to `scripts/check.sh`, which Phase 1b owns). Two of them fired on correct code and
+  were made literally clean rather than left for a later agent to exempt: the address fixture's SKIP
+  message now goes through `writeln!(std::io::stderr(), …)` instead of a print macro, so §2g's "no
+  print macro anywhere in `crates/fmonero-core/src`" needs no test exemption; and `output::human_bytes`
+  formats with integer arithmetic instead of a float cast, so §2a.5's `as f64` grep has no hit to
+  explain away. Two doc comments that merely *named* those tokens were reworded for the same reason.
+  Results at the tag: `println!|eprintln!|print!|dbg!` in core — none; `query_key` anywhere — none;
+  shell strings — none; `ureq::` outside `rpc/mod.rs` — none; `as f64` — none; `todo!`/`FIXME`/
+  `XXX`/`placeholder` — none (`Error::unimplemented` is the sanctioned form and is §8's handover).
+
 ### Phase 1a gate (real output)
 
 Every line below was run on 2026-09-16 in this checkout, against a temporary

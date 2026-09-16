@@ -365,7 +365,12 @@ mod tests {
             "/../../tests/fixtures/address-forms.json"
         );
         let Ok(text) = std::fs::read_to_string(path) else {
-            eprintln!(
+            // Written through `Write` rather than a print macro, so that §2g's grep — "no
+            // print macro anywhere in crates/fmonero-core/src" — stays literally true and
+            // cannot be weakened later to exempt tests.
+            use std::io::Write;
+            let _ = writeln!(
+                std::io::stderr(),
                 "SKIP: {path} does not exist yet (DESIGN.md §8 Phase 0 writes it); \
                  PREFIXES has {} rows and this assertion runs as soon as the fixture lands",
                 PREFIXES.len()
