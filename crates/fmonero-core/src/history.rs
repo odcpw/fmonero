@@ -529,3 +529,135 @@ mod tests {
         assert_eq!(LOCK_LEEWAY_SEC, 120);
     }
 }
+
+/// The two derived fields of §1b.4, tested on their own — the module is named so that
+/// `cargo test -p fmonero-core history::locked` (§8's gate line) selects exactly these.
+///
+/// The formula is a **conjunction of two independent conditions**, not a maximum, and
+/// `unlock_time` is an absolute height **or** a unix timestamp — never a delta added to
+/// `height`. Treating it as a delta marks every timestamp-unlocked incoming transfer locked
+/// until the year 55 000, and that is the mistake this module exists to catch.
+#[cfg(test)]
+mod locked {
+    use super::*;
+
+    fn row(height: u64, unlock_time: u64, kind: TransferKind) -> Transfer {
+        Transfer {
+            txid: "d".repeat(64),
+            kind,
+            height,
+            timestamp: 1_700_000_000,
+            amount: Piconero(1),
+            fee: Piconero(2),
+            unlock_time,
+            ..Transfer::default()
+        }
+    }
+
+    /// §8's gate line, verbatim: `locked` is false for `unlock_time == 0` at
+    /// `wh = height + 10`, true at `wh = height + 9`, and `unlock_time = 1_900_000_000` is read
+    /// as a **timestamp** and not as a height.
+    #[test]
+    fn the_age_rule_is_ten_blocks_and_a_big_unlock_time_is_a_timestamp() {
+        let h = 3_500_000;
+        let t = row(h, 0, TransferKind::In);
+        let now = Some(1_700_000_000);
+        assert_eq!(
+            super::locked(&t, Some(h + SPENDABLE_AGE), now),
+            Some(false),
+            "at height + 10 it is unlocked (wallet2.cpp:7313)"
+        );
+        assert_eq!(
+            super::locked(&t, Some(h + SPENDABLE_AGE - 1), now),
+            Some(true),
+            "one block short is still locked"
+        );
+
+        // 1_900_000_000 is above CRYPTONOTE_MAX_BLOCK_NUMBER (500_000_000), so it is a unix
+        // TIMESTAMP. Read as a height it would be "locked until block 1.9 billion", i.e.
+        // forever; read as a timestamp it unlocks when the clock passes it, minus the leeway.
+        let t = row(h, 1_900_000_000, TransferKind::In);
+        let wh = Some(h + SPENDABLE_AGE);
+        assert_eq!(
+            super::locked(&t, wh, Some(1_899_999_000)),
+            Some(true),
+            "before the timestamp (minus the 120 s leeway) it is locked"
+        );
+        assert_eq!(
+            super::locked(&t, wh, Some(1_900_000_000 - LOCK_LEEWAY_SEC)),
+            Some(false),
+            "the V2 leeway is 120 s (wallet2.cpp:7336-7337)"
+        );
+        assert_eq!(
+            super::locked(&t, wh, Some(1_900_000_000 - LOCK_LEEWAY_SEC - 1)),
+            Some(true),
+            "one second before that, still locked"
+        );
+        // And the boundary the other way: just under MAX_BLOCK_NUMBER is a HEIGHT.
+        let t = row(h, MAX_BLOCK_NUMBER - 1, TransferKind::In);
+        assert_eq!(super::locked(&t, wh, now), Some(true), "a height far ahead");
+        assert_eq!(
+            super::locked(&t, Some(MAX_BLOCK_NUMBER), now),
+            Some(false),
+            "once the wallet reaches it, unlocked"
+        );
+    }
+
+    /// A **coinbase** row needs no special age rule: its 60-block window arrives inside
+    /// `unlock_time` as an absolute height, which the height branch already handles. A second,
+    /// coinbase-specific 60 would double-count it (§1b.4).
+    #[test]
+    fn a_coinbase_row_uses_the_same_age_rule_and_its_own_unlock_height() {
+        let h = 3_500_000;
+        let t = row(h, h + 60, TransferKind::Block);
+        // Old enough by age, but its own unlock height has not been reached.
+        assert_eq!(super::locked(&t, Some(h + 10), Some(0)), Some(true));
+        assert_eq!(super::locked(&t, Some(h + 59), Some(0)), Some(true));
+        assert_eq!(super::locked(&t, Some(h + 60), Some(0)), Some(false));
+    }
+
+    /// `pending` and `pool` rows are unconditionally locked
+    /// (`wallet_rpc_server.cpp:551`, `:581`), and a `failed` row was never accepted.
+    #[test]
+    fn unconfirmed_rows_are_always_locked() {
+        for kind in [
+            TransferKind::Pending,
+            TransferKind::Pool,
+            TransferKind::Failed,
+        ] {
+            let t = row(0, 0, kind);
+            assert_eq!(
+                super::locked(&t, Some(3_500_000), Some(0)),
+                Some(true),
+                "{kind}"
+            );
+        }
+    }
+
+    /// With no wallet height — a `--cached` read — **both** fields render `null`, never `0`
+    /// (§5's shape rules, §4.1).
+    #[test]
+    fn with_no_wallet_height_both_fields_are_null() {
+        let t = row(3_500_000, 0, TransferKind::In);
+        assert_eq!(super::locked(&t, None, Some(0)), None);
+        assert_eq!(super::locked(&t, Some(3_500_010), None), None);
+        assert_eq!(super::confirmations(&t, None), None);
+    }
+
+    /// `confirmations` (`wallet_rpc_server.cpp:162-167`): `0` when `height == 0` or
+    /// `height >= wh`, otherwise `wh - height` — against the **wallet's** height, never the
+    /// node's.
+    #[test]
+    fn confirmations_is_the_wallets_height_minus_the_rows() {
+        let t = row(3_500_000, 0, TransferKind::In);
+        assert_eq!(super::confirmations(&t, Some(3_501_122)), Some(1_122));
+        assert_eq!(super::confirmations(&t, Some(3_500_000)), Some(0));
+        assert_eq!(
+            super::confirmations(&t, Some(3_499_000)),
+            Some(0),
+            "a wallet behind the row never reports a negative count"
+        );
+        let unconfirmed = row(0, 0, TransferKind::Pending);
+        assert_eq!(super::confirmations(&unconfirmed, Some(3_500_000)), Some(0));
+    }
+}

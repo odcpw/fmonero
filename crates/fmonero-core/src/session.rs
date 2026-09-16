@@ -20,6 +20,7 @@ pub mod wallet_session {
     use super::*;
 
     /// What an open produced.
+    #[derive(Clone, Debug)]
     pub struct Opened {
         pub unit_started: bool,
         pub name: String,
@@ -137,6 +138,7 @@ pub mod node_session {
     use super::*;
 
     /// What a start produced.
+    #[derive(Clone, Debug)]
     pub struct Started {
         /// `node up` against our own live node: exit 0, no second start (§2i).
         pub already_running: bool,

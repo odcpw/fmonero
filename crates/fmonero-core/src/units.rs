@@ -907,6 +907,48 @@ fn unit_file_exists(ctx: &Context, unit: &str) -> Result<bool, Error> {
     Ok(ctx.paths.systemd_user_dir.join(unit).exists())
 }
 
+/// **The permanent guard of §4.2.** boost's `program_options` does no specifier
+/// expansion, so a `%h` in `monerod.conf` would make monerod create a directory
+/// literally named `%h` under its working directory and resync the chain from zero — a
+/// failure no mock can catch. `--dry-run` writes no file, so grepping the file could
+/// never fail; this calls the renderer directly.
+#[cfg(test)]
+#[test]
+fn render_node_conf_has_no_systemd_specifiers() {
+    let dir = std::env::temp_dir().join(format!("fmonero-conf-{}", std::process::id()));
+    let ctx = Context::for_test(&dir).expect("test context");
+    let login = Login {
+        user: LOGIN_USER.into(),
+        pass: "0".repeat(32),
+    };
+    let text = render_node_conf(&ctx, &login);
+    for bad in ["%h", "%S", "%t"] {
+        assert!(
+            !text.contains(bad),
+            "monerod.conf must carry no systemd specifier, found {bad}:\n{text}"
+        );
+    }
+    // Every path in it is absolute.
+    for line in text.lines() {
+        for key in ["data-dir=", "log-file="] {
+            if let Some(v) = line.strip_prefix(key) {
+                assert!(
+                    Path::new(v).is_absolute(),
+                    "{key}{v} must be absolute (boost does not expand ~ either)"
+                );
+            }
+        }
+    }
+    assert!(text.contains("rpc-bind-ip=127.0.0.1"));
+    assert!(text.contains("rpc-bind-port=18081"));
+    assert!(text.contains("no-zmq=1"));
+    assert!(text.contains("check-updates=disabled"));
+    assert!(text.contains("out-peers=16") && text.contains("in-peers=32"));
+    assert!(text.contains("prune-blockchain=1"));
+    assert!(!text.contains("stagenet") && !text.contains("testnet"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -955,47 +997,6 @@ mod tests {
 
     fn ctx_in(dir: &Path) -> Context {
         Context::for_test(dir).expect("test context")
-    }
-
-    /// **The permanent guard of §4.2.** boost's `program_options` does no specifier
-    /// expansion, so a `%h` in `monerod.conf` would make monerod create a directory
-    /// literally named `%h` under its working directory and resync the chain from zero — a
-    /// failure no mock can catch. `--dry-run` writes no file, so grepping the file could
-    /// never fail; this calls the renderer directly.
-    #[test]
-    fn render_node_conf_has_no_systemd_specifiers() {
-        let dir = std::env::temp_dir().join(format!("fmonero-conf-{}", std::process::id()));
-        let ctx = ctx_in(&dir);
-        let login = Login {
-            user: LOGIN_USER.into(),
-            pass: "0".repeat(32),
-        };
-        let text = render_node_conf(&ctx, &login);
-        for bad in ["%h", "%S", "%t"] {
-            assert!(
-                !text.contains(bad),
-                "monerod.conf must carry no systemd specifier, found {bad}:\n{text}"
-            );
-        }
-        // Every path in it is absolute.
-        for line in text.lines() {
-            for key in ["data-dir=", "log-file="] {
-                if let Some(v) = line.strip_prefix(key) {
-                    assert!(
-                        Path::new(v).is_absolute(),
-                        "{key}{v} must be absolute (boost does not expand ~ either)"
-                    );
-                }
-            }
-        }
-        assert!(text.contains("rpc-bind-ip=127.0.0.1"));
-        assert!(text.contains("rpc-bind-port=18081"));
-        assert!(text.contains("no-zmq=1"));
-        assert!(text.contains("check-updates=disabled"));
-        assert!(text.contains("out-peers=16") && text.contains("in-peers=32"));
-        assert!(text.contains("prune-blockchain=1"));
-        assert!(!text.contains("stagenet") && !text.contains("testnet"));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The two `.service` files are the **only** place a specifier belongs (§4.2), and the
@@ -1184,37 +1185,45 @@ mod tests {
     }
 
     /// Fork a child that takes an `fcntl` lock of `l_type` on byte 0 and then blocks.
-    /// POSIX record locks are **per process**, so a second lock taken from this process would
-    /// silently succeed and the test would prove nothing.
+    ///
+    /// POSIX record locks are per **process**, so a lock taken from this process would silently
+    /// succeed and the test would prove nothing. The child closes every inherited descriptor
+    /// above stderr **before** opening anything and calls only async-signal-safe functions —
+    /// `fork` duplicates descriptors into the same open file descriptions, so a child that kept
+    /// them would go on holding another test's `flock` for as long as it lived.
     fn fork_holding(lock: &Path, l_type: libc::c_int) -> i32 {
-        use std::os::unix::io::AsRawFd;
-        let path = lock.to_path_buf();
-        // SAFETY: the child only calls open/fcntl/sleep/_exit, all async-signal-safe.
+        use std::os::unix::ffi::OsStrExt;
+        let mut c: Vec<u8> = lock.as_os_str().as_bytes().to_vec();
+        c.push(0);
+        // SAFETY: after the fork the child calls only async-signal-safe functions, over a path
+        // buffer allocated before it.
         let pid = unsafe { libc::fork() };
         assert!(pid >= 0, "fork failed");
         if pid == 0 {
-            let f = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(&path)
-                .expect("child cannot open the lock file");
-            let mut fl = libc::flock {
-                l_type: l_type as libc::c_short,
-                l_whence: libc::SEEK_SET as libc::c_short,
-                l_start: 0,
-                l_len: 1,
-                l_pid: 0,
-            };
-            // SAFETY: `f` is open and `fl` is initialised.
-            let rc = unsafe { libc::fcntl(f.as_raw_fd(), libc::F_SETLK, &mut fl) };
-            if rc != 0 {
-                // SAFETY: _exit is async-signal-safe and never unwinds.
-                unsafe { libc::_exit(9) };
-            }
-            // Hold it until the parent kills us.
-            loop {
-                // SAFETY: sleep is async-signal-safe.
-                unsafe { libc::sleep(1) };
+            // SAFETY: every call below is async-signal-safe and `c` is NUL-terminated.
+            unsafe {
+                let mut fd = 3;
+                while fd < 1024 {
+                    libc::close(fd);
+                    fd += 1;
+                }
+                let f = libc::open(c.as_ptr() as *const libc::c_char, libc::O_RDWR);
+                if f < 0 {
+                    libc::_exit(8);
+                }
+                let mut fl = libc::flock {
+                    l_type: l_type as libc::c_short,
+                    l_whence: libc::SEEK_SET as libc::c_short,
+                    l_start: 0,
+                    l_len: 1,
+                    l_pid: 0,
+                };
+                if libc::fcntl(f, libc::F_SETLK, &mut fl) != 0 {
+                    libc::_exit(9);
+                }
+                loop {
+                    libc::sleep(1);
+                }
             }
         }
         pid

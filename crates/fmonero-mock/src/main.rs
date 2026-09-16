@@ -159,11 +159,39 @@ fn serve(r: Arc<Routes>) -> std::io::Result<()> {
         r.role,
         r.dir.display()
     );
+    accept_loop(l, r);
+    Ok(())
+}
+
+/// The accept loop itself, so `serve` and [`spawn_for_test`] share it rather than each owning
+/// a copy of the one thing §8 calls load-bearing.
+fn accept_loop(l: TcpListener, r: Arc<Routes>) {
     for stream in l.incoming() {
-        let (stream, r) = (stream?, Arc::clone(&r));
+        let Ok(stream) = stream else { break };
+        let r = Arc::clone(&r);
         std::thread::spawn(move || drop(connection(stream, &r)));
     }
-    Ok(())
+}
+
+/// Bind an ephemeral loopback port, spawn the accept loop on a thread and return the port.
+///
+/// This is how `fmonero-core`'s in-process tests get a mock **without a second
+/// implementation**: they include this file with `#[path]` and call this, so the request
+/// parsing, the Digest server and the request log are the same 150 lines the binary serves
+/// (§8 Phase 0's "a thin `main()` over a `serve(routes)` function"). Sharing it as a library
+/// would need a `[dev-dependencies]` entry, and no `Cargo.toml` may be edited after the 1a
+/// gate (§2k) — the deviation is recorded in DECISIONS.md.
+///
+/// `#[allow(dead_code)]`: nothing in the **binary** calls it.
+#[allow(dead_code)]
+pub fn spawn_for_test(args: &[&str]) -> Result<u16, String> {
+    let mut r = parse_args(args.iter().map(|a| (*a).to_string()).collect())?;
+    let l = TcpListener::bind(("127.0.0.1", 0)).map_err(|e| e.to_string())?;
+    let port = l.local_addr().map_err(|e| e.to_string())?.port();
+    r.port = port;
+    let r = Arc::new(r);
+    std::thread::spawn(move || accept_loop(l, r));
+    Ok(port)
 }
 
 /// Per-connection Digest state, mirroring epee's `m_auth` — a member of the per-connection protocol
@@ -409,6 +437,11 @@ fn fixture(r: &Routes, method: &str, params: &Value) -> Option<Value> {
     {
         return Some(v);
     }
+    // After the scenario lookup, so `--scenario mismatch` still selects
+    // relay_tx-mismatch.json and DESIGN.md §2a.9's txid comparison keeps its one test.
+    if method == "relay_tx" {
+        return relay_tx(r, params);
+    }
     load(
         r,
         FIXTURE_ALIAS
@@ -452,6 +485,35 @@ fn validate_address(r: &Routes, params: &Value) -> Option<Value> {
         }
     }
     load(r, "validate_address-invalid")
+}
+
+/// `relay_tx` answers the txid of the transaction whose `tx_metadata` it was handed.
+///
+/// That is what a real wallet-rpc does — `res.tx_hash = pod_to_hex(get_transaction_hash(ptx.tx))`
+/// over the `pending_tx` parsed from the request's `hex` (wallet_rpc_server.cpp:1963) — and a
+/// mock cannot hash a transaction, but it CAN look the pair up in the very fixtures that
+/// produced the metadata. It **must**: sweep_all.json carries two transactions with their own
+/// txids, so a single static answer makes DESIGN.md §2a.9's txid comparison fire on every
+/// correct sweep, and the one test of that check becomes "the mock disagrees with itself".
+/// A `hex` no fixture produced still falls back to relay_tx.json.
+fn relay_tx(r: &Routes, params: &Value) -> Option<Value> {
+    let hex = params
+        .get("hex")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if let Some(v) = raw(r, "transfer-do-not-relay") {
+        if v["tx_metadata"].as_str() == Some(hex) {
+            return Some(json!({"tx_hash": v["tx_hash"]}));
+        }
+    }
+    if let Some(v) = raw(r, "sweep_all") {
+        let meta = v["tx_metadata_list"].as_array()?;
+        let hashes = v["tx_hash_list"].as_array()?;
+        if let Some(i) = meta.iter().position(|m| m.as_str() == Some(hex)) {
+            return hashes.get(i).map(|h| json!({"tx_hash": h}));
+        }
+    }
+    load(r, "relay_tx")
 }
 
 /// One JSON object per request. §8 fixes `{seq, ts_ms, path, method, body}`; `conn`, `status` and `nc`

@@ -10,6 +10,8 @@
 
 pub mod digest;
 pub mod jsonrpc;
+#[cfg(test)]
+mod mock_tests;
 pub mod node;
 pub mod wallet;
 

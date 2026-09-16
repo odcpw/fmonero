@@ -217,6 +217,12 @@ impl Transport {
                     .into_iter()
                     .filter_map(|v| v.to_str().ok().map(str::to_string))
                     .collect();
+                // **Drain the body before retrying.** `ureq` returns a connection to the pool
+                // only once its body has been read, and epee's auth session is PER CONNECTION
+                // (`http_protocol_handler.h:186`): a retry on a fresh socket would present a
+                // nonce the server has never issued, take the `stale` path, and fail every
+                // request forever — which looks exactly like a wrong password (§2c).
+                let _ = resp.body_mut().read_to_vec();
                 // A second 401 in a row is exit 4 (§2c): either we have no credential, or
                 // the one we have is wrong.
                 if attempt >= 2 || self.auth.is_none() {

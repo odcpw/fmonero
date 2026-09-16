@@ -750,4 +750,76 @@ mod tests {
             assert!(v.get(forbidden).is_none(), "{forbidden} must not exist");
         }
     }
+
+    /// §2a.10: **the sweep constructor sets `subaddr_indices_all: true` unconditionally**, and
+    /// `SweepRequest` carries no field that could unset it.
+    ///
+    /// With it absent (it defaults to `false`) and `subaddr_indices` empty, `on_sweep_all`
+    /// hands an EMPTY set to `create_transactions_all`, which then picks **one subaddress at
+    /// random** (`wallet2.cpp:11846-11853`) — a sweep that moves one subaddress's funds,
+    /// reports success and leaves the rest, invisible to any fixture-driven mock.
+    #[test]
+    fn the_sweep_constructor_always_sends_subaddr_indices_all() {
+        for below in [None, Some(Piconero(500_000_000_000))] {
+            for (account, priority) in [(0u32, 0u32), (7, 4)] {
+                let req = SweepRequest {
+                    dest: "8".repeat(95),
+                    account_index: account,
+                    priority,
+                    below,
+                    max_fee: None,
+                };
+                let wire = serde_json::to_value(TransferRequest::for_sweep(&req, &req.dest))
+                    .expect("the wire request serialises");
+                assert_eq!(
+                    wire["subaddr_indices_all"], true,
+                    "unconditionally, for every argument combination: {wire}"
+                );
+                assert_eq!(wire["do_not_relay"], true, "§2a.2");
+                assert_eq!(wire["get_tx_metadata"], true, "§1b.4");
+                assert_eq!(wire["address"], req.dest);
+                assert_eq!(wire["account_index"], account);
+                assert_eq!(wire["priority"], priority);
+                // Nothing §2a.8 forbids, and no `destinations` (that is `transfer`'s key).
+                for forbidden in [
+                    "unlock_time",
+                    "payment_id",
+                    "ring_size",
+                    "outputs",
+                    "subtract_fee_from_outputs",
+                    "subaddr_indices",
+                    "destinations",
+                ] {
+                    assert!(wire.get(forbidden).is_none(), "{forbidden}: {wire}");
+                }
+                match below {
+                    Some(b) => assert_eq!(wire["below_amount"], b.0),
+                    None => assert!(wire.get("below_amount").is_none(), "{wire}"),
+                }
+            }
+        }
+        // And `transfer`'s own body is the other shape: one destination, no sweep keys.
+        let req = SendRequest {
+            dest: "4".repeat(95),
+            amount: Piconero(10_000_000_000),
+            account_index: 0,
+            priority: 2,
+            note: Some("a note travels on the request, not on the wire".into()),
+            max_fee: Some(Piconero(1)),
+        };
+        let wire = serde_json::to_value(TransferRequest::for_send(&req, &req.dest)).unwrap();
+        assert_eq!(wire["destinations"][0]["amount"], 10_000_000_000u64);
+        assert_eq!(wire["get_tx_key"], false);
+        for forbidden in [
+            "address",
+            "subaddr_indices_all",
+            "below_amount",
+            "note",
+            "max_fee",
+            "unlock_time",
+            "payment_id",
+        ] {
+            assert!(wire.get(forbidden).is_none(), "{forbidden}: {wire}");
+        }
+    }
 }
