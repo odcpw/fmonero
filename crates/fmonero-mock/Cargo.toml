@@ -1,0 +1,15 @@
+[package]
+name = "fmonero-mock"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Test-only mock Monero JSON-RPC server (DESIGN.md §8 Phase 0). Never installed."
+publish = false
+
+[[bin]]
+name = "fmonero-mock"
+path = "src/main.rs"
+
+# §8 Phase 0: serde_json and the standard library only.
+[dependencies]
+serde_json.workspace = true
