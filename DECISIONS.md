@@ -9,3 +9,386 @@
 - 2026-09-16 · orchestrator · DESIGN.md v4 after review round 3. Corrections: the frozen `Error` gains `reason: Option<&'static str>`, one lowercase constructor per variant, `with_reason`, `reason()` and a `REASONS` table that `capabilities.reasons` is generated from — §4 makes `reason` a mandatory envelope key and §5c repeats it for every command, so an `Error` that could not carry it left `main.rs` (frozen at the 1a gate, §2k) choosing between breaking the freeze and dropping the key, which silently collapses exit 3 back into eight indistinguishable conditions on the money path; `reason` is extended to exits 5 (`stalled`/`rpc_error`/`restricted`/`killed_at_deadline` — the §2d breaker makes "wait or `--force`" and "the daemon refused" indistinguishable from prose), 9 and 16. **§2c now says how a test supplies the wallet credential** — every test that drives the binary starts the mock with `--auth` and writes the matching `$FMONERO_STATE_DIR/run/monero-wallet-rpc.<port>.login` first, one `mock_wallet_up()` helper — without which every AMBER wallet row and the Phase 1b gate command `fmonero wallet balance` exit 14 construct no client at all and exit 4; the §4.2 escape covered in-process tests only. The mock's **accept loop spawns one thread per connection** (per-connection Digest session preserved, request log behind one `Mutex<File>`): keep-alive plus fmonero's idle pool of one means a single-threaded loop parks every second client behind a socket that is never closed, which is exactly §2a.4's named concurrency test. New **`node_session::{up,down,restart}`** in `src/session.rs` beside `wallet_session`: the TUI calls core in process and binds `u`/`d`, `units` exposes only ingredients, and the §2i single-writer precondition — the only guard against two monerod on one LMDB — existed as prose attributed to a `main.rs` body the Phase 2 TUI agent does not own. The **Phase 0 / 1a cycle is broken**: 1a also writes `crates/fmonero-mock/src/main.rs` as `fn main() {}` (1a's gate runs a bare `cargo build --release` over a workspace whose members include the mock), and Phase 0 works in its own `phase0/mock` worktree, rebases onto `gate-1a`, and is merged by Phase 1b before its first commit. Monero-source fixes: **every daemon response carries `status`**, and `get_last_block_header` is the one call fmonero makes that `CHECK_CORE_READY()` gates (`core_rpc_server.cpp:477`, `:2453`) — it answers `status:"BUSY"` with an all-zero header for the *entire* initial sync, so `node.top_block_age_sec` would have rendered a 56-year-old block in the state this whole design is written around; `rpc/jsonrpc.rs` now inspects `status` before deserializing and a `--scenario syncing` fixture makes it testable. **`TransferKind` gains `Block`** — `fill_transfer_entry` types every coinbase incoming row `"block"` (`wallet_rpc_server.cpp:501`) inside the `in` list, so a five-variant enum failed to deserialize the whole `get_transfers` response for any p2pool/mined wallet, taking `wallet history` and the §2a.4 resolve step with it. The LMDB probe's **query type is now stated as `F_WRLCK`**: a running monerod holds a *shared* `F_RDLCK` after `mdb_env_share_locks` (`mdb.c:5022-5057`), and the old test passed for an `F_RDLCK` probe that would report a live data dir as free. **`filter_by_height: true` is mandatory** with `min_height` (`wallet_rpc_server.cpp:2890-2895`) or the bounds silently become the whole history, so it is a field of the frozen `TransferQuery`. New **§2a.11**: `send::build` takes an exclusive `flock` on `state_dir/send.lock` before the entry check and the `Plan` owns the fd — `do_not_relay` reserves nothing (`on_transfer` calls `commit_tx` only when it is false, `:1213-1214`), so two concurrent sends could select the same outputs, clobber each other's record and both relay. `send::relay` now issues one wallet **`store`** after the last relay (wallet-rpc persists only on graceful stop or this call, `:294-302`, `:2060-2077`; the idle handler never stores), applies `plan.note` itself with a failed `set_tx_notes` as a warning not a failure, and enforces the new **`--max-fee`**; §2a.2 stops claiming "the fee you see is the fee you pay" across the discard-and-rebuild flow its own hint prescribes, and every `--yes` run prints the built fee to stderr before the first relay. §2a.3's three contradictory statements about who writes `pending.json` are resolved (`send::relay` creates and marks, `send::build` only clears a resolved record). The **wallet's nettype** for the §2a.6 check now comes from its own primary address, recorded by `wallet_session::open` as `state::set_last_open(name, net)`, never from `settings.node.network`. `setup --units` creates `wallet.dir` **and every parent** (wallet-rpc's own mkdir is single-level and fatal on failure, `:325-340`), `wallet create` calls `units::ensure_running` (the units are written disabled, so §4b's rehearsal stopped at its sixth line), and `history::{confirmations,locked}` become frozen core functions with `adjusted_now` as the clock, ending two independent implementations of the `unlock_time` formula. `PendingStatus` gains pre-rendered totals so §6.5's pending row needs no `parseFloat` (§6.7 greps for it), `Plan` gains `note`/`max_fee`/`total_weight`/`_lock`, `StateDoc`/`Settings::to_toml_bytes`/`state::load`/`fsinfo::free_bytes` are defined so the doctor's class-A fixers have byte sources for the `mutate` chokepoint, every fixable §7.1 row names its `Action` (unit rewrites followed by `daemon-reload`), and `wallet_port_consistent` names `node.network` as the authority and refuses while the unit is active. Leanness: `RemoveFile` and its whole backup/hash/undo apparatus are deleted with their single member — `history_cache_fresh` becomes class D — restoring the doctor kernel's "never removes a file" axiom unnarrowed; `node ban`/`unban`/`limit` lose `--yes`. Honesty: `/usr/bin/time` and `hyperfine` are both absent so §1.4 prescribes a `date +%s%N` loop, §2l claim (a) rises to 60 ms (two `systemctl --user is-active` spawns measure ~19 ms for the pair here), §5's worked `*_xmr` example is corrected to the value its own rule produces with a round-trip gate assertion, `--timeout` is stated as a ceiling, `all` is documented as accepted nowhere, background sync leaves the RED list (§0 cut it), the docs gate stops requiring an `install.sh --yes` that `setup::run`'s stub cannot survive, Phase 2 agents write evidence to per-agent `decisions/phase2-*.md` that Phase 3 concatenates, and the TUI's screen captures are taken against the mock only. Also added: the twelve `SEED_LANGUAGES` (native **or** English spelling, `electrum-words.cpp:437-452`, `:494-500`), `grace_blocks: 10` with `res.fee == res.fees[0]`, `connection_info.ip/port` as strings against `peer.ip/port` as numbers, `open_wallet`'s `-7`/`-23`, the `destinations[]` line numbers (`:1456`/`:1476`), the TUI's `Action` enum deriving neither `Debug` nor `Clone` (it carries the wallet password), `FMONERO_WALLET_PASSWORD` removed from every child environment, a `ureq::` grep, `--log-level 0` as a secrets control, and rationales for `out-peers`/`in-peers`, `--max-concurrency 4` and `WALLET_BEHIND_BLOCKS`. Rejected: the claim that coinbase rows need a 60-block age window in `locked` — upstream's `is_transfer_unlocked` uses `CRYPTONOTE_DEFAULT_TX_SPENDABLE_AGE (10)` unconditionally (`wallet2.cpp:7308-7317`) and the 60-block mined-money window arrives inside `unlock_time` as an absolute height, already handled by the height branch, so a second `60` would double-count it (the `Block` variant itself was applied); the citation of `http_protocol_handler.inl:670` as proof that epee logs RPC request lines — that `MDEBUG` is in the static-file handler, not the RPC path, so the `--log-level 0` rule was kept but re-grounded on the `LOG_PRINT_L3` header logging at `:457`/`:638` and on wallet2's own internals; and sourcing `adjusted_now` from `get_info.adjusted_time`, because `wallet history` is documented as contacting no node (`N: no`) and inventing an RPC for it would break that row — local time is upstream's own fallback and the doctor's `node_clock` check is what makes it trustworthy.
 - 2026-09-16 · orchestrator · DESIGN.md v5 after review round 4. Corrections: the TUI's long-action path is respecified as `action: Option<(SubId, Arc<Mutex<Option<Action>>>, Instant)>` with `run` doing one `lock().take()` — ftui 0.7's `Subscription::run(&self, …)` (`ftui-runtime-0.7.0/src/subscription.rs:46`) cannot move a non-`Clone` `Action` out of a shared borrow, and fproton's `action.clone()` (`fproton/crates/fproton/src/tui/mod.rs:740`) would duplicate the password and the `send.lock` owner or force a rewrite of `send::relay`'s by-value `Plan`; `send::relay` gains an `announce: &dyn Fn(&str)` sink (CLI → stderr, TUI → log pane) so the §2a.2 pre-relay line can exist without a `println!` in `crates/fmonero-core/src`, which the Phase 3 silent-core grep enforces; `WalletClient::from_ctx` now returns `Ok` with `auth: None` on an absent login file instead of failing, so §2a.1's refusal order is actually reachable (a bad address stays 15 and an unresolved `pending_send` stays 3 with no wallet daemon) and the absence surfaces at step 5 as exit 4 `unreachable`/`auth_refused`; both clients gain `authenticated() -> Option<bool>` reporting what the wire did, the missing producer for `node.authenticated`, `wallet.authenticated`, `auth_missing` and the doctor's `node_auth`; `@label` recipients get an owner and a position — step 5a of §2a.1, one `get_address_book` after the wallet probe, resolved address everywhere downstream — instead of being rejected by `address::parse` at step 2 as exit 15; `WalletClient::new` is loopback-checked through a shared `rpc::require_loopback` and `settings set wallet.url` with it, closing the hole that let the one client which carries a credential and moves money talk plaintext to an arbitrary host; everything `setup` prints redacts `rpc-login=` (human diff, `FileAction.diff`, `-v`) while the written bytes stay real, so the node credential no longer reaches stdout, `--json` and DECISIONS.md through §8's own gate command; the no-`--yes`/`fee_above_max` refusal of `wallet send`/`sweep` emits the failure envelope **plus** the full `wallet send` key set with the built transaction's real fee, because `--json` is mandatory on a non-TTY and an agent may not be asked to confirm a fee it cannot read; `history::query` takes `Option<&WalletClient>` and `&mut HistoryQuery`, fills `wallet_height` and `adjusted_now` itself and sends `pool` only when asked, so `--pending|--failed|--pool` have a route from the wire and the node's height cannot reach `confirmations`; `wallet history`'s `N` column becomes `only with --pool` and a failed pool round trip is retried once without it, returning `pool_unavailable: true` rather than an empty `error` string; `blocks_behind` is `node.height - wallet.height` clamped at 0 (the stated sign was inverted, which would have made the `wallet_behind` warning and §2d's syncing exemption dead); `status` and `send::relay` never arm a §2d breaker, because `monero-wallet-rpc` serves RPC on one thread (`wallet_rpc_server.cpp:291-292`) so every 1 s probe during an `open_wallet`, a build or a `refresh` is killed by construction; `wallet create` finishes `wallet_session::open`'s last three steps on the wallet `on_create_wallet` leaves open (`wallet_rpc_server.cpp:3639`), so the first wallet a user makes is not open-but-nameless with no daemon credential; §1b.4 gains epee's `code: 0` catch-all row (`http_server_handlers_map2.h:213-232`) and the §2a.4 resolve step blocks only on a positive "not found"; `txid_mismatch` moves from exit 16 to exit 1 to match §2a.9 and keep `REASONS` constructible; the wallet unit renders an absolute `--wallet-dir` (a `%h` there made `wallet_dir_matches_unit` fail on a correct machine) and its gate greps the `--dry-run` output rather than a file `--dry-run` never writes; the §2a.11 refusal drops the pid `flock` cannot name; the `Systemctl` fixture gains `<exists>` and `<main-pid>` columns with `start`/`stop` as column rewrites and `ensure_running` probes before starting, without which no test can reach `Layout::UserUnit`; the §2a.11 two-process test runs against `--delay-ms 1500` instead of racing an instant mock; §5's `pending` row carries the four `total_*` fields `PendingStatus` and §6.5 already require; §6.5's `pendingLabel` call is the two-argument form; Phase 1a owns four `Cargo.toml` files and fully implements `Settings::get/set/KEYS`, its gate drops the two `wallet send` assertions and the `Verdict` round trip it cannot close (the latter moves to the Phase 2 doctor gate); Phase 0's fixture list is renamed to `get_transaction_pool_stats.json` and gains `set_limit`, `out_peers`, `in_peers`, `set_bans`, with `--rotate-nonce-after` declared in the mock's usage. Rejected: none outright — the one blocker taken in adapted form was `send::build`/`build_sweep` taking `w: Option<&WalletClient>`, whose defect (client construction pre-empting §2a.1's refusal order) is fixed instead by `from_ctx` succeeding with `auth: None`, which needs no change to two frozen §5b signatures (§2k) and leaves no `Option` for every caller to unwrap; `history::query` keeps `HistoryQuery` as an input type, filling the two derived fields in place via `&mut` rather than returning them, so `output.rs` and the TUI can still read the wallet height they render `confirmations` from; the `wallet history` pool failure is reported as a `pool_unavailable` key instead of an unlisted warning, which the §5c exact-key-set gate would otherwise fail; the §2d `send.lock`-held exemption is expressed as "`send::relay` never consults a breaker" rather than a lock probe, because a non-blocking `flock` probe from a 1 Hz `status` would itself refuse a concurrent `send::build` with a spurious exit 3; the §2a.11 test uses the mock's existing global `--delay-ms` rather than a per-route form its argv does not have.
 - 2026-09-16 · orchestrator · Plan review stopped after round 4 (58 → 54 → 45 → 25 revisions; 16 → 12 → 8 → 7 blockers) and implementation started from DESIGN.md v5. The reviewers still flagged "structural" changes, but the last round's edits were confined to §5b signatures, §8 gate placement and §2 wording while §8's phase graph, ownership and branch/tag plan held unchanged since v2; the Phase 4 code review against real code is the cheaper place to catch what remains. §1.6 corrected to name the clone itself (`…/scratchpad/monero-src`), not its parent directory.
+
+---
+
+## Phase 1a — API freeze (2026-09-16)
+
+Deliverables per DESIGN.md §8 Phase 1a: the four `Cargo.toml` files with §3.1's frozen
+dependency set, `crates/fmonero-core/src/{lib,error,context,paths,settings,state,proc,amount,
+address}.rs`, signature-only modules for the rest of §5b, `crates/fmonero/src/main.rs` (the full
+§4.1 clap tree, dispatch, §5c payloads, §4a exit mapping), `crates/fmonero/src/output.rs`, the
+`tui::run` / `doctor::run` / `setup::run` stubs with their `*Args`, `crates/fmonero/assets/menu.jsonc`
+and `crates/fmonero-mock/src/main.rs` containing exactly `fn main() {}`.
+
+### Decisions
+
+- 2026-09-16 · phase-1a · **`ureq` 3.4 builds with `default-features = false, features = ["json"]`,
+  so §3.1's one permitted manifest change was NOT taken.** No `rustls` was added back: the release
+  build, clippy and the tests are all green with no TLS backend, which makes §2c's "the binary
+  contains no TLS stack at all" a property of the frozen manifest rather than an aspiration. The
+  `cargo tree` grep §2c prescribes therefore stays unrelaxed for Phase 1b to add to `scripts/check.sh`.
+- 2026-09-16 · phase-1a · **`rpc::require_loopback` and `rpc::agent` are implemented now**, although
+  `crates/fmonero-core/src/rpc/**` is Phase 1b's. `Settings::set` — which §8 assigns to this phase in
+  full — validates `node.url` and `wallet.url` through `require_loopback`, so a signature-only body
+  would make `fmonero settings set node.url http://127.0.0.1:18081` exit 1 "not implemented" at the
+  1a gate, i.e. the §4 key table would be unusable. It touches no daemon and has its own unit test,
+  exactly like `amount.rs` and `address.rs`. `rpc::agent` is the single `ureq::Agent` constructor
+  §2d's grep demands (`timeout_global` + `http_status_as_error(false)` + an idle pool of one, because
+  epee's auth session is per connection); it is implemented rather than stubbed so that the frozen
+  "no code path can call `ureq` without a deadline" claim is structural from day one. `NodeClient::new`
+  and `WalletClient::new` are likewise real, because they are nothing but the §2c gate — the three
+  §2c cases (`https://`, a non-loopback literal, a foreign host) already exit 2 with
+  `reason: non_loopback_url` in this build.
+- 2026-09-16 · phase-1a · **`rpc/jsonrpc.rs` is deliberately not created.** §5b names no public item
+  from it (only `RpcError::Busy`, which lives in `rpc/mod.rs`), and Phase 1b owns `rpc/**`, so an
+  empty placeholder file would be a stub with no signature to freeze. `RpcError`'s variant set
+  (`Busy`, `Status`, `Rpc`, `Unauthorized`, `Transport`) is **not** frozen by §5b — only its name and
+  `Busy` are — and Phase 1b may extend it.
+- 2026-09-16 · phase-1a · **`Error::Interrupted` stays a unit variant** although §5b says every
+  variant carries `{msg, hint, reason}`: §2d and §7a both write `Err(Error::Interrupted)` as a unit
+  value, and nothing has a message, hint or reason to carry for SIGINT. `reason()` and `hint()` answer
+  `None` and the class default for it. Every other variant carries the three fields, `REASONS`
+  holds all 28 documented (code, reason) pairs, and a unit test constructs each one on its own code
+  so a documented reason that cannot be built fails the build.
+- 2026-09-16 · phase-1a · `NetType` and `AddrKind` gained `Deserialize` (§5b lists only `Serialize`):
+  `StateDoc.last_open` is `Option<(String, NetType)>` and `StateDoc` derives `Deserialize`, and §8's
+  rule-3 round-trip test asserts **both** directions of every wire spelling. Adding a derive is
+  additive and changes no signature.
+- 2026-09-16 · phase-1a · `proc::Output` keeps fproton's `duration` and `pid` alongside §5b's five
+  fields. `pid` is what fproton's "the whole process group dies" test asserts on, and `Output` is
+  constructed only inside `proc.rs`, so a superset breaks no caller. `proc.rs` is otherwise the
+  verbatim port, plus the one addition §2b.1 requires: every child is spawned with
+  `env_remove("FMONERO_WALLET_PASSWORD")`, with a test that reads a child's own environment.
+- 2026-09-16 · phase-1a · `Out` is exactly §5b's `{ pub json, pub color }`; `-v` and `--no-color`
+  live in two process-wide atomics set once in `main`, because `setup`, `doctor` and the TUI build
+  their own `Out` from a `Context` that does not carry them. `main.rs` builds every §5c payload and
+  hands it to `Out::emit(label, value)`; `output.rs` decides the human rendering. That split is what
+  lets Phase 1b enrich the rendering without touching the frozen `main.rs` (§2k) — including the
+  generic renderer, which prints `—` for every `null`, never `0` (§5).
+- 2026-09-16 · phase-1a · `settings set` validates the **key** before reading its old value, so an
+  unknown key is exit 2 `unknown_key` (§4's reason table puts `unknown_key` under exit 2) rather
+  than the exit 6 a `get` answers for the same typo. `settings get` on an unknown key keeps §5b's
+  `NotFound` (exit 6) with the same reason.
+- 2026-09-16 · phase-1a · The §4 "did you mean" redirect is Levenshtein ≤ 3 **plus a prefix rule**,
+  and a prefix match wins over a merely similar key. See "Design deviations" below.
+- 2026-09-16 · phase-1a · `crates/fmonero/src/status.rs`'s `status()` returns the **empty document**
+  rather than `Error::unimplemented`, which is §8's "or empty data": every daemon field `null`,
+  `reachable: false`, no warnings, exit 0. That is the honest answer on this machine (§1.1: no
+  Monero binary exists), it is the shape the 1a gate asserts, and it issues no RPC, spawns no process
+  and writes no state, so it cannot claim anything it has not seen (§2j). `agent::capabilities_json`
+  is likewise real for the four tables this phase owns — `EXIT_CODES`, `REASONS`, `Settings::KEYS`,
+  `WARNING_IDS` — because §4 says the documented set and the constructible set may not drift, and
+  those tables freeze here. `env`, `commands` and the real `ROBOT_GUIDE` are Phase 1b's; `BUILD_NOTE`
+  says in as many words that every daemon path exits 1 in this build.
+- 2026-09-16 · phase-1a · `wallet address --qr` is implemented (half-block QR from `qrcode`, skipped
+  when stdout is not a TTY or `--json` is in force) rather than parsed-and-ignored: a documented flag
+  that does nothing is the §2h/§2j failure, and `main.rs` cannot be edited later to add it.
+- 2026-09-16 · phase-1a · Files created beyond §8's explicit list, each a signature-only handover to
+  the phase that owns it: `crates/fmonero-core/src/{rpc/mod,rpc/digest,rpc/node,rpc/wallet,units,
+  session,history,log,wallet_dir,fsinfo,status,agent,send}.rs` (Phase 1b), and
+  `crates/fmonero/src/{prompt,setup,tui/mod,doctor/mod}.rs` (Phase 1b for `prompt`/`setup`, Phase 2
+  for `tui`/`doctor`). They exist because §5b freezes types and signatures inside them and Phase 2
+  compiles against those before Phase 1b has filled in a body. `wallet_dir.rs` and `fsinfo.rs` have
+  no file of their own in §3's tree; §5b names both as modules, so they are one file each.
+- 2026-09-16 · phase-1a · `NodeMutators<'a>` holds a `PhantomData<&'a NodeClient>` under
+  `#[allow(dead_code)]` until Phase 1b replaces it with the real borrow. It is the only `allow` in
+  shipped core code, and it exists because `clippy -D warnings` rejects a private field that nothing
+  reads — which every signature-only client field would be. The two client structs are field-less
+  for the same reason: §5b spells their private state in a comment, not in a signature.
+- 2026-09-16 · phase-1a · The gate line "the two `wallet send` exit codes" is recorded as **skipped
+  by §8's own instruction**, not waved through: §8 Phase 1a says they are not asserted here because
+  both run through `send::build`, whose 1a body is `Err(Error::unimplemented(…))`. The real output is
+  in the transcript below — both exit **1** at `WalletClient::from_ctx`, which is the first frozen
+  body on the path — and the §4b GREEN rows (exit 4 `reason: unreachable` and the no-`--yes` 3) are
+  the Phase 1b gate's §5c key-set run.
+
+### Design deviations (DESIGN.md is never edited; these are the closest correct thing)
+
+1. **`HistoryQuery` gains a `pool_unavailable: bool` field.** §5c makes `pool_unavailable` a
+   mandatory key of `wallet history`'s payload and §5b's `history::query` returns a plain
+   `Vec<Transfer>`, so the key has **no producer**: "no pool rows came back" is indistinguishable
+   from "the pool is empty", and the caller cannot tell that the retry-without-`pool` path ran. The
+   field is written back by `query` exactly as `wallet_height` and `adjusted_now` already are — the
+   pattern §5b established for that struct — and is ignored on input. Without it a Phase 1b agent
+   must either break the §5c exact-key-set gate or change a frozen signature.
+2. **The `fee_above_max` refusal carries the plain failure envelope, not §5c's money key set.** §5c
+   says a `send`/`sweep` refused at §2a.1 step 9 (`fee_above_max`) *or* step 10 (`needs_yes`) emits
+   the failure envelope **plus** the complete `wallet send` key set with the built transaction's real
+   numbers. Step 10 does: the `--yes` check lives in `main.rs`, which holds the `Plan`. Step 9 cannot:
+   §2a.2 and §5b put the `--max-fee` check inside `send::build`, whose frozen signature returns
+   `Result<Plan, Error>`, so the error escapes with no `Plan` and no fee to report, and `Error`'s
+   frozen fields are `{msg, hint, reason}`. Fabricating the numbers is forbidden (§2j) and rebuilding
+   is forbidden (§2a.3). `main.rs` therefore emits the plain envelope with `reason: fee_above_max`,
+   and the built fee appears in the error **message**. The union key set is still fully testable
+   through `needs_yes`, which is the row the Phase 1b gate asserts. A future DESIGN revision could
+   close this by having `send::build` return the plan alongside the refusal.
+3. **The §4 "did you mean" redirect needs a prefix rule, not Levenshtein ≤ 3 alone.** Of §4's own
+   three examples, `wallet.priority` is one edit from `wallet.prioriti`, but `timeouts.node` →
+   `timeouts.node_sec` is **four** edits and `node.log` → `node.log_file` is **five**. Under a pure
+   ≤ 3 rule two of the three keys §4 names as "exactly the namespace an agent half-remembers" would
+   fall back to `fmonero settings list`. `Settings::set` therefore also accepts a key the typed one
+   is a prefix of (case-insensitively), and prefers a prefix match over a merely similar key —
+   `node.log` is three edits from `node.url` and five from `node.log_file`, and the second is plainly
+   what was meant. Both documented examples now produce their exact runnable command (transcript
+   below).
+4. **`Error::Interrupted` is a unit variant** (see the decision bullet above): §5b's "ALL carry
+   `{msg, hint, reason}`" cannot hold together with §2d's and §7a's `Err(Error::Interrupted)`.
+5. **`cargo test -p fmonero-core amount address` is not a valid command line** — `cargo test` takes
+   one positional filter. The gate line was run as `cargo test -p fmonero-core -- amount address`
+   (14 tests), and also once per module for a readable transcript.
+
+### Phase 1a gate (real output)
+
+Every line below was run on 2026-09-16 in this checkout, against a temporary
+`FMONERO_STATE_DIR`/`FMONERO_CONFIG_DIR`/`FMONERO_CACHE_DIR`, with no Monero binary installed (§1.1).
+
+```console
+$ cargo build --release 2>&1 | tail -2
+    Finished `release` profile [optimized] target(s) in 0.15s
+exit=0
+
+$ cargo clippy --all-targets -- -D warnings 2>&1 | tail -2
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.21s
+exit=0
+
+$ cargo fmt --all --check && echo 'cargo fmt --check: no diff'
+cargo fmt --check: no diff
+exit=0
+
+$ cargo test 2>&1 | grep -E 'Running|test result'
+     Running unittests src/main.rs (target/debug/deps/fmonero-7deb80b216015a31)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running unittests src/lib.rs (target/debug/deps/fmonero_core-b9b294ed877ceb9b)
+test result: ok. 71 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.71s
+     Running unittests src/main.rs (target/debug/deps/fmonero_mock-6ab7a88f67bdcbdb)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+exit=0
+
+$ cargo test -p fmonero-core amount 2>&1 | grep -E 'test amount|test result'
+test amount::tests::all_is_refused_by_name_and_points_at_sweep ... ok
+test amount::tests::the_worked_examples_of_the_design ... ok
+test amount::tests::an_amount_serialises_as_an_integer ... ok
+test amount::tests::display_is_the_xmr_string_and_checked_add_refuses_to_wrap ... ok
+test amount::tests::decimal_and_piconero_forms_parse ... ok
+test amount::tests::everything_the_design_rejects_is_rejected_with_exit_two ... ok
+test amount::tests::to_xmr_string_round_trips_for_every_sampled_u64 ... ok
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 64 filtered out; finished in 0.01s
+exit=0
+
+$ cargo test -p fmonero-core address -- --nocapture 2>&1 | grep -E 'test address|SKIP|test result'
+SKIP: /home/oliver/Projects/odcpw/fmonero/crates/fmonero-core/../../tests/fixtures/address-forms.json does not exist yet (DESIGN.md §8 Phase 0 writes it); PREFIXES has 9 rows and this assertion runs as soon as the fixture lands
+test address::tests::prefixes_and_the_fixture_have_the_same_row_count ... ok
+test address::tests::the_table_has_the_nine_forms_of_the_design ... ok
+test address::tests::testnet_standard_starts_with_either_nine_or_a ... ok
+test address::tests::the_wire_spellings_are_lowercase ... ok
+test address::tests::a_real_mainnet_address_parses ... ok
+test address::tests::malformed_addresses_are_exit_fifteen ... ok
+test address::tests::every_form_round_trips_through_a_synthetic_address ... ok
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 64 filtered out; finished in 0.00s
+exit=0
+
+$ cargo test -p fmonero-core wire_spelling 2>&1 | grep -E 'test wire|test result'
+test wire_spelling::every_enum_that_appears_in_json_spells_itself_as_the_design_promises ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 69 filtered out; finished in 0.00s
+exit=0
+
+$ cargo doc -p fmonero-core 2>&1 | tail -2
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.09s
+   Generated /home/oliver/Projects/odcpw/fmonero/target/doc/fmonero_core/index.html
+exit=0
+
+$ for t in Context Paths Timeouts Settings Status NodeStatus WalletStatus PendingStatus PendingSend SendRequest SweepRequest TransferRequest Plan BuiltTx NodeClient NodeMutators WalletClient Login Session Transfer TransferKind HistoryQuery SubaddrIndex Destination Balance AddressSet BookEntry AccountRow NewAddress AddressCheck Refreshed TransferQuery GetInfo BlockHeader HardForkInfo NodeVersion FeeEstimate TxpoolStats SyncInfo Connection PeerLists Ban BanRequest NetStats Limits Layout UnitState FileAction FileStatus StateDoc Stall NetSample ColdCache Daemon CacheHeader Tail Piconero NetType AddrKind AddrForm Address Error Output CancelToken Network Severity Warning LastError Staleness; do find target/doc/fmonero_core -name "struct.$t.html" -o -name "enum.$t.html" | grep -q . || echo "MISSING $t"; done; echo 'cargo doc: every §5b type has a page'
+cargo doc: every §5b type has a page
+exit=0
+
+$ ./target/release/fmonero --help | sed -n '13,27p'
+Usage: fmonero [OPTIONS] [COMMAND]
+
+Commands:
+  status        The whole Status document (schema 1). Starts nothing, calls no wallet mutator
+  node          The local monerod: start, stop, inspect, peers, bans, limits
+  wallet        The wallet, through monero-wallet-rpc
+  settings      fmonero's own settings (~/.config/fmonero/config.toml)
+  setup         Write the systemd user units, link the bar widget, merge the menu entries
+  doctor        Diagnose the installation, and optionally repair it
+  tui           Terminal UI: Node · Wallet · Send · Log
+  capabilities  The machine contract: exit codes, reasons, settings keys, warning ids
+  robot-docs    Agent handbook, plain text
+  version       Version, build stage and what this build has actually been seen to do
+
+Options:
+exit=0
+
+$ ./target/release/fmonero node --help | sed -n '1,20p'
+The local monerod: start, stop, inspect, peers, bans, limits
+
+Usage: fmonero node [OPTIONS] <COMMAND>
+
+Commands:
+  up       Start the node's systemd user unit and wait for it to answer
+  down     Stop the node: stop_daemon over RPC first, so LMDB closes cleanly, then systemctl stop
+  restart  Stop, then start
+  info     Everything the node knows about itself: sync, fork, fees, txpool, limits
+  log      Tail the node's log file
+  peers    Live connections and the node's peer lists
+  bans     The node's ban list
+  ban      Ban a host
+  unban    Unban a host
+  limit    Read or set the node's rate limits and peer counts
+
+Options:
+      --json               Machine-readable JSON on stdout (errors too, with the same exit code)
+      --timeout <SECONDS>  Lower every deadline to N seconds (never raises one; 0 is refused)
+  -v, --verbose...         Diagnostics on stderr; repeat for more
+exit=0
+
+$ ./target/release/fmonero wallet --help | sed -n '1,24p'
+The wallet, through monero-wallet-rpc
+
+Usage: fmonero wallet [OPTIONS] <COMMAND>
+
+Commands:
+  list           The wallets in wallet.dir (*.keys basenames). Reads no wallet bytes
+  open           Open a wallet: start the unit if needed, open it, install the node credential, auto-refresh
+  close          Close the open wallet
+  create         Create a new wallet. Does NOT print the seed
+  balance        Balance and unlocked balance
+  address        The account's primary address and its subaddresses
+  new-address    Generate a new subaddress
+  history        Transfer history, from a local snapshot plus one incremental fetch
+  send           Send an exact amount to one recipient
+  sweep          Sweep an account to one recipient
+  clear-pending  Clear the pending-send record after checking whether the transaction landed
+  validate       Check an address: structurally, then against the wallet daemon
+  book           The wallet's address book
+  refresh        Scan for new blocks now
+  notes          Read or write the note stored with a transaction
+  set-daemon     Point the open wallet at another daemon
+
+Options:
+      --json               Machine-readable JSON on stdout (errors too, with the same exit code)
+exit=0
+
+$ ./target/release/fmonero doctor --help | sed -n '1,14p'
+Diagnose the installation, and optionally repair it
+
+Usage: fmonero doctor [OPTIONS] [COMMAND]
+
+Commands:
+  undo          Replay a `--fix` run in reverse (exit 13 if a backup is missing or altered)
+  capabilities  List the checks, groups and safety classes
+
+Options:
+      --fix                Apply the fixable findings (each one reversible with `doctor undo latest`)
+      --only <GROUP>       Only run one group: binaries | node | wallet | units | storage | install | security
+      --save               Write the run artifacts even without --fix
+      --json               Machine-readable JSON on stdout (errors too, with the same exit code)
+      --timeout <SECONDS>  Lower every deadline to N seconds (never raises one; 0 is refused)
+exit=0
+
+$ ./target/release/fmonero tui --help | sed -n '1,12p'
+Terminal UI: Node · Wallet · Send · Log
+
+Usage: fmonero tui [OPTIONS]
+
+Options:
+      --node               Open on the Node screen (the default)
+      --wallet             Open on the Wallet screen
+      --send               Open on the Send screen
+      --log                Open on the Log screen
+      --json               Machine-readable JSON on stdout (errors too, with the same exit code)
+      --timeout <SECONDS>  Lower every deadline to N seconds (never raises one; 0 is refused)
+  -v, --verbose...         Diagnostics on stderr; repeat for more
+exit=0
+
+$ ./target/release/fmonero status --json | jq -c '{ok, schema, layout: .node.layout, reachable: .node.reachable, height: .node.height, wallet_open: .wallet.open, pending, warnings, staleness}'
+{"ok":true,"schema":1,"layout":"none","reachable":false,"height":null,"wallet_open":false,"pending":null,"warnings":[],"staleness":{"history_cache_age_sec":null,"node_extras_age_sec":null,"node_probe_ms":0,"wallet_probe_ms":0}}
+exit=0
+
+$ ./target/release/fmonero status --json | jq -e '.ok == true and .schema == 1 and .node.reachable == false and .node.height == null and .wallet.open == false and .pending == null and (.warnings|length) == 0 and (.node|has("top_block_age_sec")) and (.wallet|has("blocks_behind")) and (.units.node|has("enabled"))' >/dev/null && echo 'schema-1 shape: every documented key present, every unknown null, exit 0'
+schema-1 shape: every documented key present, every unknown null, exit 0
+exit=0
+
+$ ./target/release/fmonero settings set nope 1
+{"code":2,"code_name":"usage","error":"unknown settings key 'nope'","hint":"fmonero settings list","ok":false,"reason":"unknown_key","schema":1}
+exit=2
+
+$ ./target/release/fmonero settings set timeouts.node 3
+{"code":2,"code_name":"usage","error":"unknown settings key 'timeouts.node'","hint":"fmonero settings set timeouts.node_sec 3   # did you mean this?","ok":false,"reason":"unknown_key","schema":1}
+exit=2
+
+$ ./target/release/fmonero settings set node.log /tmp/x.log
+{"code":2,"code_name":"usage","error":"unknown settings key 'node.log'","hint":"fmonero settings set node.log_file ~/.bitmonero/bitmonero.log   # did you mean this?","ok":false,"reason":"unknown_key","schema":1}
+exit=2
+
+$ ./target/release/fmonero settings set wallet.url http://10.0.0.5:18083
+{"code":2,"code_name":"usage","error":"http://10.0.0.5:18083 is not a loopback http URL: only 127.0.0.0/8 and ::1 are accepted","hint":"fmonero wallet set-daemon <addr>   # a remote node is reached by monero-wallet-rpc, not by fmonero","ok":false,"reason":"non_loopback_url","schema":1}
+exit=2
+
+$ ./target/release/fmonero settings set wallet.priority 9
+{"code":2,"code_name":"usage","error":"'9' is not a number in 0..=4 for wallet.priority","hint":"fmonero settings set wallet.priority 0","ok":false,"reason":"bad_args","schema":1}
+exit=2
+
+$ ./target/release/fmonero capabilities | jq -c '{exit_codes:(.exit_codes|length), reason_groups:(.reasons|length), reasons:([.reasons[].reasons]|flatten|length), settings:(.settings|length), warnings:(.warnings|length), build_stage}'
+{"exit_codes":18,"reason_groups":7,"reasons":28,"settings":20,"warnings":19,"build_stage":"phase-1a-api-freeze"}
+exit=0
+
+$ ./target/release/fmonero wallet send 888tNkZrPN6JsEgekjMnABU4TBzc2Dt29EPAvkRxbANsAnjyPbb3iQ1YBRk1UXcdRsiKc9dhwMVgN5S9cQUiyoogDavup3H 0.01
+{"code":1,"code_name":"failure","error":"WalletClient::from_ctx is not implemented in this build","hint":"fmonero capabilities   # what this build actually does","ok":false,"reason":null,"schema":1}
+exit=1
+
+$ ./target/release/fmonero wallet send 888tNkZrPN6JsEgekjMnABU4TBzc2Dt29EPAvkRxbANsAnjyPbb3iQ1YBRk1UXcdRsiKc9dhwMVgN5S9cQUiyoogDavup3H 0.01 --yes
+{"code":1,"code_name":"failure","error":"WalletClient::from_ctx is not implemented in this build","hint":"fmonero capabilities   # what this build actually does","ok":false,"reason":null,"schema":1}
+exit=1
+
+$ ./target/release/fmonero wallet send 888tNkZrPN6JsEgekjMnABU4TBzc2Dt29EPAvkRxbANsAnjyPbb3iQ1YBRk1UXcdRsiKc9dhwMVgN5S9cQUiyoogDavup3H all
+{"code":2,"code_name":"usage","error":"'all' is not an amount; `wallet sweep` moves the whole account and takes no amount","hint":"fmonero wallet sweep <address> --dry-run   # to move everything","ok":false,"reason":"bad_amount","schema":1}
+exit=2
+
+$ ./target/release/fmonero wallet send 888tNkZrPN6JsEgekjMnABU4TBzc2Dt29EPAvkRxbANsAnjyPbb3iQ1YBRk1UXcdRsiKc9dhwMVgN5S9cQUiyoogDavup3H 1.2345678912345
+{"code":2,"code_name":"usage","error":"'1.2345678912345' is not an amount: Monero has 12 decimal places","hint":"fmonero wallet send <address> 0.01 --dry-run   # XMR, or 10000000000p","ok":false,"reason":"bad_amount","schema":1}
+exit=2
+
+$ ./target/release/fmonero node down --dry-run
+{"code":2,"code_name":"usage","error":"--dry-run is not supported by this command","hint":"fmonero node down --help","ok":false,"reason":"unsupported_flag","schema":1}
+exit=2
+
+$ ./target/release/fmonero --timeout 0 status
+{"code":2,"code_name":"usage","error":"--timeout 0 is not a deadline","hint":"fmonero --timeout 5 status --json","ok":false,"reason":"bad_args","schema":1}
+exit=2
+
+$ ./target/release/fmonero tui
+{"code":2,"code_name":"usage","error":"the TUI needs a terminal; stdout is not a TTY","hint":"fmonero status --json","ok":false,"reason":"bad_args","schema":1}
+exit=2
+
+$ ./target/release/fmonero | jq -c '{ok, schema}'
+{"ok":true,"schema":1}
+exit=0
+
+$ ./target/release/fmonero robot-docs | head -4
+fmonero — robot docs (phase 1a: API freeze)
+
+This build implements the command surface, the exit codes and the local validators only.
+Anything that needs monerod or monero-wallet-rpc exits 1 'not implemented in this build'.
+exit=0
+
+$ ./target/release/fmonero version --json | jq -c '{version, build_stage}'
+{"version":"0.1.0","build_stage":"phase-1a-api-freeze"}
+exit=0
+
+$ ./target/release/fmonero node log --follow
+{"code":2,"code_name":"usage","error":"--follow is only available in the TUI's Log screen; in the CLI a pipe would hang","hint":"fmonero tui --log","ok":false,"reason":"unsupported_flag","schema":1}
+exit=2
+
+$ ./target/release/fmonero wallet open 'has/slash'
+{"code":2,"code_name":"usage","error":"'has/slash' is not a wallet name: the daemon resolves <wallet.dir>/<name> and a name may not contain '/'","hint":"fmonero wallet list","ok":false,"reason":"bad_args","schema":1}
+exit=2
+
+$ cargo test -p fmonero-core -- amount address   # the §8 gate line, as one command (cargo takes one positional filter; the harness takes several)
+running 14 tests
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 57 filtered out; finished in 0.01s
+exit=0
+
+```
