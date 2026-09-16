@@ -1,0 +1,10 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# fields: COMMAND_RPC_GET_NET_STATS::response_t, src/rpc/core_rpc_server_commands_defs.h:807-823\n#         { start_time u64, total_packets_in u64, total_bytes_in u64, total_packets_out u64,\n#           total_bytes_out u64 }\n# base:   rpc_response_base only (status, untrusted) :101-112\n# THESE ARE LIFETIME COUNTERS, NOT RATES. DESIGN.md §5 computes node.net.rx_bps/tx_bps from TWO\n#         samples kept in state.json, over the 60 s cold-path window; a single sample must render\n#         them as null, never 0. A fixture mock serves the SAME numbers on every call, so two\n#         samples taken against it differ by nothing and the rates come out 0 bps -- correct\n#         arithmetic on constant input, and the reason a real rate is a RED row (DESIGN.md §4b).\n# start_time matches get_info.json's start_time (1789518898, uptime 41233 s); the byte counters are\n#         the plausible traffic of a synced node over that period (~0.35 MiB/s in).\n# gate:   MAP_URI_AUTO_JON2(\"/get_net_stats\", ..., !m_restricted) (src/rpc/core_rpc_server.h:134):\n#         a restricted node leaves handled = false and epee answers HTTP 404, NOT -32601\n#         (contrib/epee/include/net/http_protocol_handler.inl:664). DESIGN.md §5 nulls\n#         node.net.total_bytes_* on a restricted node for exactly that reason.\n# LEGACY TRANSPORT ONLY: there is no json_rpc `get_net_stats` -- it is POST /get_net_stats.",
+  "status": "OK",
+  "untrusted": false,
+  "start_time": 1789518898,
+  "total_packets_in": 9142037,
+  "total_bytes_in": 14829461028,
+  "total_packets_out": 4218806,
+  "total_bytes_out": 2013774592
+}

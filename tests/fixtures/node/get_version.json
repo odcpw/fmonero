@@ -1,0 +1,27 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# fields: COMMAND_RPC_GET_VERSION::response_t, src/rpc/core_rpc_server_commands_defs.h:2196-2212\n#         { version u32, release bool, current_height u64, target_height u64,\n#           hard_forks[] = hf_entry (:2183-2194, { hf_version u8, height u64 }) }\n# base:   rpc_response_base only (status, untrusted) :101-112\n# `version` IS THE RPC VERSION, NOT THE SOFTWARE VERSION. It is CORE_RPC_VERSION =\n#         (CORE_RPC_VERSION_MAJOR << 16) | CORE_RPC_VERSION_MINOR with MAJOR 3 and MINOR 16\n#         (:91-94) = (3 << 16) | 16 = 196624. The software version string is get_info.version\n#         (\"0.18.5.1-release\"). DESIGN.md §5c keeps them apart under `node info`.rpc.\n# current_height / target_height / hard_forks are KV_SERIALIZE_OPT (:2208-2210), so monerod omits\n#         them when they are empty/zero; they are present here because a synced node fills them.\n#         current_height matches get_info.json's height (3541122) and target_height is 0 when synced,\n#         the same convention get_info uses (src/rpc/core_rpc_server.cpp:523).\n# hard_forks[] is the mainnet fork table VERBATIM from src/hardforks/hardforks.cpp:34-76 -- the\n#         (version, height) pair of each row, in order. The table ENDS AT v16 @ 2689608 (:75): FCMP++\n#         / Carrot is not activated, so `hard_fork_info` reports version 16 until a v17 row ships.\n#         Each row's fourth C++ field (e.g. 1656629118 for v16) is hardfork_t::time\n#         (src/hardforks/hardforks.h:34-41) and is NOT serialized here and NOT the date that height\n#         was mined -- DESIGN.md §1b.1 forbids rendering it as a block date.\n# gate:   OPEN -- MAP_JON_RPC(\"get_version\", ...) has no !m_restricted guard\n#         (src/rpc/core_rpc_server.h:174).\n# BOTH ROLES have a get_version fixture (this one and wallet/get_version.json) and they answer\n#         different shapes; that is exactly why fmonero-mock takes --role.",
+  "status": "OK",
+  "untrusted": false,
+  "version": 196624,
+  "release": true,
+  "current_height": 3541122,
+  "target_height": 0,
+  "hard_forks": [
+    { "hf_version": 1, "height": 1 },
+    { "hf_version": 2, "height": 1009827 },
+    { "hf_version": 3, "height": 1141317 },
+    { "hf_version": 4, "height": 1220516 },
+    { "hf_version": 5, "height": 1288616 },
+    { "hf_version": 6, "height": 1400000 },
+    { "hf_version": 7, "height": 1546000 },
+    { "hf_version": 8, "height": 1685555 },
+    { "hf_version": 9, "height": 1686275 },
+    { "hf_version": 10, "height": 1788000 },
+    { "hf_version": 11, "height": 1788720 },
+    { "hf_version": 12, "height": 1978433 },
+    { "hf_version": 13, "height": 2210000 },
+    { "hf_version": 14, "height": 2210720 },
+    { "hf_version": 15, "height": 2688888 },
+    { "hf_version": 16, "height": 2689608 }
+  ]
+}

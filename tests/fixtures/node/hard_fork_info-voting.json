@@ -1,0 +1,15 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# scenario: --scenario voting.\n# NOT IN DESIGN.md §8's deliverable list; added by Phase 0 with its reason recorded in\n# decisions/phase0-mock.md and tests/fixtures/README.md (\"Additions\"). The reason: DESIGN.md §1b.3\n# and §5c devote a paragraph each to the fact that `version` and the six voting fields of ONE\n# hard_fork_info response describe TWO DIFFERENT fork versions, and §5c requires `node info` to\n# publish them apart, under hard_fork.current_version and hard_fork.voting_on.version. On mainnet\n# TODAY they coincide (both 16, because the fork table ends at v16 -- hardforks.cpp:75), so against\n# hard_fork_info.json a consumer that conflated them would pass every test. This fixture is the only\n# way to make that assertion non-vacuous before a real v17 fork ships.\n# fields: identical to hard_fork_info.json -- COMMAND_RPC_HARD_FORK_INFO::response_t,\n#         src/rpc/core_rpc_server_commands_defs.h:1974-1994. Only the values differ.\n# SHAPE: a hypothetical v17 being voted on while v16 is still current, i.e. what\n#         on_hard_fork_info (src/rpc/core_rpc_server.cpp:2738-2741) returns for req.version == 0\n#         once a v17 row exists in the table:\n#           version         = get_current_hard_fork_version() = 16   <- the CURRENT fork\n#           voting          = heights.back().version           = 17  <- the NEXT one\n#           enabled         = current_version >= 17            = false\n#           votes           = blocks in the window voting >= 17      (7412 of 10080 so far)\n#           threshold       = (10080 * threshold_pct + 99) / 100; a future row need not carry 0,\n#                             so this fixture uses the 80% default (hardfork.h:52) -> 8064\n#           earliest_height = the v17 row's height\n#           state           = HardFork::State::UpdateNeeded = 1 (hardfork.h:42-46) -- what a v0.18\n#                             daemon reports when a newer fork is scheduled and it is not ready\n# The heights and the version number here are INVENTED: there is no v17 in v0.18.5.1. That is the\n# point of the file and it is why it is a scenario rather than the default.",
+  "status": "OK",
+  "untrusted": false,
+  "credits": 0,
+  "top_hash": "",
+  "version": 16,
+  "enabled": false,
+  "window": 10080,
+  "votes": 7412,
+  "threshold": 8064,
+  "voting": 17,
+  "state": 1,
+  "earliest_height": 3560000
+}

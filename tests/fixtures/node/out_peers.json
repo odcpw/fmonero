@@ -1,0 +1,6 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# fields: COMMAND_RPC_OUT_PEERS::response_t, src/rpc/core_rpc_server_commands_defs.h:1923-1931\n#         -> ONE key, `out_peers` (uint32_t), echoing the count in force.\n# base:   rpc_response_base only (status, untrusted) :101-112\n# request: { set bool, out_peers uint32_t } (:1911-1920). `set` is KV_SERIALIZE_OPT with default\n#         TRUE (:1917), so an omitted `set` WRITES the count. NodeClient::peers_count() is read-only\n#         and must therefore send `set: false` explicitly (DESIGN.md §1b.3, §5b) -- an omission\n#         silently reconfigures the daemon. That is asserted on the RECORDED REQUEST in the --log\n#         file, not on this response, because a stateless mock echoes the same number either way.\n# 16 matches the `out-peers=16` DESIGN.md §4.2 writes into monerod.conf, and get_info.json's\n#         outgoing_connections_count.\n# gate:   MAP_URI_AUTO_JON2(\"/out_peers\", ..., !m_restricted) (src/rpc/core_rpc_server.h:137) ->\n#         HTTP 404 on a restricted node.\n# One of the four files DESIGN.md §8 Phase 0 names as \"without which `node limit --out-peers N` is\n# an AMBER row with no response to serve and no way to fill §5c's out_peers key\".",
+  "status": "OK",
+  "untrusted": false,
+  "out_peers": 16
+}

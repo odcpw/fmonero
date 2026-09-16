@@ -1,0 +1,5 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# fields: COMMAND_RPC_SETBANS::response_t, src/rpc/core_rpc_server_commands_defs.h:2063-2068 --\n#         the BARE rpc_response_base (:101-112). set_bans echoes NOTHING; `status: \"OK\"` is the\n#         whole answer, and §5c's `node ban` / `node unban` payload ({host, banned, seconds}) is\n#         built by fmonero from its own request, not from this response.\n# request: bans[] = COMMAND_RPC_SETBANS::ban (:2037-2050) = { host, ip, ban, seconds }. Unban is the\n#         same method with `ban: false`; DESIGN.md §1b.3 sends `host` and leaves `ip` 0.\n# gate:   MAP_JON_RPC_WE_IF(\"set_bans\", ..., !m_restricted) (src/rpc/core_rpc_server.h:169).\n# This file is one of the four DESIGN.md §8 Phase 0 names as \"without which `node ban` / `node unban`\n# are AMBER rows with no response to serve\".",
+  "status": "OK",
+  "untrusted": false
+}

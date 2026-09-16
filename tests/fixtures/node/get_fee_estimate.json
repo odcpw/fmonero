@@ -1,0 +1,10 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# fields: COMMAND_RPC_GET_BASE_FEE_ESTIMATE::response_t,\n#         src/rpc/core_rpc_server_commands_defs.h:2266-2278 -> { fee u64, quantization_mask u64,\n#         fees[] vector<u64> }\n# base:   rpc_access_response_base (credits, top_hash) :124-136\n# METHOD NAME: the struct is COMMAND_RPC_GET_BASE_FEE_ESTIMATE but the json_rpc method -- and\n#         therefore this file's name -- is `get_fee_estimate` (src/rpc/core_rpc_server.h:176).\n# request: grace_blocks (:2257). fmonero ALWAYS sends 10, the FEE_ESTIMATE_GRACE_BLOCKS wallet2\n#         itself uses (src/wallet/wallet2.cpp:123, applied at :8597), so the chips the Send screen\n#         draws are the fees the build will charge. grace_blocks 0 returns a different fees[].\n# `fee` IS fees[0], NOT a \"normal\" tier: since HF 15 on_get_base_fee_estimate ends\n#         `res.fee = res.fees[0]` (src/rpc/core_rpc_server.cpp:3011-3012), i.e. the CHEAPEST level.\n#         DESIGN.md §5 renders it as node.fee.per_byte_pico beside fees_pico and no code may treat it\n#         as a default -- hence fee == fees[0] == 20000 here, and it must stay that way.\n# fees[] has exactly four entries, in order, and they ARE the four priority levels 1..4\n#         (wallet2::get_base_fee clamps priority 0 -> 1 and > 4 -> 4, decrements, and indexes this\n#         array: src/wallet/wallet2.cpp:8584-8609). So --priority 0 and --priority 1 both land on\n#         20000 -- the fact DESIGN.md §1b.4 spends a paragraph on.\n# quantization_mask: KV_SERIALIZE_OPT default 1 (:2275); 10000 is the mainnet value since HF 15.\n# VALUES are the worked example of DESIGN.md §5 verbatim, so §5's document and this fixture cannot\n#         disagree: per_byte_pico 20000, fees_pico [20000, 80000, 320000, 4000000].",
+  "status": "OK",
+  "untrusted": false,
+  "credits": 0,
+  "top_hash": "",
+  "fee": 20000,
+  "quantization_mask": 10000,
+  "fees": [20000, 80000, 320000, 4000000]
+}
