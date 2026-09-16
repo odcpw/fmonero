@@ -1,0 +1,235 @@
+//! fmonero's engine: everything the CLI, the TUI, the doctor and the bar widget share.
+//!
+//! **This crate is silent.** No function here writes to stdout or stderr; all output is
+//! produced by the binary (`output.rs`), and a Phase 3 gate greps this crate for print
+//! macros (DESIGN.md §2g).
+//!
+//! The public surface was frozen at the Phase 1a gate (§5b, §8): later phases fill bodies
+//! in, they do not change signatures. Every function returns `Result<_, Error>` — never
+//! `anyhow` — so the binary maps a failure to its §4a exit code without downcasting.
+//!
+//! What is **implemented** at the 1a gate: `error`, `context`, `paths`, `settings`, `proc`,
+//! `amount`, `address`, `rpc::require_loopback`, `rpc::agent`, the two client constructors'
+//! loopback gate, `status()`'s empty document and `agent::capabilities_json`. Everything
+//! else is a signature-only module whose bodies return `Error::unimplemented` or empty data
+//! — §2h's one sanctioned handover, listed in §8.
+
+pub mod address;
+pub mod agent;
+pub mod amount;
+pub mod context;
+pub mod error;
+pub mod fsinfo;
+pub mod history;
+pub mod log;
+pub mod paths;
+pub mod proc;
+pub mod rpc;
+pub mod send;
+pub mod session;
+pub mod settings;
+pub mod state;
+pub mod status;
+pub mod units;
+pub mod wallet_dir;
+
+pub use address::{AddrForm, AddrKind, Address, NetType, PREFIXES};
+pub use amount::Piconero;
+pub use context::{Context, Systemctl};
+pub use error::{Error, EXIT_CODES, REASONS};
+pub use history::{Destination, HistoryQuery, SubaddrIndex, Transfer, TransferKind};
+pub use paths::Paths;
+pub use proc::{CancelToken, Output};
+pub use rpc::{Login, NodeClient, NodeMutators, WalletClient};
+pub use send::{BuiltTx, SendRequest, SweepRequest, TransferRequest};
+// `wallet_session::open` and `node_session::up` are spelled without `session::` in §5b.
+pub use session::{node_session, wallet_session};
+pub use settings::{Network, Settings, TimeoutSettings, Timeouts, TuiSettings};
+pub use state::{Daemon, PendingKind, PendingSend, PendingTx, StateDoc};
+pub use status::{
+    LastError, NetStatus, NodeStatus, PendingStatus, PendingTxStatus, Severity, Staleness, Status,
+    UnitsStatus, WalletStatus, Warning, WALLET_BEHIND_BLOCKS, WARNING_IDS,
+};
+
+/// The tool's name, as it appears in argv, hints and the plugin.
+pub const NAME: &str = "fmonero";
+/// The workspace version.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The Status/JSON schema version (§5). Bumped only by a breaking change to the document.
+pub const SCHEMA_VERSION: u32 = 1;
+/// The machine contract's version, independent of the tool version.
+pub const CONTRACT_VERSION: &str = "1.0.0";
+
+/// The whole of §5, without starting anything (see [`status::status`]).
+pub fn status(ctx: &Context) -> Result<Status, Error> {
+    status::status(ctx)
+}
+
+/// Now, as RFC 3339 with the **local** offset and second precision (§5).
+pub fn now_rfc3339() -> String {
+    let zoned = jiff::Zoned::now();
+    let ts = zoned.timestamp();
+    let ts = ts.round(jiff::Unit::Second).unwrap_or(ts);
+    ts.display_with_offset(zoned.offset()).to_string()
+}
+
+/// A Unix epoch second as RFC 3339 with the local offset (§5).
+pub fn rfc3339_from_unix(seconds: i64) -> Option<String> {
+    let ts = jiff::Timestamp::from_second(seconds).ok()?;
+    let offset = jiff::tz::TimeZone::system().to_offset(ts);
+    Some(ts.display_with_offset(offset).to_string())
+}
+
+/// Now, as a Unix epoch second.
+pub fn now_unix() -> i64 {
+    jiff::Timestamp::now().as_second()
+}
+
+/// Write `bytes` to `path` **at mode 0600**, through `.tmp.<pid>` + `rename(2)` (§2b.7).
+///
+/// The target mode is set at creation (`O_EXCL` on the temporary file with `mode(0o600)`),
+/// never `chmod`ed afterwards, which would leave a window in which a file recording who was
+/// paid what is readable by every local user. Every fmonero-owned file goes through here.
+pub fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<(), Error> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let dir = path
+        .parent()
+        .ok_or_else(|| Error::failure(format!("{} has no parent directory", path.display())))?;
+    let tmp = dir.join(format!(
+        ".{}.tmp.{}",
+        path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "fmonero".to_string()),
+        std::process::id()
+    ));
+    // A leftover temporary from a killed process must not make the write fail.
+    let _ = std::fs::remove_file(&tmp);
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&tmp)
+        .map_err(|e| Error::failure(format!("cannot create {}: {e}", tmp.display())))?;
+    f.write_all(bytes)
+        .and_then(|()| f.sync_all())
+        .map_err(|e| Error::failure(format!("cannot write {}: {e}", tmp.display())))?;
+    drop(f);
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        Error::failure(format!("cannot replace {}: {e}", path.display()))
+    })
+}
+
+/// §5b rule 3 in one place: **every enum that appears in JSON carries its wire spelling**,
+/// asserted against the literal string §5/§5c/§7 promise, in both directions.
+///
+/// A plain `#[derive(Serialize)]` would emit `"UserUnit"`, `"Warn"` and `"In"` — a JSON
+/// document no section of the design describes — and every one of these types is frozen at
+/// the 1a gate and compiled against by Phase 2, so the wrong spelling would ship into the
+/// plugin's parser, the doctor's output and the e2e assertions before anyone noticed. The
+/// doctor's `Verdict` status is deliberately **not** here: it lives in
+/// `crates/fmonero/src/doctor/checks.rs`, which this phase does not own, and the Phase 2
+/// doctor gate asserts it instead (§8).
+#[cfg(test)]
+mod wire_spelling {
+    use super::*;
+
+    /// Assert one variant's wire spelling, and that it deserializes back.
+    fn both_ways<T>(value: T, wire: &str)
+    where
+        T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug + Copy,
+    {
+        let json = serde_json::to_value(value).expect("serialize");
+        assert_eq!(json, serde_json::json!(wire), "{value:?} must be {wire:?}");
+        let back: T = serde_json::from_value(serde_json::json!(wire)).expect("deserialize");
+        assert_eq!(back, value, "{wire:?} must read back as {value:?}");
+    }
+
+    #[test]
+    fn every_enum_that_appears_in_json_spells_itself_as_the_design_promises() {
+        // units::Layout — §5's `node.layout`, snake_case.
+        both_ways(units::Layout::UserUnit, "user_unit");
+        both_ways(units::Layout::SystemUnit, "system_unit");
+        both_ways(units::Layout::Remote, "remote");
+        both_ways(units::Layout::None, "none");
+        // Severity — §5's `warnings[].severity`.
+        both_ways(Severity::Info, "info");
+        both_ways(Severity::Warn, "warn");
+        both_ways(Severity::Error, "error");
+        // PendingKind — §5's `pending.kind` and the on-disk record's.
+        both_ways(PendingKind::Send, "send");
+        both_ways(PendingKind::Sweep, "sweep");
+        // TransferKind — §5c's `transfers[].type`, `block` included (§1b.4).
+        both_ways(TransferKind::In, "in");
+        both_ways(TransferKind::Out, "out");
+        both_ways(TransferKind::Pending, "pending");
+        both_ways(TransferKind::Failed, "failed");
+        both_ways(TransferKind::Pool, "pool");
+        both_ways(TransferKind::Block, "block");
+        // Network — §4's `node.network`.
+        both_ways(Network::Mainnet, "mainnet");
+        both_ways(Network::Stagenet, "stagenet");
+        both_ways(Network::Testnet, "testnet");
+        // NetType — the wallet's own nettype (§2a.6), and `wallet validate`'s answer.
+        both_ways(NetType::Mainnet, "mainnet");
+        both_ways(NetType::Testnet, "testnet");
+        both_ways(NetType::Stagenet, "stagenet");
+        // AddrKind — `wallet validate`'s `integrated`/`subaddress` verdict.
+        both_ways(AddrKind::Standard, "standard");
+        both_ways(AddrKind::Integrated, "integrated");
+        both_ways(AddrKind::Subaddress, "subaddress");
+        // units::FileStatus — §5c's `setup.actions[].status`.
+        both_ways(units::FileStatus::Written, "written");
+        both_ways(units::FileStatus::Unchanged, "unchanged");
+        both_ways(units::FileStatus::Skipped, "skipped");
+        both_ways(units::FileStatus::Planned, "planned");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timestamps_are_rfc3339_with_a_local_offset_and_no_zulu() {
+        let now = now_rfc3339();
+        assert!(now.contains('T'), "{now}");
+        assert!(
+            !now.ends_with('Z'),
+            "§5 wants a local offset, not Zulu: {now}"
+        );
+        assert_eq!(
+            now.len(),
+            25,
+            "expected 2026-09-16T14:02:11+02:00, got {now}"
+        );
+        let then = rfc3339_from_unix(1_700_000_000).expect("a real instant");
+        assert!(then.starts_with("2023-11-1"), "{then}");
+        assert!(now_unix() > 1_700_000_000);
+    }
+
+    #[test]
+    fn a_private_write_lands_at_0600_and_replaces_atomically() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("fmonero-wp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        write_private(&path, b"{}\n").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "§2b.7: owner-only, at the target mode");
+        write_private(&path, b"{\"a\":1}\n").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"{\"a\":1}\n");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        // No temporary left behind.
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
