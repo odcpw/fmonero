@@ -1,0 +1,18 @@
+{
+  "_provenance": "# derived from Linux /proc semantics and DESIGN.md §7.1, not captured from a run\n# Expectation for `ports_owned` against input/. See tests/fixtures/doctor/ports_owned/expect.json for\n# the /proc/net/tcp column traps and the dangling-symlink note.\n#\n# THIS CASE IS THE ONLY `fail` ports_owned HAS. §7.1: \"fail when ANYTHING is bound to a non-loopback\n# address\" -- anything, including our own unit. input/proc/net/tcp's single row is\n#   0: 00000000:46A1 ... 0A ... 8801\n# i.e. 18081 (0x46A1) LISTENING on 0.0.0.0 (00000000), inode 8801 -> pid 41233, which IS\n# fmonero-monerod.service's MainPID in the systemctl fixture. So ownership is ours and the verdict is\n# still `fail`: who owns it does not matter, where it is bound does.\n# WHY THAT IS THE SEVERE CASE AND NOT A COSMETIC ONE (§2c): a loopback-bound RPC port is already\n# reachable by any web page the user visits, via fetch(\"http://127.0.0.1:18081/json_rpc\"), which is why\n# both units carry a Digest credential -- an unauthenticated POST gets a 401 and the handler never\n# runs, and a sweep_all does not need a readable reply. A port on 0.0.0.0 removes the one remaining\n# barrier, the network boundary, and exposes the same surface to the LAN.\n# THE argv NAMES THE CAUSE: --rpc-bind-ip 0.0.0.0 --confirm-external-bind. monerod REFUSES a\n# non-loopback bind without that second flag (src/rpc/rpc_args.cpp:92, :99), so its presence means\n# somebody asked for this deliberately -- by hand-editing the unit, since `fmonero setup --units`\n# never writes either flag, and the doctor's own unit_loopback check (class B, fixable) is what\n# rewrites it back.\n# TWO CHECKS SEE THIS MACHINE, AND THEY ARE NOT REDUNDANT: unit_loopback reads the UNIT FILE (what was\n# configured) and ports_owned reads /proc/net/tcp (what is actually bound). A hand-started monerod, or\n# a unit edited after it started, makes them disagree -- which is the whole reason §7.1 has both.\n# `fixable` false, class D: killing or rebinding a running daemon is not the doctor's business (§7).\n# THE DETAIL MUST NAME THE PID AND THE BIND ADDRESS, per §7.1's fix column for this row.",
+  "_env": {
+    "FMONERO_PROC_ROOT": "input/proc",
+    "FMONERO_SYSTEMCTL_FIXTURE": "../node_layout/input/systemctl.txt"
+  },
+  "_settings": {
+    "wallet.port": "18083",
+    "node.url": "http://127.0.0.1:18081"
+  },
+  "id": "ports_owned",
+  "group": "security",
+  "severity": "warn",
+  "class": "D",
+  "status": "fail",
+  "fixable": false,
+  "detail_contains": ["18081", "0.0.0.0", "41233"]
+}

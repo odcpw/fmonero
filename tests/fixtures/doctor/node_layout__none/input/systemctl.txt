@@ -1,0 +1,17 @@
+# derived from monero v0.18.5.1 source and DESIGN.md §2i, not captured from a run
+# Format and semantics: see tests/fixtures/doctor/node_layout/input/systemctl.txt.
+#
+# CASE: node_layout__none -> Layout::None. NOTHING IS CONFIGURED.
+# Neither fmonero unit exists, Arch's monerod.service is neither active nor enabled nor present, and
+# _settings keeps node.url loopback so the remote row cannot fire either. Every disjunct of §2i's
+# table falls through, which is the `none` row.
+# THIS IS THE STATE OF A FRESHLY INSTALLED fmonero, and it is the state of THIS machine today
+# (DESIGN.md §1.1: no Monero binaries, no units). §2i's `node up` row for `none` is exit 4 backend with
+# the hint `fmonero setup --units`, which is the same fix this check reports.
+# All three lines are still listed rather than omitted: an empty fixture file and a fixture file that
+# says "nothing is here" are different inputs, and a detector that treats a MISSING LINE as "unknown"
+# rather than as "absent" answers differently for the two. Naming every unit with <exists> `no` says
+# absent, unambiguously.
+fmonero-monerod.service inactive disabled no -
+fmonero-wallet-rpc.service inactive disabled no -
+monerod.service inactive disabled no -

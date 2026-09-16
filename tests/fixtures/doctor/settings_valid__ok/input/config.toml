@@ -1,0 +1,38 @@
+# derived from monero v0.18.5.1 source, not captured from a run
+# fmonero's own config.toml. Every key and every default is DESIGN.md §4's settings table; the ports
+# and the data-dir convention are §1b.1 (CRYPTONOTE_NAME "bitmonero", src/cryptonote_config.h:165;
+# mainnet P2P/RPC/ZMQ 18080/18081/18082, :230-232). 18083 is the wallet port because 18082 is monerod's
+# ZMQ port and a fixed documented port is what lets the unit, the doctor, the panel and robot-docs
+# agree without discovery (§4).
+# CASE: settings_valid__ok -- EVERY KEY PRESENT AND VALID. The all-defaults document.
+# Settings::invalid_keys() must return an EMPTY vector here.
+[node]
+network = "mainnet"
+url = "http://127.0.0.1:18081"
+unit = "fmonero-monerod.service"
+data_dir = "/home/user/.bitmonero"
+log_file = "/home/user/.bitmonero/bitmonero.log"
+prune = true
+
+[wallet]
+url = "http://127.0.0.1:18083"
+unit = "fmonero-wallet-rpc.service"
+dir = "/home/user/.local/share/fmonero/wallets/mainnet"
+port = 18083
+account = 0
+# 2 is *normal*. 0 is accepted but is an ALIAS FOR THE LOWEST TIER, not a "wallet default":
+# since HF 15 wallet2::get_base_fee clamps 0 -> 1, decrements, and indexes the daemon's own fees[]
+# (src/wallet/wallet2.cpp:8584-8609), so priority 0 behaves exactly as priority 1 (§1b.4).
+priority = 2
+
+[timeouts]
+node_sec = 3
+wallet_sec = 5
+refresh_sec = 120
+transfer_sec = 120
+open_sec = 300
+systemctl_sec = 10
+
+[tui]
+poll_ms = 1000
+tick_ms = 120

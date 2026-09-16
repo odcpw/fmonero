@@ -1,0 +1,16 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# Expectation for `node_layout` against input/. See tests/fixtures/doctor/node_layout/expect.json for\n# how to read this file, the _env/_settings convention and the ownership note.\n#\n# THIS CASE: Layout::None -- nothing configured. The state of a fresh install, and the state of THIS\n# machine today (DESIGN.md §1.1).\n# status `warn` and A FIX COMMAND: §7.1's `fix` column for node_layout is `fmonero setup --units`, and\n# this is the only one of the four layouts that command is the answer to. Reporting `none` as `pass`\n# would make that column dead text.\n# `fixable` IS STILL false, AND THE DISTINCTION MATTERS: `fixable` means `doctor --fix` performs it\n# through mutate(Action) with a recorded inverse (§7). Writing two systemd units and a credential file\n# is `setup`'s job, it is class B in setup's own terms, and the doctor's node_layout row is class D --\n# it REPORTS the command, it does not run it. A fix_cmd is a runnable hint; `fixable: true` is a\n# promise that --fix will do it and that `doctor undo` can take it back.\n# ON THIS MACHINE TODAY the real `doctor` run reports node-group checks as `skip:*` because\n# monerod_installed fails first (§4b's GREEN row, §7.1's skip convention). That is a different verdict\n# from this fixture's, and not a contradiction: this case supplies a systemctl fixture and asks what\n# detect_layout answers; the real run never gets that far.\n# STATUS IS PHASE 0'S READING of §7.1; the Phase 2 doctor agent owns the final mapping.",
+  "_env": {
+    "FMONERO_SYSTEMCTL_FIXTURE": "input/systemctl.txt"
+  },
+  "_settings": {
+    "node.url": "http://127.0.0.1:18081"
+  },
+  "id": "node_layout",
+  "group": "node",
+  "severity": "info",
+  "class": "D",
+  "status": "warn",
+  "fixable": false,
+  "detail_contains": ["none", "fmonero setup --units"]
+}

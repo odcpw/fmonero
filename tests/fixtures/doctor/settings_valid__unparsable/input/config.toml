@@ -1,0 +1,27 @@
+# derived from monero v0.18.5.1 source, not captured from a run
+# CASE: settings_valid__unparsable -- THE FILE IS NOT TOML AT ALL.
+# §7.1's condition has two halves: "config.toml PARSES and every key is in the §4 table". The
+# settings_valid case exercises the second half; this one exercises the first, and it is the half that
+# decides whether `fmonero doctor` runs at all on a broken machine.
+# THREE SEPARATE SYNTAX ERRORS below, so a parser that recovers from one still fails:
+#   - an unterminated string on the `url` line
+#   - `prune = maybe`, a bare word where TOML needs a bool, a quoted string or a number
+#   - a `[wallet` table header with no closing bracket
+# WHY IT MATTERS MORE THAN AN INVALID VALUE: Context::load() reads this file, and EVERY command goes
+# through Context::load(). If the doctor cannot run on an unparsable config.toml, the one command whose
+# job is to repair it is the one command the breakage locks out -- so the loader must degrade to defaults
+# and let settings_valid report, rather than exiting 1 from main().
+# §7.1's fixer for this row is class A: WriteFile{config_file(), Settings::to_toml_bytes(&repaired),
+# 0o600}, with the verbatim backup + sha256 pair that makes `doctor undo latest` able to give these exact
+# bytes back (§7). THAT IS WHY §5b EXPOSES Settings::to_toml_bytes AT ALL: a fixer that called
+# Settings::save would write the file itself and bypass the backup, the hash pair and actions.jsonl --
+# and therefore undo.
+# `repaired` HERE MEANS THE WHOLE DOCUMENT: nothing in this file is recoverable, so the fix writes the
+# defaults. In the settings_valid case only the four bad keys are rewritten, and the rest is kept.
+[node]
+network = "mainnet
+url = "http://127.0.0.1:18081
+prune = maybe
+
+[wallet
+port = 18083

@@ -1,0 +1,14 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# Expectation for `settings_valid` against input/config.toml. See\n# tests/fixtures/doctor/settings_valid/expect.json for the FMONERO_CONFIG_DIR seam, the\n# Settings::invalid_keys() contract and the unknown-key question left open by §5b.\n#\n# THIS CASE: THE ALL-DEFAULTS DOCUMENT. Every one of DESIGN.md §4's twenty keys is present and holds its\n# documented default, so Settings::invalid_keys() must return an EMPTY vector and the check is `pass`.\n# UNLIKE units_present, A PASSING FIXTURE IS WRITABLE HERE, because the defaults are values rather than\n# rendered bytes -- no $HOME, no port substitution, no network segment computed at render time. The two\n# paths that DO mention a home directory (node.data_dir, node.log_file, wallet.dir) are settings whose\n# defaults §4 gives as ~-relative and Settings expands ONCE on load; this fixture writes them out\n# absolutely under /home/user, and the check does not compare them against the real $HOME -- that is\n# wallet_dir_matches_unit's job (§7.1), against the UNIT, and a different row.\n# THIS IS THE CASE THAT CATCHES A VACUOUS DETECTOR. A settings_valid that reports `warn` unconditionally,\n# or that reports every key it does not recognise -- including every key it simply forgot to add to\n# Settings::KEYS -- passes tests/fixtures/doctor/settings_valid/ and fails here. Twenty keys is exactly\n# the size at which a hand-maintained KEYS table drifts from the struct.\n# `fixable` IS STILL true: the row's fixer exists whether or not this run needs it. §7 distinguishes the\n# check's CAPABILITY (fixable, class A, the Action it would emit) from its OUTCOME (status), and a\n# `pass` row with `fixable: true` is the normal shape -- `doctor --fix` simply has nothing to do.\n# `detail_contains` is empty on purpose: there is nothing to name. Pinning a phrase like \"all keys valid\"\n# would make the fixture fail on a reworded message, which is the assertion nobody keeps.",
+  "_env": {
+    "FMONERO_CONFIG_DIR": "input"
+  },
+  "_settings": {},
+  "id": "settings_valid",
+  "group": "install",
+  "severity": "warn",
+  "class": "A",
+  "status": "pass",
+  "fixable": true,
+  "detail_contains": []
+}

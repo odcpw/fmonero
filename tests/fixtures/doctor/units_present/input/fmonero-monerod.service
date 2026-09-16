@@ -1,0 +1,43 @@
+# derived from monero v0.18.5.1 source, not captured from a run
+# VARIANT: A DRIFTED node unit -- three changes from §4.2's rendered bytes.
+#   1. Restart=always instead of Restart=on-failure. `always` restarts monerod after a clean
+#      `stop_daemon`, so `fmonero node down` would stop the daemon over RPC and systemd would
+#      bring it straight back -- the command reports success and the node is up (§4.1's
+#      node_session::down issues the RPC first so LMDB closes cleanly, then systemctl --user stop;
+#      with `always` the ordering buys nothing).
+#   2. Wants=fmonero-wallet-rpc.service added -- which points the WRONG WAY and is still wrong.
+#      §4.2 forbids a Wants= on a monerod unit in EITHER direction: `After=` orders but never
+#      starts, while `Wants=` would start a node around the §2i single-writer check, and two
+#      monerod on one data dir corrupt the LMDB (§1.2). The doctor's separate unit_no_node_wants
+#      check is the one that names a Wants=/Requires= on a monerod unit; units_present catches it
+#      too, because a byte comparison catches everything.
+#   3. The provenance header itself. See expect.json: a byte-for-byte fixture that PASSES is not
+#      writable, because units::render_node_unit embeds $HOME and settings.
+# DESIGN.md §4.2's rendered node unit, itself modelled on utils/systemd/monerod.service:1-20.
+# A CLEAN node unit: ExecStart carries no --password, no --rpc-login, no --daemon-login and no
+# --password-file, and --log-level is absent here because monerod takes it from the config file.
+# The credential lives in that --config-file at mode 0600 (§2c), NOT in argv, because
+# /proc/<pid>/cmdline is world-readable.
+# THE LEADING '#' LINES ARE THE PROVENANCE HEADER (§1.1) AND ARE NOT PART OF THE RENDERED UNIT.
+# systemd ignores '#' lines, so this file still loads; but it can never byte-match
+# units::render_node_unit, which is why the units_present fixture is the DRIFTED case (see
+# tests/fixtures/doctor/units_present/expect.json). unit_no_password_in_argv greps ExecStart rather
+# than comparing bytes, so the header is harmless here.
+[Unit]
+Description=Monero daemon (fmonero)
+After=network-online.target
+Wants=network-online.target
+Wants=fmonero-wallet-rpc.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/monerod --config-file %h/.config/fmonero/monerod.conf --non-interactive
+Restart=always
+RestartSec=5
+# monerod is I/O-heavy and must never compete with the desktop
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+
+[Install]
+WantedBy=default.target

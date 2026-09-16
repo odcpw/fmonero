@@ -1,0 +1,59 @@
+# derived from monero v0.18.5.1 source, not captured from a run
+# CASE: settings_valid -- FOUR DEFECTS, one of each kind Settings::invalid_keys() must report, plus one
+# non-defect that must NOT be reported. Contrast tests/fixtures/doctor/settings_valid__ok/input/config.toml.
+# Every key and default is DESIGN.md §4's settings table.
+#
+#   (1) node.network = "mainet"      A BAD ENUM VALUE. The three legal values are mainnet | stagenet |
+#                                    testnet (§4), and this is the typo a human actually makes. It is
+#                                    load-bearing: node.network drives the ports, monerod.conf's
+#                                    stagenet=1/testnet=1 line, wallet.dir's network segment and
+#                                    wallet.port (§4.2), so an unparsable value means `setup --units`
+#                                    cannot render anything.
+#   (2) wallet.priority = 7          OUT OF RANGE. §4 accepts 0..4; the daemon's fees[] has exactly four
+#                                    entries and wallet2 clamps > 4 to 4 (src/wallet/wallet2.cpp:8584-8609),
+#                                    so 7 silently means 4 -- THE MOST EXPENSIVE TIER -- if nothing
+#                                    validates it. A money surface that fails open costs the user money.
+#   (3) timeouts.node_sec = 0        ZERO IS NOT A DEADLINE. §4's --timeout rejects 0 with exit 2, and a
+#                                    0 here would either mean "no timeout" (§2d: every HTTP call has a
+#                                    deadline, no exceptions) or kill every call instantly. The type is
+#                                    right and the VALUE is wrong, which is the case a serde-only
+#                                    "does it parse" check misses.
+#   (4) wallet.acount = 0            AN UNKNOWN KEY, one edit distance from wallet.account. §4 requires
+#                                    `settings set` on an unknown key to name the nearest key from
+#                                    Settings::KEYS by case-insensitive Levenshtein distance <= 3 and to
+#                                    make its hint that exact runnable command. Here the key arrives by
+#                                    hand-edit rather than through `set`, so the DOCTOR is what notices.
+#                                    NOTE that `wallet.account` is therefore ABSENT and must fall back to
+#                                    its default (0) rather than making the document unloadable.
+#
+# NOT A DEFECT, AND MUST NOT BE REPORTED: node.url is loopback but on a NON-DEFAULT port (18099, the port
+# DESIGN.md §8's own gate commands give fmonero-mock). §2c's rule is scheme http plus a literal host in
+# 127.0.0.0/8 or ::1 -- it says nothing about the port, and pinning 18081 would make every mock-backed
+# AMBER row of §4b report a bad setting.
+[node]
+network = "mainet"
+url = "http://127.0.0.1:18099"
+unit = "fmonero-monerod.service"
+data_dir = "/home/user/.bitmonero"
+log_file = "/home/user/.bitmonero/bitmonero.log"
+prune = true
+
+[wallet]
+url = "http://127.0.0.1:18083"
+unit = "fmonero-wallet-rpc.service"
+dir = "/home/user/.local/share/fmonero/wallets/mainnet"
+port = 18083
+acount = 0
+priority = 7
+
+[timeouts]
+node_sec = 0
+wallet_sec = 5
+refresh_sec = 120
+transfer_sec = 120
+open_sec = 300
+systemctl_sec = 10
+
+[tui]
+poll_ms = 1000
+tick_ms = 120

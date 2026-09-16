@@ -1,0 +1,20 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# Expectation for `unit_no_password_in_argv` against input/. The base case,\n# tests/fixtures/doctor/unit_no_password_in_argv/expect.json, carries the _env caveat (DESIGN.md\n# \u00a72i freezes no override that points the doctor at a directory of unit FILES -- a gap Phase 0\n# records rather than fills), the \"how to read this file\" convention, and the rule that the node\n# unit's own rpc-login= in its --config-file is CORRECT and must not be reported.\n# input/ is that case's two units with ONE LINE CHANGED; the changed file says which at its top.\n#\n# THIS CASE: the wallet unit's ExecStart carries --rpc-login.\n# \u00a72c: the wallet unit passes NEITHER --disable-rpc-login NOR --rpc-login, precisely so that\n# monero-wallet-rpc generates its own 128-bit credential into WorkingDirectory as\n# monero-wallet-rpc.<port>.login, at mode 0400, and deletes it on exit\n# (src/wallet/wallet_rpc_server.cpp:351-380; src/common/util.cpp:215-224, :263). fmonero never\n# generates, writes or rotates that secret -- it reads it.\n# TWO SEPARATE THINGS ARE WRONG HERE, and the second is the one that matters: the two flags are\n# mutually exclusive and passing both is fatal (:341-349), but this unit passes only one, so it\n# WOULD START. It would simply put a credential in /proc/<pid>/cmdline, which is\n# world-readable -- a silent, working, leaking configuration, which is why this is an\n# error-severity check and not a startup failure.\n# CONTRAST THE NODE UNIT, which is UNCHANGED in this case and is CORRECT: its credential is in\n# ~/.config/fmonero/monerod.conf at mode 0600, referenced by --config-file, because monerod\n# does NOT auto-generate one (\u00a71b.6). A detector that greps for the string \"rpc-login\"\n# anywhere reports both units and is wrong about one of them.\n# THE VALUE IN THE FIXTURE IS THE LITERAL \"REDACTED-PLACEHOLDER\", NOT A CREDENTIAL (\u00a72b.2).",
+  "_env": {
+    "FMONERO_SYSTEMD_USER_DIR": "input"
+  },
+  "_settings": {
+    "wallet.dir": "/home/user/.local/share/fmonero/wallets/mainnet",
+    "wallet.port": "18083"
+  },
+  "id": "unit_no_password_in_argv",
+  "group": "units",
+  "severity": "error",
+  "class": "D",
+  "status": "fail",
+  "fixable": false,
+  "detail_contains": [
+    "--rpc-login",
+    "fmonero-wallet-rpc.service"
+  ]
+}

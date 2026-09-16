@@ -1,0 +1,16 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# Expectation for `node_data_dir_single_writer` against input/. See\n# tests/fixtures/doctor/node_data_dir_single_writer/expect.json for the NUL-byte warning and the\n# canonicalisation trap.\n#\n# THIS CASE IS THE SECOND HALF OF §2i'S FIRST PROBE, AND THE ONE AN IMPLEMENTER SKIPS. §2i says: read\n# /proc/*/cmdline for a monerod \"whose --data-dir (OR WHOSE --config-file's data-dir=) resolves to the\n# same canonical path\". Here argv carries NO --data-dir:\n#   /usr/bin/monerod\\0--config-file\\0/etc/monerod.conf\\0--non-interactive\\0\n# and the data dir is named only inside that conf file. A detector that reads argv alone finds no\n# match, reports the data dir FREE, and `node up` starts a SECOND WRITER on a live LMDB (§1.2) -- the\n# single failure this whole check exists to prevent. The other two cases both pass such a detector.\n#\n# THE CONF PATH IN THE cmdline IS /etc/monerod.conf, WHICH THIS FIXTURE CANNOT CREATE (no agent on\n# this machine can write /etc, and sudo needs a password -- §1.1). input/monerod.conf holds the bytes;\n# the harness must make the detector read them for that path. Two honest ways, and the Phase 2 doctor\n# agent picks one and records it:\n#   (a) rewrite the cmdline fixture at harness time so --config-file points at input/monerod.conf\n#       (it is generated, not hand-written -- see tests/fixtures/README.md), or\n#   (b) resolve a conf path through paths.proc_root's parent when FMONERO_PROC_ROOT is set.\n# (a) needs no product code and is what Phase 0 recommends: the file is one NUL-joined argv.\n# IF NEITHER IS DONE the case cannot run, and it must then be recorded as SKIPPED, never as passing --\n# a gate that cannot fail is worse than no gate (§2j).\n#\n# THE CONF FILE'S OWN CONTENT is upstream's template (utils/conf/monerod.conf:1-8): data-dir,\n# log-file, log-level, absolute paths only. boost::program_options reads it, NOT systemd, so there are\n# no %h/%S specifiers to expand (src/daemon/command_line_args.h:40-53, applied in\n# src/daemon/main.cpp:215-241) -- the same reason units::render_node_conf must emit absolute paths and\n# has a permanent unit test saying so (§4.2).\n# ARGV WINS OVER THE FILE when both name a data dir: po::store is called on argv first and boost never\n# overwrites an already-set value (src/daemon/main.cpp:215-241). So the conf is consulted only when\n# argv is silent, which is exactly this case.\n# status `fail` and the pid named, as in the base case.",
+  "_env": {
+    "FMONERO_PROC_ROOT": "input/proc"
+  },
+  "_settings": {
+    "node.data_dir": "/var/lib/monero"
+  },
+  "id": "node_data_dir_single_writer",
+  "group": "node",
+  "severity": "error",
+  "class": "D",
+  "status": "fail",
+  "fixable": false,
+  "detail_contains": ["8421", "/var/lib/monero"]
+}
