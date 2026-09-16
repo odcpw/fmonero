@@ -1,4 +1,5 @@
-# derived from monero v0.18.5.1 source and DESIGN.md §2i, not captured from a run
+# derived from monero v0.18.5.1 source, not captured from a run
+# Shape and semantics: DESIGN.md §2i's test-seam paragraph.
 # Format and semantics: see tests/fixtures/doctor/node_layout/input/systemctl.txt.
 #
 # CASE: node_layout__remote -> Layout::Remote, decided by settings.node.url ALONE.

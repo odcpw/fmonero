@@ -1,4 +1,5 @@
-# derived from monero v0.18.5.1 source and DESIGN.md §2i, not captured from a run
+# derived from monero v0.18.5.1 source, not captured from a run
+# Shape and semantics: DESIGN.md §2i's test-seam paragraph.
 # FMONERO_SYSTEMCTL_FIXTURE format (DESIGN.md §2i):
 #   <unit> <is-active> <is-enabled> <exists> <main-pid>      ('-' for an absent pid)
 # Consumers skip leading '#' lines. Under Systemctl::Fixture, units::state, units::main_pid AND
