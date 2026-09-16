@@ -1,0 +1,1022 @@
+#!/usr/bin/env bash
+# fmonero's end-to-end tests, run against the real binary (DESIGN.md §4b, §5c, §8).
+#
+#   tests/e2e.sh            --fast (default): every GREEN row, every §5c key set, and the
+#                           mock-AMBER rows. Target < 20 s after the build.
+#   tests/e2e.sh --full     adds the §2d deadline, breaker and --force paths, the §2a
+#                           concurrency tests, and the §2l (a)/(b)/(d) timings. Target < 90 s.
+#
+# **What these tests prove, and what they do not.** Every row that touches a daemon is served by
+# `crates/fmonero-mock` over fixtures DERIVED FROM THE MONERO SOURCE at v0.18.5.1 (§1.1). That
+# proves fmonero's wire format, its parsing and its own sequencing; it proves nothing about a real
+# `monerod` or `monero-wallet-rpc`, and §4b keeps those rows AMBER for exactly that reason. No
+# send has ever been broadcast from this build.
+#
+# Every case runs in its own FMONERO_STATE_DIR / _CONFIG_DIR / _CACHE_DIR, so nothing here can
+# touch the owner's real configuration, units or wallets.
+
+set -uo pipefail
+
+MODE=fast
+for arg in "$@"; do
+  case "$arg" in
+    --fast) MODE=fast ;;
+    --full) MODE=full ;;
+    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    *) echo "e2e.sh: unknown argument $arg" >&2; exit 2 ;;
+  esac
+done
+
+cd "$(dirname "$0")/.." || exit 1
+ROOT="$PWD"
+PASS=0
+FAIL=0
+SKIP=0
+WORK="$(mktemp -d)"
+MOCKS=()
+
+# Fixed, unusual ports: the login file monero-wallet-rpc writes is named after its BIND PORT
+# (§2c), so `wallet.port` and the mock's port must be the same number.
+NODE_PORT=18191
+WALLET_PORT=18193
+
+cleanup() {
+  for pid in "${MOCKS[@]:-}"; do [ -n "$pid" ] && kill "$pid" 2>/dev/null; done
+  rm -rf "$WORK"
+}
+trap cleanup EXIT
+
+ok()   { PASS=$((PASS+1)); printf '  ok    %s\n' "$1"; }
+bad()  { FAIL=$((FAIL+1)); printf '  FAIL  %s\n' "$1"; shift; for l in "$@"; do printf '        %s\n' "$l"; done; }
+skip() { SKIP=$((SKIP+1)); printf '  skip  %s\n' "$1"; }
+step() { printf '\n== %s\n' "$1"; }
+
+# ---------------------------------------------------------------- build
+step "build"
+if out="$(cargo build --release 2>&1)"; then
+  ok "cargo build --release"
+else
+  bad "cargo build --release" "$(printf '%s' "$out" | grep -E '^error' | head -5)"
+  printf '\ne2e.sh: cannot run without a binary\n'; exit 1
+fi
+FM="$ROOT/target/release/fmonero"
+MOCK="$ROOT/target/release/fmonero-mock"
+[ -x "$FM" ] || { echo "e2e.sh: $FM is missing" >&2; exit 1; }
+[ -x "$MOCK" ] || { echo "e2e.sh: $MOCK is missing" >&2; exit 1; }
+
+for tool in jq curl; do
+  command -v "$tool" >/dev/null 2>&1 || { echo "e2e.sh: $tool is required" >&2; exit 1; }
+done
+
+# ---------------------------------------------------------------- harness
+#
+# `sandbox <name>` points the three XDG overrides at a fresh directory, so no case can see
+# another's state, config or cache — and none of them can see the owner's.
+CASE=""
+sandbox() {
+  # The ports are fixed (the login file is named after the bind port, §2c), so a previous
+  # case's mock must be gone before this one starts: otherwise the new case talks to the old
+  # listener and reads a request log that belongs to another sandbox.
+  mocks_down
+  CASE="$1"
+  export FMONERO_STATE_DIR="$WORK/$CASE/state"
+  export FMONERO_CONFIG_DIR="$WORK/$CASE/config"
+  export FMONERO_CACHE_DIR="$WORK/$CASE/cache"
+  unset FMONERO_SYSTEMCTL_FIXTURE FMONERO_PROC_ROOT FMONERO_WALLET_PASSWORD
+  mkdir -p "$FMONERO_STATE_DIR/run" "$FMONERO_CONFIG_DIR" "$FMONERO_CACHE_DIR"
+  chmod 700 "$FMONERO_STATE_DIR" "$FMONERO_CONFIG_DIR" "$FMONERO_CACHE_DIR"
+}
+
+OUT=""; ERR=""; RC=0
+# `fm <args…>` runs the binary, capturing stdout, stderr and the exit code separately —
+# stdout is data and stderr is diagnostics (§4), and a test that merged them could not tell a
+# payload from a hint.
+fm() {
+  OUT="$("$FM" "$@" 2>"$WORK/stderr")"; RC=$?
+  ERR="$(cat "$WORK/stderr")"
+  return 0
+}
+
+expect_rc() { # expect_rc <want> <label>
+  if [ "$RC" = "$1" ]; then ok "$2 (exit $1)"; else
+    bad "$2: expected exit $1, got $RC" "stdout: ${OUT:0:300}" "stderr: ${ERR:0:300}"
+  fi
+}
+
+expect_reason() { # expect_reason <want> <label>
+  local got; got="$(printf '%s' "$OUT" | jq -r '.reason // "null"' 2>/dev/null)"
+  if [ "$got" = "$1" ]; then ok "$2 (reason $1)"; else
+    bad "$2: expected reason $1, got $got" "stdout: ${OUT:0:300}"
+  fi
+}
+
+expect_json() { # expect_json <jq filter> <want> <label>
+  local got; got="$(printf '%s' "$OUT" | jq -c "$1" 2>/dev/null)"
+  if [ "$got" = "$2" ]; then ok "$3"; else
+    bad "$3: $1 = $got, expected $2" "stdout: ${OUT:0:400}"
+  fi
+}
+
+expect_contains() { # expect_contains <needle> <label>  (searches stdout AND stderr)
+  case "$OUT$ERR" in
+    *"$1"*) ok "$2" ;;
+    *) bad "$2: '$1' appears in neither stdout nor stderr" "stdout: ${OUT:0:200}" "stderr: ${ERR:0:200}" ;;
+  esac
+}
+
+# §5c's gate: the top-level key set must be EXACTLY the documented one — no missing key, no
+# extra key. A superset would let a payload grow keys nothing documents; a subset would let one
+# quietly lose a key an agent parses.
+expect_keys() { # expect_keys <label> <space-separated keys>
+  local label="$1"; shift
+  local want got
+  # shellcheck disable=SC2048,SC2086
+  want="$(printf '%s\n' $* | sort -u | tr '\n' ' ')"
+  got="$(printf '%s' "$OUT" | jq -r 'keys[]' 2>/dev/null | sort -u | tr '\n' ' ')"
+  if [ "$want" = "$got" ]; then ok "§5c key set: $label"; else
+    bad "§5c key set: $label" "want: $want" "got:  $got"
+  fi
+}
+
+# ---- the mocks ---------------------------------------------------------------
+#
+# `mock_node_up` and `mock_wallet_up` are the two helpers §2c asks for by name. The wallet one
+# writes the login file **before** any fmonero invocation: with no login file the client sends
+# unauthenticated requests, the mock answers 401 twice and the command exits 4 `auth_refused`,
+# so a test that omitted it would be testing exit 4 rather than the command it named.
+NODE_LOG=""; WALLET_LOG=""
+mock_node_up() { # mock_node_up [extra argv…]
+  NODE_LOG="$WORK/$CASE/node.jsonl"
+  mkdir -p "$(dirname "$NODE_LOG")"
+  "$MOCK" --role node --port "$NODE_PORT" --fixtures "$ROOT/tests/fixtures" \
+          --log "$NODE_LOG" "$@" >/dev/null 2>&1 &
+  MOCKS+=("$!")
+  "$FM" settings set node.url "http://127.0.0.1:$NODE_PORT" >/dev/null
+  wait_port "$NODE_PORT"
+}
+
+mock_wallet_up() { # mock_wallet_up [extra argv…]
+  WALLET_LOG="$WORK/$CASE/wallet.jsonl"
+  mkdir -p "$(dirname "$WALLET_LOG")"
+  "$MOCK" --role wallet --port "$WALLET_PORT" --fixtures "$ROOT/tests/fixtures" \
+          --log "$WALLET_LOG" --auth fmonero:t3st "$@" >/dev/null 2>&1 &
+  MOCKS+=("$!")
+  "$FM" settings set wallet.url "http://127.0.0.1:$WALLET_PORT" >/dev/null
+  "$FM" settings set wallet.port "$WALLET_PORT" >/dev/null
+  printf 'fmonero:t3st' > "$FMONERO_STATE_DIR/run/monero-wallet-rpc.$WALLET_PORT.login"
+  chmod 600 "$FMONERO_STATE_DIR/run/monero-wallet-rpc.$WALLET_PORT.login"
+  wait_port "$WALLET_PORT"
+}
+
+# Is anything LISTENING on this port? Not "does it answer": a mock started with `--delay-ms
+# 10000` accepts the connection and then says nothing, and a readiness probe that waited for an
+# answer would spend a hundred seconds per case discovering that the delay works.
+#   curl 7  = could not connect          -> nothing is listening
+#   curl 28 = timed out after connecting -> listening, and deliberately slow
+#   curl 0  = answered
+port_open() {
+  curl -s -o /dev/null --connect-timeout 1 --max-time 1 -d '{}' "127.0.0.1:$1/get_height" >/dev/null 2>&1
+  [ "$?" != 7 ]
+}
+
+wait_port() {
+  for _ in $(seq 100); do
+    port_open "$1" && return 0
+    sleep 0.05
+  done
+  return 1
+}
+
+mocks_down() {
+  for pid in "${MOCKS[@]:-}"; do [ -n "$pid" ] && kill "$pid" 2>/dev/null; done
+  MOCKS=()
+  # Wait for the listeners to release the FIXED ports before the next case binds them.
+  for _ in $(seq 60); do
+    port_open "$NODE_PORT" || port_open "$WALLET_PORT" || return 0
+    sleep 0.05
+  done
+}
+
+logged() { # logged <log> <method>  -> count
+  [ -f "$1" ] || { echo 0; return; }
+  jq -s --arg m "$2" '[.[] | select(.method == $m)] | length' "$1" 2>/dev/null || echo 0
+}
+log_lines() { [ -f "$1" ] && wc -l < "$1" | tr -d ' ' || echo 0; }
+
+# A systemctl fixture (§2i): `<unit> <is-active> <is-enabled> <exists> <main-pid>`.
+systemctl_fixture() { # systemctl_fixture <layout>
+  local f="$WORK/$CASE/systemctl.txt"
+  mkdir -p "$(dirname "$f")"
+  case "$1" in
+    user_unit) printf 'fmonero-monerod.service active disabled yes 0\nfmonero-wallet-rpc.service active disabled yes 0\nmonerod.service inactive disabled no -\n' > "$f" ;;
+    system_unit) printf 'fmonero-monerod.service inactive disabled no -\nfmonero-wallet-rpc.service inactive disabled no -\nmonerod.service active enabled yes 8421\n' > "$f" ;;
+    none) printf 'fmonero-monerod.service inactive disabled no -\nfmonero-wallet-rpc.service inactive disabled no -\nmonerod.service inactive disabled no -\n' > "$f" ;;
+  esac
+  export FMONERO_SYSTEMCTL_FIXTURE="$f"
+}
+
+# A real, checksum-valid mainnet address from upstream's own test vectors, and the one
+# `validate_address-standard.json` answers for.
+DEST=42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm
+BUILT_TXID=a1e7b3c05d928f4617ac0e3b85d2f719c46b0a8e3f512d7409bc6ea18d35047f
+
+SEND_KEYS="ok schema relayed dry_run txids amount_pico amount_xmr fee_pico fee_xmr total_pico total_xmr dest account_index priority weight txs"
+
+# ================================================================ GREEN (§4b)
+step "GREEN — both daemons absent, nothing installed (§4b)"
+sandbox green
+
+fm status --json
+expect_rc 0 "status with both daemons absent"
+expect_json '.node.reachable' 'false' "node.reachable is false, not an error (§2e)"
+expect_json '.wallet.reachable' 'false' "wallet.reachable is false"
+expect_json '.node.height' 'null' "node.height is null, never 0 (§5)"
+expect_json '[.warnings[].id] | contains(["wallet_down"])' 'true' "it warns rather than failing"
+expect_keys "status" "ok schema generated_at node wallet units pending warnings last_error staleness"
+
+# §2e: `status` never starts anything. The systemctl fixture is the observable proof: a start
+# would flip the <is-active> column, and `units::{start,stop}` are the only things that do.
+systemctl_fixture none
+before="$(cat "$FMONERO_SYSTEMCTL_FIXTURE")"
+fm status --json
+after="$(cat "$FMONERO_SYSTEMCTL_FIXTURE")"
+if [ "$before" = "$after" ]; then ok "§2e: status started nothing"; else
+  bad "§2e: status changed the unit state" "$after"
+fi
+unset FMONERO_SYSTEMCTL_FIXTURE
+
+fm wallet list --json
+expect_rc 0 "wallet list on an empty directory"
+expect_json '.wallets | length' '0' "no wallets"
+expect_keys "wallet list" "ok schema wallets dir"
+expect_contains "fmonero wallet create" "the empty list names the command that creates one (§4.1)"
+expect_contains "restore-deterministic-wallet" "and the one that brings an existing seed back (§4.1)"
+
+fm wallet validate "$DEST" --json
+expect_rc 0 "wallet validate falls back to the structural verdict"
+expect_json '.structural_only' 'true' "and says so (§4.1)"
+expect_json '.nettype' '"mainnet"' "the decoded prefix names the network"
+expect_keys "wallet validate" "ok schema address valid integrated subaddress nettype structural_only"
+
+fm wallet validate "not-an-address" --json
+expect_rc 15 "an unparsable address is exit 15"
+
+fm settings list --json
+expect_rc 0 "settings list"
+expect_json '.settings | length' '20' "the twenty keys of §4"
+expect_keys "settings list" "ok schema settings"
+
+fm settings get wallet.priority --json
+expect_rc 0 "settings get"
+expect_json '.value' '"2"' "the default priority is 2 — normal, never 0 (§1b.4)"
+expect_keys "settings get" "ok schema key value default"
+
+fm settings set wallet.account 1 --json
+expect_rc 0 "settings set"
+expect_keys "settings set" "ok schema key old new"
+fm settings set wallet.account 0 --json
+
+fm settings set nope 1 --json
+expect_rc 2 "an unknown settings key is exit 2"
+expect_reason unknown_key "and it is redirected, not merely refused (§4)"
+expect_contains "fmonero settings list" "with the documented fallback when nothing is near (§4)"
+for typo in wallet.prioriti timeouts.node node.log; do
+  fm settings set "$typo" 2 --json
+  expect_contains "did you mean" "'$typo' is redirected to the nearest real key (§4)"
+done
+
+fm settings set node.url http://10.0.0.5:18081 --json
+expect_rc 2 "a non-loopback node.url is refused (§2c)"
+expect_reason non_loopback_url "with the loopback reason"
+fm settings set wallet.url http://10.0.0.5:18083 --json
+expect_rc 2 "and so is a non-loopback wallet.url — the client that moves money (§2c)"
+expect_reason non_loopback_url "with the same reason"
+
+fm capabilities
+expect_rc 0 "capabilities"
+expect_json '.exit_codes | length' '18' "18 exit codes (§4a)"
+expect_json '.reasons | length > 0' 'true' "the reason table is generated"
+expect_json '.env | length > 0' 'true' "the environment table"
+expect_json '.commands | length > 0' 'true' "the command table"
+expect_json '[.commands[] | select(.accepts_dry_run)] | length' '4' "exactly four commands accept --dry-run (§4)"
+expect_keys "capabilities" "ok tool version schema contract_version build_stage build_note exit_codes reasons settings warnings commands env"
+
+fm version --json
+expect_rc 0 "version"
+expect_keys "version" "ok schema version build_stage build_note"
+expect_contains "A REAL SEND OR SWEEP OF ANY AMOUNT" "§2j: the note says the send path has never been broadcast"
+
+if "$FM" robot-docs | head -1 | grep -q 'robot docs'; then ok "robot-docs prints plain text"; else
+  bad "robot-docs"
+fi
+if "$FM" robot-docs | grep -q 'pending_send'; then ok "robot-docs names the reasons an agent branches on"; else
+  bad "robot-docs does not name the reasons"
+fi
+fm robot-docs nonsense
+expect_rc 2 "an unknown docs section is exit 2"
+
+fm node log --json
+expect_rc 0 "node log with no log file (§4b)"
+expect_json '.lines | length' '0' "no lines"
+expect_keys "node log" "ok schema path lines truncated"
+expect_contains "no log yet" "and it says so"
+
+fm node log --follow --json
+expect_rc 2 "--follow is refused in the CLI, where a pipe would hang (§2d)"
+expect_reason unsupported_flag "with the unsupported-flag reason"
+
+fm wallet clear-pending --yes --json
+expect_rc 0 "wallet clear-pending with no record is pure state"
+expect_json '.cleared' 'false' "nothing to clear"
+expect_keys "wallet clear-pending" "ok schema cleared pending"
+fm wallet clear-pending --json
+expect_rc 3 "and without --yes it is exit 3"
+expect_reason needs_yes "needs_yes"
+
+fm node down --dry-run --json
+expect_rc 2 "--dry-run is implemented by exactly four commands (§4)"
+expect_reason unsupported_flag "and is never silently ignored"
+
+fm --timeout 0 status --json
+expect_rc 2 "--timeout 0 is not a deadline"
+
+fm node up --json
+expect_rc 4 "node up with no units is exit 4 (§4b)"
+expect_reason unit_missing "unit_missing"
+
+fm wallet open main --json
+expect_rc 9 "wallet open with no TTY and no password source is exit 9 (§2b.1)"
+expect_contains "FMONERO_WALLET_PASSWORD" "and the hint names the way an agent supplies one"
+FMONERO_WALLET_PASSWORD=x fm --timeout 3 wallet open main --json
+expect_rc 4 "wallet open with a password but no unit is exit 4 (§4b)"
+
+fm tui
+expect_rc 2 "tui without a TTY is exit 2 (§4)"
+
+fm nonsense
+expect_rc 2 "an unknown command is exit 2"
+fm wallet send
+expect_rc 2 "a missing argument is exit 2"
+expect_reason bad_args "bad_args"
+fm wallet send "$DEST" 0.1 --priority 9
+expect_rc 2 "priority 9 is out of range"
+fm wallet send "$DEST" 1.2345678912345
+expect_rc 2 "13 decimal places is not an amount (§2a.5)"
+expect_reason bad_amount "bad_amount"
+fm wallet send "$DEST" all
+expect_rc 2 "'all' is not an amount anywhere in the CLI (§4)"
+expect_contains "fmonero wallet sweep" "and the hint names the command that moves everything"
+
+for h in "--help" "wallet --help" "node --help" "settings --help" "setup --help" "doctor --help" "tui --help" "wallet send --help"; do
+  # shellcheck disable=SC2086
+  if "$FM" $h >/dev/null 2>&1; then ok "fmonero $h"; else bad "fmonero $h"; fi
+done
+
+# Bare `fmonero` on a pipe is `status --json` (§4).
+if "$FM" | jq -e '.schema == 1' >/dev/null 2>&1; then ok "bare fmonero on a pipe is status --json (§4)"; else
+  bad "bare fmonero on a pipe"
+fi
+
+# §2a.1's GREEN rows: the refusal order is local first, so a bad address still loses to an
+# unreachable daemon and a valid one does not.
+fm settings set wallet.url "http://127.0.0.1:$WALLET_PORT" >/dev/null
+fm settings set wallet.port "$WALLET_PORT" >/dev/null
+fm --timeout 3 wallet send "not-an-address" 0.1 --json
+expect_rc 15 "a bad address is exit 15 even with the wallet daemon down (§2a.1)"
+fm --timeout 3 wallet send "$DEST" 0.1 --json
+expect_rc 4 "a VALID address with the wallet daemon down is exit 4, not the no---yes 3 (§4b)"
+expect_reason unreachable "reason unreachable, because nothing is listening (§2c)"
+fm --timeout 3 wallet send "$DEST" 0.1 --dry-run --yes --json
+expect_rc 4 "--dry-run --yes with no daemon is the same, which is proof the pair cannot relay"
+
+# §4.2's two gate lines, run against the REAL config dir's renderer but writing nothing.
+step "setup --units --dry-run (§4.2)"
+sandbox setup
+fm setup --units --dry-run --json
+expect_rc 0 "setup --units --dry-run"
+expect_keys "setup" "ok schema actions dry_run"
+expect_json '[.actions[] | select(.what | test("CreateDir wallet.dir"))] | length > 0' 'true' \
+  "it lists a CreateDir action for wallet.dir when it is absent (§4.2)"
+expect_json '[.actions[] | select(.status == "written")] | length' '0' "a dry run writes nothing"
+if printf '%s' "$OUT" | grep -q 'rpc-login=fmonero:'; then
+  bad "§4.2: the node credential must be redacted in everything setup prints"
+else
+  ok "§4.2: the rpc-login value is redacted"
+fi
+# The %h guard, in the form that can actually fail: the rendered monerod.conf hunk.
+CONF_HUNK="$(printf '%s' "$OUT" | jq -r '.actions[] | select(.what == "monerod.conf") | .diff // ""')"
+if [ -z "$CONF_HUNK" ]; then
+  bad "§4.2: the dry run produced no monerod.conf diff to grep"
+elif printf '%s' "$CONF_HUNK" | grep -q '%[hSt]'; then
+  bad "§4.2: a systemd specifier reached monerod.conf" "$(printf '%s' "$CONF_HUNK" | grep -n '%[hSt]')"
+else
+  ok "§4.2: no %h, %S or %t in the rendered monerod.conf"
+fi
+# And `--wallet-dir` in the rendered unit equals `settings get wallet.dir`, read from the
+# OUTPUT because a dry run writes no file.
+UNIT_DIR="$(printf '%s' "$OUT" | jq -r '.actions[] | select(.what == "wallet unit") | .diff // ""' \
+            | grep -o -- '--wallet-dir [^ ]*' | head -1 | cut -d' ' -f2)"
+WANT_DIR="$("$FM" settings get wallet.dir --json | jq -r .value)"
+if [ -n "$UNIT_DIR" ] && [ "$UNIT_DIR" = "$WANT_DIR" ]; then
+  ok "§4.2: the unit's --wallet-dir is settings.wallet.dir byte for byte"
+else
+  bad "§4.2: --wallet-dir mismatch" "unit: $UNIT_DIR" "setting: $WANT_DIR"
+fi
+# §4.2: a test never installs a unit.
+fm setup --units --yes --json
+expect_rc 3 "setup --units --yes refuses to write under FMONERO_STATE_DIR (§4.2)"
+fm setup --json
+expect_rc 2 "setup with no target is exit 2"
+
+# ================================================================ AMBER (§4b)
+step "AMBER — against fmonero-mock over the derived fixtures (§4b)"
+sandbox amber
+mock_node_up
+mock_wallet_up
+
+fm --timeout 3 status --json
+expect_rc 0 "status against both mocks"
+expect_json '.node.reachable' 'true' "the node answers"
+expect_json '.wallet.open' 'true' "and a wallet is open"
+expect_json '.wallet.balance_xmr' '"1.234567891234"' "the balance is rendered exactly (§5)"
+expect_json '.wallet.subaddress_count' '3' "every GENERATED subaddress, not only the funded one (§5)"
+expect_json '.node.authenticated' 'false' "the node accepted us with no credential"
+expect_json '.wallet.authenticated' 'true' "the wallet completed a Digest handshake (§2c)"
+expect_json '[.warnings[].id] | contains(["auth_missing"])' 'true' "and auth_missing says so"
+
+fm --timeout 3 wallet balance --json
+expect_rc 0 "wallet balance"
+expect_keys "wallet balance" "ok schema account_index balance_pico balance_xmr unlocked_pico unlocked_xmr blocks_to_unlock time_to_unlock_sec subaddresses"
+fm --timeout 3 wallet balance --subaddresses --json
+expect_json '.subaddresses | length' '1' "--subaddresses lists only the FUNDED ones (§5)"
+
+fm --timeout 3 wallet address --json
+expect_rc 0 "wallet address"
+expect_keys "wallet address" "ok schema primary addresses selected"
+fm --timeout 3 wallet address --index 1 --json
+expect_json '.selected' '"8AsN91rznfkBGTY8psSNkJBg9SZgxxGGRUhGwRptBhgr5XSQ1XzmA9m8QAnoxydecSh5aLJXdrgXwTDMMZ1AuXsN1EX5Mtm"' "--index selects a subaddress"
+fm --timeout 3 wallet address --index 99 --json
+expect_rc 2 "an index the account does not have is exit 2"
+
+fm --timeout 3 wallet new-address --label test --json
+expect_rc 0 "wallet new-address"
+expect_keys "wallet new-address" "ok schema primary addresses selected"
+
+fm --timeout 3 wallet history --json
+expect_rc 0 "wallet history"
+expect_keys "wallet history" "ok schema transfers cache_age_sec high_water cached pool_unavailable"
+expect_json '[.transfers[].type] | contains(["block"])' 'true' "a coinbase row deserializes (§1b.4)"
+expect_json '[.transfers[] | select(.locked != null)] | length > 0' 'true' "locked is derived, not cached (§5b)"
+HIST_BODY="$(jq -s '[.[] | select(.method=="get_transfers")] | last | .body.params' "$WALLET_LOG")"
+if printf '%s' "$HIST_BODY" | jq -e '.filter_by_height == true' >/dev/null; then
+  ok "§1b.4: the top-up sends filter_by_height together with min_height"
+else
+  bad "§1b.4: filter_by_height was not sent — the bound is then silently ignored" "$HIST_BODY"
+fi
+fm --timeout 3 wallet history --cached --json
+expect_rc 0 "wallet history --cached"
+expect_json '.cached' 'true' "it says it is cached"
+expect_json '[.transfers[] | select(.confirmations != null)] | length' '0' "confirmations is null with --cached (§4.1)"
+expect_json '[.transfers[] | select(.locked != null)] | length' '0' "and so is locked — never 0 standing in for unknown"
+expect_contains "cached: confirmations unknown" "and the footer says which one --cached gives up (§4.1)"
+
+fm --timeout 3 wallet book list --json
+expect_rc 0 "wallet book list"
+expect_keys "wallet book list" "ok schema entries"
+fm --timeout 3 wallet book add "$DEST" friend --json
+expect_rc 0 "wallet book add"
+expect_keys "wallet book add" "ok schema index address description"
+fm --timeout 3 wallet book remove 0 --yes --json
+expect_rc 0 "wallet book remove"
+expect_keys "wallet book remove" "ok schema index address description"
+fm --timeout 3 wallet book remove 0 --json
+expect_rc 3 "wallet book remove without --yes is exit 3"
+
+fm --timeout 3 wallet notes get "$BUILT_TXID" --json
+expect_rc 0 "wallet notes get"
+expect_keys "wallet notes get" "ok schema txids notes"
+fm --timeout 3 wallet notes set "$BUILT_TXID" coffee --json
+expect_rc 0 "wallet notes set"
+expect_keys "wallet notes set" "ok schema txids notes"
+fm --timeout 3 wallet notes get "not-a-txid" --json
+expect_rc 2 "a malformed txid is exit 2"
+
+fm --timeout 3 wallet refresh --json
+expect_rc 0 "wallet refresh"
+expect_keys "wallet refresh" "ok schema blocks_fetched received_money"
+
+fm --timeout 3 wallet validate "$DEST" --json
+expect_rc 0 "wallet validate against the daemon"
+expect_json '.structural_only' 'false' "the daemon answered, so it is not structural-only"
+VAL_BODY="$(jq -s '[.[] | select(.method=="validate_address")] | last | .body.params' "$WALLET_LOG")"
+if printf '%s' "$VAL_BODY" | jq -e '.any_net_type == true and .allow_openalias == false' >/dev/null; then
+  ok "§2a.6: any_net_type is true and allow_openalias is false"
+else
+  bad "§2a.6: the two validate_address flags are wrong" "$VAL_BODY"
+fi
+
+FMONERO_WALLET_PASSWORD=t3stpw fm --timeout 3 wallet open main --json
+expect_rc 0 "wallet open"
+expect_keys "wallet open" "ok schema name open unit_started nettype"
+ORDER="$(jq -rs '[.[] | select(.status==200) | .method] | map(select(. == "open_wallet" or . == "set_daemon" or . == "auto_refresh")) | join(",")' "$WALLET_LOG")"
+if [ "$ORDER" = "open_wallet,set_daemon,auto_refresh" ]; then
+  ok "§4.2: open_wallet, then set_daemon, then auto_refresh — the order is not free"
+else
+  bad "§4.2: the open sequence is out of order" "$ORDER"
+fi
+
+fm --timeout 3 wallet set-daemon 127.0.0.1:18081 --trusted --yes --json
+expect_rc 0 "wallet set-daemon"
+expect_keys "wallet set-daemon" "ok schema address trusted authenticated"
+fm --timeout 3 wallet set-daemon 127.0.0.1:18081 --json
+expect_rc 3 "wallet set-daemon without --yes is exit 3"
+
+FMONERO_WALLET_PASSWORD=t3stpw fm --timeout 3 wallet create newone --yes --json
+expect_rc 0 "wallet create (the mock records the call; NO wallet file is ever created)"
+expect_keys "wallet create" "ok schema name open unit_started seed_backup_hint"
+expect_contains "monero-wallet-cli" "§2b.2: it names the command that shows the seed"
+if printf '%s' "$OUT" | grep -qE '"seed"|t3stpw'; then
+  bad "§2b.2: wallet create must not print a seed or the password"
+else
+  ok "§2b.2: no seed and no password in the payload"
+fi
+FMONERO_WALLET_PASSWORD= fm --timeout 3 wallet create empty --yes --json
+expect_rc 2 "an empty password is refused without --allow-empty-password (§2b.2)"
+fm --timeout 3 wallet create bad/name --yes --json
+expect_rc 2 "a wallet name containing '/' is refused locally (§1b.5)"
+fm --timeout 3 wallet create newone --json
+expect_rc 3 "wallet create without --yes is exit 3"
+
+fm --timeout 3 wallet close --json
+expect_rc 0 "wallet close"
+expect_keys "wallet close" "ok schema name open unit_started"
+
+fm --timeout 3 node info --json
+expect_rc 0 "node info"
+expect_keys "node info" "ok schema node txpool sync hard_fork rpc"
+expect_json '.hard_fork.current_version != .hard_fork.voting_on.version or .hard_fork.current_version == 16' 'true' \
+  "§1b.3: the two fork versions are kept apart"
+expect_json '.rpc.version_major' '3' "the RPC version is unpacked from major<<16|minor"
+
+fm --timeout 3 node peers --json
+expect_rc 0 "node peers"
+expect_keys "node peers" "ok schema connections white gray"
+expect_json '.connections[0].port | type' '"number"' "§5c: connections[].port is rendered as an integer"
+expect_json '.white[0].port | type' '"number"' "and so is the peer list's, so both arrays agree"
+
+fm --timeout 3 node bans --json
+expect_rc 0 "node bans"
+expect_keys "node bans" "ok schema bans"
+
+# The mutating node calls need §2i's user_unit layout, and the type gate is what enforces it.
+systemctl_fixture user_unit
+fm --timeout 3 node ban 1.2.3.4 --json
+expect_rc 0 "node ban under the user_unit layout"
+expect_keys "node ban" "ok schema host banned seconds"
+fm --timeout 3 node unban 1.2.3.4 --json
+expect_rc 0 "node unban"
+expect_keys "node unban" "ok schema host banned seconds"
+fm --timeout 3 node limit --json
+expect_rc 0 "node limit with no arguments only reads"
+expect_keys "node limit" "ok schema limit_up_kbps limit_down_kbps out_peers in_peers changed"
+expect_json '.changed' 'false' "and says it changed nothing"
+fm --timeout 3 node limit --up 1024 --json
+expect_rc 0 "node limit --up"
+expect_json '.changed' 'true' "and says it did"
+if jq -se '[.[] | select(.method=="out_peers")] | all(.body.set == false)' "$NODE_LOG" >/dev/null; then
+  ok "§1b.3: peers_count always sends set:false"
+else
+  bad "§1b.3: a read of out_peers wrote instead"
+fi
+
+fm --timeout 3 node up --json
+expect_rc 0 "node up under the user_unit layout"
+expect_keys "node up" "ok schema unit active reachable synchronized waited_sec already_running"
+fm --timeout 3 node down --yes --json
+expect_rc 0 "node down"
+expect_keys "node down" "ok schema unit active reachable synchronized waited_sec already_running"
+fm --timeout 3 node restart --yes --json
+expect_rc 0 "node restart"
+expect_keys "node restart" "ok schema unit active reachable synchronized waited_sec already_running"
+fm --timeout 3 node down --json
+expect_rc 3 "node down without --yes is exit 3"
+unset FMONERO_SYSTEMCTL_FIXTURE
+
+# ---- the money rows, in all three outcomes (§5c) -----------------------------
+step "the money path against the mock (§2a, §5c)"
+sandbox money
+mock_node_up
+mock_wallet_up
+
+fm --timeout 3 wallet send "$DEST" 0.1 --dry-run --json
+expect_rc 0 "wallet send --dry-run"
+expect_keys "wallet send (dry run)" "$SEND_KEYS"
+expect_json '.relayed' 'false' "it relayed nothing"
+expect_json '.dry_run' 'true' "and says it was a dry run"
+expect_json '.fee_xmr' '"0.00003072"' "the fee is the mock's REAL built fee (§2a.2)"
+SEND_DRY="$OUT"
+if [ "$(logged "$WALLET_LOG" relay_tx)" = "0" ]; then ok "§4: a dry run records zero relay_tx"; else
+  bad "§4: a dry run relayed something"
+fi
+if [ "$(logged "$WALLET_LOG" transfer)" = "1" ]; then ok "and exactly one transfer"; else
+  bad "expected one transfer, got $(logged "$WALLET_LOG" transfer)"
+fi
+
+fm --timeout 3 wallet send "$DEST" 0.1 --dry-run --yes --json
+expect_rc 0 "wallet send --dry-run --yes: --dry-run beats --yes (§4)"
+expect_json '.relayed' 'false' "nothing was relayed"
+
+fm --timeout 3 wallet send "$DEST" 0.1 --json
+expect_rc 3 "wallet send without --yes is exit 3 (§2a.1 step 10)"
+expect_reason needs_yes "needs_yes"
+expect_keys "wallet send (the no---yes refusal)" "ok schema code code_name error hint reason $SEND_KEYS"
+expect_json '.ok' 'false' "ok is false"
+expect_json '.fee_pico' '30720000' "§5c: the refusal carries the BUILT fee, machine-readable"
+expect_contains "--yes" "and the hint is the user's own command with --yes appended (§4)"
+SEND_REFUSED="$OUT"
+
+fm --timeout 3 wallet send "$DEST" 0.1 --max-fee 0.00000001 --json
+expect_rc 3 "a built fee above --max-fee is exit 3 (§2a.2)"
+expect_reason fee_above_max "fee_above_max"
+RELAYS_BEFORE="$(logged "$WALLET_LOG" relay_tx)"
+
+fm --timeout 3 wallet send "$DEST" 0.1 --note coffee --yes --json
+expect_rc 0 "wallet send --yes"
+expect_keys "wallet send (relayed)" "$SEND_KEYS"
+expect_json '.relayed' 'true' "it relayed"
+expect_json '.txids | length' '1' "one txid"
+expect_json ".txids[0]" "\"$BUILT_TXID\"" "and it is the txid that was built (§2a.9)"
+SEND_RELAYED="$OUT"
+# §2a.3: the relay_tx hex is byte-identical to the metadata the `transfer` response carried.
+# The mock served `transfer-do-not-relay.json`, so that fixture's `tx_metadata` IS that value —
+# and `tx_blob` is deliberately a different (empty) field, so relaying the wrong one shows up.
+RELAY_HEX="$(jq -rs '[.[] | select(.method=="relay_tx")] | last | .body.params.hex' "$WALLET_LOG")"
+WANT_HEX="$(jq -r '.tx_metadata' "$ROOT/tests/fixtures/wallet/transfer-do-not-relay.json")"
+if [ "$RELAY_HEX" = "$WANT_HEX" ]; then
+  ok "§2a.3: relay_tx.hex is byte-identical to the transfer response's tx_metadata"
+else
+  bad "§2a.3: relay_tx sent the wrong blob" "sent: ${RELAY_HEX:0:60}" "want: ${WANT_HEX:0:60}"
+fi
+# Five invocations have built so far in this sandbox (--dry-run, --dry-run --yes, no ---yes,
+# --max-fee, --yes) and exactly ONE of them relayed: one build per invocation, never two per
+# send, and never a build whose plan is relayed twice (§2a.3).
+if [ "$(logged "$WALLET_LOG" transfer)" = "5" ] && [ "$(logged "$WALLET_LOG" relay_tx)" = "1" ]; then
+  ok "§2a.3: five builds, one relay — one transfer per invocation and one relay per plan"
+else
+  bad "§2a.3: expected 5 transfer and 1 relay_tx" \
+      "transfer=$(logged "$WALLET_LOG" transfer) relay_tx=$(logged "$WALLET_LOG" relay_tx)"
+fi
+if [ "$(logged "$WALLET_LOG" store)" -ge 1 ]; then ok "§2a.4: one wallet store after the last relay"; else
+  bad "§2a.4: no store was issued, so a SIGKILL would lose the wallet's record"
+fi
+# §2a.8: no forbidden field in ANY recorded body.
+if jq -se 'all(.[] | select(.method=="transfer" or .method=="sweep_all");
+              (.body.params | has("unlock_time") or has("payment_id") or has("ring_size")) | not)' \
+        "$WALLET_LOG" >/dev/null; then
+  ok "§2a.8: no unlock_time, payment_id or ring_size in any recorded body"
+else
+  bad "§2a.8: a forbidden field was sent"
+fi
+# The record cleared itself (§2a.4).
+fm --timeout 3 status --json
+expect_json '.pending' 'null' "§2a.4: a successful send leaves no record behind"
+
+fm --timeout 3 wallet sweep "$DEST" --dry-run --json
+expect_rc 0 "wallet sweep --dry-run"
+expect_keys "wallet sweep (dry run)" "$SEND_KEYS"
+expect_json '.txs | length' '2' "sweep_all.json builds two transactions"
+if jq -se 'all(.[] | select(.method=="sweep_all"); .body.params.subaddr_indices_all == true)' "$WALLET_LOG" >/dev/null; then
+  ok "§2a.10: every recorded sweep_all carries subaddr_indices_all: true"
+else
+  bad "§2a.10: a sweep without it moves ONE subaddress chosen at random"
+fi
+fm --timeout 3 wallet sweep "$DEST" --json
+expect_rc 3 "wallet sweep without --yes is exit 3"
+fm --timeout 3 wallet sweep "$DEST" --yes --json
+expect_rc 0 "wallet sweep --yes"
+expect_json '.txids | length' '2' "one relay_tx per tx_metadata_list entry, in order (§2a.4)"
+expect_keys "wallet sweep (relayed)" "$SEND_KEYS"
+SWEEP_RELAYED="$OUT"
+
+# §2a.4: an unrelayed record BLOCKS, and --force does not widen it.
+printf '{"kind":"send","account_index":0,"dest":"%s","built_at":1,"txs":[{"txid":"%s","amount":1,"fee":2,"relayed":false,"relayed_at":null}]}\n' \
+  "$DEST" "$(printf 'f%.0s' $(seq 64))" > "$FMONERO_STATE_DIR/pending.json"
+chmod 600 "$FMONERO_STATE_DIR/pending.json"
+BEFORE="$(log_lines "$WALLET_LOG")"
+fm --timeout 3 wallet send "$DEST" 0.1 --yes --force --json
+expect_rc 3 "§2a.4: an unrelayed record blocks even with --yes --force"
+expect_reason pending_send "pending_send"
+if [ "$(log_lines "$WALLET_LOG")" = "$BEFORE" ]; then ok "§2a: and the mock recorded ZERO new requests"; else
+  bad "§2a: --force reached the daemon" "before $BEFORE, after $(log_lines "$WALLET_LOG")"
+fi
+fm --timeout 3 status --json
+expect_json '[.warnings[].id] | contains(["send_may_be_in_flight"])' 'true' "§5: status raises send_may_be_in_flight"
+expect_json '.pending.total_count' '1' "and surfaces the record"
+expect_json '.pending.relayed_count' '0' "with its counts pre-rendered in Rust (§5b)"
+fm --timeout 3 wallet clear-pending --yes --json
+expect_rc 0 "wallet clear-pending clears it"
+expect_json '.cleared' 'true' "cleared"
+
+# §2a's --force list: it never bypasses the §2i layout gate.
+systemctl_fixture system_unit
+BEFORE="$(log_lines "$NODE_LOG")"
+fm --timeout 3 node down --yes --force --json
+expect_rc 3 "§2i: node down under the system_unit layout is exit 3, even with --force"
+expect_reason foreign_node "foreign_node"
+for cmd in "node restart --yes" "node ban 1.2.3.4" "node unban 1.2.3.4" "node limit --up 1024"; do
+  # shellcheck disable=SC2086
+  fm --timeout 3 $cmd --json
+  expect_rc 3 "§2i: '$cmd' is refused under the system_unit layout"
+done
+if [ "$(log_lines "$NODE_LOG")" = "$BEFORE" ]; then ok "§2i: and the mock recorded ZERO requests"; else
+  bad "§2i: a mutating call reached the node" "before $BEFORE, after $(log_lines "$NODE_LOG")"
+fi
+unset FMONERO_SYSTEMCTL_FIXTURE
+
+# §2a's third --force case.
+fm settings set node.data_dir "$WORK/money/bitmonero" >/dev/null
+cp "$FMONERO_CONFIG_DIR/config.toml" "$WORK/money/config.bak"
+sed -i 's|^url = "http://127.0.0.1:18191"|url = "http://10.0.0.5:18081"|' "$FMONERO_CONFIG_DIR/config.toml"
+fm --timeout 3 status --force --json
+expect_rc 2 "§2a: status --force with a non-loopback node.url exits 2, not 5"
+expect_reason non_loopback_url "because require_loopback runs before any breaker"
+cp "$WORK/money/config.bak" "$FMONERO_CONFIG_DIR/config.toml"
+
+# ---- the §1b.4 error map, end to end ----------------------------------------
+step "the §1b.4 wallet-RPC error map, end to end"
+mocks_down
+sandbox errmap
+mock_node_up
+mock_wallet_up --fail "get_balance=-17:not enough money"
+fm --timeout 3 wallet balance --json
+expect_rc 14 "--fail get_balance=-17 makes wallet balance exit 14 (§1b.4)"
+if [ -s "$FMONERO_STATE_DIR/run/monero-wallet-rpc.$WALLET_PORT.login" ]; then
+  ok "and the matching login file was written first (§2c)"
+else
+  bad "the login file is missing, so this tested exit 4 instead"
+fi
+mocks_down
+sandbox errmap2
+mock_node_up
+mock_wallet_up --fail "get_balance=-13:No wallet file"
+fm --timeout 3 wallet balance --json
+expect_rc 9 "-13 NOT_OPEN is exit 9"
+expect_reason not_open "not_open"
+mocks_down
+sandbox errmap3
+mock_node_up
+mock_wallet_up --fail "transfer=-18:Transaction would be too large.  try /transfer_split."
+fm --timeout 3 wallet send "$DEST" 0.1 --json
+expect_rc 16 "-18 TX_TOO_LARGE is exit 16"
+expect_reason too_large "too_large"
+expect_contains "fmonero wallet sweep" "with its OWN hint naming sweep (§1b.4)"
+mocks_down
+sandbox errmap4
+mock_node_up
+mock_wallet_up --fail "transfer=-2:WRONG_ADDRESS"
+fm --timeout 3 wallet send "$DEST" 0.1 --json
+expect_rc 15 "-2 WRONG_ADDRESS is exit 15"
+mocks_down
+sandbox errmap5
+mock_node_up
+mock_wallet_up --fail "get_transfers=0:"
+fm --timeout 3 wallet history --pool --json
+expect_rc 5 "epee's code:0 catch-all is exit 5"
+expect_reason rpc_error "rpc_error"
+expect_contains "cannot reach the daemon" "with a SYNTHESISED message, never an empty one (§2j)"
+
+# ---- the restricted node, and BUSY ------------------------------------------
+step "the restricted node and the BUSY degradation (§1b.2, §1b.3)"
+mocks_down
+sandbox restricted
+mock_node_up --restricted --scenario restricted
+fm --timeout 3 status --json
+expect_rc 0 "status against a restricted node still exits 0"
+expect_json '.node.restricted' 'true' "and says it is restricted"
+expect_json '.node.uptime_sec' 'null' "a poisoned start_time renders null, not 1970 (§5)"
+expect_json '.node.free_space' 'null' "and 2^64-1 free space renders null, not 16 exabytes"
+expect_json '.node.outgoing_connections_count' 'null' "and the peer counts render null, not a false alarm"
+expect_json '.node.database_size_rounded' 'true' "database_size carries its sibling flag"
+expect_json '[.warnings[].id] | contains(["node_restricted"])' 'true' "node_restricted is raised"
+expect_json '[.warnings[].id] | contains(["node_no_peers"])' 'false' "and node_no_peers is NOT (§5)"
+fm --timeout 3 node peers --json
+expect_rc 5 "node peers on a restricted node is exit 5"
+expect_reason restricted "restricted"
+mocks_down
+sandbox busy
+mock_node_up --scenario syncing
+fm --timeout 3 status --json
+expect_rc 0 "status against a syncing node exits 0 (§1b.3)"
+expect_json '.node.top_block_age_sec' 'null' "a BUSY all-zero header renders null, not a 56-year-old block"
+expect_json '[.warnings[].id] | contains(["node_syncing"])' 'true' "node_syncing is raised"
+fm --timeout 3 wallet send "$DEST" 0.1 --yes --json
+expect_rc 4 "and a send with no wallet daemon still fails at the probe"
+
+# ================================================================ --full
+if [ "$MODE" = full ]; then
+  step "--full: the §2d deadline, breaker and --force paths"
+  mocks_down
+  sandbox deadline
+  mock_node_up --delay-ms 10000
+  mock_wallet_up
+  # `node bans`, not `node info`: `node info` renders the §5 document first, and `status`'s own
+  # client is never blocked by a breaker (§2d), so it would wait the full deadline once before
+  # the breaker path was even reached — the command would be slow for a correct reason and the
+  # timing assertion would be measuring the wrong thing.
+  START=$(date +%s%N)
+  fm --timeout 2 node bans --json
+  ELAPSED=$(( ($(date +%s%N) - START) / 1000000 ))
+  expect_rc 5 "a call killed at its deadline is exit 5"
+  expect_reason killed_at_deadline "killed_at_deadline"
+  if [ "$ELAPSED" -ge 1500 ] && [ "$ELAPSED" -le 5000 ]; then
+    ok "and it took ${ELAPSED}ms — between 1.5 s and 5 s (§2d)"
+  else
+    bad "the deadline did not hold: ${ELAPSED}ms"
+  fi
+  START=$(date +%s%N)
+  fm --timeout 2 node bans --json
+  ELAPSED=$(( ($(date +%s%N) - START) / 1000000 ))
+  expect_rc 5 "the second invocation takes the breaker path"
+  expect_reason stalled "stalled, which is a different reflex from rpc_error (§4)"
+  if [ "$ELAPSED" -lt 1000 ]; then ok "and returns in ${ELAPSED}ms without waiting again (§2d)"; else
+    bad "the breaker did not short-circuit: ${ELAPSED}ms"
+  fi
+  fm --timeout 2 node bans --force --json
+  expect_reason killed_at_deadline "--force attempts the call anyway (§2d)"
+  # And `node info` shows why the breaker cannot make `status` fast: it is never blocked by one.
+  fm --timeout 2 node info --json
+  expect_rc 5 "node info under an armed breaker is still exit 5"
+  fm --timeout 2 status --json
+  expect_rc 0 "status is never blocked by a breaker: it reports it (§2d)"
+  expect_json '[.warnings[].id] | contains(["node_stalled"])' 'true' "node_stalled"
+
+  # §2d: a wallet timeout while the wallet is far behind is wallet_syncing, NOT a stall.
+  mocks_down
+  sandbox syncing-wallet
+  mock_node_up
+  mock_wallet_up --delay-ms 10000
+  fm --timeout 3 status --json
+  expect_rc 0 "status with a slow wallet still exits 0 and degrades its fields (§2d)"
+  expect_json '.wallet.reachable' 'false' "the wallet probe was killed"
+  expect_json '.wallet.balance_pico' 'null' "so the balance is null, never 0"
+  fm --timeout 2 wallet balance --json
+  expect_rc 5 "a foreground wallet call is exit 5"
+  # `status` never arms a breaker (§2d), so the only armed one can come from the command above.
+  fm --timeout 2 status --json
+  expect_rc 0 "and status still answers"
+
+  step "--full: §2a.4's concurrency — status in a loop while a send relays"
+  mocks_down
+  sandbox concurrent
+  mock_node_up
+  mock_wallet_up --delay-ms 400
+  ( for _ in $(seq 40); do "$FM" --timeout 5 status --json >/dev/null 2>&1; done ) &
+  POLLER=$!
+  fm --timeout 20 wallet sweep "$DEST" --yes --json
+  SWEEP_RC=$RC
+  wait "$POLLER" 2>/dev/null
+  if [ "$SWEEP_RC" = 0 ]; then ok "§2a.4: the sweep succeeded while status polled throughout"; else
+    bad "§2a.4: the sweep failed under a concurrent status loop (exit $SWEEP_RC)" "${OUT:0:300}"
+  fi
+  if [ "$(logged "$WALLET_LOG" relay_tx)" = "2" ]; then ok "and both transactions were relayed exactly once"; else
+    bad "expected two relay_tx, got $(logged "$WALLET_LOG" relay_tx)"
+  fi
+
+  step "--full: §2a.11's interlock — two send processes at once"
+  mocks_down
+  sandbox interlock
+  mock_node_up
+  # --delay-ms 1500, so the first process is PROVABLY still holding send.lock when the second
+  # reaches it. Against an instant mock the first can finish build → relay → resolve before the
+  # second gets there, both legitimately succeed, and the only test of the one interlock that
+  # can double-spend becomes a coin flip.
+  mock_wallet_up --delay-ms 1500
+  "$FM" --timeout 30 wallet send "$DEST" 0.1 --yes --json > "$WORK/interlock/a.json" 2>"$WORK/interlock/a.err" &
+  A=$!
+  sleep 0.4
+  "$FM" --timeout 30 wallet send "$DEST" 0.1 --yes --json > "$WORK/interlock/b.json" 2>"$WORK/interlock/b.err" &
+  B=$!
+  wait "$A"; RC_A=$?
+  wait "$B"; RC_B=$?
+  ZEROES=0; THREES=0; BUSY_REASON=""
+  for pair in "$RC_A:a" "$RC_B:b"; do
+    rc="${pair%%:*}"; which="${pair##*:}"
+    case "$rc" in
+      0) ZEROES=$((ZEROES+1)) ;;
+      3) THREES=$((THREES+1)); BUSY_REASON="$(jq -r '.reason // "null"' "$WORK/interlock/$which.json" 2>/dev/null)" ;;
+    esac
+  done
+  if [ "$ZEROES" = 1 ] && [ "$THREES" = 1 ]; then
+    ok "§2a.11: exactly one send succeeded and one was refused"
+  else
+    bad "§2a.11: expected one exit 0 and one exit 3, got $RC_A and $RC_B" \
+        "a: $(head -c 200 "$WORK/interlock/a.json")" "b: $(head -c 200 "$WORK/interlock/b.json")"
+  fi
+  if [ "$BUSY_REASON" = send_in_progress ]; then ok "and the refusal is reason send_in_progress"; else
+    bad "§2a.11: the refusal's reason was '$BUSY_REASON'"
+  fi
+  if [ "$(logged "$WALLET_LOG" transfer)" = "1" ]; then
+    ok "and the mock recorded exactly ONE transfer: nothing was built twice"
+  else
+    bad "§2a.11: $(logged "$WALLET_LOG" transfer) transfer calls — two builds select from one unspent set"
+  fi
+
+  step "--full: §2a.4's write order — a send killed mid-relay"
+  mocks_down
+  sandbox killed
+  mock_node_up
+  mock_wallet_up --delay-ms 1500
+  "$FM" --timeout 60 wallet sweep "$DEST" --yes --json >/dev/null 2>&1 &
+  VICTIM=$!
+  # Wait until the record shows the first entry relayed and the second not, then kill.
+  SEEN=no
+  for _ in $(seq 200); do
+    if [ -f "$FMONERO_STATE_DIR/pending.json" ]; then
+      R="$(jq '[.txs[] | select(.relayed)] | length' "$FMONERO_STATE_DIR/pending.json" 2>/dev/null || echo x)"
+      T="$(jq '.txs | length' "$FMONERO_STATE_DIR/pending.json" 2>/dev/null || echo x)"
+      if [ "$R" = 1 ] && [ "$T" = 2 ]; then SEEN=yes; break; fi
+    fi
+    sleep 0.05
+  done
+  kill -9 "$VICTIM" 2>/dev/null
+  wait "$VICTIM" 2>/dev/null
+  if [ "$SEEN" = yes ]; then
+    R="$(jq '[.txs[] | select(.relayed)] | length' "$FMONERO_STATE_DIR/pending.json")"
+    if [ "$R" = 1 ]; then
+      ok "§2a.4: a SIGKILL mid-sweep leaves exactly one relayed: true and one false"
+    else
+      bad "§2a.4: after the kill the record shows $R relayed"
+    fi
+  else
+    bad "§2a.4: the record never passed through the one-relayed state"
+  fi
+  # And the next send BLOCKS on it.
+  fm --timeout 5 wallet send "$DEST" 0.1 --yes --json
+  expect_rc 3 "and the next send is refused"
+  expect_reason pending_send "pending_send"
+
+  step "--full: §2l timings, measured with the date loop of §1.4"
+  mocks_down
+  sandbox timing-a
+  S=$(date +%s%N); for _ in $(seq 20); do "$FM" status --json >/dev/null 2>&1; done; E=$(date +%s%N)
+  A_MS=$(( (E-S)/20000000 ))
+  if [ "$A_MS" -le 60 ]; then ok "§2l (a) status, both daemons absent: ${A_MS}ms mean (budget 60 ms, GREEN)"; else
+    bad "§2l (a) status, both daemons absent: ${A_MS}ms mean, over the 60 ms budget"
+  fi
+  sandbox timing-b
+  mock_node_up
+  mock_wallet_up
+  "$FM" --timeout 3 status --json >/dev/null 2>&1   # one cold pass first
+  S=$(date +%s%N); for _ in $(seq 20); do "$FM" --timeout 3 status --json >/dev/null 2>&1; done; E=$(date +%s%N)
+  B_MS=$(( (E-S)/20000000 ))
+  if [ "$B_MS" -le 80 ]; then ok "§2l (b) status against the mock: ${B_MS}ms mean (budget 80 ms, AMBER)"; else
+    bad "§2l (b) status against the mock: ${B_MS}ms mean, over the 80 ms budget"
+  fi
+  "$FM" --timeout 5 wallet history --limit 50 --json >/dev/null 2>&1   # build the snapshot
+  S=$(date +%s%N); for _ in $(seq 20); do "$FM" wallet history --limit 50 --json --cached >/dev/null 2>&1; done; E=$(date +%s%N)
+  D_MS=$(( (E-S)/20000000 ))
+  if [ "$D_MS" -le 50 ]; then ok "§2l (d) wallet history --cached: ${D_MS}ms mean (budget 50 ms, AMBER)"; else
+    bad "§2l (d) wallet history --cached: ${D_MS}ms mean, over the 50 ms budget"
+  fi
+  printf '  note  §2l (c) — warm, against a REAL monerod and monero-wallet-rpc — is RED and is\n'
+  printf '        neither measured nor claimed here (§4b, §2j).\n'
+fi
+
+# ================================================================ §5c coverage
+step "§5c: every command in §4.1 has been asserted, or is named as not covered"
+# `tui` and `robot-docs` are the two rows §5c marks exempt. `doctor`, `doctor undo` and
+# `doctor capabilities` belong to the Phase 2 doctor agent and are still the sanctioned
+# handover stub (§8), so their key sets cannot be asserted here — that is a skip with a
+# reason, never a pass.
+skip "tui — exempt: interactive, and it exits 2 on a non-TTY stdout (§5c)"
+skip "robot-docs — exempt: plain text by contract (§5c)"
+fm doctor --json
+if [ "$RC" = 1 ]; then
+  skip "doctor / doctor undo / doctor capabilities — Phase 2 owns crates/fmonero/src/doctor (§8); the body is still Error::unimplemented, so its §5c key sets are asserted by the Phase 2 doctor gate"
+else
+  bad "doctor exited $RC: it is expected to be the §8 handover stub at this phase"
+fi
+
+# ================================================================ §2b secrets
+step "§2b: the known-value grep over everything this run wrote"
+# The test's own wallet password, the mock's login-file contents and the rpc-login token must
+# appear in none of: stdout, stderr, state.json, history.bin, any fixture. The shape test
+# ("any 64-hex run") is deliberately NOT used: fmonero's own honest output is full of them.
+LEAKS=0
+for needle in t3stpw; do
+  if grep -rql "$needle" "$WORK" 2>/dev/null | grep -v '\.err$' | head -1 | grep -q .; then
+    LEAKS=1
+    bad "§2b: '$needle' appears in a file this run wrote" "$(grep -rl "$needle" "$WORK" 2>/dev/null | head -5)"
+  fi
+done
+[ "$LEAKS" = 0 ] && ok "§2b: the wallet password appears in nothing this run wrote"
+if grep -rq 'rpc-login=fmonero:[0-9a-f]' "$WORK"/*/state 2>/dev/null; then
+  bad "§2b: the node credential leaked into a state directory"
+else
+  ok "§2b: the node credential is nowhere outside monerod.conf"
+fi
+
+printf '\n'
+printf 'e2e.sh (%s): %s passed, %s failed, %s skipped\n' "$MODE" "$PASS" "$FAIL" "$SKIP"
+[ "$FAIL" = 0 ] || exit 1
+exit 0

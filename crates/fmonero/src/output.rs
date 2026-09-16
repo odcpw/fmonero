@@ -377,6 +377,17 @@ fn footers(label: &str, v: &serde_json::Value) -> Vec<String> {
                 ));
             }
         }
+        "node log" => {
+            // §4.1: a missing log file is exit 0 with "no log yet". In JSON mode the payload is
+            // `lines: []` — the machine form — so the sentence goes to stderr, where it reaches
+            // a human without ever entering the data stream (§4).
+            if v["lines"].as_array().is_some_and(|a| a.is_empty()) {
+                out.push(format!(
+                    "no log yet at {}",
+                    v["path"].as_str().unwrap_or("the configured log file")
+                ));
+            }
+        }
         "wallet create" => {
             if let Some(hint) = v["seed_backup_hint"].as_str() {
                 out.push(hint.to_string());

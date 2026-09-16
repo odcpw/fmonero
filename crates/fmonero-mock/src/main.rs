@@ -210,6 +210,8 @@ struct Session {
 /// `Content-Length` always, `Connection: close` never — without keep-alive §2c's "the second request
 /// on one nonce carries `nc=00000002`" is unwritable.
 fn connection(mut out: TcpStream, r: &Routes) -> std::io::Result<()> {
+    // Loopback, small frames, request/response: Nagle can only add latency here.
+    let _ = out.set_nodelay(true);
     let conn = r.conns.fetch_add(1, Ordering::SeqCst);
     let mut sess = Session::default();
     let mut input = BufReader::new(out.try_clone()?);
@@ -233,9 +235,17 @@ fn connection(mut out: TcpStream, r: &Routes) -> std::io::Result<()> {
             _ => ("Not Found", "text/html"),
         };
         let n = payload.len();
-        let h = format!("Content-Type: {ctype}\r\nContent-Length: {n}\r\n{extra}\r\n");
-        write!(out, "HTTP/1.1 {code} {why}\r\n{h}")?;
-        out.write_all(&payload)?;
+        // ONE write, and TCP_NODELAY below. A header write followed by a body write is two small
+        // segments on a keep-alive connection, and Nagle holds the second until the client's ACK
+        // of the first — about 40 ms per request on loopback. That is invisible in a functional
+        // test and it moved DESIGN.md §2l (b)'s `status` figure from ~60 ms to ~240 ms, i.e. the
+        // AMBER budget would have been "missed" by the mock rather than by fmonero.
+        let mut frame = format!(
+            "HTTP/1.1 {code} {why}\r\nContent-Type: {ctype}\r\nContent-Length: {n}\r\n{extra}\r\n"
+        )
+        .into_bytes();
+        frame.extend_from_slice(&payload);
+        out.write_all(&frame)?;
         out.flush()?;
     }
     Ok(())

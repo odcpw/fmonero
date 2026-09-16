@@ -364,6 +364,9 @@ pub fn capabilities_json(ctx: &Context) -> serde_json::Value {
         })
         .collect();
     serde_json::json!({
+        // The §4 envelope: every success object carries `ok` and `schema`. `main.rs` emits this
+        // object verbatim, so the two keys belong here.
+        "ok": true,
         "tool": crate::NAME,
         "version": crate::VERSION,
         "schema": crate::SCHEMA_VERSION,

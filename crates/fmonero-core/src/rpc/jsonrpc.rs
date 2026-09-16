@@ -63,7 +63,7 @@ struct Live {
 
 /// One daemon's HTTP transport.
 pub struct Transport {
-    agent: ureq::Agent,
+    agent: crate::rpc::Agent,
     base: String,
     auth: Option<Login>,
     probe: Duration,
@@ -185,70 +185,52 @@ impl Transport {
         let mut attempt = 0;
         loop {
             attempt += 1;
-            let mut req = self
-                .agent
-                .post(&url)
-                .config()
-                .timeout_global(Some(timeout))
-                .build()
-                .header("Content-Type", "application/json");
-            let mut sent_auth = false;
-            if let (Some(login), Some(session)) = (&self.auth, live.session.as_mut()) {
-                req = req.header(
-                    "Authorization",
-                    digest::authorization(session, login, "POST", path),
-                );
-                sent_auth = true;
-            }
-            let mut resp = match req.send(body) {
-                Ok(r) => r,
-                Err(ureq::Error::Timeout(_)) => {
+            let authorization = match (&self.auth, live.session.as_mut()) {
+                (Some(login), Some(session)) => {
+                    Some(digest::authorization(session, login, "POST", path))
+                }
+                _ => None,
+            };
+            let sent_auth = authorization.is_some();
+            let answer = match crate::rpc::post_once(
+                &self.agent,
+                &url,
+                authorization.as_deref(),
+                timeout,
+                body,
+            ) {
+                Ok(a) => a,
+                Err(RpcError::Killed) => {
                     drop(live);
                     self.arm_breaker();
                     return Err(RpcError::Killed);
                 }
-                Err(e) => return Err(RpcError::Transport(e.to_string())),
+                Err(e) => return Err(e),
             };
-            let status = resp.status().as_u16();
-            if status == 401 {
-                let values: Vec<String> = resp
-                    .headers()
-                    .get_all("www-authenticate")
-                    .into_iter()
-                    .filter_map(|v| v.to_str().ok().map(str::to_string))
-                    .collect();
-                // **Drain the body before retrying.** `ureq` returns a connection to the pool
-                // only once its body has been read, and epee's auth session is PER CONNECTION
-                // (`http_protocol_handler.h:186`): a retry on a fresh socket would present a
-                // nonce the server has never issued, take the `stale` path, and fail every
-                // request forever — which looks exactly like a wrong password (§2c).
-                let _ = resp.body_mut().read_to_vec();
+            if answer.status == 401 {
                 // A second 401 in a row is exit 4 (§2c): either we have no credential, or
                 // the one we have is wrong.
                 if attempt >= 2 || self.auth.is_none() {
                     live.authenticated = None;
                     return Err(RpcError::Unauthorized);
                 }
-                let refs: Vec<&str> = values.iter().map(String::as_str).collect();
+                let refs: Vec<&str> = answer.challenges.iter().map(String::as_str).collect();
                 match digest::challenge(&refs) {
                     Ok(s) => live.session = Some(s),
                     Err(_) => return Err(RpcError::Unauthorized),
                 }
                 continue;
             }
-            if status == 404 {
+            if answer.status == 404 {
                 // §1b.2: a gated **legacy** endpoint leaves `handled = false` and epee
                 // answers 404 — the restricted-RPC answer for that transport.
                 return Err(RpcError::NotRegistered(path.to_string()));
             }
-            let bytes = match resp.body_mut().read_to_vec() {
-                Ok(b) => b,
-                Err(e) => return Err(RpcError::Transport(e.to_string())),
-            };
-            if status != 200 {
+            if answer.status != 200 {
                 return Err(RpcError::Transport(format!(
-                    "HTTP {status} from {path}: {}",
-                    String::from_utf8_lossy(&bytes)
+                    "HTTP {} from {path}: {}",
+                    answer.status,
+                    String::from_utf8_lossy(&answer.body)
                         .chars()
                         .take(200)
                         .collect::<String>()
@@ -256,7 +238,7 @@ impl Transport {
             }
             live.authenticated = Some(sent_auth);
             live.any_success = true;
-            return Ok(bytes);
+            return Ok(answer.body);
         }
     }
 

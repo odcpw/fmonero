@@ -127,18 +127,81 @@ pub fn require_loopback(url: &str) -> Result<(), Error> {
     ))
 }
 
-/// The **one** place a `ureq::Agent` is constructed (§2d), with the deadline baked in, so
-/// there is no code path that can issue a request without one — `scripts/check.sh` greps
-/// for `ureq::` outside this file and fails on any other hit. The idle pool is one
-/// connection, because epee's auth session is per connection (`http_protocol_handler.h:186`,
-/// §1b.7) and a second pooled connection would start with no nonce.
-pub fn agent(timeout: std::time::Duration) -> ureq::Agent {
+/// The HTTP agent, behind a name of fmonero's own so that `scripts/check.sh` can grep for
+/// `ureq::` outside this file and fail on **any** hit — an exception list is a grep that stops
+/// protecting anything. The idle pool is one connection, because epee's auth session is per
+/// connection (`http_protocol_handler.h:186`, §1b.7) and a second pooled connection would start
+/// with no nonce.
+pub type Agent = ureq::Agent;
+
+/// The **one** place a `ureq::Agent` is constructed (§2d), with the deadline baked in.
+pub fn agent(timeout: std::time::Duration) -> Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(timeout))
         .http_status_as_error(false)
         .max_idle_connections_per_host(1)
         .build()
         .into()
+}
+
+/// One HTTP answer, with everything the caller needs and **no `ureq` type in sight**.
+pub(crate) struct HttpAnswer {
+    pub status: u16,
+    /// Every `WWW-Authenticate` header value, in order — a 401 from epee carries **two**
+    /// (§1b.7), and `digest::challenge` picks the `MD5` one.
+    pub challenges: Vec<String>,
+    pub body: Vec<u8>,
+}
+
+/// Send one POST and read its answer. Together with [`agent`] this is the **only** place
+/// `ureq` is named, which is what makes §2d's `grep -rn 'ureq::' crates/*/src` a real check
+/// rather than one that has to list exceptions: no code path can issue a request without a
+/// deadline, because there is no other code path.
+///
+/// The body is **always** read to completion, 401 included. `ureq` returns a connection to the
+/// pool only once its body has been consumed, and epee's auth session is per connection
+/// (`http_protocol_handler.h:186`): a retry on a fresh socket would present a nonce the server
+/// never issued and fail forever, which looks exactly like a wrong password (§2c).
+pub(crate) fn post_once(
+    agent: &Agent,
+    url: &str,
+    authorization: Option<&str>,
+    timeout: std::time::Duration,
+    body: &[u8],
+) -> Result<HttpAnswer, RpcError> {
+    let mut req = agent
+        .post(url)
+        .config()
+        // Per request, so one agent — and therefore one pooled connection and one server-side
+        // Digest session — serves every deadline of §2d.
+        .timeout_global(Some(timeout))
+        .build()
+        .header("Content-Type", "application/json");
+    if let Some(value) = authorization {
+        req = req.header("Authorization", value);
+    }
+    let mut resp = match req.send(body) {
+        Ok(r) => r,
+        // The one failure that arms a §2d breaker, and the only one that is `killed_at_deadline`.
+        Err(ureq::Error::Timeout(_)) => return Err(RpcError::Killed),
+        Err(e) => return Err(RpcError::Transport(e.to_string())),
+    };
+    let status = resp.status().as_u16();
+    let challenges: Vec<String> = resp
+        .headers()
+        .get_all("www-authenticate")
+        .into_iter()
+        .filter_map(|v| v.to_str().ok().map(str::to_string))
+        .collect();
+    let body = resp
+        .body_mut()
+        .read_to_vec()
+        .map_err(|e| RpcError::Transport(e.to_string()))?;
+    Ok(HttpAnswer {
+        status,
+        challenges,
+        body,
+    })
 }
 
 /// `n` bytes from `/dev/urandom`, as lowercase hex.

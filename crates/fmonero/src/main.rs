@@ -814,6 +814,13 @@ fn refuse_with_plan(out: &Out, e: &Error, payload: serde_json::Value) -> i32 {
             for (k, v) in p {
                 m.insert(k.clone(), v.clone());
             }
+            // The ENVELOPE wins. The payload arrives stamped `ok: true` by `ok()`, and §5c is
+            // explicit that this refusal carries `ok: false` with the exit code 3 — a failure
+            // envelope that says `ok: true` on the money surface is the §2j defect, and it is
+            // the one an agent branches on.
+            for (k, v) in e.json().as_object().into_iter().flatten() {
+                m.insert(k.clone(), v.clone());
+            }
         }
         println!("{merged}");
     } else {

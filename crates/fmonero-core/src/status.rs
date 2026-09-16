@@ -351,7 +351,13 @@ pub fn status(ctx: &Context) -> Result<Status, Error> {
     // ---- the node's hot path -------------------------------------------------
     let mut node = NodeStatus::unreachable(ctx.settings.node.url.clone(), layout);
     // `for_status`, never `from_ctx`: `status` arms no breaker and is blocked by none (§2d).
-    let nclient = crate::rpc::NodeClient::for_status(ctx).ok();
+    //
+    // The `?` is deliberate, and it is the one thing that can make `status` fail: both
+    // constructors reject a non-loopback URL through `rpc::require_loopback` (§2c), and §2a's
+    // `--force` list requires `status --force` with `node.url = http://10.0.0.5:18081` to exit
+    // **2**, not to report a document about a node it may not speak to. A daemon that is merely
+    // DOWN is still `reachable: false` and exit 0 (§2e) — that is a different condition.
+    let nclient = Some(crate::rpc::NodeClient::for_status(ctx)?);
     let node_started = std::time::Instant::now();
     let info = nclient.as_ref().and_then(|n| n.get_info().ok());
     let node_probe_ms = node_started.elapsed().as_millis() as u64;
@@ -372,7 +378,7 @@ pub fn status(ctx: &Context) -> Result<Status, Error> {
     let mut wallet =
         WalletStatus::unreachable(ctx.settings.wallet.url.clone(), ctx.settings.wallet.account);
     wallet.unit_active = unit_wallet.active;
-    let wclient = crate::rpc::WalletClient::for_status(ctx).ok();
+    let wclient = Some(crate::rpc::WalletClient::for_status(ctx)?);
     let wallet_started = std::time::Instant::now();
     let height = wclient.as_ref().map(|w| w.get_height());
     let wallet_probe_ms = wallet_started.elapsed().as_millis() as u64;
