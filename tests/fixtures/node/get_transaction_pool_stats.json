@@ -1,0 +1,26 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# fields: COMMAND_RPC_GET_TRANSACTION_POOL_STATS::response_t,\n#         src/rpc/core_rpc_server_commands_defs.h:1725-1733 -> ONE key, `pool_stats`.\n#         pool_stats = txpool_stats, :1680-1713\n#           bytes_total u64, bytes_min u32, bytes_max u32, bytes_med u32, fee_total u64, oldest u64,\n#           txs_total u32, num_failing u32, num_10m u32, num_not_relayed u32, histo_98pc u64,\n#           histo[] = txpool_histo (:1669-1678, { txs u32, bytes u64 }), num_double_spends u32\n# base:   rpc_access_response_base (credits, top_hash) :124-136\n# FILE NAME: the json_rpc method name AND the legacy endpoint name are both\n#         `get_transaction_pool_stats` (src/rpc/core_rpc_server.h:129 MAP_URI_AUTO_JON2). Naming this\n#         file after NodeClient::get_txpool_stats (DESIGN.md §5b) would be a silent 404 -- which is\n#         why DESIGN.md §8 Phase 0 calls the name out and why fixture names are wire names, never\n#         Rust method names.\n# gate:   OPEN. `get_transaction_pool_stats` has no !m_restricted guard (:129), so --restricted still\n#         serves this file.\n# VALUES: consistent with get_info.json's tx_pool_size 14 -- txs_total is 14 and the histo buckets\n#         sum to 14. `oldest` is a unix timestamp (1789559891 = adjusted_time - 240, so the oldest\n#         pooled tx is four minutes old, hence num_10m 0). fee_total is piconero:\n#         14 txs * ~0.0000305 XMR each.\n# histo_98pc: monerod sets it to the 98th-percentile AGE in seconds when the pool spans more than\n#         ten minutes and to 0 otherwise, and the `histo` buckets are then read as byte-size buckets.\n#         0 here, matching a four-minute-old pool.",
+  "status": "OK",
+  "untrusted": false,
+  "credits": 0,
+  "top_hash": "",
+  "pool_stats": {
+    "bytes_total": 21434,
+    "bytes_min": 1408,
+    "bytes_max": 2209,
+    "bytes_med": 1531,
+    "fee_total": 427000000,
+    "oldest": 1789559891,
+    "txs_total": 14,
+    "num_failing": 0,
+    "num_10m": 0,
+    "num_not_relayed": 0,
+    "histo_98pc": 0,
+    "histo": [
+      { "txs": 9, "bytes": 13779 },
+      { "txs": 4, "bytes": 5446 },
+      { "txs": 1, "bytes": 2209 }
+    ],
+    "num_double_spends": 0
+  }
+}

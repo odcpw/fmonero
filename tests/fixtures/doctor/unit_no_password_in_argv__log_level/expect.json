@@ -1,0 +1,20 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# Expectation for `unit_no_password_in_argv` against input/. The base case,\n# tests/fixtures/doctor/unit_no_password_in_argv/expect.json, carries the _env caveat (DESIGN.md\n# \u00a72i freezes no override that points the doctor at a directory of unit FILES -- a gap Phase 0\n# records rather than fills), the \"how to read this file\" convention, and the rule that the node\n# unit's own rpc-login= in its --config-file is CORRECT and must not be reported.\n# input/ is that case's two units with ONE LINE CHANGED; the changed file says which at its top.\n#\n# THIS CASE: both units are free of password flags, but the wallet unit's --log-level is 1.\n# THIS IS THE HALF OF \u00a77.1'S CONDITION A DETECTOR FORGETS. The row reads: neither unit's\n# ExecStart contains --password, --rpc-login, --daemon-login or a --password-file, \"AND BOTH\n# UNITS' --log-level IS 0\". A detector that implements only the flag grep reports `pass` here.\n# WHY IT BELONGS IN A SECRETS CHECK AND NOT IN A TUNING ONE (\u00a74.2): above 0, epee logs HTTP\n# request AND response headers (contrib/epee/include/net/http_protocol_handler.inl:457, :638,\n# at LOG_PRINT_L3) and wallet2 logs its own internals -- into %S/fmonero/run, the directory\n# that also holds monero-wallet-rpc's credential file, in a tree \u00a72b.7 declares owner-only but\n# whose run/ contents it explicitly EXEMPTS from the 0600 rule. That log records the open\n# wallet's name, its heights and its refresh activity, and \u00a72b's known-value grep reads stdout,\n# stderr, state.json, history.bin, doctor runs, fixtures and DECISIONS.md -- never that log. So\n# nothing else in the whole design would notice the level changing.\n# THE NODE UNIT CARRIES NO --log-level AT ALL and that is CORRECT: monerod takes it from the\n# --config-file, where \u00a74.2 sets log-level=0. A detector that requires the flag to be PRESENT\n# and 0 fails on the correct node unit -- ABSENT must satisfy the condition.",
+  "_env": {
+    "FMONERO_SYSTEMD_USER_DIR": "input"
+  },
+  "_settings": {
+    "wallet.dir": "/home/user/.local/share/fmonero/wallets/mainnet",
+    "wallet.port": "18083"
+  },
+  "id": "unit_no_password_in_argv",
+  "group": "units",
+  "severity": "error",
+  "class": "D",
+  "status": "fail",
+  "fixable": false,
+  "detail_contains": [
+    "--log-level",
+    "fmonero-wallet-rpc.service"
+  ]
+}

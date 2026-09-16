@@ -1,0 +1,14 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# Expectation for `settings_valid` against input/config.toml. See\n# tests/fixtures/doctor/settings_valid/expect.json for the FMONERO_CONFIG_DIR seam and the\n# Settings::invalid_keys() contract.\n#\n# THIS CASE: THE FILE IS NOT TOML. §7.1's condition is \"config.toml PARSES and every key is in the §4\n# table\"; the base case exercises the second half, this one the first. Verified with a real TOML parser:\n# the file fails at the unterminated string on its `network` line, and there are two more errors after it\n# (`prune = maybe`, and a `[wallet` header with no closing bracket) so a recovering parser still fails.\n#\n# THE REASON THIS CASE MATTERS MORE THAN AN INVALID VALUE: Context::load() reads config.toml, and EVERY\n# command goes through Context::load(). If an unparsable file makes the loader return Err, then the one\n# command whose job is to repair it -- `fmonero doctor --fix` -- is the one command the breakage locks\n# out, and the user's only route back is to delete the file by hand, which no --help text tells them. So\n# the loader must degrade to defaults and let THIS CHECK report the file it could not read. That is a\n# statement about Context::load, not about the doctor, and nothing else in DESIGN.md §7.1 forces it --\n# which is why the case is fixtured rather than left to a unit test on Settings.\n# SECOND-ORDER CONSEQUENCE, worth stating because it is easy to get wrong: with the file unparsable,\n# `Settings` in memory holds DEFAULTS, so every other check in the run sees default settings rather than\n# the user's. The detail must therefore make clear that the whole document was unreadable -- not that\n# some key was wrong -- or the reader will trust the neighbouring rows more than they should.\n# status `warn`, severity `warn`, class A, `fixable` true, from §7.1's row -- the same as the base case,\n# because the remedy is the same: WriteFile{config_file(), Settings::to_toml_bytes(&repaired), 0o600}\n# through mutate, with the verbatim backup and sha256 pair that let `doctor undo latest` hand these exact\n# broken bytes back (§7). Here `repaired` is the WHOLE default document, since nothing in the file is\n# recoverable; in the base case only the four bad keys are rewritten.\n# THAT UNDO IS THE POINT OF THE BACKUP: a user whose hand-edited config the doctor overwrote can get\n# their text back and find the typo, instead of being told their settings were reset.",
+  "_env": {
+    "FMONERO_CONFIG_DIR": "input"
+  },
+  "_settings": {},
+  "id": "settings_valid",
+  "group": "install",
+  "severity": "warn",
+  "class": "A",
+  "status": "warn",
+  "fixable": true,
+  "detail_contains": ["config.toml"]
+}

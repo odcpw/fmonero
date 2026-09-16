@@ -1,0 +1,20 @@
+# derived from monero v0.18.5.1 source, not captured from a run
+# Shape and semantics: DESIGN.md §2i's test-seam paragraph.
+# Format and semantics: see tests/fixtures/doctor/node_layout/input/systemctl.txt.
+#
+# CASE: node_layout__system_unit -> Layout::SystemUnit. ARCH'S OWN monerod.service IS RUNNING.
+# §2i's system_unit row has two disjuncts:
+#   (a) `systemctl is-active monerod.service` (NO --user) is `active`      <- this line drives it
+#   (b) /etc/monerod.conf exists AND `systemctl is-enabled monerod.service` succeeds
+# Disjunct (b) cannot be fixtured on this machine: no agent can create /etc/monerod.conf and sudo
+# needs a password (DESIGN.md §1.1). So this case exercises (a), and (b) is a RED row.
+# THE FMONERO UNITS DO NOT EXIST HERE (<exists> is `no`), so the user_unit row cannot also match and
+# the order of the two tests does not decide the answer. A case where BOTH are present is a real
+# machine state -- the user enables Arch's unit after running `fmonero setup --units` -- and §2i
+# resolves it by listing user_unit first; that case is not fixtured, and a Phase 2 doctor agent
+# adding it should add a case dir rather than editing this one.
+# MainPID 8421 is Arch's monerod, running as user `monero` (upstream's template,
+# utils/systemd/monerod.service:1-20). It is the pid node_data_dir_single_writer would report.
+fmonero-monerod.service inactive disabled no -
+fmonero-wallet-rpc.service inactive disabled no -
+monerod.service active enabled yes 8421

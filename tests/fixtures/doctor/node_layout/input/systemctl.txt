@@ -1,0 +1,20 @@
+# derived from monero v0.18.5.1 source, not captured from a run
+# Shape and semantics: DESIGN.md §2i's test-seam paragraph.
+# FMONERO_SYSTEMCTL_FIXTURE format (DESIGN.md §2i):
+#   <unit> <is-active> <is-enabled> <exists> <main-pid>      ('-' for an absent pid)
+# Consumers skip leading '#' lines. Under Systemctl::Fixture, units::state, units::main_pid AND
+# detect_layout's unit-file-exists test all read this file instead of stat'ing
+# paths.systemd_user_dir or spawning systemctl; units::{start,stop} become no-ops that rewrite the
+# <is-active> column. Honoured only when FMONERO_STATE_DIR is also set.
+#
+# CASE: node_layout -> Layout::UserUnit.
+# fmonero-monerod.service EXISTS, which is the first conjunct of §2i's user_unit row; _settings puts
+# a loopback node.url, which is the second. It is ACTIVE and DISABLED -- disabled is correct, because
+# setup --units writes both units disabled and starts them on demand (§4.2, and the doctor's
+# unit_enabled_state check asserts exactly that).
+# monerod.service is listed as inactive/disabled/no so the system_unit disjunct cannot fire. The
+# fixture format has no user/system column, so the UNIT NAME is the discriminator: `fmonero-*` are
+# the --user units and `monerod.service` is Arch's system one.
+fmonero-monerod.service active disabled yes 41233
+fmonero-wallet-rpc.service active disabled yes 51002
+monerod.service inactive disabled no -

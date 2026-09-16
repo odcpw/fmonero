@@ -1,0 +1,21 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# scenario: --scenario locked.\n# NOT IN DESIGN.md §8's deliverable list; added by Phase 0 with its reason recorded in\n# decisions/phase0-mock.md and tests/fixtures/README.md (\"Additions\"). The reason: DESIGN.md §5's\n# warning table makes `wallet_locked_funds` fire on `blocks_to_unlock > 0` and §6.5 gives the panel a\n# \"locked for N blocks\" row, and get_balance.json has nothing locked. Without a second fixture that\n# warning id and that panel row have no input and no test can reach either.\n# fields: identical to get_balance.json -- COMMAND_RPC_GET_BALANCE::response_t,\n#         src/wallet/wallet_rpc_server_commands_defs.h:102-119, per_subaddress_info :77-100.\n# SHAPE: unlocked_balance < balance, which is the ONLY relation that matters here.\n#         balance          1234567891234  (1.234567891234 XMR, as get_balance.json)\n#         unlocked_balance  734567891234  (0.734567891234 XMR)\n#         difference        500000000000  (0.5 XMR) locked\n#         blocks_to_unlock 6              -> the wallet_locked_funds warning fires\n#         time_to_unlock   720            = 6 blocks * DIFFICULTY_TARGET_V2 (120 s), which is how\n#                                           wallet-rpc derives it\n# THE AUTHORITY ON SPENDABLE FUNDS IS unlocked_balance, always -- never the history table's\n#         `locked (est.)` column, which DESIGN.md §1b.4/§5b recompute per response and label as an\n#         estimate.\n# per_subaddress carries the SAME split on its single funded row, because wallet2 derives the\n#         per-subaddress figures from the same outputs (src/wallet/wallet2.cpp:7037-7060): a\n#         consumer that sums per_subaddress and compares it with the top-level pair must find them\n#         equal here.",
+  "balance": 1234567891234,
+  "unlocked_balance": 734567891234,
+  "multisig_import_needed": false,
+  "blocks_to_unlock": 6,
+  "time_to_unlock": 720,
+  "per_subaddress": [
+    {
+      "account_index": 0,
+      "address_index": 0,
+      "address": "42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm",
+      "balance": 1234567891234,
+      "unlocked_balance": 734567891234,
+      "label": "Primary account",
+      "num_unspent_outputs": 7,
+      "blocks_to_unlock": 6,
+      "time_to_unlock": 720
+    }
+  ]
+}

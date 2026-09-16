@@ -1,0 +1,25 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# fields: COMMAND_RPC_GET_ADDRESS_BOOK_ENTRY::response_t,\n#         src/wallet/wallet_rpc_server_commands_defs.h:2006-2013 -> { entries[] = entry (:1993-2004) }\n#         entry = { index u64, address string, description string }\n# NO status/untrusted.\n# request: { entries[] list<u64> } (:1983-1990); an EMPTY list means all of them, which is what\n#         fmonero sends.\n# METHOD NAME: the struct is COMMAND_RPC_GET_ADDRESS_BOOK_ENTRY (singular ENTRY) but the wire method\n#         -- and this file's name -- is `get_address_book`. Likewise add_address_book and\n#         delete_address_book against ..._ADD_ADDRESS_BOOK_ENTRY / ..._DELETE_ADDRESS_BOOK_ENTRY.\n#         Fixture names are wire names.\n# THIS FILE DRIVES @label RESOLUTION, step 5a of §2a.1's refusal order. `wallet send @exchange 0.1`\n#         runs ONE get_address_book on the open wallet and matches CASE-INSENSITIVELY against\n#         `description`. The four rows below are chosen so all three outcomes are reachable from one\n#         fixture, which is the only way a stateless mock can drive them:\n#           @cold      -> zero matches                 -> exit 6 not_found\n#           @savings   -> exactly one (index 0)        -> resolves to that address\n#           @exchange  -> TWO (index 1 \"Exchange\" and index 2 \"exchange\", equal case-insensitively)\n#                                                      -> exit 7 ambiguous, listing both\n#           @donations -> exactly one (index 3)        -> resolves\n#         The Exchange/exchange pair is deliberate: the case-insensitive rule is what makes them\n#         collide, and without a colliding pair exit 7 has no input and the rule is untested.\n# THE RESOLVED ADDRESS -- NEVER THE LABEL -- is what Plan.dest, every line send::relay announces, the\n#         pending.json record and §5c's `dest` key carry (§4). A label in any of those would put a\n#         name where an audit needs an address.\n# A BARE WORD IS NEVER GUESSED AT AS A LABEL: only an @-prefixed dest reaches this call (§4), and\n#         step 2 of the refusal order skips address::parse for such a dest rather than failing it 15.\n# addresses are real, checksum-valid mainnet vectors from upstream's own test suite:\n#         index 0 and 3: tests/functional_tests/validate_address.py:69 and :74\n#         index 1 and 2: tests/unit_tests/base58.cpp:470 and\n#                        tests/unit_tests/address_from_url.cpp:40\n#         All four are mainnet, matching get_address.json's wallet, so a resolved label survives the\n#         §2a.6 nettype check.\n# `index` IS THE HANDLE `wallet book remove INDEX` TAKES, and it is the row's position in wallet2's\n#         own vector -- deleting a row RENUMBERS the ones after it. Nothing in this fixture set can\n#         show that (the mock is stateless), so a test that removes and then re-reads is a RED row.",
+  "entries": [
+    {
+      "index": 0,
+      "address": "44Kbx4sJ7JDRDV5aAhLJzQCjDz2ViLRduE3ijDZu3osWKBjMGkV1XPk4pfDUMqt1Aiezvephdqm6YD19GKFD9ZcXVUTp6BW",
+      "description": "savings"
+    },
+    {
+      "index": 1,
+      "address": "4AzKEX4gXdJdNeM6dfiBFL7kqund3HYGvMBF3ttsNd9SfzgYB6L7ep1Yg1osYJzLdaKAYSLVh6e6jKnAuzj3bw1oGy9kXCb",
+      "description": "Exchange"
+    },
+    {
+      "index": 2,
+      "address": "46BeWrHpwXmHDpDEUmZBWZfoQpdc6HaERCNmx1pEYL2rAcuwufPN9rXHHtyUA4QVy66qeFQkn6sfK8aHYjA3jk3o1Bv16em",
+      "description": "exchange"
+    },
+    {
+      "index": 3,
+      "address": "86kKnBKFqzCLxtK1Jmx2BkNBDBSMDEVaRYMMyVbeURYDWs8uNGDZURKCA5yRcyMxHzPcmCf1q2fSdhQVcaKsFrtGRsdGfNk",
+      "description": "donations"
+    }
+  ]
+}

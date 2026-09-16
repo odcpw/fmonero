@@ -1,0 +1,20 @@
+# derived from monero v0.18.5.1 source, not captured from a run
+# Shape and semantics: DESIGN.md §2i's test-seam paragraph.
+# Format and semantics: see tests/fixtures/doctor/node_layout/input/systemctl.txt.
+#
+# CASE: node_layout__remote -> Layout::Remote, decided by settings.node.url ALONE.
+# §2i's remote row is "settings.node.url is not loopback", and nothing in this file can produce it:
+# the layout comes from expect.json's _settings (node.url = http://10.0.0.5:18081). The file exists so
+# the case still runs under Systemctl::Fixture -- without FMONERO_SYSTEMCTL_FIXTURE set, detect_layout
+# would stat the real ~/.config/systemd/user and spawn the real systemctl, and the case would depend
+# on the machine it runs on.
+# fmonero-monerod.service IS PRESENT AND ACTIVE HERE ON PURPOSE. That makes the case non-vacuous: the
+# user_unit row's FIRST conjunct (the unit file exists) holds, and only its SECOND (a loopback
+# node.url) fails. A detector that checks the unit file and forgets the URL answers user_unit here and
+# passes every other node_layout case. It would then hand out NodeMutators for a node fmonero cannot
+# reach and `node up` would try to systemctl-start a local unit while every RPC went to 10.0.0.5.
+# NOTE that `status --force` with a non-loopback node.url exits 2, not 5 (§2a's --force test list),
+# because rpc::require_loopback rejects the URL before any breaker is consulted.
+fmonero-monerod.service active disabled yes 41233
+fmonero-wallet-rpc.service inactive disabled yes -
+monerod.service inactive disabled no -

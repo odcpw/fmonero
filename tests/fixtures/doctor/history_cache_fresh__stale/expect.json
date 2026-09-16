@@ -1,0 +1,16 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# The postcard header layout is DESIGN.md \u00a75b's; nothing here was captured from a run.\n# Expectation for `history_cache_fresh` against input/history.bin. See\n# tests/fixtures/doctor/history_cache_fresh/expect.json for the FMONERO_CACHE_DIR seam, the byte-by-byte\n# header layout, why the file is a header with no body, and why the class is D.\n#\n# THIS CASE: THE HEADER IS VALID AND THE CACHE IS FAR BEHIND. Only one varint differs from the base case:\n#   c0 c2 cf 01   high_water 3400000 instead of f8 90 d8 01 (3541112)\n# The wallet height is 3541122 (wallet/get_height.json), so the cache is 141 122 blocks behind -- far\n# past \u00a77.1's 1 000-block threshold, and about 196 days at the 120 s target block time (\u00a71b.1).\n# THE MAGIC, VERSION AND FINGERPRINT ALL STILL MATCH, which is what makes this case distinct from\n# __bad_magic: the file is a perfectly good cache OF THIS WALLET, just old. A detector that reports the\n# same thing for both has collapsed two different pieces of advice -- \"it will top up\" and \"it is not\n# your wallet's cache\" -- into one.\n# WHAT THE USER SHOULD TAKE FROM IT: nothing urgent. \u00a75's matching status warning `history_cache_stale`\n# is severity INFO and fires on the same 1 000-block rule, and \u00a75b's incremental top-up re-fetches from\n# high_water.saturating_sub(720) on the next `wallet history` -- so the code repairs this by itself the\n# moment the command runs without --cached. The check's value is explaining a `wallet history --cached`\n# that looks emptier than expected: with --cached, \u00a74.1 issues NO RPC at all and `confirmations` and\n# `locked` render as null, so a stale cache and a quiet one look alike.\n# status `warn`: the condition in \u00a77.1's detect column is not met, and pass/warn/fail/skip has no\n# \"informational note\" value -- severity `info` is what keeps it quiet, and an info-severity `warn` does\n# not change the run's exit code unless something else fails (\u00a77's exit rule: 11 if any check is `fail`).\n# STATUS IS PHASE 0'S READING: \u00a77.1 fixes severity, class and fixability for this row but not the status\n# for a stale header. The Phase 2 doctor agent owns the final mapping and should record it if it differs.\n# THE DETAIL MUST GIVE BOTH HEIGHTS, not a verdict word: \"3400000, 141122 behind\" tells the user whether\n# this is a cache from last week or from last year, and the fix_cmd\n# `fmonero wallet history --limit 1   # rebuilds the snapshot` is the same either way.",
+  "_env": {
+    "FMONERO_CACHE_DIR": "input"
+  },
+  "_settings": {},
+  "id": "history_cache_fresh",
+  "group": "install",
+  "severity": "info",
+  "class": "D",
+  "status": "warn",
+  "fixable": false,
+  "detail_contains": [
+    "3400000"
+  ]
+}

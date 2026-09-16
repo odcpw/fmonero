@@ -1,0 +1,21 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# The /proc formats are the kernel's and the check is DESIGN.md \u00a77.1's; nothing was captured.\n# Expectation for the doctor check `ports_owned` (DESIGN.md \u00a77.1) against input/.\n# How to read this file: tests/fixtures/doctor/node_layout/expect.json.\n#\n# THE CHECK READS EVERYTHING THROUGH paths.proc_root, WHICH IS WHY THIS FIXTURE CAN DRIVE IT AT ALL:\n# \u00a77.1 says ports_owned reads \"<proc_root>/net/tcp, <proc_root>/*/fd\" -- not the real /proc, and not\n# `ss` or `lsof` (neither is guaranteed installed, the same reason \u00a72i rejects lsof/fuser).\n#\n# input/proc/net/tcp IS A KERNEL-FORMAT SAMPLE, not a convenience format, and two columns bite:\n#   local_address is HEX-IP:HEX-PORT with the IP in inet_addr byte order, so 127.0.0.1 prints as\n#     0100007F and 0.0.0.0 as 00000000. A parser that reads it as big-endian dotted order sees\n#     127.0.0.1 as 1.0.0.127 and the loopback test silently inverts.\n#   the PORT IS HEX: 18080 = 0x46A0, 18081 = 0x46A1, 18083 = 0x46A3. Reading it as decimal finds\n#     nothing and the check reports `pass` on every machine -- the vacuous-gate failure of \u00a72j.\n#   st = 0A is TCP_LISTEN; a fixture row with any other st is not a bound port.\n#   the LAST column is the socket INODE, and that is the join key: /proc/<pid>/fd/<n> is a symlink to\n#     `socket:[<inode>]`, so \"who listens on this port\" is (port -> inode) then (inode -> pid).\n# input/proc/<pid>/fd/<n> ARE DANGLING SYMLINKS ON PURPOSE. git stores the link TARGET, which is the\n#   only thing the scan reads; there is no socket to point at. A harness that copies the tree must\n#   preserve symlinks (`cp -a`, not `cp -rL`, which would fail on a dangling link).\n#\n# THIS CASE: OUR OWN TWO UNITS own all three ports, all on 127.0.0.1.\n#   18080 (P2P) and 18081 (RPC) -> inodes 5501/5502 -> pid 41233, which is fmonero-monerod.service's\n#     MainPID in input/systemctl.txt\n#   18083 (wallet RPC)          -> inode 5503        -> pid 51002, fmonero-wallet-rpc.service's MainPID\n# \u00a77.1: `pass` when the listener is our unit's PID or nothing. So the systemctl fixture is REQUIRED\n# for this case -- without it there is no MainPID to compare against and the right answer would be\n# `warn` (an unknown process) for all three rows.\n# 18080 AND 18081 ARE THE PORTS \u00a77.1 NAMES LITERALLY, plus wallet.port; 18083 is the default\n# (DESIGN.md \u00a74: 18082 is monerod's ZMQ port, so the wallet takes 18083).\n# status `pass`; the detail should name what it found rather than only \"ok\", so that a run against an\n# empty /proc -- which also yields `pass` under \u00a77.1's \"our unit's PID OR NOTHING\" -- is\n# distinguishable from this one.",
+  "_env": {
+    "FMONERO_PROC_ROOT": "input/proc",
+    "FMONERO_SYSTEMCTL_FIXTURE": "../node_layout/input/systemctl.txt"
+  },
+  "_settings": {
+    "wallet.port": "18083",
+    "node.url": "http://127.0.0.1:18081"
+  },
+  "id": "ports_owned",
+  "group": "security",
+  "severity": "warn",
+  "class": "D",
+  "status": "pass",
+  "fixable": false,
+  "detail_contains": [
+    "18081",
+    "41233"
+  ]
+}

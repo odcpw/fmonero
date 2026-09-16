@@ -1,0 +1,7 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# fields: COMMAND_RPC_GET_LIMIT::response_t, src/rpc/core_rpc_server_commands_defs.h:1865-1875\n#         { limit_up uint64_t, limit_down uint64_t }\n# base:   rpc_response_base only (status, untrusted) :101-112\n# SIGNEDNESS DIFFERS BETWEEN get_limit AND set_limit, and it is not cosmetic: get_limit's two fields\n#         are uint64_t (:1867-1868) while set_limit's are int64_t (:1896-1897), because -1 means\n#         \"reset to the default\" on the way IN and set_limit echoes that same signed type back\n#         (set_limit.json). DESIGN.md §5b types NetStatus.limit_*_kbps as Option<i64> so one field\n#         can carry both answers.\n# UNITS ARE kB/s -- all of them, for get and set alike; upstream's own comment is on the set_limit\n#         request field (:1883).\n# gate:   OPEN. MAP_URI_AUTO_JON2(\"/get_limit\", ...) has NO !m_restricted guard\n#         (src/rpc/core_rpc_server.h:135), unlike /set_limit (:136). So node.net.limit_*_kbps stays\n#         populated on a restricted node even though total_bytes_* goes null (DESIGN.md §5).\n# LEGACY TRANSPORT ONLY: POST /get_limit; there is no json_rpc get_limit.\n# VALUES are the worked example of DESIGN.md §5: limit_up 2048, limit_down 8192.",
+  "status": "OK",
+  "untrusted": false,
+  "limit_up": 2048,
+  "limit_down": 8192
+}

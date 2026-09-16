@@ -1,0 +1,55 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# scenario: --scenario failed.\n# NOT IN DESIGN.md §8's deliverable list; added by Phase 0 with its reason recorded in\n# decisions/phase0-mock.md and tests/fixtures/README.md (\"Additions\"). The reason: §2a.4 names the\n# test \"the mock answers get_transfer_by_txid with a FAILED-type row and the test asserts the next\n# send exits 0 with an empty record\", and --fail cannot produce it: --fail yields a JSON-RPC ERROR,\n# while this case is a SUCCESSFUL response whose `type` happens to be \"failed\". --scenario is the\n# mechanism DESIGN.md §8 provides for a second fixture of one method.\n# fields: identical to get_transfer_by_txid.json -- COMMAND_RPC_GET_TRANSFER_BY_TXID::response_t,\n#         src/wallet/wallet_rpc_server_commands_defs.h:1667-1676; transfer_entry :1446-1487.\n# WHY THE CASE EXISTS AT ALL: on_get_transfer_by_txid searches get_unconfirmed_payments_out\n#         (src/wallet/wallet_rpc_server.cpp:3014-3022), the same source that feeds BOTH the `pending`\n#         and the `failed` lists of on_get_transfers, and fill_transfer_entry types those rows\n#         `is_failed ? \"failed\" : \"pending\"` (:561). So a failed transaction IS findable by txid.\n# WHY IT MUST COUNT AS FOUND (§2a.4): a `failed` row means the wallet saw the transaction and it did\n#         not make it, which is not a double-spend risk. Treating it as not-found would leave the\n#         pending.json record in place forever and force the user to type `clear-pending` out of\n#         habit -- the one thing §2a.4 exists to prevent, because a habitual clear-pending disarms\n#         the interlock that stops a double send.\n# ONLY A POSITIVE \"NOT FOUND\" MAY BLOCK: that is -8 with the message \"Transaction not found.\"\n#         (:3045-3046) -> Ok(None) (§5b), reachable from the mock with\n#         --fail get_transfer_by_txid=-8:'Transaction not found.'\n# THE TXID is the same one as get_transfer_by_txid.json, transfer-do-not-relay.json and\n#         relay_tx.json: this is the SAME transaction, seen after it failed rather than after it was\n#         accepted. Only `type` differs. `locked` stays true, as it is unconditionally for\n#         pending/failed rows (:551), and confirmations stays 0 because height is 0.",
+  "transfer": {
+    "txid": "a1e7b3c05d928f4617ac0e3b85d2f719c46b0a8e3f512d7409bc6ea18d35047f",
+    "payment_id": "0000000000000000",
+    "height": 0,
+    "timestamp": 1789560095,
+    "amount": 100000000000,
+    "amounts": [100000000000],
+    "fee": 30720000,
+    "note": "",
+    "destinations": [
+      {
+        "amount": 100000000000,
+        "address": "44Kbx4sJ7JDRDV5aAhLJzQCjDz2ViLRduE3ijDZu3osWKBjMGkV1XPk4pfDUMqt1Aiezvephdqm6YD19GKFD9ZcXVUTp6BW"
+      }
+    ],
+    "type": "failed",
+    "unlock_time": 0,
+    "locked": true,
+    "subaddr_index": { "major": 0, "minor": 0 },
+    "subaddr_indices": [{ "major": 0, "minor": 0 }],
+    "address": "42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm",
+    "double_spend_seen": false,
+    "confirmations": 0,
+    "suggested_confirmations_threshold": 1
+  },
+  "transfers": [
+    {
+      "txid": "a1e7b3c05d928f4617ac0e3b85d2f719c46b0a8e3f512d7409bc6ea18d35047f",
+      "payment_id": "0000000000000000",
+      "height": 0,
+      "timestamp": 1789560095,
+      "amount": 100000000000,
+      "amounts": [100000000000],
+      "fee": 30720000,
+      "note": "",
+      "destinations": [
+        {
+          "amount": 100000000000,
+          "address": "44Kbx4sJ7JDRDV5aAhLJzQCjDz2ViLRduE3ijDZu3osWKBjMGkV1XPk4pfDUMqt1Aiezvephdqm6YD19GKFD9ZcXVUTp6BW"
+        }
+      ],
+      "type": "failed",
+      "unlock_time": 0,
+      "locked": true,
+      "subaddr_index": { "major": 0, "minor": 0 },
+      "subaddr_indices": [{ "major": 0, "minor": 0 }],
+      "address": "42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm",
+      "double_spend_seen": false,
+      "confirmations": 0,
+      "suggested_confirmations_threshold": 1
+    }
+  ]
+}

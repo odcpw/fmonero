@@ -1,0 +1,21 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# fields: COMMAND_RPC_GET_BALANCE::response_t, src/wallet/wallet_rpc_server_commands_defs.h:102-119\n#         { balance u64, unlocked_balance u64, multisig_import_needed bool,\n#           per_subaddress[] = per_subaddress_info (:77-100), blocks_to_unlock u64,\n#           time_to_unlock u64 }\n#         per_subaddress_info = { account_index u32, address_index u32, address string, balance u64,\n#           unlocked_balance u64, label string, num_unspent_outputs u64, blocks_to_unlock u64,\n#           time_to_unlock u64 }\n# NO status/untrusted: the WALLET RPC has no rpc_response_base. Only the DAEMON's responses carry\n#         `status`, which is why DESIGN.md §1b.3's BUSY rule is a node rule and not a wallet rule.\n# request: { account_index, address_indices, all_accounts (OPT false, :71), strict (OPT false, :72) }\n# per_subaddress HOLDS ONLY FUNDED SUBADDRESSES. wallet2::balance_per_subaddress builds it from\n#         subaddresses holding unspent, unfrozen outputs (src/wallet/wallet2.cpp:7037-7060), so this\n#         fixture deliberately carries ONE entry while get_address.json carries THREE addresses. That\n#         asymmetry is the point: DESIGN.md §5 sources status.wallet.subaddress_count from\n#         get_address.addresses.len() (3) and NOT from per_subaddress.len() (1), and §7a's Wallet\n#         screen joins the two, rendering an em dash where a subaddress has no row here.\n# AMOUNTS ARE PICONERO INTEGERS (1 XMR = 1e12, src/cryptonote_config.h:66-67). balance 1234567891234\n#         = \"1.234567891234\" XMR, the worked example of DESIGN.md §5, so this fixture and §5's\n#         document cannot disagree and Piconero::to_xmr_string's round trip is exercised on it.\n# blocks_to_unlock / time_to_unlock are 0 here (nothing locked), so the wallet_locked_funds warning\n#         (§5) does NOT fire; get_balance-locked.json is the fixture that makes it fire.\n# time_to_unlock IS SECONDS and is named time_to_unlock on the wire (:98, :117) while DESIGN.md §5\n#         renders it as status.wallet.time_to_unlock_sec -- the `_sec` suffix is fmonero's, not\n#         Monero's.\n# addresses: real, checksum-valid mainnet vectors from upstream's own test suite --\n#         primary    tests/functional_tests/validate_address.py:68 (mainnet standard, prefix 18)\n#         subaddress tests/functional_tests/validate_address.py:73 (mainnet subaddress, prefix 42)\n#         See tests/fixtures/address-forms.json for all nine forms and their provenance.",
+  "balance": 1234567891234,
+  "unlocked_balance": 1234567891234,
+  "multisig_import_needed": false,
+  "blocks_to_unlock": 0,
+  "time_to_unlock": 0,
+  "per_subaddress": [
+    {
+      "account_index": 0,
+      "address_index": 0,
+      "address": "42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm",
+      "balance": 1234567891234,
+      "unlocked_balance": 1234567891234,
+      "label": "Primary account",
+      "num_unspent_outputs": 7,
+      "blocks_to_unlock": 0,
+      "time_to_unlock": 0
+    }
+  ]
+}

@@ -1,0 +1,55 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# fields: COMMAND_RPC_GET_TRANSFER_BY_TXID::response_t,\n#         src/wallet/wallet_rpc_server_commands_defs.h:1667-1676 -> { transfer = transfer_entry,\n#         transfers[] = list of transfer_entry }. transfer_entry is :1446-1487; see\n#         get_transfers.json for the full field list and the derivation of confirmations/locked.\n# NO status/untrusted.\n# request: { txid string, account_index u32 (OPT 0, :1662) } (:1655-1664).\n# `transfer` IS transfers[0]: upstream fills both, the singular for compatibility.\n# THIS IS THE §2a.4 RESOLVE STEP'S ANSWER, and the row is the SAME TRANSACTION as\n#         transfer-do-not-relay.json's tx_hash, relay_tx.json's tx_hash and get_transfers.json's\n#         pending[0] -- so a build -> relay -> resolve sequence against fmonero-mock finds the\n#         transaction it just broadcast and CLEARS the pending record. That is what makes a normal\n#         successful send leave nothing behind, and what keeps `wallet clear-pending --yes` the\n#         manual escape hatch after a crash rather than something a user learns to type after every\n#         send -- which would disarm the interlock by habit (§2a.4).\n# relay_tx CALLS commit_tx INTERNALLY (src/wallet/wallet_rpc_server.cpp:1903-1960,\n#         m_wallet->commit_tx(ptx)), so the wallet registers the transaction as pending AT ONCE and\n#         the resolve finds it on the first try -- hence type \"pending\", height 0, confirmations 0.\n# ANY TYPE COUNTS AS FOUND, `failed` INCLUDED (§2a.4): on_get_transfer_by_txid searches\n#         get_unconfirmed_payments_out (:3014-3022), the same source that feeds BOTH the `pending`\n#         and the `failed` lists of on_get_transfers, and fill_transfer_entry types those rows\n#         `is_failed ? \"failed\" : \"pending\"` (:561). A `failed` row means the wallet saw the\n#         transaction and it did not make it -- not a double-spend risk. Omitting that type from the\n#         accepted set would leave the record in place forever.\n#         get_transfer_by_txid-failed.json is the fixture for that branch.\n# THE \"NOT FOUND\" ANSWER IS NOT THIS FILE: it is -8 WRONG_TXID with the message\n#         \"Transaction not found.\" (:3045-3046), which §5b maps to Ok(None) and which is the ONLY\n#         answer allowed to BLOCK a send. Reach it from the mock with\n#         --fail get_transfer_by_txid=-8:'Transaction not found.'\n#         The \"Transaction ID has invalid format/size\" variants of -8 (:2971-2972, :2982-2983) are\n#         caller errors and map to exit 2 instead.\n# A stateless mock CANNOT dispatch on the requested txid, so this file answers for EVERY txid. A test\n#         that needs \"this txid resolves, that one does not\" uses --fail, not two fixtures.",
+  "transfer": {
+    "txid": "a1e7b3c05d928f4617ac0e3b85d2f719c46b0a8e3f512d7409bc6ea18d35047f",
+    "payment_id": "0000000000000000",
+    "height": 0,
+    "timestamp": 1789560095,
+    "amount": 100000000000,
+    "amounts": [100000000000],
+    "fee": 30720000,
+    "note": "",
+    "destinations": [
+      {
+        "amount": 100000000000,
+        "address": "44Kbx4sJ7JDRDV5aAhLJzQCjDz2ViLRduE3ijDZu3osWKBjMGkV1XPk4pfDUMqt1Aiezvephdqm6YD19GKFD9ZcXVUTp6BW"
+      }
+    ],
+    "type": "pending",
+    "unlock_time": 0,
+    "locked": true,
+    "subaddr_index": { "major": 0, "minor": 0 },
+    "subaddr_indices": [{ "major": 0, "minor": 0 }],
+    "address": "42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm",
+    "double_spend_seen": false,
+    "confirmations": 0,
+    "suggested_confirmations_threshold": 1
+  },
+  "transfers": [
+    {
+      "txid": "a1e7b3c05d928f4617ac0e3b85d2f719c46b0a8e3f512d7409bc6ea18d35047f",
+      "payment_id": "0000000000000000",
+      "height": 0,
+      "timestamp": 1789560095,
+      "amount": 100000000000,
+      "amounts": [100000000000],
+      "fee": 30720000,
+      "note": "",
+      "destinations": [
+        {
+          "amount": 100000000000,
+          "address": "44Kbx4sJ7JDRDV5aAhLJzQCjDz2ViLRduE3ijDZu3osWKBjMGkV1XPk4pfDUMqt1Aiezvephdqm6YD19GKFD9ZcXVUTp6BW"
+        }
+      ],
+      "type": "pending",
+      "unlock_time": 0,
+      "locked": true,
+      "subaddr_index": { "major": 0, "minor": 0 },
+      "subaddr_indices": [{ "major": 0, "minor": 0 }],
+      "address": "42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm",
+      "double_spend_seen": false,
+      "confirmations": 0,
+      "suggested_confirmations_threshold": 1
+    }
+  ]
+}

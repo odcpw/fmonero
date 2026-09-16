@@ -1,0 +1,20 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# Expectation for `unit_no_password_in_argv` against input/. The base case,\n# tests/fixtures/doctor/unit_no_password_in_argv/expect.json, carries the _env caveat (DESIGN.md\n# \u00a72i freezes no override that points the doctor at a directory of unit FILES -- a gap Phase 0\n# records rather than fills), the \"how to read this file\" convention, and the rule that the node\n# unit's own rpc-login= in its --config-file is CORRECT and must not be reported.\n# input/ is that case's two units with ONE LINE CHANGED; the changed file says which at its top.\n#\n# THIS CASE: the wallet unit's ExecStart carries --password-file.\n# \u00a72b.1: the wallet password never reaches argv -- not fmonero's, not monero-wallet-rpc's. And\n# --password-file is an argument to FMONERO, never forwarded to the daemon, which would reject\n# it alongside --wallet-dir anyway (src/wallet/wallet_rpc_server.cpp:4897-4901). So a unit\n# carrying it cannot even start, and the doctor's value is naming the flag instead of leaving\n# the user with a unit that fails at RestartSec=5 intervals into systemd's start limit.\n# THE DETAIL MUST NAME THE FLAG (\u00a77.1's fix column for this row is \"detail names the\n# offending flag\") AND THE UNIT, since only one of the two is at fault.\n# THE PATH IN THE FIXTURE IS A PLACEHOLDER AND CONTAINS NO PASSWORD (\u00a72b.2): the file it names\n# does not exist.",
+  "_env": {
+    "FMONERO_SYSTEMD_USER_DIR": "input"
+  },
+  "_settings": {
+    "wallet.dir": "/home/user/.local/share/fmonero/wallets/mainnet",
+    "wallet.port": "18083"
+  },
+  "id": "unit_no_password_in_argv",
+  "group": "units",
+  "severity": "error",
+  "class": "D",
+  "status": "fail",
+  "fixable": false,
+  "detail_contains": [
+    "--password-file",
+    "fmonero-wallet-rpc.service"
+  ]
+}

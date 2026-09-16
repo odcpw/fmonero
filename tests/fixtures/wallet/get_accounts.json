@@ -1,0 +1,15 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# fields: COMMAND_RPC_GET_ACCOUNTS::response_t, src/wallet/wallet_rpc_server_commands_defs.h:298-309\n#         { total_balance u64, total_unlocked_balance u64,\n#           subaddress_accounts[] = subaddress_account_info (:279-296) }\n#         subaddress_account_info = { account_index u32, base_address string, balance u64,\n#           unlocked_balance u64, label string, tag string }\n# NO status/untrusted.\n# request: { tag string, strict_balances (OPT false, :273), regexp (OPT false, :274) }. An empty tag\n#         means every account. DESIGN.md §1b.4 lists `tag` and `strict_balances`; `regexp` (:269) is a\n#         third request field of v0.18.5.1 that §1b.4's row omits -- see tests/fixtures/README.md,\n#         \"Deviations\". fmonero sends none of the three.\n# `base_address` is the account's PRIMARY address, the same string get_address.json returns for\n#         account 0 -- so a consumer can join the two.\n# DESIGN.md §5 reads exactly ONE number from this call: status.wallet.accounts =\n#         subaddress_accounts.len() = 1 here. It is a COLD-PATH call, cached 60 s in state.json, not\n#         one of the five hot calls.\n# total_balance / total_unlocked_balance are across ALL accounts, so with one account they equal\n#         get_balance.json's balance / unlocked_balance byte for byte. A second account would break\n#         that equality, which is why §5 sources status.wallet.balance_* from get_balance{account}\n#         and never from here.\n# `tag` is the empty string for an untagged account, not null. Account tags are cut from v0.1\n#         (DESIGN.md §0), so nothing reads it; it is here because the wire carries it.\n# label \"Primary account\" is wallet2's own default for account 0.",
+  "total_balance": 1234567891234,
+  "total_unlocked_balance": 1234567891234,
+  "subaddress_accounts": [
+    {
+      "account_index": 0,
+      "base_address": "42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm",
+      "balance": 1234567891234,
+      "unlocked_balance": 1234567891234,
+      "label": "Primary account",
+      "tag": ""
+    }
+  ]
+}

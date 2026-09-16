@@ -1,0 +1,6 @@
+# derived from monero v0.18.5.1 source, not captured from a run
+# THIS DIRECTORY IS DELIBERATELY EMPTY. The case is "neither unit file exists", and git cannot store
+# an empty directory, so this placeholder stands in for the absence.
+# A CONSUMER MUST IGNORE DOTFILES when listing input/: a harness that copies everything and then counts
+# files finds one, and a detector that looks for `*.service` finds none -- which is the correct answer.
+# See expect.json for what the case asserts.

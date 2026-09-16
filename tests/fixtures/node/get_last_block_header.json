@@ -1,0 +1,31 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# fields: COMMAND_RPC_GET_LAST_BLOCK_HEADER::response_t, src/rpc/core_rpc_server_commands_defs.h:1230-1238\n#         block_header = block_header_response, :1166-1215 (all 22 members, all KV_SERIALIZEd)\n# base:   rpc_access_response_base (credits, top_hash) :124-136\n# height is get_info.height - 1: get_info reports blockchain height (top + 1,\n#         src/rpc/core_rpc_server.cpp:521) while this is the top BLOCK's own index.\n# depth 0: this IS the top block.\n# timestamp 1789560084 = adjusted_time - 47, so node.top_block_age_sec is 47 at the fixture's\n#         notional \"now\" (DESIGN.md §5's worked example). Against a real clock it grows without\n#         bound - a fixture has no now.\n# pow_hash \"\": the request sends fill_pow_hash = false (:1221; DESIGN.md §1b.3 - it is expensive).\n# reward 600000000000 = 0.6 XMR, the mainnet tail emission floor.\n# This call is the ONLY one fmonero makes that CHECK_CORE_READY() gates\n#         (src/rpc/core_rpc_server.cpp:2453); its BUSY answer is get_last_block_header-syncing.json.",
+  "status": "OK",
+  "untrusted": false,
+  "credits": 0,
+  "top_hash": "",
+  "block_header": {
+    "major_version": 16,
+    "minor_version": 16,
+    "timestamp": 1789560084,
+    "prev_hash": "a41c8e5d2b70f3964d18ca02e7b5384f1906cd27ea3b5470f8d21ca9630be51f",
+    "nonce": 2148372914,
+    "orphan_status": false,
+    "height": 3541121,
+    "depth": 0,
+    "hash": "6b1f2d0c8a4e7b39f5c1a2d8e0b4763fa915c2d83e6407bb1f9d25ca380e47f1",
+    "difficulty": 471234567890,
+    "wide_difficulty": "0x6db1f0a3d2",
+    "difficulty_top64": 0,
+    "cumulative_difficulty": 419523847562819374,
+    "wide_cumulative_difficulty": "0x5d31f8a2c4e90bae",
+    "cumulative_difficulty_top64": 0,
+    "reward": 600000000000,
+    "block_size": 3184,
+    "block_weight": 3184,
+    "num_txes": 12,
+    "pow_hash": "",
+    "long_term_weight": 3184,
+    "miner_tx_hash": "0f4a8d61c9e2b35708fd1a4c86b39207e5d1cb08a3f647b2910dc5e284af6b3d"
+  }
+}

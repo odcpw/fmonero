@@ -1,0 +1,72 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# fields: COMMAND_RPC_SYNC_INFO::response_t, src/rpc/core_rpc_server_commands_defs.h:2426-2444\n#         peers[]  = COMMAND_RPC_SYNC_INFO::peer  :2396-2403  -> ONE key, `info`, a connection_info\n#                    (src/cryptonote_protocol/cryptonote_protocol_defs.h:47-116). The peers array is\n#                    NOT an array of connection_info; it is an array of { info: connection_info }.\n#         spans[]  = COMMAND_RPC_SYNC_INFO::span  :2405-2424\n#                    { start_block_height u64, nblocks u64, connection_id string, rate u32,\n#                      speed u32, size u64, remote_address string }\n#         overview = std::string  :2433  -- monerod fills it with a JSON-ish ASCII art string, so it\n#                    is a STRING that happens to look like an array; \"[]\" when no spans are in flight.\n# gate:   MAP_JON_RPC_WE_IF(\"sync_info\", ..., !m_restricted) (src/rpc/core_rpc_server.h:179), so a\n#         restricted node answers -32601 instead - error-restricted.json, served by --restricted.\n# This fixture is the SYNCED case: two connections mirroring get_connections.json's outgoing rows,\n# no spans in flight, overview \"[]\". next_needed_pruning_seed 0 = no pruning.",
+  "status": "OK",
+  "untrusted": false,
+  "credits": 0,
+  "top_hash": "",
+  "height": 3541122,
+  "target_height": 0,
+  "next_needed_pruning_seed": 0,
+  "overview": "[]",
+  "spans": [],
+  "peers": [
+    {
+      "info": {
+        "incoming": false,
+        "localhost": false,
+        "local_ip": false,
+        "address": "203.0.113.17:18080",
+        "host": "203.0.113.17",
+        "ip": "203.0.113.17",
+        "port": "18080",
+        "rpc_port": 18089,
+        "rpc_credits_per_hash": 0,
+        "peer_id": "9c2f4b18ae03d571",
+        "recv_count": 18437201,
+        "recv_idle_time": 3,
+        "send_count": 942117,
+        "send_idle_time": 3,
+        "state": "normal",
+        "live_time": 8412,
+        "avg_download": 12,
+        "current_download": 4,
+        "avg_upload": 2,
+        "current_upload": 1,
+        "support_flags": 1,
+        "connection_id": "d4b1f0a92c3e47589a6c1d8b2e70f435",
+        "height": 3541122,
+        "pruning_seed": 0,
+        "address_type": 1
+      }
+    },
+    {
+      "info": {
+        "incoming": false,
+        "localhost": false,
+        "local_ip": false,
+        "address": "198.51.100.42:18080",
+        "host": "198.51.100.42",
+        "ip": "198.51.100.42",
+        "port": "18080",
+        "rpc_port": 0,
+        "rpc_credits_per_hash": 0,
+        "peer_id": "1a7d05c3ef92b846",
+        "recv_count": 2048,
+        "recv_idle_time": 41,
+        "send_count": 512,
+        "send_idle_time": 41,
+        "state": "synchronizing",
+        "live_time": 62,
+        "avg_download": 0,
+        "current_download": 0,
+        "avg_upload": 0,
+        "current_upload": 0,
+        "support_flags": 1,
+        "connection_id": "7e05c1a4b83d29f6051c7a4e93d2b806",
+        "height": 3541100,
+        "pruning_seed": 384,
+        "address_type": 1
+      }
+    }
+  ]
+}

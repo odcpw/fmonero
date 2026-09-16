@@ -1,0 +1,168 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# fields: COMMAND_RPC_GET_TRANSFERS::response_t, src/wallet/wallet_rpc_server_commands_defs.h:1634-1649\n#         -> FIVE lists: in, out, pending, failed, pool. Each is a list of transfer_entry.\n#         transfer_entry = :1446-1487, all eighteen members KV_SERIALIZEd at :1468-1485:\n#           txid string, payment_id string, height u64, timestamp u64, amount u64,\n#           amounts[] = amounts_container = std::vector<uint64_t> (:1445 -- a BARE array of numbers,\n#             not the { amounts: [...] } wrapper that single_transfer_response.amounts_by_dest uses),\n#           fee u64, note string, destinations[] = transfer_destination (:474-482, {amount, address}),\n#           type string, unlock_time u64, locked bool,\n#           subaddr_index = cryptonote::subaddress_index (src/cryptonote_basic/subaddress_index.h:38-55),\n#           subaddr_indices[] of the same, address string, double_spend_seen bool,\n#           confirmations u64 (OPT, :1484), suggested_confirmations_threshold u64 (OPT, :1485)\n# NO status/untrusted: the wallet RPC has no rpc_response_base.\n#\n# `type` HAS SIX VALUES, NOT FIVE, AND `block` LIVES IN THE `in` LIST. fill_transfer_entry types an\n#   incoming row `pd.m_coinbase ? \"block\" : \"in\"` (src/wallet/wallet_rpc_server.cpp:501) and pushes\n#   it into the `in` list, so \"block\" is an ordinary member of get_transfers' `in` array for any\n#   wallet holding a mined or p2pool output. A five-variant TransferKind makes serde fail on the\n#   WHOLE response, so `wallet history` exits 1 and the §2a.4 resolve step cannot complete -- which\n#   under §2a.4's own rule leaves the pending record in place and blocks every later send. Row 3\n#   below is that row, and it is the reason this file exists in DESIGN.md §8's list.\n#\n# `subaddr_index` IS AN OBJECT, NOT A NUMBER: {\"major\": N, \"minor\": M}\n#   (subaddress_index.h:51-54). `major` IS the account index, so §5b's Transfer carries a\n#   SubaddrIndex and has no separate account_index field. A u32 there fails to deserialize every row.\n#\n# `confirmations` AND `locked` ARE DERIVED PER RESPONSE, NOT STORED, AND AGAINST THE WALLET'S HEIGHT.\n#   wallet-rpc recomputes them on every call from m_wallet->get_blockchain_current_height()\n#   (src/wallet/wallet_rpc_server.cpp:162, called at :505, :535, :566, :589). The values below are\n#   computed for wh = 3541122, which is wallet/get_height.json -- NOT node/get_info.json's height,\n#   even though the two coincide in this fixture set. §5b's history cache stores NEITHER field.\n#     confirmations = 0 when height == 0 or height >= wh, else wh - height\n#     locked        = !(age_ok && spendtime_ok), TWO INDEPENDENT CONDITIONS (wallet2.cpp:7308-7344),\n#                     not a maximum:\n#       age_ok       = height != 0 && height + 10 <= wh        (SPENDABLE_AGE, cryptonote_config.h:49)\n#       spendtime_ok = unlock_time == 0                                  -> true\n#                      unlock_time <  500000000 (CRYPTONOTE_MAX_BLOCK_NUMBER, :40) -> wh >= unlock_time\n#                      otherwise (a UNIX TIMESTAMP)                      -> adjusted_now + 120 >= unlock_time\n#     unlock_time IS NEVER A DELTA ADDED TO height. Rows 3 and 4 are the two branches.\n#   pending and pool rows are UNCONDITIONALLY locked (:551, :581) regardless of the formula.\n#\n# THE ROWS, and what each one is for:\n#   in[0]   plain confirmed incoming. unlock_time 0, so spendtime_ok is the trivial branch.\n#           confirmations = 3541122 - 3540000 = 1122; age_ok true; locked false.\n#   in[1]   THE TIMESTAMP BRANCH. unlock_time 1900000000 is >= 500000000, so it is a unix timestamp\n#           (2030-03-17), not a height. adjusted_now (1789560131 in this fixture set) + 120 is far\n#           below it, so locked is TRUE even though age_ok is true and confirmations is 3122. Treating\n#           unlock_time as a delta on height would mark this unlocked; treating it as a height would\n#           read it as block 1.9 billion and mark every such row locked until the year 55000.\n#           DESIGN.md §8's Phase 1b gate names this exact value.\n#   in[2]   THE COINBASE ROW, type \"block\", inside the `in` list. unlock_time 3539060 = height + 60\n#           (CRYPTONOTE_MINED_MONEY_UNLOCK_WINDOW, cryptonote_config.h:44) and is an ABSOLUTE HEIGHT,\n#           so the height branch applies: wh 3541122 >= 3539060, spendtime_ok true, locked false.\n#           A second coinbase-specific 60-block rule would double-count that window (§1b.4).\n#   out[0]  confirmed outgoing, with a NON-EMPTY destinations[] -- the one fact a user checks after a\n#           send, which is why §5b's Transfer carries the field and §7a's detail pane renders it.\n#           Carries a `note`, so set_tx_notes/get_tx_notes have something to round-trip.\n#   pending[0] height 0, confirmations 0, locked true. ITS txid IS transfer-do-not-relay.json's\n#           tx_hash, relay_tx.json's tx_hash and get_transfer_by_txid.json's transfer.txid -- so the\n#           §2a.4 resolve step finds the transaction a build-then-relay just broadcast, which is what\n#           makes a normal successful send leave nothing behind.\n#   failed[0] height 0, locked true. A row the wallet saw that did not make it. §2a.4 counts `failed`\n#           as FOUND, so this row must exist for the \"record self-clears\" test to be writable.\n#   pool[0] height 0, locked true. The `pool` list is the ONLY one whose branch runs\n#           update_pool_state/process_pool_state -- a daemon round trip (:2939-2950) -- which is why\n#           history::query sends `pool: true` only when asked (§1b.4, §4.1).\n#\n# `amounts[]` is populated only where the wallet recorded per-destination amounts; upstream leaves it\n#   empty on rows it did not split, and both shapes appear below.\n# `payment_id` is 16 zeros for a payment with no id -- pod_to_hex of a null crypto::hash8 -- not an\n#   empty string and not null. An integrated address would put a real 16-hex id here.\n# `suggested_confirmations_threshold` is on the wire but §5b's Transfer does not carry it; it is\n#   derived per response like confirmations and is not a field fmonero reads.\n# addresses are real, checksum-valid mainnet vectors from upstream's own test suite:\n#   our own:     validate_address.py:68 (standard, prefix 18), :73 and :74 (subaddress, prefix 42)\n#   counterparty: validate_address.py:69 (standard, prefix 18)\n# request: DESIGN.md §1b.4 -- `filter_by_height` is NOT KV_SERIALIZE_OPT (:1624), so an omitted flag\n#   value-initialises to false and min_height/max_height are silently ignored (:2890-2895). A fixture\n#   mock cannot catch that (it serves this same file either way), which is why the flag is a field of\n#   the frozen TransferQuery type and the assertion is made on the --log file's recorded request.",
+  "in": [
+    {
+      "txid": "3d9f0b271ac845e6f0b1d5a38c274e19b6053fa2c8e147db9025c6f3a8b41e70",
+      "payment_id": "0000000000000000",
+      "height": 3540000,
+      "timestamp": 1789425600,
+      "amount": 500000000000,
+      "amounts": [500000000000],
+      "fee": 30720000,
+      "note": "",
+      "destinations": [],
+      "type": "in",
+      "unlock_time": 0,
+      "locked": false,
+      "subaddr_index": { "major": 0, "minor": 1 },
+      "subaddr_indices": [{ "major": 0, "minor": 1 }],
+      "address": "8AsN91rznfkBGTY8psSNkJBg9SZgxxGGRUhGwRptBhgr5XSQ1XzmA9m8QAnoxydecSh5aLJXdrgXwTDMMZ1AuXsN1EX5Mtm",
+      "double_spend_seen": false,
+      "confirmations": 1122,
+      "suggested_confirmations_threshold": 4
+    },
+    {
+      "txid": "c5a10e83b7d2946f1e0b53ca827d4f6019ab3c5e8d02741fb96c0ea53d871b24",
+      "payment_id": "0000000000000000",
+      "height": 3538000,
+      "timestamp": 1789185600,
+      "amount": 75000000000,
+      "amounts": [],
+      "fee": 30720000,
+      "note": "",
+      "destinations": [],
+      "type": "in",
+      "unlock_time": 1900000000,
+      "locked": true,
+      "subaddr_index": { "major": 0, "minor": 2 },
+      "subaddr_indices": [{ "major": 0, "minor": 2 }],
+      "address": "86kKnBKFqzCLxtK1Jmx2BkNBDBSMDEVaRYMMyVbeURYDWs8uNGDZURKCA5yRcyMxHzPcmCf1q2fSdhQVcaKsFrtGRsdGfNk",
+      "double_spend_seen": false,
+      "confirmations": 3122,
+      "suggested_confirmations_threshold": 1
+    },
+    {
+      "txid": "7b0e2c94af51d368b0a7e15c2d94f307a8b6015ed3c2947fb0a6c1e582d43f96",
+      "payment_id": "0000000000000000",
+      "height": 3539000,
+      "timestamp": 1789305600,
+      "amount": 600000000000,
+      "amounts": [600000000000],
+      "fee": 0,
+      "note": "",
+      "destinations": [],
+      "type": "block",
+      "unlock_time": 3539060,
+      "locked": false,
+      "subaddr_index": { "major": 0, "minor": 0 },
+      "subaddr_indices": [{ "major": 0, "minor": 0 }],
+      "address": "42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm",
+      "double_spend_seen": false,
+      "confirmations": 2122,
+      "suggested_confirmations_threshold": 4
+    }
+  ],
+  "out": [
+    {
+      "txid": "e04b8a1c7d2359f6b0ae13c5820d7f4916cb305ae8d1247fb90c6ea5382f1db7",
+      "payment_id": "0000000000000000",
+      "height": 3541000,
+      "timestamp": 1789545600,
+      "amount": 250000000000,
+      "amounts": [250000000000],
+      "fee": 30720000,
+      "note": "coffee",
+      "destinations": [
+        {
+          "amount": 250000000000,
+          "address": "44Kbx4sJ7JDRDV5aAhLJzQCjDz2ViLRduE3ijDZu3osWKBjMGkV1XPk4pfDUMqt1Aiezvephdqm6YD19GKFD9ZcXVUTp6BW"
+        }
+      ],
+      "type": "out",
+      "unlock_time": 0,
+      "locked": false,
+      "subaddr_index": { "major": 0, "minor": 0 },
+      "subaddr_indices": [{ "major": 0, "minor": 0 }],
+      "address": "42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm",
+      "double_spend_seen": false,
+      "confirmations": 122,
+      "suggested_confirmations_threshold": 2
+    }
+  ],
+  "pending": [
+    {
+      "txid": "a1e7b3c05d928f4617ac0e3b85d2f719c46b0a8e3f512d7409bc6ea18d35047f",
+      "payment_id": "0000000000000000",
+      "height": 0,
+      "timestamp": 1789560095,
+      "amount": 100000000000,
+      "amounts": [100000000000],
+      "fee": 30720000,
+      "note": "",
+      "destinations": [
+        {
+          "amount": 100000000000,
+          "address": "44Kbx4sJ7JDRDV5aAhLJzQCjDz2ViLRduE3ijDZu3osWKBjMGkV1XPk4pfDUMqt1Aiezvephdqm6YD19GKFD9ZcXVUTp6BW"
+        }
+      ],
+      "type": "pending",
+      "unlock_time": 0,
+      "locked": true,
+      "subaddr_index": { "major": 0, "minor": 0 },
+      "subaddr_indices": [{ "major": 0, "minor": 0 }],
+      "address": "42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm",
+      "double_spend_seen": false,
+      "confirmations": 0,
+      "suggested_confirmations_threshold": 1
+    }
+  ],
+  "failed": [
+    {
+      "txid": "2f8c05d1b3a749e60c1fa85d3729b40e17d6c0b85a3e2f419dbc06ea5381f7c3",
+      "payment_id": "0000000000000000",
+      "height": 0,
+      "timestamp": 1789471200,
+      "amount": 20000000000,
+      "amounts": [20000000000],
+      "fee": 30720000,
+      "note": "",
+      "destinations": [
+        {
+          "amount": 20000000000,
+          "address": "44Kbx4sJ7JDRDV5aAhLJzQCjDz2ViLRduE3ijDZu3osWKBjMGkV1XPk4pfDUMqt1Aiezvephdqm6YD19GKFD9ZcXVUTp6BW"
+        }
+      ],
+      "type": "failed",
+      "unlock_time": 0,
+      "locked": true,
+      "subaddr_index": { "major": 0, "minor": 0 },
+      "subaddr_indices": [{ "major": 0, "minor": 0 }],
+      "address": "42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm",
+      "double_spend_seen": false,
+      "confirmations": 0,
+      "suggested_confirmations_threshold": 1
+    }
+  ],
+  "pool": [
+    {
+      "txid": "9c3b0e175da2486f0b1ec53a927d4f8016ab3c5e7d0294fb16c0ea538d271b45",
+      "payment_id": "0000000000000000",
+      "height": 0,
+      "timestamp": 1789560020,
+      "amount": 40000000000,
+      "amounts": [40000000000],
+      "fee": 30720000,
+      "note": "",
+      "destinations": [],
+      "type": "pool",
+      "unlock_time": 0,
+      "locked": true,
+      "subaddr_index": { "major": 0, "minor": 1 },
+      "subaddr_indices": [{ "major": 0, "minor": 1 }],
+      "address": "8AsN91rznfkBGTY8psSNkJBg9SZgxxGGRUhGwRptBhgr5XSQ1XzmA9m8QAnoxydecSh5aLJXdrgXwTDMMZ1AuXsN1EX5Mtm",
+      "double_spend_seen": false,
+      "confirmations": 0,
+      "suggested_confirmations_threshold": 1
+    }
+  ]
+}

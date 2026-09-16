@@ -1,0 +1,63 @@
+# derived from monero v0.18.5.1 source, not captured from a run
+# VARIANT: A DRIFTED wallet unit -- StateDirectoryMode=0700 has been REMOVED.
+#   systemd's default for StateDirectory= is 0755, so its absence is not a missing nicety: it
+#   makes %S/fmonero/run world-readable, and that directory holds monero-wallet-rpc's credential
+#   file and its log -- a log that records the open wallet's name, its heights and its refresh
+#   activity -- on a machine whose threat model explicitly includes other local users (§2c, §4.2,
+#   §2b.7). The credential file itself settles at 0400 by private_file's own dance
+#   (src/common/util.cpp:215-224), so the FILE mode is fine; the DIRECTORY mode is the hole.
+#   THIS IS THE DRIFT A HUMAN MAKES: the line looks like boilerplate. A byte comparison catches
+#   it; no flag grep does, which is why units_present exists alongside the five flag checks.
+# DESIGN.md §4.2's rendered wallet unit. Every flag, and every DELIBERATE OMISSION, is from §1b.5:
+#   --rpc-bind-ip 127.0.0.1        the default anyway (src/rpc/rpc_args.cpp:92); binding elsewhere
+#                                  would need --confirm-external-bind (:99), which is never written
+#   --rpc-bind-port 18083          REQUIRED and has no default -- arg_descriptor<std::string, true>
+#                                  (src/wallet/wallet_rpc_server.cpp:139). 18083 because 18082 is
+#                                  monerod's ZMQ port (§1b.1)
+#   --wallet-dir <abs>             rendered from settings.wallet.dir, ALWAYS with the network segment,
+#                                  and deliberately NOT %h: the doctor's wallet_dir_matches_unit
+#                                  compares it against the setting LITERALLY (§4.2)
+#   --daemon-address / --trusted-daemon   the unrestricted local node
+#   --log-level 0                  A SECRETS CONTROL, NOT A TUNING KNOB (§4.2): above 0 epee logs HTTP
+#                                  request and response headers (http_protocol_handler.inl:457, :638,
+#                                  at LOG_PRINT_L3) and wallet2 logs its internals, into a file that
+#                                  sits in the same directory as the daemon's credential. THIS CHECK
+#                                  ASSERTS IT IS 0 (§7.1), for both units.
+#   --max-concurrency 4            halves upstream's all-cores default (§1b.5); wallet scanning is the
+#                                  one fmonero workload that will eat all 8 cores behind the user's back
+# ABSENT ON PURPOSE: no --disable-rpc-login and no --rpc-login, so monero-wallet-rpc GENERATES its own
+#   128-bit credential into WorkingDirectory as monero-wallet-rpc.<port>.login at mode 0400 and deletes
+#   it on exit (src/common/util.cpp:215-224, :263; wallet_rpc_server.cpp:351-380) -- the two are
+#   mutually exclusive and passing both is fatal (:341-349); no --password, ever (§2b.1); no
+#   --wallet-file and no --password-file, both incompatible with --wallet-dir (:318-324, :4897-4901);
+#   no --restricted-rpc, which would block relay_tx (§1b.4); no --detach, because systemd owns the
+#   process; and NO --daemon-login, because /proc/<pid>/cmdline is world-readable -- which is why every
+#   open_wallet is followed by exactly one set_daemon carrying the credential (§4.2).
+# StateDirectoryMode=0700 is not optional: systemd's default for StateDirectory= is 0755, and this
+#   directory holds the credential file and the log (§4.2, §2b.7).
+# Wants=fmonero-monerod.service is DELIBERATELY ABSENT: it would start a node around the §2i
+#   single-writer check, and two monerod on one data dir corrupt the LMDB (§1.2). That omission is the
+#   doctor's unit_no_node_wants check, a different row.
+[Unit]
+Description=Monero wallet RPC (fmonero)
+After=fmonero-monerod.service
+
+[Service]
+Type=simple
+StateDirectory=fmonero/run
+WorkingDirectory=%S/fmonero/run
+ExecStart=/usr/bin/monero-wallet-rpc \
+  --rpc-bind-ip 127.0.0.1 \
+  --rpc-bind-port 18083 \
+  --wallet-dir /home/user/.local/share/fmonero/wallets/mainnet \
+  --daemon-address 127.0.0.1:18081 \
+  --trusted-daemon \
+  --non-interactive \
+  --log-file %S/fmonero/run/monero-wallet-rpc.log \
+  --log-level 0 \
+  --max-concurrency 4
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

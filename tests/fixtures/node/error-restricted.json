@@ -1,0 +1,9 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# THE RESTRICTED-RPC PROBE'S ANSWER, and a WHOLE JSON-RPC ENVELOPE rather than a result object --\n# the only file in tests/fixtures/node/ that is. fmonero-mock serves it verbatim except for `id`,\n# which it overwrites with the id the request carried.\n# WHERE IT COMES FROM: with --restricted-rpc (or --public-node) a gated json_rpc method is NOT\n# REGISTERED AT ALL -- MAP_JON_RPC_WE_IF(..., !m_restricted) (src/rpc/core_rpc_server.h:166, :169,\n# :170, :179) -- so the dispatch falls through to END_JSON_RPC_MAP(), which answers HTTP 200 with\n#   {\"jsonrpc\":\"2.0\",\"id\":<id>,\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}\n# (contrib/epee/include/net/http_server_handlers_map2.h:280-285). -32601 is the JSON-RPC 2.0\n# \"method not found\" code; the message is epee's literal.\n# A gated LEGACY endpoint behaves differently -- it leaves handled = false\n# (http_server_handlers_map2.h:144) and epee answers HTTP 404\n# (contrib/epee/include/net/http_protocol_handler.inl:664), with no body of this shape. fmonero-mock\n# reproduces both halves: -32601 for a gated json_rpc method, 404 for a gated legacy endpoint.\n# WHY IT MATTERS: `sync_info` answering -32601 IS fmonero's restricted-RPC probe\n# (NodeClient::is_restricted, DESIGN.md §1b.2/§5b) -- the cheapest unambiguous one, and a call the\n# node dashboard needs anyway. Under --restricted the mock answers this for sync_info,\n# get_connections, get_bans and set_bans.\n# `id` is a STRING here (\"0\"), matching DESIGN.md §8's literal. JSON-RPC 2.0 allows a string or a\n# number and monerod echoes whatever it was sent, so a client must not assume either.",
+  "jsonrpc": "2.0",
+  "id": "0",
+  "error": {
+    "code": -32601,
+    "message": "Method not found"
+  }
+}

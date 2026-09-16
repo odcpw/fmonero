@@ -1,0 +1,49 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# fields: COMMAND_RPC_GET_PEER_LIST::response_t, src/rpc/core_rpc_server_commands_defs.h:1387-1397\n#         white_list[] / gray_list[] = struct peer, :1338-1369\n# base:   rpc_response_base ONLY (status, untrusted) :101-112 -- no credits, no top_hash, unlike\n#         get_info / get_last_block_header / sync_info / get_fee_estimate, which extend\n#         rpc_access_response_base (:124-136).\n# TYPES THAT BITE (DESIGN.md §1b.3): peer.ip is uint32_t (:1341) and peer.port is uint16_t (:1342)\n#         -- NUMBERS -- while connection_info.ip/.port in get_connections.json are STRINGS. The two\n#         are not one type, and DESIGN.md §5b's \"u64 for counts\" applied to Connection breaks there.\n# THE ip NUMBER IS NETWORK BYTE ORDER HELD IN A HOST uint32_t, NOT dotted-order arithmetic.\n#         peer.ip comes from epee::string_tools::get_ip_int32_from_string, which is literally\n#         `ip = inet_addr(str)` (contrib/epee/src/string_tools.cpp:79-86), and the inverse is\n#         `adr.s_addr = ip; inet_ntoa(adr)` (:68-77). inet_addr returns the four octets in network\n#         order; on a little-endian host that uint32_t therefore reads BYTE-REVERSED:\n#           203.0.113.17  -> 0x117100cb =  292618443   (NOT 0xcb007111 = 3405803793)\n#           198.51.100.42 -> 0x2a6433c6 =  711209926\n#           185.129.61.7  -> 0x073d81b9 =  121471417\n#           192.0.2.201   -> 0xc90200c0 = 3372351680\n#         A consumer that reconstructs the dotted form as (a<<24)|(b<<16)|(c<<8)|d gets every row\n#         backwards. fmonero does not need to: every row also carries `host` as a string (:1340,\n#         filled from that same u32 by the peer ctor at :1356), and §5c's `node peers` payload\n#         renders host and port only. The numbers are written out here so that a future consumer of\n#         `ip` cannot get the convention wrong silently, and so this file can be regenerated.\n# KV_SERIALIZE_OPT on rpc_port (:1365), rpc_credits_per_hash (:1366) and pruning_seed (:1368) means\n#         monerod omits them when they equal the default; every row here carries them explicitly,\n#         because a client must cope with both and omission is the easier half to get right.\n# gate:   MAP_URI_AUTO_JON2(\"/get_peer_list\", ..., !m_restricted) (src/rpc/core_rpc_server.h:121):\n#         a restricted node leaves handled = false and epee answers HTTP 404\n#         (contrib/epee/include/net/http_protocol_handler.inl:664), NOT -32601. --restricted does that.\n# request: public_only defaults to TRUE (:1381), include_blocked to false (:1382).\n# `id` is the peer's 64-bit peer_id; last_seen is a unix timestamp, here within a day of\n#         get_info.json's adjusted_time (1789560131).",
+  "status": "OK",
+  "untrusted": false,
+  "white_list": [
+    {
+      "id": 11258999068426240,
+      "host": "203.0.113.17",
+      "ip": 292618443,
+      "port": 18080,
+      "rpc_port": 18089,
+      "rpc_credits_per_hash": 0,
+      "last_seen": 1789560101,
+      "pruning_seed": 0
+    },
+    {
+      "id": 7237005577332262210,
+      "host": "198.51.100.42",
+      "ip": 711209926,
+      "port": 18080,
+      "rpc_port": 0,
+      "rpc_credits_per_hash": 0,
+      "last_seen": 1789559984,
+      "pruning_seed": 384
+    },
+    {
+      "id": 4611686018427387905,
+      "host": "185.129.61.7",
+      "ip": 121471417,
+      "port": 18080,
+      "rpc_port": 18081,
+      "rpc_credits_per_hash": 0,
+      "last_seen": 1789557412,
+      "pruning_seed": 0
+    }
+  ],
+  "gray_list": [
+    {
+      "id": 1234605616436508552,
+      "host": "192.0.2.201",
+      "ip": 3372351680,
+      "port": 18080,
+      "rpc_port": 0,
+      "rpc_credits_per_hash": 0,
+      "last_seen": 1789488011,
+      "pruning_seed": 0
+    }
+  ]
+}

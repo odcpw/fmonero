@@ -1,0 +1,17 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# fields: COMMAND_RPC_GETBANS::response_t, src/rpc/core_rpc_server_commands_defs.h:2023-2031\n#         bans[] = COMMAND_RPC_GETBANS::ban, :2002-2013 -> { host string, ip uint32, seconds uint32 }\n# base:   rpc_response_base only (status, untrusted) :101-112\n# NOTE the GETBANS ban and the SETBANS ban are DIFFERENT structs: SETBANS's (:2037-2050) adds a\n#       `ban` bool. Unban is `ban: false` on set_bans, not a separate method (DESIGN.md §1b.3).\n# `seconds` on the way out is the REMAINING ban time, not the original duration: on_get_bans keeps a\n#       row only while `i->second > now` and writes `b.seconds = i->second - now`\n#       (src/rpc/core_rpc_server.cpp:2750-2766).\n# `ip` is filled by get_ip_int32_from_string (:2758-2760) = inet_addr, i.e. NETWORK byte order in a\n#       host uint32_t -- the same convention as peer.ip, written out in get_peer_list.json:\n#         203.0.113.66  -> 0x427100cb = 1114702027\n#         198.51.100.99 -> 0x636433c6 = 1667511238\n#       and it is 0 when the host is not a bare IPv4 literal (b.ip is initialised to 0 at :2757).\n# gate: MAP_JON_RPC_WE_IF(\"get_bans\", ..., !m_restricted) (src/rpc/core_rpc_server.h:170) -> a\n#       restricted node answers -32601; --restricted serves error-restricted.json.\n# DESIGN.md §5c's `node bans` payload is { bans: [{host, ip, seconds}] } -- these three keys verbatim.",
+  "status": "OK",
+  "untrusted": false,
+  "bans": [
+    {
+      "host": "203.0.113.66",
+      "ip": 1114702027,
+      "seconds": 84213
+    },
+    {
+      "host": "198.51.100.99",
+      "ip": 1667511238,
+      "seconds": 3571
+    }
+  ]
+}

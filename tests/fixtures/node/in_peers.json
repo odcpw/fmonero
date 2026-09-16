@@ -1,0 +1,6 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# fields: COMMAND_RPC_IN_PEERS::response_t, src/rpc/core_rpc_server_commands_defs.h:1949-1957\n#         -> ONE key, `in_peers` (uint32_t), echoing the count in force.\n# base:   rpc_response_base only (status, untrusted) :101-112\n# request: { set bool, in_peers uint32_t } (:1937-1946). `set` is KV_SERIALIZE_OPT with default TRUE\n#         (:1943) -- see out_peers.json: an omitted `set` WRITES.\n# 32 matches the `in-peers=32` DESIGN.md §4.2 writes into monerod.conf.\n# gate:   MAP_URI_AUTO_JON2(\"/in_peers\", ..., !m_restricted) (src/rpc/core_rpc_server.h:138) ->\n#         HTTP 404 on a restricted node.\n# One of the four files DESIGN.md §8 Phase 0 names as \"without which `node limit --in-peers N` is an\n# AMBER row with no response to serve and no way to fill §5c's in_peers key\".",
+  "status": "OK",
+  "untrusted": false,
+  "in_peers": 32
+}
