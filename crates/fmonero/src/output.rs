@@ -88,11 +88,18 @@ impl Out {
 
     /// One JSON object, or the human rendering of the same payload. The only place either
     /// is printed. `label` is the command, so a renderer can special-case it.
+    ///
+    /// The **notes** are emitted in both modes, because they go to stderr and stderr is not
+    /// the data stream (§4): a JSON consumer's payload stays exactly the §5c key set while a
+    /// human still gets the footer §4.1 promises.
     pub fn emit(&self, label: &str, value: serde_json::Value) {
         if self.json {
             println!("{value}");
         } else {
             human(self, label, &value);
+        }
+        for note in footers(label, &value) {
+            self.note(note);
         }
     }
 
@@ -209,9 +216,18 @@ fn cell(v: &serde_json::Value) -> String {
 /// object, one row per array entry — is honest for every §5c payload, and `status` gets its
 /// own summary on top. Phase 1b enriches the branches here; `main.rs` never changes.
 pub fn human(out: &Out, label: &str, value: &serde_json::Value) {
-    if label == "status" {
-        status_human(out, value);
-        return;
+    match label {
+        "status" => return status_human(out, value),
+        "wallet send" | "wallet sweep" => return money_human(out, value),
+        "wallet history" => return history_human(out, value),
+        "wallet balance" => return balance_human(out, value),
+        "wallet address" | "wallet new-address" => return address_human(out, value),
+        "wallet list" => return list_human(out, value),
+        "node peers" => return peers_human(out, value),
+        "node log" => return log_human(out, value),
+        "settings list" => return settings_human(out, value),
+        "setup" => return setup_human(out, value),
+        _ => {}
     }
     let Some(map) = value.as_object() else {
         out.line(cell(value));
@@ -323,5 +339,328 @@ pub fn status_human(out: &Out, v: &serde_json::Value) {
             cell(&w["text"])
         ));
         out.line(format!("  hint: {}", cell(&w["hint"])));
+    }
+}
+
+// ---------------------------------------------------------------- per-command renderings
+//
+// `main.rs` builds every §5c payload and is frozen (§2k); these render the same JSON a
+// machine gets, so the two can never describe different numbers. Each one is driven by the
+// payload's own keys, never by a second call into core.
+
+/// Notes that go to **stderr in both modes** — the footers §4.1 promises and the one hint
+/// §4.1 attaches to an empty `wallet list`. stdout stays the data stream (§4).
+fn footers(label: &str, v: &serde_json::Value) -> Vec<String> {
+    let mut out = Vec::new();
+    match label {
+        "wallet history" => {
+            if v["cached"] == serde_json::Value::Bool(true) {
+                out.push("cached: confirmations unknown (no daemon call)".to_string());
+            }
+            if v["pool_unavailable"] == serde_json::Value::Bool(true) {
+                out.push(
+                    "the txpool could not be read (the wallet daemon could not reach the node); \
+                     every other row is complete"
+                        .to_string(),
+                );
+            }
+        }
+        "wallet list" => {
+            if v["wallets"].as_array().is_some_and(|a| a.is_empty()) {
+                let dir = v["dir"].as_str().unwrap_or("<wallet.dir>");
+                out.push(format!("no wallets in {dir}"));
+                out.push("hint: fmonero wallet create <name> --yes".to_string());
+                // The one command that brings an existing seed back (§4.1): `wallet restore`
+                // is cut from v0.1 precisely so no seed enters fmonero's process (§0, §2b.2).
+                out.push(format!(
+                    "hint: monero-wallet-cli --restore-deterministic-wallet --wallet-file {dir}/<name>   # then: fmonero wallet open <name>"
+                ));
+            }
+        }
+        "wallet create" => {
+            if let Some(hint) = v["seed_backup_hint"].as_str() {
+                out.push(hint.to_string());
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+/// `wallet send` / `wallet sweep`: the confirmation block, identical for a dry run, for the
+/// no-`--yes` refusal and for a relayed success, so a human reads one shape too (§5c).
+fn money_human(out: &Out, v: &serde_json::Value) {
+    let pair =
+        |pico: &str, xmr: &str| format!("{} XMR ({} piconero)", cell(&v[xmr]), cell(&v[pico]));
+    out.line(format!("To        {}", cell(&v["dest"])));
+    out.line(format!("Amount    {}", pair("amount_pico", "amount_xmr")));
+    out.line(format!("Fee       {}", pair("fee_pico", "fee_xmr")));
+    out.line(format!("Total     {}", pair("total_pico", "total_xmr")));
+    out.line(format!(
+        "Account   {}   Priority {}   Weight {}",
+        cell(&v["account_index"]),
+        cell(&v["priority"]),
+        cell(&v["weight"])
+    ));
+    let txs = v["txs"].as_array().map(Vec::as_slice).unwrap_or_default();
+    if txs.len() > 1 {
+        out.line(format!("{} transactions:", txs.len()));
+        for t in txs {
+            out.line(format!(
+                "  {}  {} XMR  fee {} XMR  {}",
+                cell(&t["txid"]),
+                cell(&t["amount_xmr"]),
+                cell(&t["fee_xmr"]),
+                if t["relayed"] == serde_json::Value::Bool(true) {
+                    out.paint("relayed", Paint::Green)
+                } else {
+                    out.paint("not relayed", Paint::Dim)
+                }
+            ));
+        }
+    }
+    let relayed = v["relayed"] == serde_json::Value::Bool(true);
+    let dry = v["dry_run"] == serde_json::Value::Bool(true);
+    let verdict = if relayed {
+        out.paint("broadcast", Paint::Green)
+    } else if dry {
+        out.paint("dry run: nothing was broadcast", Paint::Dim)
+    } else {
+        out.paint("nothing was broadcast", Paint::Yellow)
+    };
+    out.line(verdict);
+    for id in v["txids"].as_array().map(Vec::as_slice).unwrap_or_default() {
+        out.line(format!("txid      {}", cell(id)));
+    }
+}
+
+/// `wallet history`. `confirmations` and `locked` come from the payload — they are computed in
+/// core and never here (§5b) — and a `null` renders `—`, never `0` (§5).
+fn history_human(out: &Out, v: &serde_json::Value) {
+    let rows = v["transfers"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    if rows.is_empty() {
+        out.line("no transfers");
+        return;
+    }
+    out.line(format!(
+        "{}  {}  {}  {}  {}  {}",
+        pad("date", 16),
+        pad("type", 7),
+        pad("amount", 18),
+        pad("fee", 12),
+        pad("conf", 6),
+        "locked (est.)"
+    ));
+    for t in rows {
+        let when = t["timestamp"]
+            .as_i64()
+            .and_then(fmonero_core::rfc3339_from_unix)
+            .map(|s| s.chars().take(16).collect::<String>())
+            .unwrap_or_else(|| "—".to_string());
+        out.line(format!(
+            "{}  {}  {}  {}  {}  {}",
+            pad(&when, 16),
+            pad(&cell(&t["type"]), 7),
+            pad(&cell(&t["amount_xmr"]), 18),
+            pad(&cell(&t["fee_xmr"]), 12),
+            pad(&cell(&t["confirmations"]), 6),
+            cell(&t["locked"])
+        ));
+    }
+    out.line(format!(
+        "{} row(s)   high water {}   cache age {}s",
+        rows.len(),
+        cell(&v["high_water"]),
+        cell(&v["cache_age_sec"])
+    ));
+}
+
+fn balance_human(out: &Out, v: &serde_json::Value) {
+    out.line(format!("account   {}", cell(&v["account_index"])));
+    out.line(format!(
+        "balance   {} XMR ({} piconero)",
+        cell(&v["balance_xmr"]),
+        cell(&v["balance_pico"])
+    ));
+    out.line(format!(
+        "unlocked  {} XMR ({} piconero)",
+        cell(&v["unlocked_xmr"]),
+        cell(&v["unlocked_pico"])
+    ));
+    if v["blocks_to_unlock"].as_u64().unwrap_or(0) > 0 {
+        out.line(out.paint(
+            &format!(
+                "locked    for {} more block(s) (~{}s)",
+                cell(&v["blocks_to_unlock"]),
+                cell(&v["time_to_unlock_sec"])
+            ),
+            Paint::Yellow,
+        ));
+    }
+    if let Some(subs) = v["subaddresses"].as_array() {
+        // Only the FUNDED subaddresses are here (§5), so an absent row is not an absent
+        // subaddress — `wallet address` lists them all.
+        out.line("funded subaddresses:");
+        for s in subs {
+            out.line(format!(
+                "  {} {}  {} XMR  unlocked {} XMR  {} output(s)  {}",
+                pad(&cell(&s["address_index"]), 3),
+                cell(&s["address"]),
+                cell(&s["balance_xmr"]),
+                cell(&s["unlocked_xmr"]),
+                cell(&s["num_unspent_outputs"]),
+                cell(&s["label"])
+            ));
+        }
+    }
+}
+
+fn address_human(out: &Out, v: &serde_json::Value) {
+    out.line(format!("primary   {}", cell(&v["primary"])));
+    out.line(format!("selected  {}", cell(&v["selected"])));
+    for a in v["addresses"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+    {
+        out.line(format!(
+            "  {} {}  {}{}",
+            pad(&cell(&a["address_index"]), 3),
+            cell(&a["address"]),
+            cell(&a["label"]),
+            if a["used"] == serde_json::Value::Bool(true) {
+                "  (used)"
+            } else {
+                ""
+            }
+        ));
+    }
+}
+
+fn list_human(out: &Out, v: &serde_json::Value) {
+    for name in v["wallets"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+    {
+        out.line(cell(name));
+    }
+}
+
+fn peers_human(out: &Out, v: &serde_json::Value) {
+    match v["connections"].as_array() {
+        Some(rows) => {
+            out.line(format!("{} live connection(s)", rows.len()));
+            for c in rows {
+                out.line(format!(
+                    "  {}  {}  {}  height {}  seed {}  {}s  ↓{} ↑{}",
+                    pad(&cell(&c["host"]), 40),
+                    pad(&cell(&c["port"]), 6),
+                    pad(&cell(&c["state"]), 12),
+                    cell(&c["height"]),
+                    cell(&c["pruning_seed"]),
+                    cell(&c["live_time"]),
+                    human_bytes(c["avg_download"].as_u64().unwrap_or(0)),
+                    human_bytes(c["avg_upload"].as_u64().unwrap_or(0)),
+                ));
+            }
+        }
+        None => out.line("connections   — (not available on a restricted node)"),
+    }
+    for (key, title) in [("white", "white list"), ("gray", "gray list")] {
+        match v[key].as_array() {
+            Some(rows) => {
+                out.line(format!("{title}: {} peer(s)", rows.len()));
+                for p in rows {
+                    out.line(format!(
+                        "  {}:{}  last seen {}",
+                        cell(&p["host"]),
+                        cell(&p["port"]),
+                        cell(&p["last_seen"])
+                    ));
+                }
+            }
+            None => out.line(format!("{title}   — (not available on a restricted node)")),
+        }
+    }
+}
+
+fn log_human(out: &Out, v: &serde_json::Value) {
+    let lines = v["lines"].as_array().map(Vec::as_slice).unwrap_or_default();
+    if lines.is_empty() {
+        out.line(format!("no log yet at {}", cell(&v["path"])));
+        return;
+    }
+    for l in lines {
+        out.line(cell(l));
+    }
+    if v["truncated"] == serde_json::Value::Bool(true) {
+        out.note("(earlier lines were not read)");
+    }
+}
+
+fn settings_human(out: &Out, v: &serde_json::Value) {
+    let rows = v["settings"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let width = rows
+        .iter()
+        .map(|r| UnicodeWidthStr::width(r["key"].as_str().unwrap_or("")))
+        .max()
+        .unwrap_or(0);
+    for r in rows {
+        let value = cell(&r["value"]);
+        let default = cell(&r["default"]);
+        let marker = if value == default { " " } else { "*" };
+        out.line(format!(
+            "{marker} {}  {}",
+            pad(&cell(&r["key"]), width),
+            value
+        ));
+        out.line(format!(
+            "    {}",
+            out.paint(
+                &format!("{}  [default {default}]", cell(&r["doc"])),
+                Paint::Dim
+            )
+        ));
+    }
+    out.note("* = changed from the default");
+}
+
+fn setup_human(out: &Out, v: &serde_json::Value) {
+    let dry = v["dry_run"] == serde_json::Value::Bool(true);
+    for a in v["actions"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+    {
+        let status = cell(&a["status"]);
+        let paint = match status.as_str() {
+            "written" => Paint::Green,
+            "planned" => Paint::Yellow,
+            "skipped" => Paint::Red,
+            _ => Paint::Dim,
+        };
+        out.line(format!(
+            "{} {}  {}",
+            out.paint(&pad(&status, 9), paint),
+            cell(&a["what"]),
+            cell(&a["path"])
+        ));
+        // The diff is already redacted where it was rendered (§4.2): `units::install` and the
+        // menu merge both pass it through `units::redact_login`.
+        if let Some(diff) = a["diff"].as_str() {
+            for line in diff.lines() {
+                out.line(format!("    {line}"));
+            }
+        }
+    }
+    if dry {
+        out.note("dry run: nothing was changed");
     }
 }

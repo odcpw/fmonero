@@ -418,7 +418,13 @@ pub fn status(ctx: &Context) -> Result<Status, Error> {
     }
 
     // ---- the cold path, at most once per 60 s (§5) --------------------------
-    let cold = cold_pass(ctx, nclient.as_ref(), wclient.as_ref(), wallet.open, now);
+    let cold = cold_pass(
+        ctx,
+        nclient.as_ref().filter(|_| node.reachable),
+        wclient.as_ref().filter(|_| wallet.reachable),
+        wallet.open,
+        now,
+    );
     if let Some(c) = cold.as_ref() {
         if node.reachable {
             node.hard_fork_version = c.hard_fork_version;
@@ -462,10 +468,9 @@ pub fn status(ctx: &Context) -> Result<Status, Error> {
     let staleness = Staleness {
         node_probe_ms,
         wallet_probe_ms,
-        node_extras_age_sec: stale_doc
-            .cold
-            .as_ref()
-            .map(|c| (now - c.built_at).max(0) as u64),
+        // The age of the cold set that is about to be stored, which is 0 on a pass that just
+        // ran and the previous age in between — `null` before the first pass ever (§5).
+        node_extras_age_sec: cold.as_ref().map(|c| (now - c.built_at).max(0) as u64),
         history_cache_age_sec: crate::history::header(ctx)
             .ok()
             .flatten()
@@ -566,6 +571,12 @@ fn cold_pass(
         if now - c.built_at < COLD_TTL_SEC {
             return existing;
         }
+    }
+    // With nothing answering there is no cold pass to make, and a `built_at` of now over a
+    // set of `null`s would report `node_extras_age_sec: 0` for data that does not exist —
+    // the zero-standing-in-for-unknown §5 forbids.
+    if n.is_none() && w.is_none() {
+        return existing;
     }
     let mut cold = existing.unwrap_or_default();
     cold.built_at = now;
