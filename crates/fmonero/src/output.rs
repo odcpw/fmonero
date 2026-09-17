@@ -227,6 +227,8 @@ pub fn human(out: &Out, label: &str, value: &serde_json::Value) {
         "node log" => return log_human(out, value),
         "settings list" => return settings_human(out, value),
         "setup" => return setup_human(out, value),
+        // v5.2: the two mode commands share one key set and therefore one renderer (§5c).
+        "node remote" | "node local" => return mode_human(out, value),
         _ => {}
     }
     let Some(map) = value.as_object() else {
@@ -641,6 +643,53 @@ fn settings_human(out: &Out, v: &serde_json::Value) {
         ));
     }
     out.note("* = changed from the default");
+}
+
+/// `node remote` / `node local` (§5c, §2m.5). The two share one key set, so an agent parses
+/// one shape and reads `mode`; a human gets the same facts in the same order.
+fn mode_human(out: &Out, v: &serde_json::Value) {
+    let mode = cell(&v["mode"]);
+    let dry = v["dry_run"] == serde_json::Value::Bool(true);
+    out.line(format!(
+        "{}  {}  {} · ssl {}",
+        out.paint(
+            &pad(&mode, 7),
+            if mode == "remote" {
+                Paint::Yellow
+            } else {
+                Paint::Green
+            }
+        ),
+        cell(&v["address"]),
+        if v["trusted"] == serde_json::Value::Bool(true) {
+            "trusted"
+        } else {
+            "untrusted"
+        },
+        cell(&v["ssl_support"])
+    ));
+    // The same `units::FileAction[]` shape and the same rendering `setup` uses (§5b).
+    setup_human(out, v);
+    if v["wallet_unit_restarted"] == serde_json::Value::Bool(true) {
+        out.note("monero-wallet-rpc was restarted: it holds --daemon-address in its argv");
+    }
+    // §2m.5 step 10: the restart closed whatever was open, so say so rather than leave
+    // `status` claiming a wallet that is gone — a stale fact about money.
+    if let Some(name) = v["wallet_must_reopen"].as_str() {
+        out.note(format!("the wallet {name} was closed by that restart"));
+        out.note(format!("hint: fmonero wallet open {name}"));
+    }
+    if !dry && v["changed"] == serde_json::Value::Bool(false) {
+        out.note("nothing changed: this machine was already in that mode");
+    }
+    if mode == "remote" {
+        // §2m.6, in the same words README and robot-docs use.
+        out.note(
+            "this node learns your IP address and the timing of every request, supplies the \
+             decoys your transactions are built from, and can lie about the chain tip and the \
+             fee — bound a send with --max-fee, and never mark a public node --trusted",
+        );
+    }
 }
 
 fn setup_human(out: &Out, v: &serde_json::Value) {

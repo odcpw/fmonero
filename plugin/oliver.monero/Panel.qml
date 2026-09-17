@@ -24,8 +24,14 @@ Panel {
 
   // ---- bar icon state (DESIGN.md §6.4, first match wins) -------------------
   readonly property bool anyError: Model.worstSeverity(svc.warnings) === "error"
+  // Cases 6 and 7 are v5.2's remote rows, and they sit ABOVE the three node rows deliberately
+  // (§6.4): `!nodeUp`, `!synced` and the percent ring all read fields that are null in remote
+  // mode, so left below they would draw a crossed glyph and a 0 % ring for a wallet that is
+  // working perfectly — a bar icon claiming the node is down.
   readonly property int iconCase: !svc.alive ? 0
     : anyError ? 1
+    : (svc.remote && svc.walletOpen) ? 6
+    : svc.remote ? 7
     : !svc.nodeUp ? 2
     : !svc.synced ? 3
     : svc.walletOpen ? 4 : 5
@@ -33,7 +39,10 @@ Panel {
     : (iconCase === 0 || iconCase === 2) ? Qt.darker(barForeground, 1.55) : barForeground
   readonly property bool iconCrossed: iconCase === 0 || iconCase === 2
   readonly property bool iconWarning: iconCase <= 1
-  readonly property bool iconFilled: iconCase === 4
+  readonly property bool iconFilled: iconCase === 4 || iconCase === 6
+  // A small chevron in the same badge slot the warning badge uses, in `barForeground` rather
+  // than `urgent`: remote mode is a configuration, not a fault (§6.4).
+  readonly property bool iconRemote: iconCase === 6 || iconCase === 7
   readonly property real iconRing: iconCase === 3 ? svc.syncPct / 100 : -1
   // The number only when the bar is tall enough to draw two legible digits inside the ring.
   readonly property string iconPercent:
@@ -41,6 +50,16 @@ Panel {
 
   readonly property string tooltipText: {
     if (!svc.alive) return "Monero · fmonero is not answering"
+    // In remote mode the tooltip never contains a height, a peer count or a sync phrase it
+    // does not have (§6.4): all three are null there.
+    if (svc.remote) {
+      var remoteParts = ["Monero", Model.remoteLabel(svc.node)]
+      if (svc.walletOpen && svc.wallet.height !== null && svc.wallet.height !== undefined)
+        remoteParts.push("wallet " + Model.grouped(svc.wallet.height))
+      if (svc.walletOpen && svc.showBalance && svc.wallet.balance_xmr)
+        remoteParts.push(String(svc.wallet.balance_xmr) + " XMR")
+      return remoteParts.join(" · ")
+    }
     var parts = ["Monero"]
     if (svc.node && svc.node.height !== null && svc.node.height !== undefined)
       parts.push(Model.grouped(svc.node.height))
@@ -228,6 +247,7 @@ Panel {
                               sections: root.navSections, alive: svc.alive,
                               binaryMissing: svc.binaryMissing, nodeUp: svc.nodeUp,
                               synced: svc.synced, walletOpen: svc.walletOpen,
+                              remote: svc.remote,
                               iconCase: root.iconCase, iconColor: String(root.barIconColor) })
     }
   }
@@ -246,6 +266,7 @@ Panel {
         crossed: root.iconCrossed
         warning: root.iconWarning
         filled: root.iconFilled
+        remote: root.iconRemote
         ringProgress: root.iconRing
         percentText: root.iconPercent
       }
@@ -330,9 +351,10 @@ Panel {
                   iconSize: Style.font.display
                   color: svc.nodeUp ? root.foreground : root.dim
                   badgeColor: root.urgent
-                  crossed: svc.alive && !svc.nodeUp
+                  crossed: svc.alive && !svc.remote && !svc.nodeUp
                   warning: !svc.alive || root.anyError
                   filled: svc.walletOpen
+                  remote: svc.remote
                 }
               }
               trailingControl: Component {

@@ -52,6 +52,16 @@ forbid() {
     ok "$name"
   fi
 }
+# The other half of `forbid`: a line that MUST be there. Used by the §2m structural checks,
+# where the property being asserted is that a branch exists and is reachable.
+present() {
+  local name="$1" file="$2" pattern="$3"
+  if grep -qF "$pattern" "$PLUGIN/$file" 2>/dev/null; then
+    ok "$name"
+  else
+    bad "$name" "$PLUGIN/$file does not contain: $pattern"
+  fi
+}
 fires() {
   local name="$1" pattern="$2" content="$3" dir="$SELFTEST/$RANDOM$RANDOM"
   mkdir -p "$dir"
@@ -176,6 +186,27 @@ forbid "no float arithmetic on money" "$FLOATS"
 fires  "parseFloat" "$FLOATS" 'var x = parseFloat(status.pending.txs[0].amount_xmr)'
 fires  "Number()"   "$FLOATS" 'var x = Number(status.wallet.balance_xmr) + 1'
 fires  "pico / 1e12" "$FLOATS" 'var xmr = status.wallet.balance_pico / 1e12'
+
+# --- 7b. remote node mode (DESIGN.md §2m, §6.4, §6.5; v5.2) -------------------
+# This script has no way to feed the widget a Status document — the cursor IPC is a read-only
+# hook and a setter that injected one would let anything spoof what the bar displays — so the
+# remote rows are asserted STRUCTURALLY, on the one property that is load-bearing: the two
+# remote cases must come BEFORE the three node cases in `iconCase`. Below them, `!svc.nodeUp`
+# and `!svc.synced` read fields that are null in remote mode, and the icon would draw a crossed
+# glyph and a 0 % ring for a wallet that is working perfectly (§6.4). The live half below then
+# proves the file still loads, and `cursor` now reports `remote` so a human can check it.
+ICON_EXPR="$(sed -n '/readonly property int iconCase:/,/svc.walletOpen ? 4 : 5/p' "$PLUGIN/Panel.qml")"
+REMOTE_AT="$(printf '%s\n' "$ICON_EXPR" | grep -n 'svc.remote' | head -1 | cut -d: -f1)"
+NODEUP_AT="$(printf '%s\n' "$ICON_EXPR" | grep -n '!svc.nodeUp' | head -1 | cut -d: -f1)"
+if [[ -n $REMOTE_AT && -n $NODEUP_AT && $REMOTE_AT -lt $NODEUP_AT ]]; then
+  ok "svc.remote is matched before !svc.nodeUp (§6.4)"
+else
+  bad "§6.4: the remote rows must be matched BEFORE !svc.nodeUp" "$ICON_EXPR"
+fi
+present "Model.remoteLabel exists" Model.js 'function remoteLabel'
+present "and Panel.qml uses it instead of a sync gauge" Panel.qml 'Model.remoteLabel'
+present "the node toggle is inert in remote mode" Service.qml 'if (remote) { localError'
+present "cursor reports the mode" Panel.qml 'remote: svc.remote'
 
 # --- 8. reload the shell, read the journal, ask the widget ---------------------
 if [[ $STATIC_ONLY -eq 1 ]]; then

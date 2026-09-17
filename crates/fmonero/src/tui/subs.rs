@@ -194,9 +194,8 @@ pub fn execute(
             }
             Action::BuildTx(req) => {
                 let w = WalletClient::from_ctx(ctx)?;
-                // In remote mode there is no node client at all — `from_ctx` refuses (§2c) —
-                // and step 7 is a bounded `refresh` instead (§2m.3). The CLI names the same
-                // three situations; `NodeGate` is what makes the compiler enumerate them.
+                // No node client in remote mode — `from_ctx` refuses (§2c) — and step 7 is a
+                // bounded `refresh` instead (§2m.3).
                 let n = match fmonero_core::NodeClient::from_ctx(ctx) {
                     Ok(n) => Some(n),
                     Err(e) if e.reason() == Some("remote_node") => None,

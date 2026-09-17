@@ -78,10 +78,23 @@ function shortAddr(addr) {
   return a.substring(0, 8) + "…" + a.substring(a.length - 6)
 }
 
+// The row that REPLACES the sync gauge in remote mode (DESIGN.md §6.5, v5.2). Every gauge
+// field is null there, and a 0 % bar for a wallet that is working is the rendered untruth §2j
+// forbids. `node` is Status.node.
+function remoteLabel(node) {
+  if (!node) return "remote"
+  var label = "remote: " + shortAddr(String(node.url || ""))
+  if (node.trusted === true) label += " · trusted"
+  return label
+}
+
 // The one phrase under the hero. `node` is Status.node, or null.
 function syncLabel(status) {
   if (!status || status.ok !== true) return "fmonero is not answering"
   var n = status.node
+  // Remote mode answers FIRST: `reachable` is null there, not false, and every branch below
+  // reads a field that has no source (§2m.3).
+  if (n && n.layout === "remote") return remoteLabel(n)
   if (!n || n.reachable !== true) {
     return n && n.layout === "none" ? "No node configured" : "Node is not running"
   }

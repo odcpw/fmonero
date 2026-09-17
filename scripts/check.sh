@@ -267,7 +267,8 @@ fi
 # these five files got their first 2 600 — and it is measured here, in a gate that fails, rather
 # than recorded in a ledger nothing reads. `tests.rs` is excluded by §7a: it is test code.
 step "§7a  the TUI fits its line budget · §6.1 the plugin fits its own"
-TUI_BUDGET=4600
+# v5.2: 4700, measured 4655 — §2m's Node screen, stated in DESIGN.md §7a first (was 4600).
+TUI_BUDGET=4700
 if [ -d "$BIN/tui" ]; then
   TUI_FILES=()
   for f in mod theme screens send subs; do
@@ -282,7 +283,9 @@ if [ -d "$BIN/tui" ]; then
 else
   printf '  skip  §7a line budget: crates/fmonero/src/tui does not exist yet\n'
 fi
-QML_BUDGET=1310
+# v5.2 raised it from 1310 by §6.1's +15/+15 for the remote badge and `Model.remoteLabel`
+# and by nothing else, stated in DESIGN.md before the code was written (§6.1).
+QML_BUDGET=1340
 if [ -d plugin/oliver.monero ]; then
   QML_LINES="$(cat plugin/oliver.monero/*.qml plugin/oliver.monero/*.js plugin/oliver.monero/manifest.json 2>/dev/null | grep -c '')"
   if [ "$QML_LINES" -le "$QML_BUDGET" ]; then

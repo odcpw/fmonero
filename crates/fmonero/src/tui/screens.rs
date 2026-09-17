@@ -367,11 +367,9 @@ fn node_hero(m: &Tui, area: Rect, frame: &mut Frame) {
             Span::styled("● ", th.badge(m.node_badge())),
             Span::styled(m.node_phrase(), th.title()),
         ]));
-        // **In remote mode the hero is a different, much smaller one** (v5.2, §2m.3, §7a), and
-        // the 1 s poll makes no node call at all. **No sync `MiniBar`, no percent, no ETA, no
-        // peers, no version**: every one of them is `null` here, and a gauge at 0 % is the
-        // rendered untruth §2j forbids — the same reason §6.4 puts the widget's remote rows
-        // above its node rows.
+        // In remote mode the hero is a different, much smaller one (§2m.3, §7a): no gauge, no
+        // percent, no ETA, no peers, no version. All of them are `null` here, and a gauge at
+        // 0 % is the rendered untruth §2j forbids.
         if n.layout == Layout::Remote {
             lines.push(kv(
                 th,
@@ -1296,12 +1294,28 @@ fn help(m: &Tui, frame: &mut Frame) {
     ) else {
         return;
     };
+    // §7a: in remote mode the keys that need the local daemon are marked from this same table,
+    // so help and behaviour cannot drift — `confirm` toasts, and `b` has no bans to show.
+    let remote = m.remote_mode();
     let lines = KEYS
         .iter()
         .map(|(k, a)| {
+            let disabled = remote && matches!(*k, "u  d" | "L" | "b");
+            let action = if disabled {
+                format!("{a}  (remote mode: disabled)")
+            } else {
+                (*a).to_string()
+            };
             Line::from_spans([
                 Span::styled(format!("{k:<22}"), th.key().bg(th.selection)),
-                Span::styled((*a).to_string(), th.text().bg(th.selection)),
+                Span::styled(
+                    action,
+                    if disabled {
+                        th.dimmed().bg(th.selection)
+                    } else {
+                        th.text().bg(th.selection)
+                    },
+                ),
             ])
         })
         .collect();

@@ -17,6 +17,7 @@ Item {
   property bool crossed: false
   property bool warning: false
   property bool filled: false        // a wallet is open (DESIGN.md §6.4)
+  property bool remote: false         // v5.2: monero-wallet-rpc talks to a remote node (§6.4)
   property real ringProgress: -1     // 0..1 sync ring around the glyph; < 0 draws none
   property string percentText: ""    // drawn instead of the M when the bar is tall enough
   readonly property real viewBox: 24
@@ -61,6 +62,21 @@ Item {
     visible: root.crossed; anchors.centerIn: parent
     width: parent.width * 1.22; height: Math.max(2, parent.height * 0.14)
     radius: height / 2; color: root.color; rotation: -45
+  }
+
+  // v5.2, §6.4: the remote badge — one more Shape in the SAME slot the warning badge uses, in
+  // `color` not `badgeColor`: remote mode is a configuration, not a fault. `warning` wins the
+  // slot when both apply, which §6.4's icon-case order already guarantees.
+  Shape {
+    visible: root.remote && !root.warning
+    anchors.right: parent.right; anchors.bottom: parent.bottom
+    width: Math.max(8, parent.width * 0.42); height: width
+    antialiasing: true; preferredRendererType: Shape.CurveRenderer
+    ShapePath {
+      fillColor: "transparent"; strokeColor: root.color; strokeWidth: 1.4
+      capStyle: ShapePath.RoundCap; joinStyle: ShapePath.RoundJoin
+      PathSvg { path: "M 2 1 L 6 4.5 L 2 8" }
+    }
   }
 
   // Something needs a human: an error-severity warning, or no answer at all.

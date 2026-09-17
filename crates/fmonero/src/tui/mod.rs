@@ -416,9 +416,8 @@ impl Tui {
         if self.status_err.is_some() || s.pending.is_some() || self.has_warning("node_stalled") {
             return "error";
         }
-        // **Remote mode answers first** (v5.2, §2m.3): `reachable` and `synchronized` are both
-        // `null` there, and every badge below reads one of them — so left to fall through they
-        // would paint "down" for a wallet that is working perfectly.
+        // Remote mode answers first (§2m.3): `reachable` and `synchronized` are both `null`
+        // there, so every badge below would paint "down" for a wallet that is working.
         if self.remote_mode() {
             return "remote";
         }
@@ -545,6 +544,12 @@ impl Tui {
     }
 
     fn load_extras(&self) -> Cmd<Msg> {
+        // Nothing to load in remote mode (§2m.3): every extra needs a `NodeClient`, which
+        // `from_ctx` refuses there, and the remote hero renders none of them. `Cmd::none()`
+        // rather than a failing task: no error about a configuration that is correct.
+        if self.remote_mode() {
+            return Cmd::none();
+        }
         let ctx = self.ctx.clone();
         let bans = self.node.view == NodeView::Bans;
         Cmd::task(move || {
@@ -1213,6 +1218,14 @@ impl Tui {
     // ------------------------------------------------------------ modal builders
 
     fn confirm(&mut self, what: Confirm) -> Cmd<Msg> {
+        // In remote mode `u`, `d` and `L` toast instead of acting (§7a): all three exit 4
+        // `remote_node`, and the toast names the command that restores them — the only place a
+        // TUI user learns the mode is reversible. The TUI never offers the switch itself: it
+        // restarts a daemon and closes the wallet this session is holding (§2m.5).
+        if self.remote_mode() {
+            self.note("remote node mode — run: fmonero node local --yes", true);
+            return Cmd::none();
+        }
         if !matches!(units::may_mutate_node(&self.ctx), Ok(true)) {
             self.note(
                 "this monerod is not fmonero's to mutate — sudo systemctl <verb> monerod",

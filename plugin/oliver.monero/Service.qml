@@ -27,6 +27,10 @@ Item {
   readonly property var  units:      status.units || null
   readonly property var  warnings:   Array.isArray(status.warnings) ? status.warnings : []
   readonly property string lastError: String((status.last_error && status.last_error.text) || "")
+  // v5.2, §2m: the one discriminator the icon, the panel and the toggle all branch on. Every
+  // node field is null in remote mode, and `nodeUp`/`synced` already read null as false because
+  // both compare with `=== true` — so only the rows that render a NUMBER need this.
+  readonly property bool remote:     !!(node && node.layout === "remote")
   readonly property bool nodeUp:     !!(node && node.reachable === true)
   readonly property bool synced:     !!(node && node.synchronized === true)
   readonly property int  syncPct:    node && node.sync_percent !== null && node.sync_percent !== undefined
@@ -117,7 +121,14 @@ Item {
     desiredTimer.restart()
     runAction(["node", "down", "--yes", "--json"], "Stopping the node…")
   }
-  function toggleNode() { desiredOn ? stopNode() : startNode() }
+  // **Inert in remote mode** (§6.4): `node up`/`node down` are specified to exit 4
+  // `remote_node` there, and firing a command that cannot succeed would put a red error on the
+  // bar every time someone mis-clicks. `_desired` is never set either: `node.reachable` is
+  // null, so the optimism bridge has nothing to converge on (§6.3).
+  function toggleNode() {
+    if (remote) { localError = "fmonero node local --yes"; return }
+    desiredOn ? stopNode() : startNode()
+  }
 
   // Shown only while a wallet is open, so it can never be the call that starts a wallet daemon.
   function refreshWallet() {
