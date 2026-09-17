@@ -5706,7 +5706,12 @@ test result: ok. 3 passed; 0 failed       # crates/fmonero-mock
 The five `tests/e2e.sh` assertions the verifier listed —
 `node up with no units is exit 4`, `unit_missing`, `wallet open with a password but no unit is
 exit 4`, `it lists a CreateDir action for wallet.dir when it is absent` and the `--wallet-dir`
-grep — all pass in the run pasted below, and the fifth was rewritten rather than merely unblocked:
+grep — all pass in the run pasted below. Their **pre-fix** state is the verifier's own transcript
+rather than a re-run here, and deliberately so: the pre-fix `wallet open` case reaches
+`units::start` and starts the owner's real `fmonero-wallet-rpc.service`, which is what left it
+flapping in the first place. Re-creating that to re-photograph a failure already recorded two
+sections above would be the opposite of what this phase is for. The fifth was rewritten rather
+than merely unblocked:
 an `unchanged` action carries `"diff": null` by contract (§5b `FileAction`), so the grep had
 nothing to read on a correct machine. It now reads the rendered unit out of a `planned` diff the
 sandbox guarantees, **and** the installed unit file on disk, with the sandbox dropped — the row
