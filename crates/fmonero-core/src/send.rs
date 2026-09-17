@@ -827,6 +827,34 @@ pub fn take_send_lock(ctx: &Context) -> Result<std::fs::File, Error> {
     // else its own exit code — a lock fmonero cannot take for an I/O reason is a failure (exit
     // 1), not a claim that a transaction may be in flight (exit 3), and §4's whole argument for
     // `reason` is that an agent acts on the difference.
+    //
+    // **`EWOULDBLOCK` does not mean "somebody else has it" either, and that is the second
+    // defect.** A `flock` belongs to the *open file description*, not to the process, and
+    // `fork(2)` — by **any** thread — copies the descriptor table, so a child holds a
+    // reference to the description until it `exec`s. Rust opens every file `O_CLOEXEC`, which
+    // bounds that window to fork→exec rather than to the child's whole life; it does not close
+    // it. So a `std::process::Command` on one thread (a `systemctl` probe, the mock server a
+    // test starts) keeps *this* thread's already-dropped lock alive for a few microseconds,
+    // and a bare non-blocking `flock` then reports `send_in_progress` with nobody holding
+    // anything: the verifier measured **8 122 spurious `EWOULDBLOCK` in 20 000** on a private
+    // lock file with four sibling threads doing nothing but spawning `/bin/true`, and
+    // `/proc/locks` is empty by the time anyone looks. The CLI is single-threaded on the money
+    // path today; the TUI is not, so a legitimate send can be refused.
+    //
+    // **The fix is a bounded retry, not a weaker interlock**, and the two timescales are what
+    // make that safe: a fork window lasts microseconds, while a genuine holder holds
+    // `send.lock` across a build, a human's confirm modal and every `relay_tx` — seconds at
+    // best. Retrying for [`LOCK_RETRY_BUDGET`] therefore cannot let two real senders through
+    // (the second still meets a lock that will be held long after the budget expires) and
+    // costs a real refusal only that budget in latency. The alternatives were considered and
+    // rejected: `O_CLOEXEC` is already set and is exactly what leaves the fork→exec window;
+    // `fcntl(F_OFD_SETLK)` is an open-file-description lock too and is inherited by `fork` in
+    // the same way, so it closes nothing; and process-associated `F_SETLK` would close it only
+    // by moving to the lock family §2i's `flock`-vs-`fcntl` choice deliberately keeps clear of,
+    // while adding POSIX record locking's "any close drops the lock" footgun on the one path
+    // that must not lose a lock silently.
+    let started = std::time::Instant::now();
+    let mut backoff = std::time::Duration::from_micros(200);
     loop {
         // SAFETY: `f` is an open descriptor for the whole call.
         if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
@@ -836,6 +864,11 @@ pub fn take_send_lock(ctx: &Context) -> Result<std::fs::File, Error> {
         match err.raw_os_error() {
             Some(libc::EINTR) => continue,
             Some(e) if e == libc::EWOULDBLOCK || e == libc::EAGAIN => {
+                if started.elapsed() < LOCK_RETRY_BUDGET {
+                    std::thread::sleep(backoff);
+                    backoff = (backoff * 2).min(std::time::Duration::from_millis(20));
+                    continue;
+                }
                 // `flock` does not name the holder and the lock file stays empty, so the
                 // message carries no pid; the holder is identified through `status`'s
                 // `pending` record, which is what the hint points at (§2a.11).
@@ -856,6 +889,15 @@ pub fn take_send_lock(ctx: &Context) -> Result<std::fs::File, Error> {
         }
     }
 }
+
+/// How long [`take_send_lock`] retries a non-blocking `flock` that answered `EWOULDBLOCK`
+/// before it declares `send_in_progress` (§2a.11).
+///
+/// Sized between the two timescales it has to separate: the fork→exec window that produces a
+/// spurious refusal is microseconds, and a real holder holds the lock for seconds. 500 ms is
+/// three orders of magnitude clear of the first and one clear of the second, and it is the
+/// whole extra latency a genuine refusal pays.
+pub const LOCK_RETRY_BUDGET: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Enough of an address to recognise, for a message that must not wrap a terminal.
 fn short(address: &str) -> String {
@@ -1045,5 +1087,84 @@ mod tests {
         ] {
             assert!(wire.get(forbidden).is_none(), "{forbidden}: {wire}");
         }
+    }
+
+    /// §2a.11, and the third defect the remote-node verification found: `take_send_lock` must
+    /// not answer `send_in_progress` because a **sibling thread forked**.
+    ///
+    /// The shape is the verifier's 20 000-iteration probe, shrunk to fit a test suite: four
+    /// threads doing nothing but `std::process::Command::spawn`, while this thread takes the
+    /// lock on its own private state directory, drops it and immediately takes it again. No
+    /// other process ever touches this file, so **every** refusal here is spurious. On the
+    /// bare non-blocking `flock` the verifier measured 8 122 in 20 000 (≈ 40 %); 400
+    /// iterations therefore fail it with overwhelming margin, and the bounded retry makes them
+    /// all succeed.
+    #[test]
+    fn a_fork_in_a_sibling_thread_never_refuses_a_send() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let dir = std::env::temp_dir().join(format!("fmonero-send-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let ctx = Context::for_test(&dir).expect("test context");
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let spawners: Vec<_> = (0..4)
+            .map(|_| {
+                let stop = Arc::clone(&stop);
+                std::thread::spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        if let Ok(mut c) = std::process::Command::new("/bin/true").spawn() {
+                            let _ = c.wait();
+                        }
+                    }
+                })
+            })
+            .collect();
+
+        let mut refused = 0usize;
+        let mut other = 0usize;
+        for _ in 0..400 {
+            match take_send_lock(&ctx) {
+                Ok(lock) => drop(lock),
+                Err(e) if e.reason() == Some("send_in_progress") => refused += 1,
+                Err(_) => other += 1,
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        for t in spawners {
+            let _ = t.join();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            (refused, other),
+            (0, 0),
+            "{refused} spurious send_in_progress (and {other} other errors) on a private lock \
+             file no other process ever opened"
+        );
+    }
+
+    /// The other half of the same change: the retry must not weaken the interlock. Two open
+    /// file descriptions in one process conflict exactly as two processes do, so a lock that is
+    /// really held is still refused — after the budget, not before it.
+    #[test]
+    fn a_lock_that_is_really_held_is_still_refused_after_the_budget() {
+        let dir = std::env::temp_dir().join(format!("fmonero-send-held-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let ctx = Context::for_test(&dir).expect("test context");
+
+        let held = take_send_lock(&ctx).expect("the first lock");
+        let started = std::time::Instant::now();
+        let err = take_send_lock(&ctx).expect_err("the second must be refused");
+        let waited = started.elapsed();
+        drop(held);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(err.exit_code(), 3, "{err}");
+        assert_eq!(err.reason(), Some("send_in_progress"));
+        assert!(
+            waited >= LOCK_RETRY_BUDGET,
+            "it gave up after {waited:?}, before the {LOCK_RETRY_BUDGET:?} budget"
+        );
     }
 }
