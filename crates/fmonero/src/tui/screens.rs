@@ -62,7 +62,17 @@ pub(super) fn view(m: &Tui, frame: &mut Frame) {
             .render(Rect::new(b.x, b.y, b.width, b.height.min(3)), frame);
         return;
     }
-    let banner = u16::from(m.status.as_ref().is_some_and(|s| s.pending.is_some()));
+    let pending = m.status.as_ref().is_some_and(|s| s.pending.is_some());
+    // The banner carries the txid AND both commands (§7a), which needs a second row on a
+    // terminal narrower than 120 columns: a cut `clear-pending --yes` is the half a reader
+    // needs.
+    let banner = if !pending {
+        0
+    } else if b.width >= 120 {
+        1
+    } else {
+        2
+    };
     let rows = Flex::vertical()
         .constraints([
             Constraint::Fixed(1),
@@ -72,7 +82,7 @@ pub(super) fn view(m: &Tui, frame: &mut Frame) {
         ])
         .split(b);
     tab_strip(m, rows[0], frame, tier);
-    if banner == 1 {
+    if banner > 0 {
         pending_banner(m, rows[1], frame);
     }
     match m.screen {
@@ -186,14 +196,17 @@ fn pending_banner(m: &Tui, area: Rect, frame: &mut Frame) {
     let txid: String = p
         .txs
         .first()
-        .map_or("—".into(), |t| t.txid.chars().take(16).collect());
+        .map_or("—".into(), |t| t.txid.chars().take(8).collect());
     para(
         format!(
-            "SEND IN FLIGHT {} XMR → {} · {} of {} relayed · {txid} · fmonero wallet history --limit 5 · fmonero wallet clear-pending --yes",
-            p.total_amount_xmr, short_addr(&p.dest), p.relayed_count, p.total_count
+            "SEND IN FLIGHT {} XMR → {} {}/{} · tx {txid} · fmonero wallet history --limit 5 | clear-pending --yes",
+            p.total_amount_xmr,
+            short_addr(&p.dest),
+            p.relayed_count,
+            p.total_count
         ),
         th.err(),
-        false,
+        area.height > 1,
     )
     .render(area, frame);
 }

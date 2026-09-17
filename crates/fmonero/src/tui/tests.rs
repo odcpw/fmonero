@@ -20,7 +20,7 @@ use std::sync::Arc;
 use ftui::runtime::simulator::ProgramSimulator;
 use ftui::{Event, Frame, GraphemePool, KeyCode, KeyEvent, Model};
 
-use fmonero_core::{CancelToken, Context};
+use fmonero_core::{state, CancelToken, Context, PendingKind, PendingSend, PendingTx, Piconero};
 
 use super::send::{Stage, CONFIRM_WORD, NO_SWEEP};
 use super::{subs, Msg, Screen, Tui, KEYS};
@@ -464,6 +464,55 @@ fn the_send_screen_builds_once_and_relays_that_exact_transaction() {
     let announced = sim.model().announce.lock().expect("sink").join("\n");
     let log_has_it = announced.contains("0.1000") || !sim.model().logs.empty;
     assert!(log_has_it, "the announce line is missing: {announced:?}");
+}
+
+/// §2i, in the TUI: `u`, `d` and `L` are refused under any layout but fmonero's own user
+/// unit, with the gate's own text, and **before** any RPC or confirm modal.
+#[test]
+fn node_mutations_are_refused_when_fmonero_does_not_own_the_node() {
+    let mut m = offline_model(Screen::Node);
+    for k in ['u', 'd', 'L'] {
+        let _ = m.on_key(KeyEvent::new(KeyCode::Char(k)));
+        assert!(
+            m.modal.is_none(),
+            "{k}: no confirm modal without a user unit"
+        );
+        assert!(m.action.is_none(), "{k}: nothing may be started");
+        assert!(
+            m.note.contains("not fmonero's to mutate"),
+            "{k}: {}",
+            m.note
+        );
+    }
+}
+
+/// §7a: an unresolved `pending.json` record is a red banner on **every** screen, carrying the
+/// txid and the two commands — and it turns the node badge red (§7a's badge colours).
+#[test]
+fn an_unresolved_pending_record_banners_every_screen() {
+    let w = World::new("pending");
+    let record = PendingSend {
+        kind: PendingKind::Send,
+        account_index: 0,
+        dest: DEST.to_string(),
+        built_at: fmonero_core::now_unix(),
+        txs: vec![PendingTx {
+            txid: BUILT_TXID.to_string(),
+            amount: Piconero(100_000_000_000),
+            fee: Piconero(30_720_000),
+            relayed: false,
+            relayed_at: None,
+        }],
+    };
+    state::set_pending_send(&w.ctx, &record).expect("the record");
+    for screen in [Screen::Node, Screen::Wallet, Screen::Send, Screen::Log] {
+        let s = sim(model(&w.ctx, screen));
+        assert_eq!(s.model().node_badge(), "error", "{screen:?}");
+        let text = sim_text(&s, 120, 40);
+        for needle in ["SEND IN FLIGHT", "clear-pending", &BUILT_TXID[..8]] {
+            assert!(text.contains(needle), "{screen:?} lost {needle}:\n{text}");
+        }
+    }
 }
 
 /// A build survives leaving the Send screen, so the modal it produces must own the keys

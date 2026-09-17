@@ -41,7 +41,7 @@ step exist in exactly one place (§5b).
 | Gate line (§8, Phase 2 "tui") | Result |
 |---|---|
 | clippy clean | **pass** — `cargo clippy --all-targets -- -D warnings`, exit 0 |
-| ≤ 1 800 lines | **FAIL — 4314 lines** in the five named files (see "The line budget" below) |
+| ≤ 1 800 lines | **FAIL — 4330 lines** in the five named files (see "The line budget" below) |
 | `fmonero tui` opens and quits on a real pty | **pass** — `tests/tui_tmux.sh`, 10 checks |
 | every screen renders with the mock up | **pass** — `tests/tui_tmux.sh --capture`, 13 checks; captures below |
 | every screen renders with both daemons absent | **pass** — `tests/tui_tmux.sh` and the tier test |
@@ -55,51 +55,53 @@ step exist in exactly one place (§5b).
 ### clippy
 
 ```text
-    Checking fmonero v0.1.0 (/home/oliver/Projects/odcpw/fmonero/.claude/worktrees/wf_233da421-45c-5/crates/fmonero)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.59s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.10s
 exit 0
 ```
 
 ### `cargo test -p fmonero tui`
 
 ```text
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
      Running unittests src/main.rs (target/debug/deps/fmonero-7deb80b216015a31)
 
-running 31 tests
+running 34 tests
 test tui::screens::tests::an_address_wraps_rather_than_eliding_when_it_is_being_confirmed ... ok
 test tui::screens::tests::the_resize_tiers_are_the_ones_the_design_names ... ok
-test tui::send::tests::all_is_refused_inline_and_names_the_sweep_command ... ok
 test tui::send::tests::the_confirm_modal_needs_the_word_not_just_enter ... ok
-test tui::send::tests::the_account_selector_stays_inside_the_accounts_the_wallet_has ... ok
-test tui::send::tests::a_zero_amount_and_a_bad_address_are_both_refused_before_anything_is_sent ... ok
-test tui::send::tests::a_good_form_becomes_a_send_request_without_a_sweep_field ... ok
 test tui::send::tests::the_picker_yields_a_literal_address_never_a_label ... ok
+test tui::send::tests::the_account_selector_stays_inside_the_accounts_the_wallet_has ... ok
 test tui::subs::tests::an_error_keeps_its_own_exit_code_and_hint ... ok
+test tui::send::tests::a_zero_amount_and_a_bad_address_are_both_refused_before_anything_is_sent ... ok
 test tui::subs::tests::debugging_an_open_never_prints_the_password ... ok
+test tui::send::tests::a_good_form_becomes_a_send_request_without_a_sweep_field ... ok
 test tui::subs::tests::every_action_but_a_relay_is_cancellable ... ok
 test tui::subs::tests::labels_name_what_is_running ... ok
 test tui::tests::mock::tests::auth_params_splits_quoted_and_bare_values ... ok
-test tui::tests::mock::tests::md5_matches_rfc1321_edges ... ok
+test tui::send::tests::all_is_refused_inline_and_names_the_sweep_command ... ok
 test tui::tests::mock::tests::digest_matches_rfc2617_and_differs_from_md5_sess ... ok
+test tui::tests::mock::tests::md5_matches_rfc1321_edges ... ok
 test tui::tests::a_zero_area_frame_renders_nothing_and_does_not_panic ... ok
 test tui::tests::quitting_while_an_action_runs_takes_two_presses ... ok
-test tui::tests::the_narrow_tier_collapses_the_tab_strip ... ok
 test tui::screens::tests::human_numbers_and_short_forms_read_like_the_cli_ones ... ok
+test tui::tests::the_narrow_tier_collapses_the_tab_strip ... ok
 test tui::tests::the_help_overlay_lists_the_bindings_the_model_implements ... ok
+test tui::tests::node_mutations_are_refused_when_fmonero_does_not_own_the_node ... ok
+test tui::tests::the_offline_node_screen_says_what_to_press_and_never_shows_a_zero_height ... ok
 test tui::tests::the_offline_wallet_screen_offers_the_open_key ... ok
+test tui::tests::the_open_wallet_modal_masks_the_password_and_lists_the_wallet_dir ... ok
 test tui::theme::tests::every_badge_state_has_its_own_colour ... ok
 test tui::theme::tests::hex_parsing_tolerates_the_hash_and_trailing_alpha ... ok
 test tui::theme::tests::the_qr_is_dark_on_light_whatever_the_theme_is ... ok
-test tui::tests::the_offline_node_screen_says_what_to_press_and_never_shows_a_zero_height ... ok
-test tui::tests::the_send_screen_refuses_all_inline_and_never_reaches_the_daemon ... ok
-test tui::tests::the_open_wallet_modal_masks_the_password_and_lists_the_wallet_dir ... ok
+test tui::tests::the_confirm_modal_owns_the_keys_even_on_another_screen ... ok
 test tui::tests::the_qr_modal_draws_the_address_and_the_code ... ok
+test tui::tests::the_send_screen_refuses_all_inline_and_never_reaches_the_daemon ... ok
 test tui::tests::every_screen_renders_at_every_tier_with_both_daemons_absent ... ok
 test tui::tests::the_send_screen_builds_once_and_relays_that_exact_transaction ... ok
 test tui::tests::every_screen_renders_against_the_mock ... ok
+test tui::tests::an_unresolved_pending_record_banners_every_screen ... ok
 
-test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.32s
+test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.26s
 
 exit 0
 ```
@@ -175,13 +177,13 @@ $ echo $?
 ### Line counts
 
 ```text
-  1594 crates/fmonero/src/tui/mod.rs
-  1443 crates/fmonero/src/tui/screens.rs
+  1597 crates/fmonero/src/tui/mod.rs
+  1456 crates/fmonero/src/tui/screens.rs
    772 crates/fmonero/src/tui/send.rs
    304 crates/fmonero/src/tui/subs.rs
-   507 crates/fmonero/src/tui/tests.rs
+   585 crates/fmonero/src/tui/tests.rs
    201 crates/fmonero/src/tui/theme.rs
-  4821 total
+  4915 total
 ```
 
 ## Screen captures
@@ -520,8 +522,8 @@ transaction's own (§2a.2). `Esc` discarded it; the run asserts the mock recorde
 ## The line budget — the one gate line that fails
 
 §7a budgets **1 800 lines** across `src/tui/{mod,theme,screens,send,subs}.rs`. The real
-counts are 1594 + 201 + 1443 + 772 + 304 = **4314** (`tests.rs`, which §7a does not name, is a
-further 507). The overrun is reported rather than closed, and it is not closed
+counts are 1597 + 201 + 1456 + 772 + 304 = **4330** (`tests.rs`, which §7a does not name, is a
+further 585). The overrun is reported rather than closed, and it is not closed
 by deleting tests or features:
 
 - Every screen, key, modal and state §7a specifies is implemented. Cutting to 1 800 means
@@ -532,7 +534,7 @@ by deleting tests or features:
   fproton's TUI, the one §7a scales from ("1 800 rather than fproton's 1 200 because there are
   four screens instead of three"), is itself **2 634** lines against that 1 200 — a 2.2×
   overrun, the same ratio as this one. Four screens, a five-state send machine, four modals, a
-  QR canvas and 31 tests at fproton's own density land where this landed.
+  QR canvas and 34 tests at fproton's own density land where this landed.
 - Two compaction passes were made before reporting: the model's state is grouped into
   `NodeUi`/`WalletUi`/`LogUi` so the constructor is a handful of `Default`s, and every panel
   renders through five shared helpers (`framed`, `overlay`, `kv`, `para`, `table`) instead of
@@ -578,6 +580,15 @@ owns §7a — not to this agent silently dropping a screen.
 7. **The daemon log level is a TUI-side 0→4→0 pointer.** `set_log_level` has no reader —
    `get_info` does not report the level — so the cycle advances when the call is sent. The
    confirm modal names the level it is about to set, and nothing claims to know the daemon's.
+
+8. **The confirm modal owns the keys wherever it is drawn.** A build is not cancelled by
+   leaving the Send screen, so `Msg::ActionDone(Built)` can arrive over the Wallet screen; the
+   key router therefore sends every key to the modal while one exists. A visible confirm modal
+   whose `send`/`Esc` went to the screen behind it is the worst state the money surface could
+   be in, and `the_confirm_modal_owns_the_keys_even_on_another_screen` pins it.
+9. **The pending banner takes a second row below 120 columns.** It has to carry the txid *and*
+   both commands (§7a); on a narrower terminal one row cuts `clear-pending --yes`, which is the
+   half a reader needs.
 
 ## Two things a reviewer should check next
 
