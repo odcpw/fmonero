@@ -35,7 +35,11 @@ in-process mock server test suite, on-demand systemd user unit for the backend).
 - Claim nothing RED in README, `--help` or robot-docs. Append to `DECISIONS.md`; never rewrite
   earlier entries.
 
-## State (2026-09-16)
-No Monero binaries are installed (`extra/monero` 0.18.5.1 is available; `sudo` needs a password,
-so the owner installs it). Everything that touches a live `monerod` or `monero-wallet-rpc` is RED
-until then; fixtures are derived from the Monero source at v0.18.5.1 and say so in their headers.
+## State (2026-09-17)
+Monero 0.18.5.1 is installed (`extra/monero`). fmonero v0.1 is built, installed to
+`~/.local/bin/fmonero`, its two user units are written (disabled until a wallet is opened or the
+owner runs `node up`), the bar widget `oliver.monero` is live, and the owner uses **remote node
+mode** (`node.mode = remote`, DESIGN.md §2m): no local `monerod`, `monero-wallet-rpc` talks to a
+public node. Every command exercised so far is in DECISIONS.md's verification sections; a real
+send or sweep of any amount is still RED (never run) and must not be claimed anywhere. Fixtures
+are derived from the Monero source at v0.18.5.1 and say so in their headers.
