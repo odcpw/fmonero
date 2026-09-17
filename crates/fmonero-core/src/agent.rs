@@ -302,6 +302,18 @@ const ENV: &[EnvVar] = &[
         default: "",
         test_only: true,
     },
+    // Added by Phase 3's ergonomics pass, not by §5b's own list: the Phase 2 doctor introduced
+    // this third test seam (`doctor/probes.rs::systemd_user_dir`, a deviation it recorded) so
+    // that the six §7.1 unit-file checks have something to read, since `units::install` refuses
+    // to run under FMONERO_STATE_DIR. §5b asks the ergonomics pass to assert that "every
+    // variable read is documented", and `scripts/check.sh` now checks that direction too — this
+    // row is what that check found missing, and documenting it is the fix.
+    EnvVar {
+        name: "FMONERO_SYSTEMD_USER_DIR",
+        purpose: "read the systemd user units from here instead, for the doctor's unit-file fixtures; honoured ONLY when FMONERO_STATE_DIR is also set",
+        default: "~/.config/systemd/user",
+        test_only: true,
+    },
 ];
 
 /// The machine contract (§5b).

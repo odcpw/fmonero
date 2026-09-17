@@ -407,11 +407,21 @@ where
     T: std::str::FromStr + PartialOrd + std::fmt::Display + Copy,
 {
     let bad = || {
+        // The hint offers the key's DOCUMENTED DEFAULT from `KEY_TABLE`, not the range's low
+        // bound: for `wallet.priority` the low bound is 0, which §1b.4 spends a paragraph
+        // explaining is the cheapest tier and an alias of 1 — so hinting it nudged the user
+        // away from the documented default of 2 (normal) every time they mistyped a priority.
+        // Phase 3's ergonomics pass; the fallback stays `lo` for a key not in the table.
+        let suggested = KEY_TABLE
+            .iter()
+            .find(|(k, _, _)| *k == key)
+            .map(|(_, default, _)| (*default).to_string())
+            .unwrap_or_else(|| lo.to_string());
         Error::usage(format!(
             "'{value}' is not a number in {lo}..={hi} for {key}"
         ))
         .with_reason("bad_args")
-        .with_hint(format!("fmonero settings set {key} {lo}"))
+        .with_hint(format!("fmonero settings set {key} {suggested}"))
     };
     let n: T = value.parse().map_err(|_| bad())?;
     if n < lo || n > hi {
@@ -713,6 +723,40 @@ mod tests {
         let e = s.get("nope").unwrap_err();
         assert_eq!(e.exit_code(), 6);
         assert_eq!(e.reason(), Some("unknown_key"));
+    }
+
+    /// Phase 3's ergonomics pass: an out-of-range number is hinted with the key's DOCUMENTED
+    /// DEFAULT, never with the range's low bound. For `wallet.priority` the low bound is 0 —
+    /// the cheapest tier and an alias of 1 (§1b.4) — so the old hint taught the opposite of
+    /// §4's `wallet.priority` default of 2 every time somebody mistyped a priority.
+    #[test]
+    fn an_out_of_range_number_is_hinted_with_the_documented_default() {
+        let mut s = Settings::default();
+        for (key, bad, want) in [
+            (
+                "wallet.priority",
+                "9",
+                "fmonero settings set wallet.priority 2",
+            ),
+            (
+                "timeouts.node_sec",
+                "0",
+                "fmonero settings set timeouts.node_sec 3",
+            ),
+            ("tui.poll_ms", "5", "fmonero settings set tui.poll_ms 1000"),
+            (
+                "wallet.port",
+                "99999999",
+                "fmonero settings set wallet.port 18083",
+            ),
+        ] {
+            let e = s.set(key, bad).unwrap_err();
+            assert_eq!(e.exit_code(), 2, "{key}");
+            assert_eq!(e.hint(), want, "{key}");
+            // And the hint is itself accepted, which is what makes it runnable (§4).
+            let suggested = want.rsplit(' ').next().unwrap();
+            assert!(s.set(key, suggested).is_ok(), "{key} {suggested}");
+        }
     }
 
     #[test]

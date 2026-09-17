@@ -395,14 +395,53 @@ if [ "$FULL" = 1 ]; then
   if cargo doc -p fmonero-core --no-deps >/dev/null 2>&1; then pass "rustdoc"; else
     fail "cargo doc"; cargo doc -p fmonero-core --no-deps 2>&1 | grep -E '^(error|warning)' | head -20 | sed 's/^/        /'
   fi
-  step "--full: the documented environment variables are all read (§5b)"
+  # §5b: "Phase 3's ergonomics pass asserts every documented env var is read somewhere under
+  # `crates/` AND that every variable read is documented — the round trip is what stops the list
+  # drifting." Only the first half existed, and the second half is the one that catches a new
+  # variable: the Phase 2 doctor added FMONERO_SYSTEMD_USER_DIR and nothing noticed.
+  step "--full: the documented environment variables and the read ones are the same set (§5b)"
+  DOCUMENTED="$("$ROOT/target/release/fmonero" capabilities --json 2>/dev/null \
+                | tr ',{}' '\n\n\n' | grep -oE '"FMONERO_[A-Z_]+"|"NO_COLOR"|"CI"' \
+                | tr -d '"' | sort -u)"
+  if [ -z "$DOCUMENTED" ]; then
+    fail "could not read capabilities.env — the round trip below would be vacuous"
+  fi
   MISSING=""
-  for var in FMONERO_STATE_DIR FMONERO_CONFIG_DIR FMONERO_CACHE_DIR FMONERO_WALLET_PASSWORD \
-             NO_COLOR CI FMONERO_PROC_ROOT FMONERO_SYSTEMCTL_FIXTURE; do
+  for var in $DOCUMENTED; do
     grep -rq "$var" "${SHIPPED[@]}" 2>/dev/null || MISSING="$MISSING $var"
   done
   if [ -n "$MISSING" ]; then fail "capabilities documents variables nothing reads:$MISSING"; else
-    pass "every documented variable is read somewhere under crates/"
+    pass "every documented variable is read somewhere under crates/ ($(printf '%s' "$DOCUMENTED" | grep -c '') of them)"
+  fi
+  # The other direction. `PATH` is excluded by name: `proc::which` reads it, every process has
+  # one, and it is not an fmonero knob — documenting it would say fmonero has a setting it does
+  # not have. Everything else a source file reads must appear in `capabilities.env`.
+  UNDOCUMENTED=""
+  READS="$(grep -rhoE 'env::var(_os)?\("[A-Za-z_0-9]+"\)' "${SHIPPED[@]}" 2>/dev/null \
+           | grep -oE '"[A-Za-z_0-9]+"' | tr -d '"' | sort -u | grep -v '^PATH$')"
+  # `paths.rs` reads its four through one `env_dir(key)` helper, so the literals live in the
+  # call sites rather than in an `env::var` call: add any FMONERO_* string literal that the
+  # tree hands to that helper.
+  READS="$READS $(grep -rhoE 'env_dir\("FMONERO_[A-Z_]+"\)|under_test_state_dir' "${SHIPPED[@]}" 2>/dev/null \
+                  | grep -oE 'FMONERO_[A-Z_]+' | sort -u)"
+  for var in $(printf '%s\n' $READS | sort -u); do
+    case " $(printf '%s' "$DOCUMENTED" | tr '\n' ' ') " in
+      *" $var "*) ;;
+      *) UNDOCUMENTED="$UNDOCUMENTED $var" ;;
+    esac
+  done
+  if [ -n "$UNDOCUMENTED" ]; then
+    fail "the tree reads variables capabilities does not document:$UNDOCUMENTED"
+  else
+    pass "and every variable the tree reads is documented (PATH excluded by name)"
+  fi
+  # Self-test: the reverse direction must fire on a source file that reads an undocumented one.
+  mkdir -p "$SELFTEST/envcheck"
+  printf 'fn f() { std::env::var_os("FMONERO_NOT_DOCUMENTED"); }\n' > "$SELFTEST/envcheck/fixture.rs"
+  if grep -rhoE 'env::var(_os)?\("[A-Za-z_0-9]+"\)' "$SELFTEST/envcheck" | grep -q FMONERO_NOT_DOCUMENTED; then
+    pass "self-test: the reverse env scan sees a var read in a source file"
+  else
+    fail "self-test: the reverse env scan finds nothing in its own fixture — it is vacuous"
   fi
 fi
 

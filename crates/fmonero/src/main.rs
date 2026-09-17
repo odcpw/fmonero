@@ -595,8 +595,24 @@ fn clap_hint(path: &[&str]) -> String {
 
 /// Parse, or turn clap's failure into the §4 error envelope, so that a piping agent gets one
 /// JSON object for **every** failure, a bad flag value included.
+/// `fmonero help`, `fmonero help wallet`, `fmonero help wallet send` → the same help
+/// `--help` prints. The `help` **subcommand** stays disabled (`disable_help_subcommand`), so it
+/// never appears in the command tree, in `capabilities.commands` or in §5c's key-set gate — but
+/// `help <sub>` is what a person and an agent both type first, and answering it with
+/// "unrecognized subcommand 'help'" and a generic `fmonero --help` spends a round trip on
+/// vocabulary. The rewrite is positional: only a leading `help` is treated this way, so
+/// `fmonero wallet notes get help` is still a txid argument.
+fn rewrite_help_argv(argv: &mut Vec<std::ffi::OsString>) {
+    if argv.len() < 2 || argv[1] != *"help" {
+        return;
+    }
+    argv.remove(1);
+    argv.push(std::ffi::OsString::from("--help"));
+}
+
 fn parse_or_report() -> Cli {
-    let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let mut argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    rewrite_help_argv(&mut argv);
     match Cli::try_parse_from(&argv) {
         Ok(cli) => cli,
         Err(e) => {
@@ -1907,4 +1923,47 @@ fn check_txid(txid: &str) -> Result<(), Error> {
     ))
     .with_reason("bad_args")
     .with_hint("fmonero wallet history --limit 20"))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+
+    fn rewrite(args: &[&str]) -> Vec<String> {
+        let mut argv: Vec<OsString> = args.iter().map(OsString::from).collect();
+        super::rewrite_help_argv(&mut argv);
+        argv.iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// Phase 3's ergonomics pass. `fmonero help <sub>` is the first thing both a person and an
+    /// agent type, and before this it answered "unrecognized subcommand 'help'".
+    #[test]
+    fn a_leading_help_becomes_the_help_flag_for_that_command() {
+        assert_eq!(rewrite(&["fmonero", "help"]), ["fmonero", "--help"]);
+        assert_eq!(
+            rewrite(&["fmonero", "help", "wallet"]),
+            ["fmonero", "wallet", "--help"]
+        );
+        assert_eq!(
+            rewrite(&["fmonero", "help", "wallet", "send"]),
+            ["fmonero", "wallet", "send", "--help"]
+        );
+    }
+
+    /// Positional, so an argument that happens to be the word `help` is left alone — otherwise
+    /// `wallet notes get help` would print help instead of reporting a bad txid.
+    #[test]
+    fn help_anywhere_but_first_is_an_ordinary_argument() {
+        assert_eq!(
+            rewrite(&["fmonero", "wallet", "notes", "get", "help"]),
+            ["fmonero", "wallet", "notes", "get", "help"]
+        );
+        assert_eq!(rewrite(&["fmonero"]), ["fmonero"]);
+        assert_eq!(
+            rewrite(&["fmonero", "status", "--json"]),
+            ["fmonero", "status", "--json"]
+        );
+    }
 }
