@@ -257,7 +257,8 @@ fn run_unit_verb(ctx: &Context, verb: &str, unit: &str, cancel: &CancelToken) ->
 /// The two questions that must be answered **before any `systemctl` call** (§2i, §4.1, v5.1),
 /// each in a fraction of a millisecond:
 ///
-/// 1. **is the unit file there?** Else exit **4 `unit_missing`**, hint `fmonero setup --units`.
+/// 1. **is the unit file there?** Else exit **4 `unit_missing`**, hint
+///    `fmonero setup --units --yes`.
 /// 2. **is the daemon binary on `PATH`?** Else exit **4 `not_installed`**, hint
 ///    `omarchy pkg add monero` — the same probe the doctor's `monerod_installed` makes.
 ///

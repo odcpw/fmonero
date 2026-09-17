@@ -1389,7 +1389,7 @@ fmonero **never starts a second `monerod` on a data dir that is already served**
 | `user_unit` | `~/.config/systemd/user/fmonero-monerod.service` exists and `settings.node.url` is loopback. **Ownership is decided by configuration alone; who currently holds the data dir is a separate question, answered below.** | the preflight and the single-writer precondition below, then `systemctl --user start fmonero-monerod.service`, then poll `get_info` until it answers or 30 s |
 | `system_unit` | `systemctl is-active monerod.service` (no `--user`) is `active`, or `/etc/monerod.conf` exists and `systemctl is-enabled monerod.service` succeeds | exits **3 `safety`**: `hint: sudo systemctl start monerod   # fmonero does not use sudo`. Status, info, peers, bans and the wallet all work against it, subject to §1b.2 if it is restricted. |
 | `remote` | `settings.node.url` is not loopback | exits 2 (§2c) |
-| `none` | nothing found | exits **4 `backend`**: `hint: fmonero setup --units` |
+| `none` | nothing found | exits **4 `backend`**: `hint: fmonero setup --units --yes` — the hint is a command an agent runs, and `fmonero setup --units` alone exits 3 `needs_yes` |
 
 **The single-writer probe is a precondition of `node up`, not a term in `detect_layout`.** It cannot
 distinguish fmonero's own running `monerod` from a foreign one — the fcntl probe reports whoever

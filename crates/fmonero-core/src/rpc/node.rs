@@ -529,7 +529,8 @@ impl NodeClient {
         // description of this method ("Returns `Error::Safety` … unless UserUnit"), recorded in
         // DECISIONS.md by Phase 3's ergonomics pass. §2i's own layout table gives `none` "exits
         // **4 `backend`**: hint: `fmonero setup --units`", which is what `node_session::up` and
-        // `down` already answer; collapsing it into the `system_unit` refusal told a user with
+        // `down` already answer — with `--yes`, because `fmonero setup --units` alone exits 3
+        // `needs_yes`; collapsing it into the `system_unit` refusal told a user with
         // no monerod installed at all — this machine, and every fresh one — to run
         // `sudo systemctl <verb> monerod` about a unit that does not exist, and called it
         // `foreign_node` when there is no node. `system_unit` and `remote`, the two layouts §2i
@@ -539,7 +540,7 @@ impl NodeClient {
                 "no fmonero node unit is installed, so there is no node to mutate",
             )
             .with_reason("unit_missing")
-            .with_hint("fmonero setup --units"));
+            .with_hint("fmonero setup --units --yes"));
         }
         Err(Error::safety(
             "fmonero does not mutate a node it does not own: this monerod is not fmonero's user unit",

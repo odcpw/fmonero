@@ -307,7 +307,9 @@ pub mod node_session {
                 "no fmonero node unit is installed",
             )
             .with_reason("unit_missing")
-            .with_hint("fmonero setup --units")),
+            // `--yes`, because the hint is run, not read: `fmonero setup --units` alone exits
+            // 3 `needs_yes`, which is a second round trip for the agent this hint is for.
+            .with_hint("fmonero setup --units --yes")),
         }
     }
 
