@@ -152,6 +152,14 @@ pub const KEYS: &[(&str, &str)] = &[
         "cycle priority (on its row, or from anywhere) · address book",
     ),
     (
+        "Send: ←→",
+        "on the Priority or Account row: change it (accounts come from the wallet)",
+    ),
+    (
+        "Send: sweep",
+        "not in the TUI — run: fmonero wallet sweep <addr> --dry-run",
+    ),
+    (
         "Send: type \"send\"",
         "the confirm modal's --yes; Esc discards, and a relay cannot be cancelled",
     ),
@@ -165,8 +173,8 @@ const RX_SAMPLES: usize = 60;
 const HISTORY_LIMIT: usize = 500;
 /// Lines of the daemon log the Log screen tails.
 const LOG_LINES: usize = 2_000;
-const FILTER_HINT: &str = "filter by txid, address or note";
-const SEARCH_HINT: &str = "search the log";
+pub(super) const FILTER_HINT: &str = "filter by txid, address or note";
+pub(super) const SEARCH_HINT: &str = "search the log";
 
 /// The node extras the Node screen needs beyond §5's `status` document.
 #[derive(Default)]
@@ -343,7 +351,11 @@ pub fn run(args: TuiArgs, ctx: Context) -> anyhow::Result<i32> {
 impl Tui {
     fn new(screen: Screen, ctx: Context, exit: Arc<AtomicI32>) -> Tui {
         let theme = Theme::load();
-        let mut send = SendScreen::new(&theme, ctx.settings.wallet.priority);
+        let mut send = SendScreen::new(
+            &theme,
+            ctx.settings.wallet.priority,
+            ctx.settings.wallet.account,
+        );
         if screen == Screen::Send {
             send.resume();
         }
@@ -353,7 +365,7 @@ impl Tui {
                 .ok(),
             node: NodeUi::default(),
             wallet: WalletUi {
-                filter: text_input(&theme, FILTER_HINT),
+                filter: text_input(&theme),
                 ..WalletUi::default()
             },
             logs: LogUi {
@@ -363,7 +375,7 @@ impl Tui {
                 empty: true,
                 follow: true,
                 level: 0,
-                search: text_input(&theme, SEARCH_HINT),
+                search: text_input(&theme),
                 search_open: false,
             },
             send,
@@ -708,8 +720,8 @@ impl Tui {
         if m != self.theme_mtime {
             self.theme_mtime = m;
             self.theme = Theme::load();
-            self.wallet.filter = restyle(&self.wallet.filter, &self.theme, FILTER_HINT);
-            self.logs.search = restyle(&self.logs.search, &self.theme, SEARCH_HINT);
+            self.wallet.filter = restyle(&self.wallet.filter, &self.theme);
+            self.logs.search = restyle(&self.logs.search, &self.theme);
             self.send.restyle(&self.theme);
         }
     }
@@ -876,7 +888,7 @@ impl Tui {
             KeyCode::Char('u') => return self.confirm(Confirm::NodeUp),
             KeyCode::Char('d') => return self.confirm(Confirm::NodeDown),
             KeyCode::Char('L') => {
-                let next = self.next_log_level();
+                let next = (self.logs.level + 1) % 5;
                 return self.confirm(Confirm::LogLevel(next));
             }
             KeyCode::Char('b') => {
@@ -978,7 +990,7 @@ impl Tui {
                 self.note(if on { "following" } else { "follow off" }, false);
             }
             KeyCode::Char('L') => {
-                let next = self.next_log_level();
+                let next = (self.logs.level + 1) % 5;
                 return self.confirm(Confirm::LogLevel(next));
             }
             KeyCode::Char('n') => self.logs.viewer.borrow_mut().next_match(),
@@ -995,8 +1007,13 @@ impl Tui {
     }
 
     fn on_send_key(&mut self, k: KeyEvent) -> Cmd<Msg> {
-        let account = self.account_index();
-        match self.send.on_key(k, account) {
+        // How many accounts the wallet has, so the selector cannot name a missing one (§5).
+        let accounts = self
+            .status
+            .as_ref()
+            .and_then(|s| s.wallet.accounts)
+            .unwrap_or(1);
+        match self.send.on_key(k, accounts) {
             SendCmd::None => Cmd::none(),
             SendCmd::Note(text) => {
                 self.note(text, true);
@@ -1007,7 +1024,7 @@ impl Tui {
                 Cmd::none()
             }
             SendCmd::Book => self.load_book(),
-            SendCmd::Validate => match self.send.request(account, None) {
+            SendCmd::Validate => match self.send.request(None) {
                 Ok(req) => self.validate_then_build(req),
                 Err(why) => {
                     self.send.back_to_form();
@@ -1201,7 +1218,9 @@ impl Tui {
                 index: row.address_index,
             },
             title: format!(" Label subaddress {} ", row.address_index),
-            input: text_input(&self.theme, "a label for this subaddress").with_focused(true),
+            input: text_input(&self.theme)
+                .with_value(row.label.clone())
+                .with_focused(true),
         });
         Cmd::none()
     }
@@ -1216,16 +1235,9 @@ impl Tui {
         self.modal = Some(Modal::Prompt {
             what: Prompt::Note { txid },
             title: " Note for this transfer ".to_string(),
-            input: text_input(&self.theme, "a note, kept in the wallet")
-                .with_value(value)
-                .with_focused(true),
+            input: text_input(&self.theme).with_value(value).with_focused(true),
         });
         Cmd::none()
-    }
-
-    /// The daemon does not report its log level, so the 0→4→0 cycle pointer is the TUI's own.
-    fn next_log_level(&self) -> i8 {
-        (self.logs.level + 1) % 5
     }
 
     // ------------------------------------------------------------ list movement
@@ -1311,15 +1323,16 @@ impl Tui {
     }
 }
 
-fn text_input(th: &Theme, placeholder: &str) -> TextInput {
+/// Every input in the TUI: themed, with its hint drawn at render time by
+/// `screens::hinted_input` rather than handed to ftui's own empty-field text (§2h).
+fn text_input(th: &Theme) -> TextInput {
     TextInput::new()
-        .with_placeholder(placeholder)
         .with_style(th.text())
         .with_cursor_style(Style::new().bg(th.accent).fg(th.selection))
 }
 
-fn restyle(old: &TextInput, th: &Theme, placeholder: &str) -> TextInput {
-    let mut fresh = text_input(th, placeholder).with_value(old.value().to_string());
+fn restyle(old: &TextInput, th: &Theme) -> TextInput {
+    let mut fresh = text_input(th).with_value(old.value().to_string());
     fresh.set_focused(old.focused());
     fresh
 }

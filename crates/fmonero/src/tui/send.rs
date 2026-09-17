@@ -41,6 +41,7 @@ pub(super) enum Field {
     Amount,
     Note,
     Priority,
+    Account,
 }
 
 pub(super) enum Stage {
@@ -80,6 +81,9 @@ pub(super) struct SendScreen {
     /// 0–4, defaulting to `settings.wallet.priority`. `0` is an **alias of the lowest
     /// tier**, not a "wallet default" (§1b.4), and the chip row says so.
     pub priority: u32,
+    /// §7a's account selector: the account the transaction is built from, defaulting to
+    /// `settings.wallet.account` and bounded by `get_accounts` (§5's `wallet.accounts`).
+    pub account: u32,
     pub stage: Stage,
     /// The confirm modal's typed word.
     pub typed: String,
@@ -90,14 +94,22 @@ pub(super) struct SendScreen {
     pub editing: bool,
 }
 
+/// The three fields, in Tab order, with the hint each draws while it is empty.
+const FIELDS: [(Field, &str, &str); 3] = [
+    (Field::To, "To", "address, or @label from the address book"),
+    (Field::Amount, "Amount", "0.5   ·   250000000000p"),
+    (Field::Note, "Note", "optional note, kept in the wallet"),
+];
+
 impl SendScreen {
-    pub fn new(th: &Theme, priority: u32) -> SendScreen {
+    pub fn new(th: &Theme, priority: u32, account: u32) -> SendScreen {
         SendScreen {
-            to: field_input(th, "address, or @label from the address book"),
-            amount: field_input(th, "0.5   ·   250000000000p"),
-            note: field_input(th, "optional note, kept in the wallet"),
+            to: field_input(th),
+            amount: field_input(th),
+            note: field_input(th),
             field: Field::To,
             priority,
+            account,
             stage: Stage::Form,
             typed: String::new(),
             picker: None,
@@ -106,12 +118,8 @@ impl SendScreen {
     }
 
     pub fn restyle(&mut self, th: &Theme) {
-        for (input, placeholder) in [
-            (&mut self.to, "address, or @label from the address book"),
-            (&mut self.amount, "0.5   ·   250000000000p"),
-            (&mut self.note, "optional note, kept in the wallet"),
-        ] {
-            let mut fresh = field_input(th, placeholder).with_value(input.value().to_string());
+        for input in [&mut self.to, &mut self.amount, &mut self.note] {
+            let mut fresh = field_input(th).with_value(input.value().to_string());
             fresh.set_focused(input.focused());
             *input = fresh;
         }
@@ -175,11 +183,7 @@ impl SendScreen {
     }
 
     /// The request the form describes, or the reason it is not one.
-    pub fn request(
-        &self,
-        account_index: u32,
-        max_fee: Option<Piconero>,
-    ) -> Result<SendRequest, String> {
+    pub fn request(&self, max_fee: Option<Piconero>) -> Result<SendRequest, String> {
         let (text, ok) = self.validation();
         if !ok {
             return Err(text);
@@ -189,7 +193,7 @@ impl SendScreen {
         Ok(SendRequest {
             dest: self.to.value().trim().to_string(),
             amount,
-            account_index,
+            account_index: self.account,
             priority: self.priority,
             note: (!note.is_empty()).then(|| note.to_string()),
             max_fee,
@@ -202,7 +206,9 @@ impl SendScreen {
         self.confirming() || self.picker.is_some() || (self.editing && !self.busy())
     }
 
-    pub fn on_key(&mut self, k: KeyEvent, account_index: u32) -> SendCmd {
+    /// `accounts` is how many the wallet has (§5's `wallet.accounts`), so the selector
+    /// cannot name one that does not exist.
+    pub fn on_key(&mut self, k: KeyEvent, accounts: u32) -> SendCmd {
         if self.confirming() {
             return self.on_confirm_key(k);
         }
@@ -228,26 +234,43 @@ impl SendScreen {
                     Field::To => Field::Amount,
                     Field::Amount => Field::Note,
                     Field::Note => Field::Priority,
-                    Field::Priority => Field::To,
+                    Field::Priority => Field::Account,
+                    Field::Account => Field::To,
                 });
                 SendCmd::None
             }
             KeyCode::BackTab | KeyCode::Up => {
                 self.focus(match self.field {
-                    Field::To => Field::Priority,
+                    Field::To => Field::Account,
                     Field::Amount => Field::To,
                     Field::Note => Field::Amount,
                     Field::Priority => Field::Note,
+                    Field::Account => Field::Priority,
                 });
                 SendCmd::None
             }
-            KeyCode::Enter => match self.request(account_index, None) {
+            KeyCode::Enter => match self.request(None) {
                 Ok(_) => {
                     self.stage = Stage::Validating;
                     SendCmd::Validate
                 }
                 Err(why) => SendCmd::Note(why),
             },
+            code if self.field == Field::Account => {
+                let n = accounts.max(1);
+                match code {
+                    KeyCode::Right => self.account = (self.account + 1) % n,
+                    KeyCode::Left => self.account = (self.account + n - 1) % n,
+                    KeyCode::Char(c @ '0'..='9') => {
+                        let want = u32::from(c as u8 - b'0');
+                        if want < n {
+                            self.account = want;
+                        }
+                    }
+                    _ => {}
+                }
+                SendCmd::None
+            }
             code if self.field == Field::Priority => {
                 match code {
                     KeyCode::Char('p') | KeyCode::Right => self.priority = (self.priority + 1) % 5,
@@ -348,9 +371,8 @@ impl SendScreen {
     }
 }
 
-fn field_input(th: &Theme, placeholder: &str) -> TextInput {
+fn field_input(th: &Theme) -> TextInput {
     TextInput::new()
-        .with_placeholder(placeholder)
         .with_style(th.text())
         .with_cursor_style(Style::new().bg(th.accent).fg(th.selection))
 }
@@ -388,18 +410,27 @@ pub(super) fn view(m: &Tui, area: Rect, frame: &mut ftui::Frame, tier: Tier) {
             Constraint::Fill,
         ])
         .split(inner);
-    for (i, (label, input)) in [("To", &s.to), ("Amount", &s.amount), ("Note", &s.note)]
-        .into_iter()
-        .enumerate()
-    {
+    for (i, (field, label, hint)) in FIELDS.into_iter().enumerate() {
         let row = rows[i];
+        let input = match field {
+            Field::Amount => &s.amount,
+            Field::Note => &s.note,
+            _ => &s.to,
+        };
         Paragraph::new(Text::from_line(Line::from_spans([Span::styled(
             format!("{label:<7}"),
-            th.dimmed(),
+            if s.field == field {
+                th.accented()
+            } else {
+                th.dimmed()
+            },
         )])))
         .wrap(WrapMode::None)
         .render(row, frame);
-        input.render(
+        super::screens::hinted_input(
+            th,
+            input,
+            hint,
             Rect::new(row.x + 8, row.y, row.width.saturating_sub(8).max(1), 1),
             frame,
         );
@@ -436,6 +467,15 @@ pub(super) fn view(m: &Tui, area: Rect, frame: &mut ftui::Frame, tier: Tier) {
         ));
     }
     chips.push(Span::styled(" p · Ctrl+P cycles".to_string(), th.dimmed()));
+    chips.push(Span::styled(
+        format!("   Account {} ", s.account),
+        if s.field == Field::Account {
+            th.selected()
+        } else {
+            th.dimmed()
+        },
+    ));
+    chips.push(Span::styled("←→".to_string(), th.dimmed()));
     Paragraph::new(Text::from_line(Line::from_spans(chips)))
         .wrap(WrapMode::None)
         .render(rows[3], frame);
@@ -458,7 +498,7 @@ pub(super) fn view(m: &Tui, area: Rect, frame: &mut ftui::Frame, tier: Tier) {
     lines.push(Line::styled(
         format!(
             "account {} · Tab moves · @ picks from the address book · {}",
-            m.account_index(),
+            s.account,
             if s.editing {
                 "Esc leaves the form"
             } else {
@@ -513,7 +553,7 @@ fn view_preview(m: &Tui, area: Rect, frame: &mut ftui::Frame) {
     ]));
     lines.push(Line::from_spans([
         Span::styled("Account ".to_string(), th.dimmed()),
-        Span::styled(m.account_index().to_string(), th.text()),
+        Span::styled(s.account.to_string(), th.text()),
     ]));
     if let Some(w) = m.status.as_ref().map(|st| &st.wallet) {
         lines.push(Line::from_spans([
@@ -615,7 +655,7 @@ mod tests {
     const DEST: &str = "42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm";
 
     fn screen() -> SendScreen {
-        SendScreen::new(&Theme::default(), 2)
+        SendScreen::new(&Theme::default(), 2, 0)
     }
 
     #[test]
@@ -627,7 +667,7 @@ mod tests {
         assert!(!ok);
         assert_eq!(text, NO_SWEEP);
         assert!(text.contains("fmonero wallet sweep"));
-        assert!(s.request(0, None).is_err());
+        assert!(s.request(None).is_err());
     }
 
     #[test]
@@ -638,7 +678,8 @@ mod tests {
         s.note.set_value("rent");
         let (_, ok) = s.validation();
         assert!(ok);
-        let req = s.request(3, Some(Piconero(1))).expect("a request");
+        s.account = 3;
+        let req = s.request(Some(Piconero(1))).expect("a request");
         assert_eq!(req.dest, DEST);
         assert_eq!(req.amount, Piconero(500_000_000_000));
         assert_eq!(req.account_index, 3);
@@ -684,6 +725,28 @@ mod tests {
     }
 
     #[test]
+    fn the_account_selector_stays_inside_the_accounts_the_wallet_has() {
+        let mut s = screen();
+        s.focus(Field::Account);
+        // Two accounts: 0 -> 1 -> 0, and a digit the wallet does not have is ignored.
+        let _ = s.on_key(key(KeyCode::Right), 2);
+        assert_eq!(s.account, 1);
+        let _ = s.on_key(key(KeyCode::Right), 2);
+        assert_eq!(s.account, 0);
+        let _ = s.on_key(key(KeyCode::Left), 2);
+        assert_eq!(s.account, 1);
+        let _ = s.on_key(key(KeyCode::Char('7')), 2);
+        assert_eq!(s.account, 1, "account 7 does not exist");
+        let _ = s.on_key(key(KeyCode::Char('0')), 2);
+        assert_eq!(s.account, 0);
+        assert_eq!(
+            s.request(None).err(),
+            Some("enter a recipient and an amount".to_string()),
+            "the selector must not build anything by itself"
+        );
+    }
+
+    #[test]
     fn the_picker_yields_a_literal_address_never_a_label() {
         let mut s = screen();
         s.picker = Some((
@@ -694,7 +757,7 @@ mod tests {
             }],
             0,
         ));
-        let _ = s.on_key(key(KeyCode::Enter), 0);
+        let _ = s.on_key(key(KeyCode::Enter), 1);
         assert_eq!(s.to.value(), DEST);
         assert!(s.picker.is_none());
     }

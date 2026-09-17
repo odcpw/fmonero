@@ -767,13 +767,13 @@ impl RenderItem for HistoryItem<'_> {
         // implementation (§5b), and they take the WALLET's height.
         let conf = history::confirmations(t, self.wh).map_or("—".to_string(), |c| c.to_string());
         let locked = match history::locked(t, self.wh, self.now) {
-            Some(true) => "locked",
-            Some(false) => "",
-            None => "—",
+            Some(true) => format!("{:<11}", "locked"),
+            Some(false) => format!("{:<11}", ""),
+            None => format!("{:<11}", "—"),
         };
         let kind = t.kind.as_str();
         let mut text = format!(
-            "{} {:<7} {:>14} {:>6} {}",
+            "{:<12} {:<7} {:>14} {:>6} {}",
             short_time(t.timestamp),
             kind,
             t.amount.to_xmr_string(),
@@ -818,13 +818,24 @@ fn history_pane(m: &Tui, area: Rect, frame: &mut Frame, wide: bool) {
     let rows = Flex::vertical()
         .constraints([Constraint::Fixed(1), Constraint::Fixed(1), Constraint::Fill])
         .split(inner);
-    search_row(&m.wallet.filter, m.wallet.filter_open, th, rows[0], frame);
-    let header = if wide {
-        "WHEN         TYPE            AMOUNT   CONF               FEE  NOTE"
-    } else {
-        "WHEN         TYPE            AMOUNT   CONF"
-    };
-    para(header.to_string(), th.dimmed(), false).render(rows[1], frame);
+    search_row(
+        &m.wallet.filter,
+        super::FILTER_HINT,
+        m.wallet.filter_open,
+        th,
+        rows[0],
+        frame,
+    );
+    // Built with the row's own format string, so the column §4.1 insists on labelling
+    // `locked (est.)` cannot drift out of alignment with its values.
+    let mut header = format!(
+        "{:<12} {:<7} {:>14} {:>6} {}",
+        "WHEN", "TYPE", "AMOUNT", "CONF", "LOCKED est."
+    );
+    if wide {
+        header.push_str(&format!("  {:>12}  {}", "FEE", "NOTE"));
+    }
+    para(header, th.dimmed(), false).render(rows[1], frame);
     if let Some(e) = &m.wallet.rows_err {
         para(format!("history is unavailable: {e}"), th.err(), true).render(rows[2], frame);
         return;
@@ -964,7 +975,14 @@ fn log_screen(m: &Tui, area: Rect, frame: &mut Frame) {
     let rows = Flex::vertical()
         .constraints([Constraint::Fixed(1), Constraint::Fill])
         .split(inner);
-    search_row(&m.logs.search, m.logs.search_open, th, rows[0], frame);
+    search_row(
+        &m.logs.search,
+        super::SEARCH_HINT,
+        m.logs.search_open,
+        th,
+        rows[0],
+        frame,
+    );
     if m.logs.empty {
         para(
             format!(
@@ -1254,13 +1272,43 @@ fn table(
     StatefulWidget::render(&t, area, frame, &mut state.borrow_mut());
 }
 
-fn search_row(input: &TextInput, open: bool, th: &Theme, area: Rect, frame: &mut Frame) {
+fn search_row(
+    input: &TextInput,
+    hint: &str,
+    open: bool,
+    th: &Theme,
+    area: Rect,
+    frame: &mut Frame,
+) {
     let style = if open { th.accented() } else { th.dimmed() };
     para("/ ".to_string(), style, false).render(area, frame);
-    input.render(
+    hinted_input(
+        th,
+        input,
+        hint,
         Rect::new(area.x + 2, area.y, area.width.saturating_sub(2).max(1), 1),
         frame,
     );
+}
+
+/// A `TextInput` plus its own dim hint while it is empty.
+///
+/// ftui's own empty-field text is set through a builder whose name is one of the words
+/// `scripts/check.sh`'s §2h grep forbids in shipped source, and it would appear on every
+/// input in the TUI — a grep that fires on correct code is the grep an agent relaxes (§2j).
+/// So the hint is drawn here instead: the input renders first (it owns the cursor), the hint
+/// over its empty cells second.
+pub(super) fn hinted_input(
+    th: &Theme,
+    input: &TextInput,
+    hint: &str,
+    area: Rect,
+    frame: &mut Frame,
+) {
+    input.render(area, frame);
+    if input.value().is_empty() && !hint.is_empty() {
+        para(hint.to_string(), th.dimmed(), false).render(area, frame);
+    }
 }
 
 // ---------------------------------------------------------------- formatting
