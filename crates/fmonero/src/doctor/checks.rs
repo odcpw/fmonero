@@ -1737,20 +1737,37 @@ fn history_cache_fresh(p: &Probes) -> Verdict {
             ),
         );
     };
+    // **A high water of 0 means the snapshot holds no transfers**, not that it is `wh` blocks
+    // stale: `high_water` is the greatest height any recorded transfer sits at, so a wallet
+    // that has never received or sent anything has 0 there. "3 764 638 behind the wallet's
+    // 3 764 638" is true subtraction and a false sentence, and the sentence is what a reader
+    // acts on (§2j). The verdict is unchanged in both branches; only the words are.
+    let empty = c.high_water == 0;
     let behind = wh.saturating_sub(c.high_water);
     if behind <= CACHE_STALE_BLOCKS {
-        return Verdict::pass(format!(
-            "high water {} against a wallet at {wh} ({behind} behind)",
-            c.high_water
-        ));
+        return Verdict::pass(if empty {
+            format!("the snapshot is empty and the wallet is at {wh}: nothing to be behind")
+        } else {
+            format!(
+                "high water {} against a wallet at {wh} ({behind} behind)",
+                c.high_water
+            )
+        });
     }
     Verdict::warn(
         "stale",
-        format!(
-            "high water {}, {behind} behind the wallet's {wh}. The next `wallet history` \
-             without --cached refetches from high_water - 720 by itself (§5b)",
-            c.high_water
-        ),
+        if empty {
+            format!(
+                "the snapshot holds no transfers (high water 0) while the wallet is at {wh}. \
+                 The next `wallet history` without --cached rebuilds it by itself (§5b)"
+            )
+        } else {
+            format!(
+                "high water {}, {behind} behind the wallet's {wh}. The next `wallet history` \
+                 without --cached refetches from high_water - 720 by itself (§5b)",
+                c.high_water
+            )
+        },
     )
     .cmd("fmonero wallet history --limit 1   # rebuilds the snapshot")
 }

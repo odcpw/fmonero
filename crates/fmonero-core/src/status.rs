@@ -929,13 +929,28 @@ fn warnings(
     if let Some(h) = crate::history::header(ctx).ok().flatten() {
         if let Some(wh) = s.wallet.height {
             if wh.saturating_sub(h.high_water) > HISTORY_STALE_BLOCKS {
-                add(
-                    "history_cache_stale",
-                    Severity::Info,
+                // **A high water of 0 is an EMPTY snapshot, not one 3.7 million blocks
+                // stale**, and the arithmetic cannot tell the two apart: `high_water` is the
+                // greatest height any recorded transfer sits at, so a wallet with no
+                // transfers at all has 0 there and "stops 3 764 638 blocks behind the wallet"
+                // is true subtraction and a false sentence (§2j). The warning still fires —
+                // an empty snapshot against a wallet at the tip is exactly as worth
+                // rebuilding — it just says what it found.
+                let detail = if h.high_water == 0 {
+                    format!(
+                        "the history snapshot is empty while the wallet is at block {wh}; it \
+                         holds no transfers to serve from"
+                    )
+                } else {
                     format!(
                         "the history snapshot stops {} blocks behind the wallet",
                         wh - h.high_water
-                    ),
+                    )
+                };
+                add(
+                    "history_cache_stale",
+                    Severity::Info,
+                    detail,
                     "fmonero wallet history --limit 1   # rebuilds the snapshot",
                 );
             }
