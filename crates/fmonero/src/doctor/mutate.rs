@@ -951,6 +951,13 @@ pub fn refused_here(ctx: &Context, actions: &[Action]) -> Option<String> {
 
 /// The repaired `config.toml`: every valid key kept, every invalid one reset to its default,
 /// every unknown one dropped. A document that did not parse at all becomes the defaults.
+///
+/// It is the **same** replay `settings_valid` reports on — `probes::read_settings_document` —
+/// rather than a second one, so the fixer can no longer reset a key the detector considers
+/// fine. That is not tidiness: the two replays disagreeing is precisely how `doctor --fix`
+/// came to rewrite `node.mode` from `remote` to `local` on a correctly configured machine
+/// (§2m.1), because a `node.mode = remote` applied before `node.remote` fails to set and a
+/// failed `set` here silently leaves the default behind.
 fn repaired_settings(p: &Probes) -> Result<Vec<u8>, Error> {
     let Some(text) = &p.settings_file.text else {
         return Settings::default().to_toml_bytes();
@@ -958,34 +965,13 @@ fn repaired_settings(p: &Probes) -> Result<Vec<u8>, Error> {
     if p.settings_parse_error.is_some() {
         return Settings::default().to_toml_bytes();
     }
-    let mut repaired = Settings::default();
-    let value: toml::Value = toml::from_str(text)
-        .map_err(|e| Error::doctor_refused(format!("config.toml no longer parses: {e}")))?;
-    let bad: Vec<&str> = p
-        .settings_problems
-        .iter()
-        .map(|(k, _)| k.as_str())
-        .collect();
-    if let Some(table) = value.as_table() {
-        for (section, body) in table {
-            let Some(inner) = body.as_table() else {
-                continue;
-            };
-            for (leaf, v) in inner {
-                let key = format!("{section}.{leaf}");
-                if bad.contains(&key.as_str()) {
-                    continue;
-                }
-                let text = match v {
-                    toml::Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                };
-                // An unknown key simply fails to set, which is what dropping it means.
-                let _ = repaired.set(&key, &text);
-            }
-        }
+    let doc = super::probes::read_settings_document(text);
+    if let Some(e) = doc.parse_error {
+        return Err(Error::doctor_refused(format!(
+            "config.toml no longer parses: {e}"
+        )));
     }
-    repaired.to_toml_bytes()
+    doc.settings.to_toml_bytes()
 }
 
 // ------------------------------------------------------------------ undo

@@ -1171,14 +1171,49 @@ fn capture_link(ctx: &Context) -> LinkProbe {
 /// real defects behind it — and the repaired document §7.1's fixer writes has to keep every
 /// key that was fine.
 pub fn inspect_settings(text: &str) -> (Option<String>, Vec<String>, Vec<(String, String)>) {
+    let doc = read_settings_document(text);
+    (doc.parse_error, doc.unknown, doc.problems)
+}
+
+/// `config.toml` replayed onto a fresh [`Settings`], **as a whole document**.
+///
+/// One function rather than two because the detector (`inspect_settings`, which feeds
+/// `settings_valid`) and the fixer (`mutate::repaired_settings`, which writes the repaired
+/// file) have to agree about which keys are wrong, and §2a.3's argument applies to a rule that
+/// lives in two replays exactly as it applies to one that lives in two callers: it holds in
+/// one. The returned [`Settings`] **is** the repaired document — a key that failed to apply is
+/// left at its default, which is what "reset to its default" means.
+///
+/// ### Why the §2m.1 pair is applied after everything else
+///
+/// `node.mode = remote` is legal exactly when `node.remote` — wherever it sits in the file —
+/// is a valid address, so its validity is a property of the **document**, not of either key
+/// alone. `toml::Value`'s table is a `BTreeMap`, so a one-key-at-a-time replay in the
+/// document's own order always reaches `mode` before `remote` and refuses a file whose
+/// invariant *holds*; `settings_valid` then warned on a correctly configured machine and
+/// `doctor --fix` rewrote `node.mode` to `local` while the installed wallet unit kept naming
+/// the public node — the state §2m exists to prevent. So the pair is lifted out of the per-key
+/// pass and applied afterwards, the address first, which makes the outcome independent of the
+/// order the keys appear in and puts the invariant exactly where `Settings::invalid_keys`
+/// already puts it: on the finished document, reported under `node.mode`, whose documented
+/// default (`local`) is also its repair.
+pub fn read_settings_document(text: &str) -> SettingsDocument {
     let value: toml::Value = match toml::from_str(text) {
         Ok(v) => v,
-        Err(e) => return (Some(e.to_string()), Vec::new(), Vec::new()),
+        Err(e) => {
+            return SettingsDocument {
+                parse_error: Some(e.to_string()),
+                settings: Settings::default(),
+                unknown: Vec::new(),
+                problems: Vec::new(),
+            }
+        }
     };
     let mut unknown = Vec::new();
     let mut problems = Vec::new();
     let mut probe = Settings::default();
     let known: Vec<&str> = Settings::KEYS.iter().map(|(k, _, _)| *k).collect();
+    let mut deferred: Vec<(String, String)> = Vec::new();
     if let Some(table) = value.as_table() {
         for (section, body) in table {
             let Some(inner) = body.as_table() else {
@@ -1195,15 +1230,47 @@ pub fn inspect_settings(text: &str) -> (Option<String>, Vec<String>, Vec<(String
                     toml::Value::String(s) => s.clone(),
                     other => other.to_string(),
                 };
+                if CROSS_KEY_PAIR.contains(&key.as_str()) {
+                    deferred.push((key, text));
+                    continue;
+                }
                 if let Err(e) = probe.set(&key, &text) {
                     problems.push((key, e.to_string()));
                 }
             }
         }
     }
+    // The address first, then the mode: `Settings::set` is where §2m.1 lives, and this is the
+    // one order in which it sees the document's own final value for both halves.
+    deferred.sort_by_key(|(k, _)| CROSS_KEY_PAIR.iter().position(|c| c == k).unwrap_or(0));
+    for (key, text) in deferred {
+        if let Err(e) = probe.set(&key, &text) {
+            problems.push((key, e.to_string()));
+        }
+    }
     unknown.sort();
     problems.sort();
-    (None, unknown, problems)
+    SettingsDocument {
+        parse_error: None,
+        settings: probe,
+        unknown,
+        problems,
+    }
+}
+
+/// The two keys of §2m.1's invariant, in the order [`read_settings_document`] applies them.
+const CROSS_KEY_PAIR: [&str; 2] = ["node.remote", "node.mode"];
+
+/// What [`read_settings_document`] found: the document as `Settings`, plus its three failure
+/// kinds.
+pub struct SettingsDocument {
+    /// `Some` when the file is not TOML at all; the other three fields are then empty.
+    pub parse_error: Option<String>,
+    /// Every key that applied, with every key that did not left at its default — the repaired
+    /// document `doctor --fix` writes.
+    pub settings: Settings,
+    pub unknown: Vec<String>,
+    pub problems: Vec<(String, String)>,
 }
 
 fn hex(bytes: &[u8]) -> String {

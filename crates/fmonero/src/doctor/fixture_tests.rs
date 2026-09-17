@@ -492,3 +492,70 @@ fn checksum_tree(root: &Path) -> Vec<(String, u64, Vec<u8>)> {
     out.sort();
     out
 }
+
+/// §2m.1, and the defect the remote-node verification found: a `config.toml` that carries
+/// `node.mode = "remote"` **and** a valid `node.remote` satisfies the invariant, so
+/// `settings_valid` must pass and the fixer must have nothing to plan.
+///
+/// It failed before the fix for a reason no assertion in this suite could have caught by
+/// looking at a corrupt file: `toml::Value`'s table is a `BTreeMap`, `mode` sorts before
+/// `remote`, and the detector replayed the document one key at a time onto a fresh
+/// `Settings::default()` — so `node.mode = remote` was validated against an address the same
+/// file supplies three lines further down and had not been read yet. `settings_valid` then
+/// warned `invalid_keys` on a correct machine, and `doctor --fix` rewrote `node.mode` to
+/// `local` while the installed wallet unit kept naming the public node.
+///
+/// The second half of the test is the one that matters for money: even if some future
+/// detector did mark the pair, the bytes `repaired_settings` would write must still carry the
+/// mode and the address, because the repair that silently takes a machine out of remote mode
+/// leaves `node.mode` and the wallet unit disagreeing about which node holds its view of the
+/// chain.
+#[test]
+fn a_remote_mode_config_with_a_valid_address_is_valid_and_the_fixer_plans_nothing() {
+    use super::mutate;
+
+    let dir = std::env::temp_dir().join(format!("fmonero-doctor-remote-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let ctx = Context::for_test(&dir).expect("test context");
+
+    // Written in the order `Settings::save` writes it — `mode` above `remote` — which is also
+    // the order `toml::Value` hands the keys back, and therefore the order that broke.
+    let doc =
+        "[node]\nnetwork = \"mainnet\"\nmode = \"remote\"\nurl = \"http://127.0.0.1:18081\"\n\
+               remote = \"node.example.com:18089\"\nremote_trusted = false\n";
+    std::fs::write(ctx.paths.config_file(), doc).unwrap();
+
+    let p = {
+        let mut p = Probes::empty(&ctx, Some(DoctorGroup::Install));
+        p.capture_install(&ctx);
+        p
+    };
+    assert!(
+        p.settings_problems.is_empty(),
+        "the §2m.1 pair was reported as invalid: {:?}",
+        p.settings_problems
+    );
+    let def = CHECKS.iter().find(|c| c.id == "settings_valid").unwrap();
+    let v = (def.detect)(&p);
+    assert_eq!(v.status, CheckStatus::Pass, "{}", v.detail);
+    assert!(
+        v.plan.is_none(),
+        "a passing settings_valid must offer no fix: {:?}",
+        v.plan
+    );
+
+    // And the fixer itself, called directly, keeps both halves of the pair.
+    let actions = mutate::plan(super::checks::PlanKind::RepairSettings, &ctx, &p).expect("plan");
+    let bytes = match actions.first().expect("one write") {
+        mutate::Action::WriteFile { bytes, .. } => bytes.clone(),
+        other => panic!("unexpected repair action: {other:?}"),
+    };
+    let repaired: Settings = toml::from_str(std::str::from_utf8(&bytes).unwrap()).unwrap();
+    assert!(
+        repaired.node.mode.is_remote(),
+        "the repair took the machine out of remote mode:\n{}",
+        String::from_utf8_lossy(&bytes)
+    );
+    assert_eq!(repaired.node.remote, "node.example.com:18089");
+    let _ = std::fs::remove_dir_all(&dir);
+}
