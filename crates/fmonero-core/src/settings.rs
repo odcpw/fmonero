@@ -475,10 +475,15 @@ impl Settings {
                 )))
             }
         };
-        // The default wallet directory carries the network segment (§4).
+        // The default wallet directory carries the network segment (§4), and it is derived from
+        // **`paths.wallet_dir`** — `$XDG_DATA_HOME/fmonero/wallets`, which §5b calls "the default
+        // root of the per-network wallet directories". Computing it from `$HOME` here instead was
+        // a second, independent statement of one default: the two agree only while
+        // `XDG_DATA_HOME` is `~/.local/share`, and `setup --units` derives its own `want_dir`
+        // from `paths.wallet_dir` (§4.2), so anywhere else the two disagreed and `setup --units`
+        // planned a settings change on a machine that needed none.
         if s.wallet.dir == WalletSettings::default().dir {
-            s.wallet.dir =
-                PathBuf::from(format!("~/.local/share/fmonero/wallets/{}", s.node.network));
+            s.wallet.dir = paths.wallet_dir.join(s.node.network.as_str());
         }
         s.node.data_dir = expand_tilde(&s.node.data_dir, &paths.home);
         s.node.log_file = expand_tilde(&s.node.log_file, &paths.home);

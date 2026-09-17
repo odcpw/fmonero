@@ -3,7 +3,8 @@
 //! Ported from `fproton/crates/fproton-core/src/paths.rs`. `FMONERO_STATE_DIR`,
 //! `FMONERO_CONFIG_DIR` and `FMONERO_CACHE_DIR` override the XDG locations so every test
 //! and every §4b row can run in its own directory; `FMONERO_PROC_ROOT` overrides `/proc`
-//! for the §2i detection fixtures and is honoured **only** when `FMONERO_STATE_DIR` is
+//! for the §2i detection fixtures and `FMONERO_SYSTEMD_USER_DIR` overrides
+//! `~/.config/systemd/user`, and both are honoured **only** when `FMONERO_STATE_DIR` is
 //! also set.
 
 use std::path::{Path, PathBuf};
@@ -32,7 +33,13 @@ pub struct Paths {
     pub run_dir: PathBuf,
     /// `~/.bitmonero` — Monero's own default data dir (§1b.1).
     pub bitmonero_dir: PathBuf,
-    /// `~/.config/systemd/user` — where `setup --units` writes the two units (§4.2).
+    /// `~/.config/systemd/user` — where `setup --units` writes the two units (§4.2) — or
+    /// `FMONERO_SYSTEMD_USER_DIR` when `FMONERO_STATE_DIR` is also set (§2i's test seam,
+    /// widened in v5.1). Without the override no test can make `units::detect_layout` or
+    /// `units::preflight` see a machine that has **no** units, because `Paths::discover`
+    /// reads the real `XDG_CONFIG_HOME` and `units::install` refuses to write a unit under
+    /// a test state dir at all (§4.2) — which is how a set-up machine made ten assertions
+    /// of the suite fail on their own premise.
     pub systemd_user_dir: PathBuf,
     /// `~/.config/omarchy` — the plugin directory and the menu extension live below this.
     pub omarchy_config_dir: PathBuf,
@@ -51,8 +58,9 @@ fn env_dir(key: &str) -> Option<PathBuf> {
 }
 
 /// True when the process is running against a test state directory. The §2i overrides
-/// (`FMONERO_PROC_ROOT`, `FMONERO_SYSTEMCTL_FIXTURE`) are honoured only then, which is
-/// the same guard `units::install` uses to refuse writing a real unit.
+/// (`FMONERO_PROC_ROOT`, `FMONERO_SYSTEMCTL_FIXTURE`, `FMONERO_SYSTEMD_USER_DIR`) are
+/// honoured only then, which is the same guard `units::install` uses to refuse writing a
+/// real unit.
 pub fn under_test_state_dir() -> bool {
     env_dir("FMONERO_STATE_DIR").is_some()
 }
@@ -82,6 +90,12 @@ impl Paths {
             Some(p) if under_test_state_dir() => p,
             _ => PathBuf::from("/proc"),
         };
+        // The same guard, for the same reason: a seam that worked without a test state dir
+        // would let an ordinary invocation be pointed at a directory of unit files.
+        let systemd_user_dir = match env_dir("FMONERO_SYSTEMD_USER_DIR") {
+            Some(p) if under_test_state_dir() => p,
+            _ => xdg_config.join("systemd/user"),
+        };
         Ok(Paths {
             run_dir: state_dir.join("run"),
             state_dir,
@@ -89,7 +103,7 @@ impl Paths {
             cache_dir,
             wallet_dir,
             bitmonero_dir: home.join(".bitmonero"),
-            systemd_user_dir: xdg_config.join("systemd/user"),
+            systemd_user_dir,
             omarchy_config_dir: xdg_config.join("omarchy"),
             local_bin: home.join(".local/bin"),
             home,
@@ -182,6 +196,14 @@ impl Paths {
     pub fn plugin_link(&self) -> PathBuf {
         self.omarchy_config_dir.join("plugins/oliver.monero")
     }
+    /// Omarchy's own shell configuration — the file `omarchy plugin enable` and
+    /// `omarchy bar put` write, and therefore the one place their effect can be read back
+    /// without a running shell (§1.5: "Enabling writes `{\"id\":\"oliver.monero\"}` into
+    /// `~/.config/omarchy/shell.json`"). `setup --plugin`'s pre-check reads it so a second
+    /// run reports those two steps `unchanged` instead of spawning them again (§4.2).
+    pub fn omarchy_shell_json(&self) -> PathBuf {
+        self.omarchy_config_dir.join("shell.json")
+    }
     /// `<data-dir>/lmdb/lock.mdb` — the file the §2i `fcntl(F_GETLK)` probe opens.
     pub fn lmdb_lock(&self, data_dir: &Path) -> PathBuf {
         data_dir.join("lmdb/lock.mdb")
@@ -198,18 +220,28 @@ mod tests {
     fn the_env_overrides_move_every_file_and_proc_root_is_guarded() {
         let dir = std::env::temp_dir().join("fmonero-paths-test");
         let fake_proc = std::env::temp_dir().join("fmonero-fake-proc");
+        let fake_units = std::env::temp_dir().join("fmonero-fake-units");
+        let real_units = Paths::discover().expect("paths").systemd_user_dir;
 
-        // (1) FMONERO_PROC_ROOT alone is ignored: the §2i override needs a test state dir.
+        // (1) FMONERO_PROC_ROOT and FMONERO_SYSTEMD_USER_DIR alone are ignored: both §2i
+        // overrides need a test state dir.
         std::env::remove_var("FMONERO_STATE_DIR");
         std::env::set_var("FMONERO_PROC_ROOT", &fake_proc);
+        std::env::set_var("FMONERO_SYSTEMD_USER_DIR", &fake_units);
         let p = Paths::discover().expect("paths");
         assert_eq!(p.proc_root, PathBuf::from("/proc"), "§2i: guarded override");
+        assert_eq!(
+            p.systemd_user_dir, real_units,
+            "§2i: the systemd seam is guarded by the test state dir too"
+        );
 
         // (2) With both set, every fmonero file moves and the override is honoured.
         std::env::set_var("FMONERO_STATE_DIR", &dir);
         let p = Paths::discover().expect("paths");
         std::env::remove_var("FMONERO_STATE_DIR");
         std::env::remove_var("FMONERO_PROC_ROOT");
+        std::env::remove_var("FMONERO_SYSTEMD_USER_DIR");
+        assert_eq!(p.systemd_user_dir, fake_units);
         assert_eq!(p.state_dir, dir);
         assert_eq!(p.state_file(), dir.join("state.json"));
         assert_eq!(p.pending_file(), dir.join("pending.json"));

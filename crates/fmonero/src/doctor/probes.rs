@@ -900,23 +900,20 @@ impl Probes {
 
 // ------------------------------------------------------------------ helpers
 
-/// `~/.config/systemd/user`, or `FMONERO_SYSTEMD_USER_DIR` when `FMONERO_STATE_DIR` is also
-/// set.
+/// Where the two units live — **`ctx.paths.systemd_user_dir`, and nothing else**.
 ///
-/// **A deviation from DESIGN.md, recorded in `decisions/phase2-doctor.md`.** §2i freezes
-/// `FMONERO_PROC_ROOT` and `FMONERO_SYSTEMCTL_FIXTURE`, and neither points the doctor at a
-/// directory of unit **files** — which six §7.1 checks read (`units_present`,
-/// `unit_loopback`, `unit_no_password_in_argv`, `unit_no_node_wants`,
-/// `wallet_dir_matches_unit`, `wallet_port_consistent`), while `units::install` refuses to
-/// run at all under `FMONERO_STATE_DIR` (§4.2) so no test may write a real one. Phase 0
-/// reported the gap and named two resolutions; this is the second of them — resolved
-/// **inside `probes.rs`**, which this phase owns, rather than by adding a field to `Paths`,
-/// which it does not (§2k). The guard is the same one §2i puts on its own two overrides.
+/// It used to read `FMONERO_SYSTEMD_USER_DIR` here, a Phase 2 deviation recorded in
+/// `decisions/phase2-doctor.md`: §2i froze `FMONERO_PROC_ROOT` and
+/// `FMONERO_SYSTEMCTL_FIXTURE`, neither of which points anything at a directory of unit
+/// **files**, and this phase did not own `Paths`. v5.1 moves the seam into
+/// `Paths::discover`, under the same `FMONERO_STATE_DIR` guard, so the doctor and every
+/// other reader of that directory — `units::detect_layout`, `units::state`,
+/// `units::preflight`, `units::install` — agree about which directory a test is looking at.
+/// This function stays because six §7.1 checks name it (`units_present`, `unit_loopback`,
+/// `unit_no_password_in_argv`, `unit_no_node_wants`, `wallet_dir_matches_unit`,
+/// `wallet_port_consistent`) and one place to read it from is still worth having.
 pub fn systemd_user_dir(ctx: &Context) -> PathBuf {
-    match std::env::var_os("FMONERO_SYSTEMD_USER_DIR") {
-        Some(p) if !p.is_empty() && fmonero_core::paths::under_test_state_dir() => PathBuf::from(p),
-        _ => ctx.paths.systemd_user_dir.clone(),
-    }
+    ctx.paths.systemd_user_dir.clone()
 }
 
 /// The `ExecStart=` line's argv, with systemd's trailing `\` continuations joined.
