@@ -1,4 +1,4 @@
-# fmonero — design brief v5 (source of truth for every agent working on this repo)
+# fmonero — design brief v5.1 (source of truth for every agent working on this repo)
 
 A fast Monero node + wallet front end for Omarchy: a Rust CLI + engine (`crates/fmonero-core`,
 `crates/fmonero`), a FrankenTUI app (`fmonero tui`), a `doctor`, and a thin Quickshell bar widget
@@ -1386,7 +1386,7 @@ fmonero **never starts a second `monerod` on a data dir that is already served**
 
 | Layout | How it is detected | What `node up` does |
 |---|---|---|
-| `user_unit` | `~/.config/systemd/user/fmonero-monerod.service` exists and `settings.node.url` is loopback. **Ownership is decided by configuration alone; who currently holds the data dir is a separate question, answered below.** | the single-writer precondition below, then `systemctl --user start fmonero-monerod.service`, then poll `get_info` until it answers or 30 s |
+| `user_unit` | `~/.config/systemd/user/fmonero-monerod.service` exists and `settings.node.url` is loopback. **Ownership is decided by configuration alone; who currently holds the data dir is a separate question, answered below.** | the preflight and the single-writer precondition below, then `systemctl --user start fmonero-monerod.service`, then poll `get_info` until it answers or 30 s |
 | `system_unit` | `systemctl is-active monerod.service` (no `--user`) is `active`, or `/etc/monerod.conf` exists and `systemctl is-enabled monerod.service` succeeds | exits **3 `safety`**: `hint: sudo systemctl start monerod   # fmonero does not use sudo`. Status, info, peers, bans and the wallet all work against it, subject to §1b.2 if it is restricted. |
 | `remote` | `settings.node.url` is not loopback | exits 2 (§2c) |
 | `none` | nothing found | exits **4 `backend`**: `hint: fmonero setup --units` |
@@ -1404,6 +1404,50 @@ fmonero's own node, in exactly the state where the user needs them. So:
   ⇒ **exit 0, already running** (idempotent, no second start); any other PID ⇒ **exit 3 `safety`**
   with `error: "monerod pid <N> already has <data-dir> open"` and
   `hint: fmonero status --json   # a monerod is already serving this data dir`.
+
+**Two questions come before any `systemctl` call, and both answer within milliseconds** (v5.1).
+`units::preflight(ctx, unit, binary)` asks them, and `node up`, `node restart`, `wallet open` and
+`wallet create` all go through it:
+
+1. **is the unit file in `paths.systemd_user_dir`?** Else exit **4 `backend`**,
+   `reason: unit_missing`, `hint: fmonero setup --units --yes`.
+2. **is the daemon binary (`monerod`, `monero-wallet-rpc`) on `PATH`?** Else exit **4 `backend`**,
+   `reason: not_installed`, `hint: omarchy pkg add monero` — the same `proc::which` probe the
+   doctor's `monerod_installed` already makes.
+
+Without (2), a machine `setup --units` has configured and `omarchy pkg add monero` has not reached
+answers `node up` with **exit 8** after thirty seconds — §4a's "nothing is broken", whose hint points
+at a `status` document that will say `reachable: false` without saying why — and leaves the unit
+restarting every five seconds on `203/EXEC`, which is systemd saying the binary is not there. §4a
+assigns that condition exit **4**. This is the state `scripts/install.sh --yes` leaves on a machine
+with no Monero, so it is the first thing an owner meets; it was finding 1 of the Phase 4
+verification, and §4.2 spends a paragraph on the identical failure shape one layer down (a missing
+`wallet.dir` ancestor). `node restart` asks **before** its own `down`, because a restart that stops
+the node and then reports "monerod is not installed" has left the machine worse than it found it.
+
+**Where each question lives, and why the wallet path differs.** For `node up`/`node restart` the
+preflight runs immediately after the layout gate. For `wallet open`/`wallet create` it runs inside
+`units::ensure_running`, **after** the probe and immediately before `units::start` — because
+`ensure_running` probes first precisely so that every AMBER wallet row of §4b works against
+`fmonero-mock` with no unit installed (§5b), and a preflight ahead of the probe would refuse all of
+them. A daemon that is already answering needs neither a unit file nor a binary on this machine's
+`PATH`.
+
+**(2) is skipped under `Systemctl::Fixture`.** The §2i seam already stands in for the machine's
+systemd; a fixture that reports a unit as present and active is standing in for its daemon too, and
+`fmonero-mock` is what answers the RPC in every one of those rows. The seam is honoured only under
+`FMONERO_STATE_DIR`, so no real invocation can reach the exemption, and `units`' own unit test drives
+`preflight` directly with an explicit binary name — so the check is not exempt from being tested, and
+`tests/e2e.sh` proves the real answer with no fixture set at all.
+
+**A unit fmonero started that never answered is stopped again** (v5.1). `units::ensure_running` and
+`node_session::up` both poll to a deadline; on expiry, and only when *they* issued the start, they
+run `systemctl --user stop <unit>` followed by `systemctl --user reset-failed <unit>` and say so in
+the error. Without it every such failure leaves a `Restart=on-failure` loop behind a command that has
+already failed — which is what the Phase 4 verifier's runs left on this machine, twice, and had to
+undo by hand. `reset-failed` is part of it because the units now set their own start limit (§4.2): a
+unit that has hit it refuses the *next* start until the failed state is cleared, and an owner who has
+just installed Monero must not meet that.
 - **`node down` / `node restart`** require only `Layout::UserUnit`; they never consult
   `data_dir_in_use`.
 - The doctor's `node_data_dir_single_writer` uses it as a report-only check.
@@ -1467,7 +1511,8 @@ same text (§7a).
 **The test seam, frozen now because §2k freezes the API at the 1a gate.** `detect_layout` and
 `data_dir_in_use` read the real `/proc` and shell out to the real `systemctl`, and no agent on this
 machine can create `/etc/monerod.conf` or a system unit (§1.1). So `Paths` carries
-`proc_root: PathBuf` (`/proc`, overridden by `FMONERO_PROC_ROOT`) and `Context` carries
+`proc_root: PathBuf` (`/proc`, overridden by `FMONERO_PROC_ROOT`), **`systemd_user_dir: PathBuf`
+(`~/.config/systemd/user`, overridden by `FMONERO_SYSTEMD_USER_DIR` — v5.1, §4.2)** and `Context` carries
 `systemctl: Systemctl` — `Real`, or `Fixture(PathBuf)` from `FMONERO_SYSTEMCTL_FIXTURE`, a file of
 `<unit> <is-active> <is-enabled> <exists> <main-pid>` lines (`-` for an absent pid). Under
 `Fixture`, `units::state`, `units::main_pid` **and `detect_layout`'s unit-file-exists test** all
@@ -1476,9 +1521,19 @@ read that file instead of stat'ing `paths.systemd_user_dir` or spawning `systemc
 the named line** and return `Ok`. Without those four, nothing can reach `Layout::UserUnit` in a test
 at all — `units::install` refuses to run under `FMONERO_STATE_DIR` (§4.2), so no test may write a
 real unit — and §2d's `node up --wait --wait-timeout 2` case, the `user_unit` + write-lock case
-below and §4b's AMBER `node up`/`node down` rows would have no way to run. **Both overrides are
+below and §4b's AMBER `node up`/`node down` rows would have no way to run. **All three overrides are
 honoured only when `FMONERO_STATE_DIR` is also set**, the same guard `units::install` already uses
 to refuse running under a test state dir.
+
+`FMONERO_SYSTEMD_USER_DIR` is the third, and it is the one that makes the *absence* of a unit
+testable: `Systemctl::Fixture` answers `is-active`/`is-enabled`/`exists`/`MainPID` and nothing more,
+while `detect_layout`, `units::preflight`, `units::install` and six §7.1 doctor checks all read the
+**directory**. v5 left it out; the Phase 2 doctor added it inside `probes.rs` as a recorded
+deviation, so the doctor and the rest of the code could disagree about which directory a test was
+looking at; and the Phase 4 verifier's one real `scripts/install.sh --yes` then made ten assertions
+of this project's own suite fail on their own premise, because `tests/e2e.sh` could sandbox state,
+config and cache but not this. It is one field, honoured in `Paths::discover` under the same guard
+as the other two, and `probes.rs` reads the field.
 
 *Tests:* a doctor fixture supplies a synthetic `/proc` tree plus a systemctl fixture and asserts the
 `node_layout` verdict for all four cases; **a unit test holds an `fcntl` READ lock (`F_RDLCK`,
@@ -1764,9 +1819,9 @@ wallet.
 |---|---|---|---|---|---|---|
 | *(bare)* | — | TUI on a TTY, else `status --json` | – | – | – | – |
 | `status` | — | §5's hot call set (three RPCs with the wallet closed, five with it open) plus `systemctl --user is-active` ×2 and state. **Never starts anything and calls no wallet mutator** (§2e); it does write `state.json` atomically (§5). | no | – | no | no |
-| `node up` | `[--wait] [--wait-timeout SECONDS]` | **`node_session::up` (§5b)** — the one implementation, shared with the TUI's `u` key: §2i layout, then the §2i single-writer precondition (no holder ⇒ start; our own unit's `MainPID` ⇒ **exit 0, already running**; any other PID ⇒ exit 3 naming it), then `systemctl --user start fmonero-monerod.service`. Returns as soon as one `get_info` answers, waiting at most 30 s (exit 8 if it never does). **`--wait` additionally polls until `get_info.synchronized` is true**, bounded by `--wait-timeout`, **default 1 800 s**; when it elapses the command exits **8 `timeout`** with `error: "still syncing at <pct>% after <n>s"` and `hint: fmonero node up --wait --wait-timeout 86400   # or: fmonero status --json`. `--wait-timeout 0` is the explicit opt-in to "poll until interrupted" and is refused (exit 2) when stdout is not a TTY, because a non-interactive caller has nothing that can interrupt it (§2d). There is no unbounded default: a command that can block for days is a command an agent cannot call. Without `--wait` a still-syncing node is exit 0 plus the `node_syncing` warning. Needs layout `user_unit` (§2i). | yes | no | – | – |
+| `node up` | `[--wait] [--wait-timeout SECONDS]` | **`node_session::up` (§5b)** — the one implementation, shared with the TUI's `u` key: §2i layout, then **§2i's preflight — the unit file (exit 4 `unit_missing`) and `monerod` on `PATH` (exit 4 `not_installed`), both answered in milliseconds and both before any `systemctl` call** —, then the §2i single-writer precondition (no holder ⇒ start; our own unit's `MainPID` ⇒ **exit 0, already running**; any other PID ⇒ exit 3 naming it), then `systemctl --user start fmonero-monerod.service`. Returns as soon as one `get_info` answers, waiting at most 30 s (exit 8 if it never does). **`--wait` additionally polls until `get_info.synchronized` is true**, bounded by `--wait-timeout`, **default 1 800 s**; when it elapses the command exits **8 `timeout`** with `error: "still syncing at <pct>% after <n>s"` and `hint: fmonero node up --wait --wait-timeout 86400   # or: fmonero status --json`. `--wait-timeout 0` is the explicit opt-in to "poll until interrupted" and is refused (exit 2) when stdout is not a TTY, because a non-interactive caller has nothing that can interrupt it (§2d). There is no unbounded default: a command that can block for days is a command an agent cannot call. Without `--wait` a still-syncing node is exit 0 plus the `node_syncing` warning. Needs layout `user_unit` (§2i). **A unit this command started that never answered is stopped again and the error says so** (§2i, v5.1): a failed `node up` never leaves a `Restart=on-failure` loop behind it. | yes | no | – | – |
 | `node down` | — | **`node_session::down` (§5b)**: `POST /stop_daemon` if reachable, then `systemctl --user stop`; the RPC call first so LMDB closes cleanly. **Layout `user_unit` only** — exits 3 before any RPC otherwise (§2i). | yes | **yes** | – | – |
-| `node restart` | — | **`node_session::restart` (§5b)**: `down` then `up`. **Layout `user_unit` only** (§2i). | yes | **yes** | – | – |
+| `node restart` | — | **`node_session::restart` (§5b)**: `down` then `up`. **Layout `user_unit` only** (§2i), and §2i's preflight runs **before** the `down` — a restart that stops the node and then reports "monerod is not installed" has left the machine worse than it found it (v5.1). | yes | **yes** | – | – |
 | `node info` | — | `get_info` + `get_last_block_header` + `hard_fork_info` + `get_version` + `get_fee_estimate` + `get_transaction_pool_stats`; `sync_info`/`get_net_stats`/`get_limit` when unrestricted | no | – | – | yes |
 | `node log` | `[--lines N] [--follow] [--grep TEXT]` | `log::tail` (§5b) over `settings.node.log_file` (default `~/.bitmonero/bitmonero.log`), a bounded read; a missing file is exit 0 with "no log yet"; `--follow` only from the TUI's Log screen, refused (exit 2) in the CLI where a pipe would hang | no | – | – | no |
 | `node peers` | `[--white\|--gray] [--limit N]` | `get_connections` (live) and `POST /get_peer_list` (`public_only:true`). Restricted node → exit 5 with the restricted hint | no | – | – | yes |
@@ -1775,9 +1830,9 @@ wallet.
 | `node unban` | `HOST` | `set_bans [{host, ban:false, seconds:0}]`. **Layout `user_unit` only** (§2i). | yes | – | – | yes |
 | `node limit` | `[--up KBPS] [--down KBPS] [--out-peers N] [--in-peers N]` | no args → `NodeClient::{get_limit, peers_count}`, both read-only (any layout); with args → `NodeMutators::{set_limit, set_peers_count}`, which exist only on a type the **layout `user_unit`** gate hands out (§2i). `-1` restores the default. | with args | – | – | yes |
 | `wallet list` | — | `wallet_dir::list` (§5b): `*.keys` basenames in `settings.wallet.dir`, sorted; no RPC, no wallet bytes read (§2b.6). A NAME containing `/` is exit 2 (§1b.5). An empty list (and a `-23 NO_WALLET_DIR`) prints, besides `fmonero wallet create <name> --yes`, the one command that brings an existing seed back: `hint: monero-wallet-cli --restore-deterministic-wallet --wallet-file <wallet.dir>/<name>   # then: fmonero wallet open <name>` (§0 cuts `wallet restore`). | no | – | no | no |
-| `wallet open` | `NAME [--password-file P]` | `wallet_session::open` (§5b) — the single implementation of the §4.2 sequence, shared with the TUI's open modal: `units::ensure_running`, then `open_wallet{filename, password}` (§2b.1), **then** exactly one `set_daemon{address, trusted, username, password}` (§4.2), then `auto_refresh{enable:true, period:20}` (§2d). The order is not free: `on_set_daemon` answers `-13 NOT_OPEN` with no wallet loaded (`wallet_rpc_server.cpp:4692`), so issuing it first would fail silently and leave the wallet unable to reach fmonero's own authenticated node. Records `state::set_last_open(name, net)` — the wallet's own nettype, read from its primary address, being the §2a.6 send-path authority — so `status` can name it. A NAME containing `/` is exit 2 (§1b.5); a missing `<wallet.dir>/<NAME>.keys` is exit **6 `not_found`**, checked locally because wallet-rpc collapses that case into the same `-1` a wrong password gives (§1b.4). | yes | no | – | no |
+| `wallet open` | `NAME [--password-file P]` | `wallet_session::open` (§5b) — the single implementation of the §4.2 sequence, shared with the TUI's open modal: `units::ensure_running` — which probes first, and only when the probe fails runs §2i's preflight (exit 4 `unit_missing` / `not_installed`) and then the start, so an answering daemon needs no unit and no binary while an absent one is refused in milliseconds rather than at a 30 s deadline (v5.1) —, then `open_wallet{filename, password}` (§2b.1), **then** exactly one `set_daemon{address, trusted, username, password}` (§4.2), then `auto_refresh{enable:true, period:20}` (§2d). The order is not free: `on_set_daemon` answers `-13 NOT_OPEN` with no wallet loaded (`wallet_rpc_server.cpp:4692`), so issuing it first would fail silently and leave the wallet unable to reach fmonero's own authenticated node. Records `state::set_last_open(name, net)` — the wallet's own nettype, read from its primary address, being the §2a.6 send-path authority — so `status` can name it. A NAME containing `/` is exit 2 (§1b.5); a missing `<wallet.dir>/<NAME>.keys` is exit **6 `not_found`**, checked locally because wallet-rpc collapses that case into the same `-1` a wrong password gives (§1b.4). | yes | no | – | no |
 | `wallet close` | — | `wallet_session::close` (§5b): `close_wallet{autosave_current:true}` then `state::clear_last_open` | yes | no | yes | no |
-| `wallet create` | `NAME [--language L] [--allow-empty-password]` | `units::ensure_running(wallet.unit)` — the same first step as `wallet open`, because the units are written **disabled** and started on demand (§4.2), so without it `wallet create` on a freshly `setup`-ed machine exits 4 `backend` and §4b's RED rehearsal stops at its sixth line — then `create_wallet`. **`create_wallet` leaves the new wallet open** — `on_create_wallet` ends `m_wallet = wal.release()` (`wallet_rpc_server.cpp:3639`) — so `wallet create` must finish the same post-open steps `wallet_session::open` performs, or the wallet it just made is open with no daemon credential and no recorded name: `status` would report `wallet.open: true` with `wallet.name: null` (§5 sources that from `state::last_open`), every wallet→daemon call would 401 (§4.2), and the §2a send path would accept a nameless wallet. Those steps are exactly the last three of `wallet_session::open`, called on the wallet `create_wallet` left open — no new API: one `set_daemon{address, trusted, username, password}` carrying `Login::from_monerod_conf` (§4.2), then `auto_refresh{enable:true, period:20}` (§2d), then `state::set_last_open(name, net)` with the nettype read from the new wallet's own primary address (§2a.6). `--language` is validated locally against `SEED_LANGUAGES` (§1b.4) and defaults to `"English"` (the field is required and an unknown value comes back as a bare `-1`). Refuses if the file exists (exit 3, `reason: wallet_exists`). The password is read as §2b.1 says and, **on a TTY, prompted twice and compared** — a mismatch exits 2 without creating anything; an **empty** password is refused with exit 2 unless `--allow-empty-password` is passed, because an unencrypted wallet is a deliberate choice and never a typo; with no TTY the password must come from `--password-file` or `$FMONERO_WALLET_PASSWORD`, where there is nothing to mistype. Does not print the seed, and ends with the `seed_backup_hint` of §2b.2. | yes | **yes** | leaves one open | no |
+| `wallet create` | `NAME [--language L] [--allow-empty-password]` | `units::ensure_running(wallet.unit)` — the same first step as `wallet open`, including §2i's preflight (v5.1), because the units are written **disabled** and started on demand (§4.2), so without it `wallet create` on a freshly `setup`-ed machine exits 4 `backend` and §4b's RED rehearsal stops at its sixth line — then `create_wallet`. **`create_wallet` leaves the new wallet open** — `on_create_wallet` ends `m_wallet = wal.release()` (`wallet_rpc_server.cpp:3639`) — so `wallet create` must finish the same post-open steps `wallet_session::open` performs, or the wallet it just made is open with no daemon credential and no recorded name: `status` would report `wallet.open: true` with `wallet.name: null` (§5 sources that from `state::last_open`), every wallet→daemon call would 401 (§4.2), and the §2a send path would accept a nameless wallet. Those steps are exactly the last three of `wallet_session::open`, called on the wallet `create_wallet` left open — no new API: one `set_daemon{address, trusted, username, password}` carrying `Login::from_monerod_conf` (§4.2), then `auto_refresh{enable:true, period:20}` (§2d), then `state::set_last_open(name, net)` with the nettype read from the new wallet's own primary address (§2a.6). `--language` is validated locally against `SEED_LANGUAGES` (§1b.4) and defaults to `"English"` (the field is required and an unknown value comes back as a bare `-1`). Refuses if the file exists (exit 3, `reason: wallet_exists`). The password is read as §2b.1 says and, **on a TTY, prompted twice and compared** — a mismatch exits 2 without creating anything; an **empty** password is refused with exit 2 unless `--allow-empty-password` is passed, because an unencrypted wallet is a deliberate choice and never a typo; with no TTY the password must come from `--password-file` or `$FMONERO_WALLET_PASSWORD`, where there is nothing to mistype. Does not print the seed, and ends with the `seed_backup_hint` of §2b.2. | yes | **yes** | leaves one open | no |
 | `wallet balance` | `[--account N] [--subaddresses]` | `get_balance{account_index, all_accounts:false}` | no | – | yes | no |
 | `wallet address` | `[--account N] [--index N] [--qr]` | `get_address`; `--qr` renders the primary/selected address as a half-block QR on stdout (skipped when not a TTY) | no | – | yes | no |
 | `wallet new-address` | `[--account N] [--label TEXT]` | `create_address` | yes | no | yes | no |
@@ -1879,7 +1934,20 @@ nothing.
   `--rotate-rpc-login` mints a fresh node credential; see below.
 - `--plugin` symlinks `plugin/oliver.monero` → `~/.config/omarchy/plugins/oliver.monero`, then
   `omarchy plugin enable oliver.monero` and `omarchy bar put oliver.monero --before omarchy.tailscale`,
-  each skipped when already done.
+  **each skipped when already done, and the pre-check is named** (v5.1): both are read from
+  `~/.config/omarchy/shell.json`, the file Omarchy itself writes — §1.5: "Enabling writes
+  `{"id":"oliver.monero"}` into `~/.config/omarchy/shell.json`" — and for a bar widget the two
+  questions are one fact, because `omarchy plugin enable` puts the id into a section of
+  `bar.layout` and `omarchy bar put` "leaves a widget that is already on the bar where it is"
+  (`/usr/share/omarchy/bin/omarchy-bar`). An id already in that document reports
+  `FileStatus::Unchanged` with **no process spawned**; an unreadable or unrecognised document is
+  "cannot tell" and the command runs as before, because skipping a step that was never taken is the
+  one wrong answer here. The file rather than `omarchy plugin list`, for two reasons: the listing is
+  an IPC call that needs a **running** shell, and `setup` must answer this on a machine whose shell
+  has not started; and it would cost a process spawn before the two it exists to avoid. Without the
+  pre-check both steps reported `written` on **every** run — the machine was unharmed, since both
+  commands are idempotent, but §8's idempotence assertion reads the report, and that is what it
+  read (finding 2 of the Phase 4 verification).
 - `--menu` merges `crates/fmonero/assets/menu.jsonc` into
   `~/.config/omarchy/extensions/omarchy-menu.jsonc` **textually**, exactly as fproton does: copy
   the file verbatim to `~/.local/state/fmonero/backups/omarchy-menu.jsonc.<UTC basic>`; strip
@@ -1902,10 +1970,15 @@ check them without running `setup`:
 Description=Monero daemon (fmonero)
 After=network-online.target
 Wants=network-online.target
+# v5.1: RestartSec=5 can never reach systemd's own 10 s / 5-start default, so a 203/EXEC
+# (the answer when monerod is absent) would restart every five seconds forever.
+StartLimitIntervalSec=60
+StartLimitBurst=3
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/monerod --config-file %h/.config/fmonero/monerod.conf --non-interactive
+# The ABSOLUTE, XDG-resolved `paths.monerod_conf()` — NEVER `%h/.config/...` (v5.1; see below).
+ExecStart=/usr/bin/monerod --config-file /home/<user>/.config/fmonero/monerod.conf --non-interactive
 Restart=on-failure
 RestartSec=5
 # monerod is I/O-heavy and must never compete with the desktop
@@ -1961,12 +2034,15 @@ the same reason: wallet scanning is the one fmonero workload that will happily e
 the user is doing something else.
 
 `units::render_node_conf` substitutes `ctx.paths.home` and `ctx.settings.node.data_dir` as absolute
-paths. `%h` and `%S` appear **only** in the two `.service` files, where systemd expands them; boost
-does no specifier expansion, so a `%h` here would make `monerod` create a directory literally named
-`%h` under its working directory and resync the chain from zero — a failure no mock can catch.
+paths. **No systemd specifier may reach `monerod.conf`**: boost does no specifier expansion, so a
+`%h` here would make `monerod` create a directory literally named `%h` under its working directory
+and resync the chain from zero — a failure no mock can catch.
 Its guard is therefore a **permanent unit test**, `units::render_node_conf_has_no_systemd_specifiers`,
 which calls `units::render_node_conf` directly and asserts the returned string contains no `%h`,
-`%S` or `%t`. The Phase 1b gate runs that test **and** greps the rendered `monerod.conf` hunk of
+`%S` or `%t`. The guard is about the **conf**, and it stays exactly that: `%S` still appears in the
+wallet unit's `StateDirectory=`, `WorkingDirectory=` and `--log-file`, where systemd expands it and
+nothing is compared against a setting. The node unit carries **no specifier at all** (v5.1): its
+one path, `--config-file`, is now compared against `paths.monerod_conf()`. The Phase 1b gate runs that test **and** greps the rendered `monerod.conf` hunk of
 `setup --units --dry-run`'s output. Grepping the file itself after a `--dry-run` would be vacuous:
 `--dry-run` changes nothing, so the file does not exist, `grep` exits 2 with an error and produces
 no output — the gate would pass whether or not a `%h` was emitted, and a gate that cannot fail is
@@ -1988,6 +2064,9 @@ mint a new one; it prints that the node must be restarted.
 [Unit]
 Description=Monero wallet RPC (fmonero)
 After=fmonero-monerod.service
+# v5.1, for the same reason as the node unit: three tries in a minute, then stop.
+StartLimitIntervalSec=60
+StartLimitBurst=3
 
 [Service]
 Type=simple
@@ -2012,13 +2091,40 @@ WantedBy=default.target
 ```
 
 **`%h` is deliberately not used for `--wallet-dir`.** `settings.wallet.dir` is an absolute path
-once `Settings` has loaded it (a `~` in `config.toml` is expanded there, once), and the doctor's
+once `Settings` has loaded it (a `~` in `config.toml` is expanded there, once, and the default is
+derived from `paths.wallet_dir` so that `setup --units`' own `want_dir` and the setting cannot
+disagree), and the doctor's
 `wallet_dir_matches_unit` compares the unit's argument against that path **literally** — so a unit
 carrying `%h/...` would make the check report `fail` on a perfectly correct machine, its class-B
 fixer rewrite the unit to bytes systemd expands identically, and the next run fail again. A check
 that fails on a correct machine is the check an agent relaxes. `%S` stays in
-`StateDirectory=`/`WorkingDirectory=`/`--log-file`, which nothing compares against a setting, and
-`%h` stays in the node unit's `--config-file`, likewise uncompared.
+`StateDirectory=`/`WorkingDirectory=`/`--log-file`, which nothing compares against a setting.
+
+**`%h` is not used for the node unit's `--config-file` either** (v5.1, closing `secrets-5`; v5
+kept the literal here on the grounds that it was "likewise uncompared", and that was the defect).
+`--config-file` is rendered as the absolute `paths.monerod_conf()`, exactly as `--wallet-dir` is
+rendered from `settings.wallet.dir`. systemd expands `%h` to `$HOME`, and **there is no specifier
+for `XDG_CONFIG_HOME`**: with that variable set to anything but `~/.config`, `setup --units` writes
+`monerod.conf` where `Paths` says and the unit names a file that is not there. `monerod` treats a
+missing *named* config file as fatal (§1b.6, `src/daemon/main.cpp:243-247`), so it exits
+`203`-class immediately, `Restart=on-failure` retries it, and `node up` answers "did not answer
+`get_info` within 30 s" — exit 8, "nothing is broken", with the symptom pointing away from the
+cause. Two consequences follow, and both are part of the contract:
+
+- the doctor's `units_present`, which compares the installed unit against `units::render_node_unit`
+  **byte for byte**, reports `warn:unit_drift` on a unit written by a pre-v5.1 build, and its
+  class-B fixer rewrites it — which is the intended upgrade path and needs no migration code;
+- the §7.1 fixtures under `tests/fixtures/doctor/{units_present,unit_no_password_in_argv*}/input/`
+  carry the absolute form (`/home/user/.config/fmonero/monerod.conf`, matching their
+  `_settings` home), and say in their provenance header why.
+
+**`StartLimitIntervalSec=60` / `StartLimitBurst=3` on both units** (v5.1) exist because this
+document twice describes a failing unit as retrying "into systemd's start limit" and that was not
+true: the manager defaults are `DefaultStartLimitIntervalSec=10s` and `DefaultStartLimitBurst=5`,
+and a unit with `RestartSec=5` gets two starts per interval — so the burst of five is never reached
+and a `203/EXEC` loops forever. The Phase 4 verifier met exactly that and had to stop both units by
+hand. Three tries in a minute, then `failed`, is the behaviour the prose already claimed; the
+milliseconds-fast refusal of §2i's preflight is what keeps a user from meeting it at all.
 
 **`--wallet-dir` is rendered from `settings.wallet.dir` and therefore always carries the network
 segment**, never from a template constant. It is the daemon that resolves
@@ -2061,6 +2167,14 @@ there (§2c). `Paths::run_dir` follows `FMONERO_STATE_DIR` when it is set, so a 
 the unit's working directory diverge — which is fine, because a test never installs a unit: it
 points `WalletClient::new` at `fmonero-mock --auth` instead. `units::install` refuses to run at all
 when `FMONERO_STATE_DIR` is set, so that divergence can never produce a half-written unit.
+
+**And `Paths::systemd_user_dir` follows `FMONERO_SYSTEMD_USER_DIR` under the same guard** (v5.1,
+§2i's seam list). Because `install` refuses to write a unit under a test state dir, the *absence* of
+a unit is the only unit state a test can produce — and until v5.1 it could not produce even that,
+since `Paths::discover` read the real `XDG_CONFIG_HOME`. The Phase 4 verifier's one real
+`scripts/install.sh --yes` therefore broke ten assertions of this project's own suite, each of which
+had silently been asserting "nothing is installed on this machine". A suite a correct installer
+breaks is a suite that gets weakened, so the seam is the fix and the assertions are unchanged.
 
 Note what is **absent** from that argv and why: no `--disable-rpc-login` and no `--rpc-login`, so
 the daemon writes its own credential into `WorkingDirectory` (§2c); no `--password`, ever (§2b.1);
@@ -2153,7 +2267,9 @@ appeared in two or three — and a gate its own document fails is a gate an agen
   `undo latest`, byte-compare) and `doctor undo` against a run whose backup hash mismatches
   (exit 13),
   `tui` (opens, renders every screen in its empty state, quits cleanly), `node up` with no units
-  (exit 4), `wallet open` with no unit (exit 4), `wallet send` with no wallet daemon (**exit 4
+  (exit 4 `unit_missing`), `wallet open` with no unit (exit 4 `unit_missing`),
+  **`node up`, `node restart` and `wallet open` with the units installed and no Monero binary
+  (exit 4 `not_installed`, in milliseconds — §2i's preflight, v5.1)**, `wallet send` with no wallet daemon (**exit 4
   `reason: unreachable`**, at step 5 and before any build — steps 1–4 of §2a.1's refusal order run
   first, which they can because `WalletClient::from_ctx` succeeds with no login file (§2c), so a bad
   address is still exit 15 and an unresolved `pending_send` is still exit 3, but a valid address
@@ -2507,6 +2623,11 @@ pub struct Paths { pub state_dir: PathBuf, pub config_dir: PathBuf, pub cache_di
                    pub local_bin: PathBuf, pub home: PathBuf,
                    /// "/proc", or FMONERO_PROC_ROOT when FMONERO_STATE_DIR is also set (§2i).
                    pub proc_root: PathBuf }
+// `systemd_user_dir` is `~/.config/systemd/user`, or FMONERO_SYSTEMD_USER_DIR when
+// FMONERO_STATE_DIR is also set (§2i, §4.2 — v5.1). Same field, same guard as `proc_root`.
+// `Context::for_test(dir)` additionally puts `systemd_user_dir`, `local_bin` and
+// `settings.wallet.dir` under `dir`: they pointed at the real machine until v5.1, and the one
+// real `scripts/install.sh --yes` then made five unit tests fail on their own premise.
 impl Paths {
     /// FMONERO_STATE_DIR / FMONERO_CONFIG_DIR / FMONERO_CACHE_DIR override the XDG locations.
     pub fn discover() -> Result<Paths, Error>;
@@ -2526,6 +2647,9 @@ impl Paths {
     pub fn doctor_latest(&self) -> PathBuf;
     pub fn omarchy_menu(&self) -> PathBuf;
     pub fn plugin_link(&self) -> PathBuf;
+    /// `~/.config/omarchy/shell.json` — Omarchy's own record of which plugins are enabled and
+    /// what the bar carries (§1.5). Read by `setup --plugin`'s pre-check (§4.2, v5.1).
+    pub fn omarchy_shell_json(&self) -> PathBuf;
 }
 
 // ---- the types that cross a phase boundary (rule 2 above) -----------------------
@@ -3151,6 +3275,26 @@ pub mod units {
     /// (fbittorrent/src/backend.rs:17-29).
     pub fn ensure_running(ctx: &Context, unit: &str, probe: &dyn Fn() -> bool,
                           deadline: Duration, cancel: &CancelToken) -> Result<bool, Error>;
+    /// The two questions of §2i that come **before any `systemctl` call**, both answered in
+    /// milliseconds: the unit file exists in `paths.systemd_user_dir` (else
+    /// `Error::Backend{reason:"unit_missing"}`, hint `fmonero setup --units --yes`) and `binary`
+    /// is on PATH (else `Error::Backend{reason:"not_installed"}`, hint `omarchy pkg add monero`).
+    /// The second is skipped under `Systemctl::Fixture`, which stands in for the machine's daemon
+    /// as well as for its systemd (§2i). Called by `node_session::{up, restart}` and — after the
+    /// probe, immediately before `start` — by `ensure_running`, so `wallet open` and
+    /// `wallet create` get it too. (v5.1)
+    pub fn preflight(ctx: &Context, unit: &str, binary: &str) -> Result<(), Error>;
+    /// Which daemon a unit runs, so `ensure_running` can ask `preflight`'s second question
+    /// without a second parameter — its signature is frozen (§5b) and its two callers would
+    /// otherwise each name the binary, the arrangement §2a.3 rejects. (v5.1)
+    pub fn unit_binary(ctx: &Context, unit: &str) -> &'static str;
+    /// `systemctl --user stop` then `reset-failed` for a unit **we** started that never answered,
+    /// returning the clause the caller appends to its error. Called by `ensure_running` and by
+    /// `node_session::up` on their deadline, and by nothing else: a unit fmonero did not start is
+    /// not fmonero's to stop (§7's axiom, and §2i). (v5.1)
+    pub fn stop_after_failed_start(ctx: &Context, unit: &str, cancel: &CancelToken) -> String;
+    /// `RestartSec=` in both rendered units, quoted in `preflight`'s message (§4.2). (v5.1)
+    pub const RESTART_SEC: u32;
     /// Two probes (§2i): `<paths.proc_root>/*/cmdline` for a monerod already serving `data_dir`,
     /// and `fcntl(F_GETLK)` on `<data_dir>/lmdb/lock.mdb`. NEVER `flock`, which does not conflict
     /// with LMDB's fcntl lock and would report a live data dir as free.
@@ -3341,7 +3485,8 @@ pub mod agent {
     ///   "env":      [{name, purpose, default, test_only}] — FMONERO_STATE_DIR,
     ///               FMONERO_CONFIG_DIR, FMONERO_CACHE_DIR, FMONERO_WALLET_PASSWORD (the
     ///               documented way an agent opens a wallet with no TTY, §2b.1), NO_COLOR, CI,
-    ///               and FMONERO_PROC_ROOT / FMONERO_SYSTEMCTL_FIXTURE marked `test_only: true`
+    ///               and FMONERO_PROC_ROOT / FMONERO_SYSTEMCTL_FIXTURE /
+    ///               FMONERO_SYSTEMD_USER_DIR (§2i, v5.1) marked `test_only: true`
     ///   "settings": the §4 key table with defaults, from `Settings::KEYS`
     ///   "warnings": the §5 warning-id table
     ///   "reasons":  the §4 `reason` discriminators, grouped by exit code, **generated from
@@ -3717,7 +3862,7 @@ touches something foreign but reversible gets its own class then, with its first
 | `wallet_dir_matches_unit` | units | error | B | the wallet unit's `--wallet-dir` argument equals `settings.wallet.dir` byte for byte — both absolute, which is why the unit renders the path rather than `%h` (§4.2) — the daemon resolves `<wallet-dir>/<filename>` and a name may not contain `/`, so a mismatch is unbridgeable and makes `wallet list` read a directory `open_wallet` never writes | **yes** | rewrite the unit from the setting (backup first) |
 | `wallet_port_consistent` | units | error | B | the wallet unit's `--rpc-bind-port` equals `settings.wallet.port` and the port in `settings.wallet.url`; otherwise `Paths::wallet_login_file(port)` looks for a login file the daemon never wrote (§4.2) | **yes** | **`settings.node.network` is the authority, not either observed value** (§4): the expected port is 18083 \| 38083 \| 28083 for mainnet \| stagenet \| testnet. The fixer rewrites `settings.wallet.port`, the port inside `settings.wallet.url` and the unit's `--rpc-bind-port` to that one value, in that order, each through `mutate` with a backup. Three-way disagreement with no stated authority is a coin flip inside a class-B fixer, and one side of it — rewriting the settings to match the unit — changes `Paths::wallet_login_file(port)` under a *running* daemon and produces exactly the symptom this check exists to prevent. **Refused (`skip:wallet_rpc_active`, no mutation) while the wallet unit is active**: rebinding a live daemon's port from under it is how a running wallet becomes unreachable mid-send. The detail then names the three observed values and `systemctl --user stop fmonero-wallet-rpc.service` as the precondition. |
 | `pending_send` | wallet | error | D | the `pending.json` record has **any** entry with `relayed == false`; a fully-relayed record that the next `send` would resolve is reported `info`, not `fail` (§2a.4) | **no — class D** | `fmonero wallet history --limit 5` then `fmonero wallet clear-pending --yes`. Never automated: only a human can decide whether that transaction landed (§2a.4). |
-| `units_present` | units | warn | B | both unit files exist and match `units::render_*` byte-for-byte | **yes** | rewrite them (backup first) |
+| `units_present` | units | warn | B | both unit files exist and match `units::render_*` byte-for-byte. **This is also the upgrade path for v5.1's two unit changes** — the absolute `--config-file` and the `StartLimit*` pair (§4.2) — so a unit written by an older build reports `warn:unit_drift` and the class-B fixer rewrites it; no migration code exists or is needed | **yes** | rewrite them (backup first) |
 | `unit_loopback` | units | error | B | both units' `--rpc-bind-ip` is `127.0.0.1` and neither carries `--confirm-external-bind` | **yes** | rewrite |
 | `unit_no_password_in_argv` | units | error | D | neither unit's `ExecStart` contains `--password`, `--rpc-login`, `--daemon-login` or a `--password-file` (§2b.1, §4.2), **and both units' `--log-level` is `0`** — above 0 the daemon logs HTTP headers and wallet internals into a file §2b.7 exempts from the 0600 rule, in a directory that holds the daemon's credential (§4.2) | no | detail names the offending flag |
 | `unit_no_node_wants` | units | error | B | neither unit's `Wants=` or `Requires=` names a `monerod` unit — `Wants=` would start a node around the §2i single-writer check (§4.2) | **yes** | rewrite (backup first) |
@@ -3774,11 +3919,19 @@ one-line predicates covered by a single table-driven unit test in `checks.rs`.
 
 ---
 
-## 7a. TUI (`fmonero tui`) — one agent, one pass, ≤ 1 800 lines across `src/tui/{mod,theme,screens,send,subs}.rs`
+## 7a. TUI (`fmonero tui`) — one agent, one pass, ≤ 4 600 lines across `src/tui/{mod,theme,screens,send,subs}.rs` (`tests.rs` excluded)
 
-The budget is 1 800 rather than fproton's 1 200 because there are four screens instead of three,
-plus a send state machine, two modals and a QR canvas. `theme.rs` (≈180 lines) is copied verbatim
-from fproton and does not count against the design effort, only the budget.
+**The budget is the measured figure, and it is a ceiling against growth rather than a target**
+(v5.1). v5 asked for 1 800 — fproton's 1 200 plus a fourth screen, a send state machine, two modals
+and a QR canvas — and the implementation came in at 4 557 lines, which the Phase 2 TUI gate, the
+Phase 3 ledger and the Phase 4 fixer each reported (`ux-19`) and none closed. fproton's own TUI
+missed its 1 200-line budget by the same 2.2× ratio, and **every screen, key and modal §7a specifies
+is implemented** — so the honest lever was the number, not the feature set: closing `ux-19` by
+deleting a specified screen would have traded a missed budget for a missing feature. 4 600 is
+4 557 rounded up, `scripts/check.sh` fails above it, and the next agent to add 2 000 lines the way
+these five files got their first 2 600 has to say so in this document first. `theme.rs` (≈200 lines)
+is copied verbatim from fproton and does not count against the design effort, only the budget;
+`tests.rs` is test code and is excluded by name, as the gate is.
 
 **Runtime.** The ftui 0.7 Elm loop: one `struct Tui` implementing `ftui::Model`;
 `App::fullscreen(tui).run()`; no mouse in v0.1. It owns a `Context` clone and calls `fmonero-core`
@@ -4277,7 +4430,7 @@ outside its list.
 
 | Agent | Owns | Gate |
 |---|---|---|
-| **tui** (~4 h) | `crates/fmonero/src/tui/**`, `tests/tui_tmux.sh` | clippy clean; ≤ 1 800 lines; `fmonero tui` opens and quits cleanly on a real pty (`script -qc` or a tmux pane); every screen renders with the mock up and with both daemons absent; the four resize tiers have render tests; the `ProgramSimulator` send test asserts one `transfer` + one `relay_tx` with identical metadata, driven against `fmonero-mock --auth` **with the matching login file written first** (§2c); the `Action` redaction test (§7a); no `println!`; no literal colour outside `theme.rs`; a text capture of each screen in **`decisions/phase2-tui.md`** (§8 preamble), taken **against `fmonero-mock` serving `tests/fixtures/` only, never against a real wallet** — §2b.2's rule covers DECISIONS.md, and the Wallet screen renders a balance, a primary address and counterparty addresses; the capture's header states which mock scenario produced it |
+| **tui** (~4 h) | `crates/fmonero/src/tui/**`, `tests/tui_tmux.sh` | clippy clean; ≤ 4 600 lines across `{mod,theme,screens,send,subs}.rs`, `tests.rs` excluded (v5.1, §7a), enforced by `scripts/check.sh`; `fmonero tui` opens and quits cleanly on a real pty (`script -qc` or a tmux pane); every screen renders with the mock up and with both daemons absent; the four resize tiers have render tests; the `ProgramSimulator` send test asserts one `transfer` + one `relay_tx` with identical metadata, driven against `fmonero-mock --auth` **with the matching login file written first** (§2c); the `Action` redaction test (§7a); no `println!`; no literal colour outside `theme.rs`; a text capture of each screen in **`decisions/phase2-tui.md`** (§8 preamble), taken **against `fmonero-mock` serving `tests/fixtures/` only, never against a real wallet** — §2b.2's rule covers DECISIONS.md, and the Wallet screen renders a balance, a primary address and counterparty addresses; the capture's header states which mock scenario produced it |
 | **plugin** (~3 h) | `plugin/oliver.monero/**` except README, `tests/plugin-smoke.sh`. **Works in the main checkout on branch `phase2/plugin`**, not a worktree — see the §8 preamble | `omarchy-plugin-validate plugin/oliver.monero` clean; `tests/plugin-smoke.sh` green with the plugin symlinked and enabled on this machine; the §6.7 money-grep and the `parseFloat`/`Number(`/`/ 1e` grep pass **and each fires on its own positive fixture**; real line counts recorded against the §6.1 budgets (sum ≤ 1 310) in **`decisions/phase2-plugin.md`** (§8 preamble) |
 | **doctor** (~4 h) | `crates/fmonero/src/doctor/**`, `tests/fixtures/doctor/**` (handed over by Phase 0, and this agent may edit them) | `fmonero doctor --json \| jq` lists every §7.1 check with a real verdict on this machine and **exits 11** (binaries `fail:not_installed`, node/wallet/storage `skip:*`, install and security real); `doctor --fix --dry-run` changes nothing (`git status` + a state-dir checksum); class-A round trips (`corrupt → --fix → assert → undo latest → compare`) under `FMONERO_STATE_DIR`; `doctor capabilities --json` valid; `doctor --only security` works; **the `Verdict` status round trip (`pass`/`warn`/`fail`/`skip`) asserted against the literal strings of §7** (§5b rule 3 — moved here from the Phase 1a gate, which does not own `checks.rs`); evidence goes to **`decisions/phase2-doctor.md`** (§8 preamble) |
 | **docs** (~2 h; starts after 1a) | `README.md`, `plugin/oliver.monero/README.md`, `scripts/{install,uninstall}.sh` | `bash -n` and `shellcheck` clean on both scripts; `scripts/install.sh --dry-run` prints every step it would take and touches nothing (verified by `git status` plus a `$HOME` checksum); the script follows `installer-workmanship` (set -euo pipefail, umask 077, a lock, `cargo build --release -p fmonero` only, atomic rename into `~/.local/bin`, never sudo, never outside `$HOME`, exit codes mirroring §4a) and its `--yes` path is **read for** idempotence, not executed — at `gate-1a` `setup::run` is still a stub returning `Error::unimplemented`, so `install.sh --yes` would exit 1 on its first real step and this agent could not close its own gate, and §4b already reserves the one real `setup` run for the Phase 4 verifier; README follows `readme-writing` + `de-slopify`, has a "Status" section mirroring §4b, and claims nothing RED; a reviewer can find every README claim in code or in the matrix; evidence goes to **`decisions/phase2-docs.md`** (§8 preamble) |
