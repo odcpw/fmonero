@@ -6791,3 +6791,165 @@ unchanged; `scripts/uninstall.sh` is still RED (`bash -n` only); `setup`'s refus
 `system_unit` layout is still the one scenario that keeps `setup` a RED command; the 120 GB floor
 is still an estimate; and README's Install section still describes `uninstall.sh`'s behaviour from
 its source rather than from a run — the honesty edge the verifier recorded and did not fix.
+
+- 2026-09-17 · design · DESIGN.md v5.2: remote node mode. The orchestrator fixed the mode model
+  (`node.mode`/`node.remote`/`node.remote_trusted`), the two convenience commands, the unit and
+  `set_daemon` shapes, the refresh-based send gate, the doctor and TUI/widget treatments, the
+  README brief and "no §2c change, no `Cargo.toml` change". Everything below is a decision this
+  pass made on top of that list, each recorded because a later agent would otherwise have to
+  re-derive it. **Source findings that changed the design** (new §1b.9, all read in the v0.18.5.1
+  tree): (a) **`set_daemon` never opens a socket** — it is `m_http_client->set_server(...)`
+  (`wallet2.cpp:1409`), a URL parse (`abstract_http_client.cpp:134-148`) — so a successful
+  `set_daemon` proves nothing about reachability, and its `-38 "Unable to set daemon"`
+  (`wallet_rpc_server.cpp:4758-4763`) means the address did not *parse*. §4.2's v5 parenthetical
+  ("raised when wallet2 cannot reach the address") was **wrong** and is corrected in place; the
+  local-mode swallow survives with the right justification, and in remote mode `-38` is **not**
+  swallowed (exit 4, new `reason: remote_address_rejected`). (b) `set_server` **discards the scheme
+  and everything after the port**, and fills a missing port with 80/443, never 18081
+  (`:139-146`) — so `node.remote` **requires an explicit `:port`** and refuses a path, rather than
+  guessing. (c) `--daemon-ssl autodetect` is **opportunistic and unauthenticated**: verification is
+  `system_ca` but the handshake does not fail on a bad certificate (`net_ssl.h:121-124`) and a
+  failed handshake permanently downgrades the connection to plaintext (`net_helper.h:225-233`);
+  `enabled` throws at startup without a CA/fingerprint/allow-any-cert (`wallet2.cpp:416-432`), so
+  autodetect is **forced**, not preferred, and README must say "unauthenticated" in those words.
+  (d) giving **neither** trust flag is not "untrusted": `make_basic` falls back to
+  `is_local_address(daemon_address)` (`:451-462`), so exactly one of the two flags is now rendered
+  **in both modes**. (e) `trusted` leaks the wallet's own unspent amounts *into a request*
+  (`select_available_outputs_from_histogram`, `:12281-12282`) — the concrete reason a public node
+  is never trusted. (f) **no wallet-RPC method reports the daemon's height or sync state**
+  (`on_getheight` is the wallet's own, `wallet_rpc_server.cpp:943`), which is why `node.reachable`
+  is `null` in remote mode rather than `false`. **Decisions beyond the orchestrator's list:**
+  §1b.9 added as the source section every other change cites, so nothing is re-read. The address
+  grammar made explicit with seven refusal rows, each with its `file:line` reason; port mandatory;
+  path and userinfo refused; a loopback `node.remote` allowed. A settings **invariant** —
+  `mode == remote` ⇒ `node.remote` valid — enforced in `Settings::set` in both directions (new
+  exit-2 `reason: remote_unset`), so no consumer needs an "empty address" branch. `node local`
+  **keeps** `node.remote`/`node.remote_trusted` rather than clearing them. `settings set` stays
+  inert (no systemd, no re-render); the drift it can produce is exactly what the new
+  `wallet_daemon_matches_unit` check reports. `--dry-run` placed **before** the `--yes` gate on
+  both commands (as `setup --dry-run` already is), which raises the documented `--dry-run` command
+  count from four to six. `send::build`'s node argument became `NodeGate{Local,Unreachable,Remote}`
+  rather than a re-documented `Option`, because `None` already means the opposite of what remote
+  mode needs. The remote gate's deadline miss is **exit 10 `node_syncing`** with the new
+  `reason: wallet_catching_up` — not exit 5 — because the caller's action is identical to local
+  mode's ("wait, then retry"); exit 10 gained a `reason` in both modes as a result
+  (`node_not_synchronized`). §2d amended: **in remote mode no wallet deadline kill arms the
+  breaker**, because `blocks_behind` — its only discriminator — is unobservable there.
+  `ssl_support` derived from the **address** (loopback ⇒ `disabled`, else `autodetect`) rather than
+  from the mode, so local mode, a loopback `node.remote` and `wallet set-daemon` all follow one
+  rule; this also fixes a pre-existing waste — our own local unit and `set_daemon` were inheriting
+  `autodetect` and attempting TLS against `127.0.0.1` on every reconnect, so **both units now
+  render `--daemon-ssl` explicitly** (a `units_present` `unit_drift` rewrite, the documented
+  upgrade path). New §5b members beyond the two commands: `units::daemon_target` +
+  `ssl_for_address` (six callers of one derivation), `wallet_session::refresh` (three callers of
+  "refresh then record"), `state::note_refresh`, `Settings::parse_remote_address`, and the enums
+  `NodeMode`/`SslSupport`. §5 gained `node.trusted` (a privacy fact about the running system, not a
+  preference), `wallet.last_refresh_at` (the only freshness signal left when `blocks_behind` is
+  null — and named "fmonero issued" because the daemon's own 20 s auto-refresh is invisible to us),
+  and `node.reachable: Option<bool>`; `node.url` now means "the address in force" in both modes.
+  Two new warnings, `remote_node` (info) and `remote_node_trusted` (warn); nine existing node
+  warnings documented as never firing in remote mode because `null` is not `false`.
+  `monerod_installed` **warns** rather than fails in remote mode, and `wallet_daemon_link`,
+  `disk_space` and `prune_configured` were added to the skip set the orchestrator started;
+  `unit_loopback` explicitly does **not** change. `remote_node_untrusted`'s private-address list
+  includes CGNAT 100.64/10 (Tailscale) and states that a **DNS name is never treated as private**,
+  because resolving one inside a §7 pure detector is a network call whose answer can change between
+  runs. `node info` is the one node command that still exits 0 and takes a settings-only path
+  (never `NodeClient::from_ctx`), with the **same §5c key set** as local mode and four `null`
+  sub-objects, so one parser serves both. `wallet set-daemon` gained `ssl_support` and
+  `persistent: false` in its payload and now validates its ADDRESS against the same grammar.
+  §6 budgets raised deliberately and in this document first (`MoneroIcon.qml` 80→95,
+  `Model.js` 150→165, total 1 310→1 340) with the two new icon rows placed **above** the node rows,
+  because `!nodeUp`/`!synced` read fields that are null in remote mode and would draw a crossed
+  glyph and a 0 % ring for a wallet that is working. The TUI deliberately does **not** offer the
+  mode switch — it toasts `fmonero node local --yes` — because the switch restarts a daemon and
+  closes the wallet the session is holding. §4b gained a fourth class, **LIVE**: six read-only
+  wallet rows (`create`/`open`/`refresh`/`balance`/`address`/`history`, empty wallet) that remote
+  mode moves out of RED against a real public node, with a rehearsal that ends in
+  `fmonero node local --yes` so the suite leaves the machine as it found it. Nothing in §2c, §2k or
+  any `Cargo.toml` changed; §5b.1 lists all nine signature changes in one table, and §8 records
+  that v5.2 is a post-Phase-4 amendment run by one agent against the Phase 3 gate list.
+
+- 2026-09-17 · implementer · **the v5.2 review, integrated into DESIGN.md before a line of code was
+  written.** Nine revisions came back against the v5.2 amendment — one blocker, four major, four
+  minor. **All nine are applied**; none is rejected, and the two whose own `file:line` citations
+  were off were applied with corrected numbers rather than argued with, because the substance held
+  in both. Every citation below was re-read in the v0.18.5.1 tree of §1.6 before the edit was made.
+  - **Blocker — §5b's `wallet_session::open` still carried the v5 contract.** Its doc comment said
+    the `set_daemon` arguments come from `Login::from_monerod_conf` and that "a `-38` from
+    `set_daemon` is a warning, not a failure", full stop — the **opposite** of what §2m.3 and §4.2
+    require in remote mode, in the one module Phase 1b implements from, with §5b.1 closing "nothing
+    else in §5b moves". Rewritten: the four arguments come from `units::daemon_target(ctx)`, `login`
+    is `None` **always** in remote mode, `ssl` is address-derived, and the `-38` rule is split by
+    mode (swallowed locally; exit 4 `backend`, `reason: remote_address_rejected` remotely).
+    §5b.1 is now **ten** amendments, not nine: #10 is this behaviour change, listed for the reason
+    #9 already gives — a signature that does not move is not a contract that did not move, and a
+    Phase 2 agent compiling against §5b gets no warning that `open` can now fail for a new reason.
+  - **Major — decoy-set manipulation was missing from §2m.6's privacy list.** The node supplies the
+    material every ring is built from: `get_rct_distribution` fills `rct_offsets`
+    (`wallet2.cpp:9258-9261`) with only a monotonicity check (`:9269`) and a suspicious-count bound
+    (`:9271`), `gamma_picker` is seeded from exactly those offsets (`:9402`), and the ring members
+    come from `/get_outs.bin` (`:9736`) — all verified. A fourth bullet says so, and says the thing
+    that makes it worth its own line: **`trusted: false` does not reduce it**, so a list that ends
+    at IP, timing and (when trusted) amounts understates the risk on the axis people choose a node
+    for. The same sentence is in §2m.7 point 3, in the same words, so the two texts cannot drift.
+  - **Major — the fee lie was pooled with the two lies that cost nothing.** §2m.6 named three lies
+    and gave all three one consequence ("exit 16, funds unaffected"). An inflated fee estimate is
+    the one that costs real money and the only one with no automatic detection:
+    `get_base_fee(priority)` returns the daemon's `get_dynamic_base_fee_estimate_2021_scaling`
+    answer verbatim (`wallet2.cpp:8584-8608`, the call at `:8597`) and **every** build path uses it
+    — `:11160`, `:11807`, `:11924`, each confirmed to read `get_base_fee(priority)` — while
+    `adjust_priority` (`:8688`) also reads the daemon's pool backlog. The transaction relays
+    successfully and the excess goes to a miner. The paragraph is now three bullets with three
+    consequences, and both §2m.6 and §2m.7 point 3 name **`--max-fee`** (§2a.2), which this tool
+    already ships and which §2m had never mentioned.
+  - **Major — nothing said that the remote node picks the new wallet's restore height.**
+    `on_create_wallet` builds the wallet2 from the *process's* `--daemon-address`
+    (`wallet_rpc_server.cpp:3596`), then `invoke_http_json("/getheight", …)` and
+    `set_refresh_from_block_height(hres.height)` with `hres.height` initialised to 0 and left there
+    when the call fails (`:3606-3609`) — **before** fmonero's `set_daemon` runs. (The reviewer cited
+    `:3602-3607`; the lines are `:3606-3609` and `make_new` is `:3596`. Corrected, not disputed.)
+    New paragraph in §2m.3, a clause on §4.1's `wallet create` row, a sentence in §2m.7 point 1 and
+    an assertion in §4b's LIVE rehearsal: a `wallet refresh` whose `blocks_fetched` is a genesis
+    scan is `wallet create` having silently taken restore height 0 from a node that did not answer,
+    and §0 cuts both `rescan_blockchain` and `scan_tx`, so v0.1 ships no recovery —
+    `monero-wallet-cli`'s `rescan_bc` is the way out and README says so.
+  - **Major — `node remote` / `node local` restarted `monero-wallet-rpc` with neither money guard.**
+    They now take the §2a.11 `send.lock` and run the §2a.4 `pending_send` entry check, as steps 3
+    and 4 of what is now **nine** steps. The reason is sharper than symmetry: this is the one
+    command whose purpose is to change the node a send is resolved against, so §2a.4's resolve step
+    would run `get_transfer_by_txid` against a **different** node, get "not found" for a transaction
+    that really was broadcast, and block every later send until the user typed `clear-pending` — the
+    habit §2a.4 exists to prevent. **`--dry-run` is exempt, explicitly**, taking the second of the
+    two options the review offered: it exits at step 2, writes nothing, restarts nothing and can
+    abort no relay, so blocking a preview would refuse the safe half of the command for a risk it
+    does not carry — the same argument step 2 already makes for putting `--dry-run` ahead of
+    `--yes`. §4.1's `--yes` justification names both guards; §4b gains three GREEN rows for them
+    (both commands refusing on an unrelayed record, the `--dry-run` exemption still exiting 0, and
+    a held `send.lock` giving `send_in_progress`), none of which needs a daemon.
+  - **Minor — §2m.3 and §7.1 disagreed about which `node` checks skip in remote mode.** §2m.3 named
+    one exception (`node_layout`); §7.1 named two. The second is `remote_node_untrusted`, the only
+    check in the document that is meaningful *only* in remote mode, so the §2m wording would have
+    disabled the trusted-public-node warning in the one mode it can fire. §2m.3 now names both.
+  - **Minor — the `ftp://` refusal's stated reason was false.** "Anything else parses to port 0 and
+    connects to port 0" is not what the source does: `parse_url`'s regex captures an explicit port
+    in group 6 whatever the scheme (`net_parse_helpers.cpp:181`, `:199-203`) and the 80/443 table
+    runs only `if (parsed.port == 0)` (`abstract_http_client.cpp:139-144`), after which only host
+    and port are forwarded (`:146`) — which is §1b.9 item 1's own "the scheme is discarded", in the
+    same document. The row and its exit code are unchanged; the rationale is now the true one (with
+    the port mandatory the scheme has **no** effect, so accepting `ftp://` would silently discard
+    it — the §2j failure the path row already refuses).
+  - **Minor — §1b.9 item 4's "five things" stopped at one translation unit.**
+    `monero-wallet-rpc` gates five more handlers on `is_trusted_daemon()`, all confirmed:
+    `import_key_images` (`wallet_rpc_server.cpp:3151`), `rescan_spent` (`:3456`) and `start_mining`
+    (`:3484`) refuse with "This command requires a trusted daemon."; `import_multisig`'s post-import
+    `rescan_spent` is skipped (`:4432`) and the background-mining check returns early (`:438`). All
+    five are cut by §0, so nothing breaks today — and all five are where a v0.2 restoring one of
+    them will meet the flag. The count now reads "five in `wallet2` and five more in wallet-RPC".
+  - **Minor — an off-by-two.** `wallet2.cpp:447-448` is the conditional **assignment**; the
+    `THROW_WALLET_EXCEPTION_IF` that makes two trust flags fatal is `:449-450`. Both citations
+    (§1b.9 item 3 and §4.2) corrected.
+
+  Nothing was rejected, so there is no evidence to record against one. Two things the review did
+  **not** move and this pass did not move either: §2c is untouched (no TLS crate, no remote call
+  from fmonero, `require_loopback` unchanged), and no `Cargo.toml` changes (§2k).
