@@ -80,6 +80,16 @@ impl SetupArgs {
         s.push_str(" --yes");
         s
     }
+
+    /// The same invocation with `--dry-run` instead of `--yes` — the safe half of what the
+    /// user asked for, and the hint the sandbox refusal carries (v5.3, §4.2).
+    pub(crate) fn own_dry_run(&self) -> String {
+        let mut s = self.own_command();
+        debug_assert!(s.ends_with(" --yes"));
+        s.truncate(s.len() - " --yes".len());
+        s.push_str(" --dry-run");
+        s
+    }
 }
 
 /// Run setup. `--dry-run` prints a unified diff and changes nothing (§4.2).
@@ -232,11 +242,14 @@ fn units_step(ctx: &mut Context, args: &SetupArgs) -> Result<Vec<FileAction>, Er
     // `actions` list that would have said so discarded along with the error. §4.2 says "running
     // it twice leaves the same machine"; a run that reports failure and changes five keys is
     // neither idempotent nor honest, and the next `status` then talks to the wrong port.
+    // v5.3: a `sandboxed_units` refusal's hint becomes the user's **own** command with
+    // `--dry-run`, which is the safe half of what they asked for (§4.2, §4).
     let written = if args.rotate_rpc_login {
-        units::install_rotating(ctx, args.dry_run)?
+        units::install_rotating(ctx, args.dry_run)
     } else {
-        units::install(ctx, args.dry_run)?
-    };
+        units::install(ctx, args.dry_run)
+    }
+    .map_err(|e| e.retarget_sandbox_hint(args.own_dry_run()))?;
     if !args.dry_run && !changed.is_empty() {
         ctx.settings.save(ctx)?;
     }

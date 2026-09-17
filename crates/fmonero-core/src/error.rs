@@ -343,6 +343,24 @@ impl Error {
         self
     }
 
+    /// Re-point a `sandboxed_units` refusal's hint at the command the **user** typed (v5.3,
+    /// §4.2).
+    ///
+    /// `units::install`'s sandbox refusal is raised in core, which cannot know whether the
+    /// caller was `setup --units`, `node remote <addr> --yes` or `node local --yes`, so it
+    /// ships a hint naming `fmonero setup --units --dry-run`. That is runnable and safe and is
+    /// still somebody else's command; §4's rule is that a hint is the user's own. Every CLI
+    /// entry point that can reach `install` calls this with its own invocation plus
+    /// `--dry-run`, and every other error passes through untouched — the reason is the guard,
+    /// so this can never rewrite a hint it was not meant for.
+    #[must_use]
+    pub fn retarget_sandbox_hint(self, own_dry_run: impl Into<String>) -> Error {
+        if self.reason() == Some("sandboxed_units") {
+            return self.with_hint(own_dry_run);
+        }
+        self
+    }
+
     /// The process exit code for this error (§4a).
     pub fn exit_code(&self) -> i32 {
         match self {

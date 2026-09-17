@@ -717,9 +717,18 @@ fn install_with(ctx: &Context, dry_run: bool, rotate: bool) -> Result<Vec<FileAc
     let sandboxed_units = crate::paths::systemd_user_dir_is_sandboxed()
         && matches!(ctx.systemctl, Systemctl::Fixture(_));
     if !dry_run && crate::paths::under_test_state_dir() && !sandboxed_units {
+        // **A `reason`, because §4's whole argument for the field is that an agent acts on the
+        // difference** — this exit 3 is not a money refusal and not `needs_yes`; it is "you are
+        // in a sandbox and this write would leave it", and it carried `reason: null` until
+        // v5.3, which reads as an unclassified safety refusal. The hint is completed by the
+        // caller, which is the only layer that knows what the user typed: every CLI entry point
+        // that reaches `install` re-points it at **that** command with `--dry-run`
+        // ([`Error::retarget_sandbox_hint`]), so the refusal prescribes the safe half of the
+        // command the user ran rather than a different command that happens to be safe.
         return Err(Error::safety(
             "units::install refuses to write a real systemd unit while FMONERO_STATE_DIR is set",
         )
+        .with_reason("sandboxed_units")
         .with_hint("fmonero setup --units --dry-run"));
     }
     let mut actions = Vec::new();
