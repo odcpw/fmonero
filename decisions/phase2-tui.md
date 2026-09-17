@@ -41,7 +41,7 @@ step exist in exactly one place (§5b).
 | Gate line (§8, Phase 2 "tui") | Result |
 |---|---|
 | clippy clean | **pass** — `cargo clippy --all-targets -- -D warnings`, exit 0 |
-| ≤ 1 800 lines | **FAIL — 4330 lines** in the five named files (see "The line budget" below) |
+| ≤ 1 800 lines | **FAIL — 4339 lines** in the five named files (see "The line budget" below) |
 | `fmonero tui` opens and quits on a real pty | **pass** — `tests/tui_tmux.sh`, 10 checks |
 | every screen renders with the mock up | **pass** — `tests/tui_tmux.sh --capture`, 13 checks; captures below |
 | every screen renders with both daemons absent | **pass** — `tests/tui_tmux.sh` and the tier test |
@@ -51,49 +51,52 @@ step exist in exactly one place (§5b).
 | no `println!` | **pass** — grep below, and `tests/tui_tmux.sh` asserts it |
 | no literal colour outside `theme.rs` | **pass** — grep below |
 | a capture of each screen, scenario named | **pass** — below |
+| *(beyond the gate)* the restricted node and the `"BUSY"` header | **pass** — `a_restricted_node_names_the_method_each_dark_pane_needs`, `a_syncing_node_shows_the_gauge_and_no_block_age` (§1b.2, §1b.3) |
 
 ### clippy
 
 ```text
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.10s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.12s
 exit 0
 ```
 
 ### `cargo test -p fmonero tui`
 
 ```text
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
      Running unittests src/main.rs (target/debug/deps/fmonero-7deb80b216015a31)
 
-running 34 tests
-test tui::screens::tests::an_address_wraps_rather_than_eliding_when_it_is_being_confirmed ... ok
+running 36 tests
 test tui::screens::tests::the_resize_tiers_are_the_ones_the_design_names ... ok
 test tui::send::tests::the_confirm_modal_needs_the_word_not_just_enter ... ok
-test tui::send::tests::the_picker_yields_a_literal_address_never_a_label ... ok
 test tui::send::tests::the_account_selector_stays_inside_the_accounts_the_wallet_has ... ok
-test tui::subs::tests::an_error_keeps_its_own_exit_code_and_hint ... ok
-test tui::send::tests::a_zero_amount_and_a_bad_address_are_both_refused_before_anything_is_sent ... ok
-test tui::subs::tests::debugging_an_open_never_prints_the_password ... ok
-test tui::send::tests::a_good_form_becomes_a_send_request_without_a_sweep_field ... ok
-test tui::subs::tests::every_action_but_a_relay_is_cancellable ... ok
-test tui::subs::tests::labels_name_what_is_running ... ok
-test tui::tests::mock::tests::auth_params_splits_quoted_and_bare_values ... ok
 test tui::send::tests::all_is_refused_inline_and_names_the_sweep_command ... ok
+test tui::screens::tests::an_address_wraps_rather_than_eliding_when_it_is_being_confirmed ... ok
+test tui::send::tests::a_good_form_becomes_a_send_request_without_a_sweep_field ... ok
+test tui::send::tests::a_zero_amount_and_a_bad_address_are_both_refused_before_anything_is_sent ... ok
+test tui::send::tests::the_picker_yields_a_literal_address_never_a_label ... ok
+test tui::subs::tests::an_error_keeps_its_own_exit_code_and_hint ... ok
+test tui::subs::tests::labels_name_what_is_running ... ok
+test tui::subs::tests::every_action_but_a_relay_is_cancellable ... ok
+test tui::subs::tests::debugging_an_open_never_prints_the_password ... ok
+test tui::tests::mock::tests::auth_params_splits_quoted_and_bare_values ... ok
 test tui::tests::mock::tests::digest_matches_rfc2617_and_differs_from_md5_sess ... ok
 test tui::tests::mock::tests::md5_matches_rfc1321_edges ... ok
 test tui::tests::a_zero_area_frame_renders_nothing_and_does_not_panic ... ok
 test tui::tests::quitting_while_an_action_runs_takes_two_presses ... ok
 test tui::screens::tests::human_numbers_and_short_forms_read_like_the_cli_ones ... ok
-test tui::tests::the_narrow_tier_collapses_the_tab_strip ... ok
 test tui::tests::the_help_overlay_lists_the_bindings_the_model_implements ... ok
+test tui::tests::the_narrow_tier_collapses_the_tab_strip ... ok
 test tui::tests::node_mutations_are_refused_when_fmonero_does_not_own_the_node ... ok
 test tui::tests::the_offline_node_screen_says_what_to_press_and_never_shows_a_zero_height ... ok
 test tui::tests::the_offline_wallet_screen_offers_the_open_key ... ok
-test tui::tests::the_open_wallet_modal_masks_the_password_and_lists_the_wallet_dir ... ok
+test tui::tests::a_syncing_node_shows_the_gauge_and_no_block_age ... ok
+test tui::tests::a_restricted_node_names_the_method_each_dark_pane_needs ... ok
+test tui::tests::the_confirm_modal_owns_the_keys_even_on_another_screen ... ok
 test tui::theme::tests::every_badge_state_has_its_own_colour ... ok
 test tui::theme::tests::hex_parsing_tolerates_the_hash_and_trailing_alpha ... ok
 test tui::theme::tests::the_qr_is_dark_on_light_whatever_the_theme_is ... ok
-test tui::tests::the_confirm_modal_owns_the_keys_even_on_another_screen ... ok
+test tui::tests::the_open_wallet_modal_masks_the_password_and_lists_the_wallet_dir ... ok
 test tui::tests::the_qr_modal_draws_the_address_and_the_code ... ok
 test tui::tests::the_send_screen_refuses_all_inline_and_never_reaches_the_daemon ... ok
 test tui::tests::every_screen_renders_at_every_tier_with_both_daemons_absent ... ok
@@ -101,7 +104,7 @@ test tui::tests::the_send_screen_builds_once_and_relays_that_exact_transaction .
 test tui::tests::every_screen_renders_against_the_mock ... ok
 test tui::tests::an_unresolved_pending_record_banners_every_screen ... ok
 
-test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.26s
+test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.27s
 
 exit 0
 ```
@@ -177,13 +180,13 @@ $ echo $?
 ### Line counts
 
 ```text
-  1597 crates/fmonero/src/tui/mod.rs
-  1456 crates/fmonero/src/tui/screens.rs
+  1603 crates/fmonero/src/tui/mod.rs
+  1459 crates/fmonero/src/tui/screens.rs
    772 crates/fmonero/src/tui/send.rs
    304 crates/fmonero/src/tui/subs.rs
-   585 crates/fmonero/src/tui/tests.rs
+   632 crates/fmonero/src/tui/tests.rs
    201 crates/fmonero/src/tui/theme.rs
-  4915 total
+  4971 total
 ```
 
 ## Screen captures
@@ -193,14 +196,14 @@ Each is `tmux capture-pane -p` on a 120×40 pane, trailing blank rows dropped.
 ### Node
 
 ```text
-[ 1 Node ]  2 Wallet    3 Send    4 Log                                                                 mainnet omarchy
+[ 1 Node ]  2 Wallet    3 Send    4 Log                                                               ⠙ mainnet omarchy
 ╭ Node ──────────────────────────────────────────────────────╮╭ Net ───────────────────────────────────────────────────╮
 │ ● Synchronized                                             ││ ↓ ↑        0 B/s   0 B/s                               │
 │ sync       ████████████ 100.0%  3541122 / 3541122          ││ limits     ↑2048 ↓8192 kB/s                            │
-│ last block 13h 03m ago                                     ││                                                        │
+│ last block 13h 15m ago                                     ││                                                        │
 │ peers      16 out · 3 in                                   │╰────────────────────────────────────────────────────────╯
 │ version    0.18.5.1-release · fork v16 · mainnet           │╭ Mempool · fees ────────────────────────────────────────╮
-│                                                            ││ pool       14 txs · 20.9 kB · oldest 13h 06m ago       │
+│                                                            ││ pool       14 txs · 20.9 kB · oldest 13h 19m ago       │
 │                                                            ││ pool fees  0.000427 XMR · 0 failing · 0 double spends  │
 │                                                            ││ fee/byte   1:0.00000002  2:0.00000008  3:0.00000032    │
 │                                                            ││ 4:0.000004                                             │
@@ -292,7 +295,7 @@ never recomputed in the TUI.
 ### Send
 
 ```text
-  1 Node    2 Wallet  [ 3 Send ]  4 Log                                                               ⠙ mainnet omarchy
+  1 Node    2 Wallet  [ 3 Send ]  4 Log                                                               ⠸ mainnet omarchy
 ╭ Send ──────────────────────────────────────────────────────────────╮╭ Preview ───────────────────────────────────────╮
 │ To      address, or @label from the address book                   ││ To                                             │
 │                                                                    ││                                                │
@@ -388,7 +391,7 @@ transaction's own (§2a.2). `Esc` discarded it; the run asserts the mock recorde
 
 ```text
   1 Node    2 Wallet    3 Send  [ 4 Log ]                                                               mainnet omarchy
-╭ Log  /tmp/tmp.4mw0vXkoAE/bitmonero.log  follow on ───────────────────────────────────────────────────────────────────╮
+╭ Log  /tmp/tmp.2vybVzOVnx/bitmonero.log  follow on ───────────────────────────────────────────────────────────────────╮
 │ / search the log                                                                                                     │
 │ 2026-09-16 14:02:09.114 I Monero 'Fluorine Fermi' (v0.18.5.1-release) started                                        │
 │ 2026-09-16 14:02:10.002 I Synced 3541122/3541122                                                                     │
@@ -433,7 +436,7 @@ transaction's own (§2a.2). `Esc` discarded it; the run asserts the mock recorde
 
 ```text
   1 Node    2 Wallet    3 Send  [ 4 Log ]                                                               mainnet omarchy
-╭ Log  /tmp/tmp.4mw0vXkoAE/bitmonero.log  follow on ───────────────────────────────────────────────────────────────────╮
+╭ Log  /tmp/tmp.2vybVzOVnx/bitmonero.log  follow on ───────────────────────────────────────────────────────────────────╮
 │ / search the log                                                                                                     │
 │ 2026-09-16 14:02:09.114 I Monero 'Fluorine Fermi' (v0.18.5.1-release) started                                        │
 │ 2026-09-16 14:02:10.002 I Synced 3541122/3541122                                                                     │
@@ -522,8 +525,8 @@ transaction's own (§2a.2). `Esc` discarded it; the run asserts the mock recorde
 ## The line budget — the one gate line that fails
 
 §7a budgets **1 800 lines** across `src/tui/{mod,theme,screens,send,subs}.rs`. The real
-counts are 1597 + 201 + 1456 + 772 + 304 = **4330** (`tests.rs`, which §7a does not name, is a
-further 585). The overrun is reported rather than closed, and it is not closed
+counts are 1603 + 201 + 1459 + 772 + 304 = **4339** (`tests.rs`, which §7a does not name, is a
+further 632). The overrun is reported rather than closed, and it is not closed
 by deleting tests or features:
 
 - Every screen, key, modal and state §7a specifies is implemented. Cutting to 1 800 means
@@ -534,7 +537,7 @@ by deleting tests or features:
   fproton's TUI, the one §7a scales from ("1 800 rather than fproton's 1 200 because there are
   four screens instead of three"), is itself **2 634** lines against that 1 200 — a 2.2×
   overrun, the same ratio as this one. Four screens, a five-state send machine, four modals, a
-  QR canvas and 34 tests at fproton's own density land where this landed.
+  QR canvas and 36 tests at fproton's own density land where this landed.
 - Two compaction passes were made before reporting: the model's state is grouped into
   `NodeUi`/`WalletUi`/`LogUi` so the constructor is a handful of `Default`s, and every panel
   renders through five shared helpers (`framed`, `overlay`, `kv`, `para`, `table`) instead of
