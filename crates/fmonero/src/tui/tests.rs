@@ -835,3 +835,51 @@ fn the_qr_modal_draws_the_address_and_the_code() {
     // The address is wrapped, never elided (§7a).
     assert!(text.contains(&DEST[..20]), "{text}");
 }
+
+/// **§7a and §2m.3: the Node screen in remote mode is a different, much smaller hero.**
+///
+/// It renders the address, the trust flag and the ssl mode, one dim line of explanation, and —
+/// this is the assertion that matters — **no sync gauge, no percent and no ETA**, because all
+/// three read fields that are `null` there and a gauge at 0 % is the rendered untruth §2j
+/// forbids. On the pre-v5.2 code this screen showed "Node is not running" and a 0 % bar for a
+/// wallet that is working perfectly.
+#[test]
+fn the_node_screen_in_remote_mode_shows_the_address_and_no_gauge() {
+    let dir = std::env::temp_dir().join(format!(
+        "fmonero-tui-remote-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let mut ctx = Context::for_test(&dir).expect("test context");
+    ctx.settings.node.remote = "node.example.com:18089".into();
+    ctx.settings.node.mode = fmonero_core::NodeMode::Remote;
+    ctx.settings.wallet.url = "http://127.0.0.1:2".into();
+    let s = sim(model(&ctx, Screen::Node));
+    let text = sim_text(&s, 100, 30);
+    assert!(text.contains("Remote node"), "{text}");
+    assert!(text.contains("node.example.com:18089"), "{text}");
+    assert!(text.contains("untrusted"), "{text}");
+    assert!(
+        text.contains("monero-wallet-rpc does"),
+        "the one dim line §7a asks for, verbatim:\n{text}"
+    );
+    // Every pane that needs a gated method says so, with `remote node` as the reason (§7a).
+    assert_eq!(
+        text.matches("not available with a remote node").count(),
+        3,
+        "Peers, Net and Mempool·fees each say it:\n{text}"
+    );
+    // No gauge, and none of the phrases that would need a number remote mode has not got.
+    for absent in [
+        "eta ",
+        "Node is not running",
+        "reading the transaction pool",
+        "sparkline fills",
+    ] {
+        assert!(
+            !text.contains(absent),
+            "the remote hero rendered `{absent}`:\n{text}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -509,6 +509,10 @@ fn list_pane(m: &Tui, area: Rect, frame: &mut Frame, wide: bool) {
             para(text.to_string(), th.dimmed(), true).render(inner, frame);
         }
     };
+    if m.remote_mode() {
+        empty("not available with a remote node", frame);
+        return;
+    }
     if m.node_restricted() {
         let method = if bans { "get_bans" } else { "get_connections" };
         empty(
@@ -574,7 +578,28 @@ fn list_pane(m: &Tui, area: Rect, frame: &mut Frame, wide: bool) {
     table(m, area, &title, rows, header, widths, frame);
 }
 
+/// §7a: in remote mode every pane that needs a gated method renders the same "not available"
+/// treatment a restricted node gets, with the reason `remote node` instead of a method name.
+/// Returns true when it drew it, so the caller returns.
+fn remote_pane(m: &Tui, area: Rect, title: &str, frame: &mut Frame) -> bool {
+    if !m.remote_mode() {
+        return false;
+    }
+    if let Some(inner) = framed(area, &m.theme, title, false, frame) {
+        para(
+            "not available with a remote node".to_string(),
+            m.theme.dimmed(),
+            true,
+        )
+        .render(inner, frame);
+    }
+    true
+}
+
 fn net_pane(m: &Tui, area: Rect, frame: &mut Frame, sparkline: bool) {
+    if remote_pane(m, area, " Net ", frame) {
+        return;
+    }
     let th = &m.theme;
     let Some(inner) = framed(area, th, " Net ", false, frame) else {
         return;
@@ -616,6 +641,9 @@ fn net_pane(m: &Tui, area: Rect, frame: &mut Frame, sparkline: bool) {
 }
 
 fn pool_pane(m: &Tui, area: Rect, frame: &mut Frame) {
+    if remote_pane(m, area, " Mempool · fees ", frame) {
+        return;
+    }
     let th = &m.theme;
     let Some(inner) = framed(area, th, " Mempool · fees ", false, frame) else {
         return;
