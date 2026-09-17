@@ -105,10 +105,15 @@ pub mod wallet_session {
         let login = crate::rpc::Login::from_monerod_conf(&ctx.paths.monerod_conf())?;
         let address = crate::units::host_port(&ctx.settings.node.url);
         if let Err(e) = w.set_daemon(&address, true, login.as_ref()) {
-            // A `-38 NO_DAEMON_CONNECTION` does NOT fail the open: the wallet is open, it
-            // simply has no daemon yet (§4.2). Anything else is a real failure of the step
-            // whose omission means the wallet can never sync.
-            if e.exit_code() != 4 {
+            // §4.2 exempts exactly ONE failure: `-38 NO_DAEMON_CONNECTION`, raised when
+            // wallet2 cannot reach the address (`wallet_rpc_server.cpp:4757-4761`) — the
+            // wallet is open, it simply has no daemon yet. Exit 4 is a whole class, not that
+            // one code: a 401 (`auth_refused`), `-7 DENIED`, `-48 DISABLED` and `-23
+            // NO_WALLET_DIR` all land there, and swallowing them reports a successful
+            // `wallet open` for a wallet left with NO daemon credential — the step §4.2 calls
+            // the one "whose omission means the wallet can never sync". `-38` and a transport
+            // failure are the two that carry `reason: unreachable` (§1b.4, jsonrpc.rs).
+            if e.reason() != Some("unreachable") {
                 return Err(e);
             }
             let _ = crate::state::set_last_error(ctx, &e, None);
