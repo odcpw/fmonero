@@ -6987,22 +6987,22 @@ before everything   ActiveState=inactive  UnitFileState=disabled  NRestarts=0   
 $ cargo fmt --check                                   exit 0
 $ cargo clippy --all-targets -- -D warnings           Finished `dev` profile — no warnings
 $ cargo test
-running 79 tests   test result: ok. 79 passed; 0 failed      # crates/fmonero       (76 before)
+running 80 tests   test result: ok. 80 passed; 0 failed      # crates/fmonero       (76 before)
 running 158 tests  test result: ok. 158 passed; 0 failed     # crates/fmonero-core  (144 before)
 running 3 tests    test result: ok. 3 passed; 0 failed       # crates/fmonero-mock
-                                                      240 tests, 0 failed   (226 before)
-$ cargo test -- --test-threads=1                      the same 240, 0 failed
+                                                      241 tests, 0 failed   (226 before)
+$ cargo test -- --test-threads=1                      the same 241, 0 failed
 $ scripts/check.sh --full
-  ok    §7a: 4655 lines across src/tui/{mod,theme,screens,send,subs}.rs (budget 4700)
+  ok    §7a: 4683 lines across src/tui/{mod,theme,screens,send,subs}.rs (budget 4700)
   ok    §6.1: 1305 lines of manifest + QML + Model.js (budget 1340)
   ok    every command capabilities lists exists in the clap tree (40 of them)
   ok    and every subcommand the binary offers is documented
   ok    no RED claim in README, 1651 lines of --help/robot-docs/capabilities
 check.sh: PASS                                        (0 FAIL)
 $ tests/e2e.sh --fast
-e2e.sh (fast): 517 passed, 0 failed, 3 skipped        real 0m17.482s   (389 before: +128)
+e2e.sh (fast): 522 passed, 0 failed, 3 skipped        real 0m17.482s   (389 before: +133)
 $ tests/e2e.sh --full
-e2e.sh (full): 541 passed, 2 failed, 3 skipped        real 2m13.112s   (415 before: +126)
+e2e.sh (full): 546 passed, 2 failed, 3 skipped        real 2m13.112s   (415 before: +131)
 $ tests/plugin-smoke.sh
 plugin-smoke: 37 passed, 0 failed                     (32 before: +5)
 $ tests/tui_tmux.sh
@@ -7020,9 +7020,11 @@ below.
 ### The two failing assertions, and the A/B that says whose they are
 
 ```
-  FAIL  §2l (a) status, both daemons absent: 70ms mean, over the 60 ms budget
-  FAIL  §2l (b) status against the mock: 88ms mean, over the 80 ms budget
+  FAIL  §2l (a) status, both daemons absent: 70-77ms mean, over the 60 ms budget
+  FAIL  §2l (b) status against the mock: 87-88ms mean, over the 80 ms budget
 ```
+
+(Three `--full` runs on the day, spread over two hours: (a) 77, 70, 76 ms; (b) 88, 88, 87 ms.)
 
 They fail on the **pre-v5.2 binary too**, on this machine, today. `e54c8bd` — the commit the
 previous gate was run at — was built in a scratch worktree and measured against this tree's
