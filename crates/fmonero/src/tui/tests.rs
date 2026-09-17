@@ -742,9 +742,27 @@ fn an_unresolved_pending_record_banners_every_screen() {
     for screen in [Screen::Node, Screen::Wallet, Screen::Send, Screen::Log] {
         let s = sim(model(&w.ctx, screen));
         assert_eq!(s.model().node_badge(), "error", "{screen:?}");
-        let text = sim_text(&s, 120, 40);
-        for needle in ["SEND IN FLIGHT", "clear-pending", &BUILT_TXID[..8]] {
-            assert!(text.contains(needle), "{screen:?} lost {needle}:\n{text}");
+        // §7a: "the txid and the two commands", at every width the banner is drawn at. Both
+        // commands in full: `history --limit 5 | clear-pending --yes` is one command piped into
+        // a program that does not exist, and at 45 columns two rows dropped the second half —
+        // the only command that gets the Send screen building again.
+        for (cw, ch) in [(150u16, 40u16), (120, 40), (70, 24), (45, 20)] {
+            let text = sim_text(&s, cw, ch);
+            // The banner wraps at a narrow width, so the commands are checked on the joined
+            // text: what matters is that neither is CUT OFF, which is what a fixed two-row
+            // banner did to `clear-pending` at 45 columns.
+            let flat = text.replace('\n', " ");
+            for needle in [
+                "SEND IN FLIGHT",
+                "wallet history --limit 5",
+                "wallet clear-pending --yes",
+                &BUILT_TXID[..8],
+            ] {
+                assert!(
+                    flat.contains(needle),
+                    "{screen:?} at {cw}x{ch} lost {needle}:\n{text}"
+                );
+            }
         }
     }
 }

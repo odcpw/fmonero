@@ -62,20 +62,17 @@ pub(super) fn view(m: &Tui, frame: &mut Frame) {
             .render(Rect::new(b.x, b.y, b.width, b.height.min(3)), frame);
         return;
     }
-    let pending = m.status.as_ref().is_some_and(|s| s.pending.is_some());
-    // The banner carries the txid AND both commands in full (§7a), which is about 135 columns
-    // of text — so the ladder has to reach three rows: at 45 columns two rows ended at
-    // `fmonero wallet history` and dropped the `clear-pending` half, which is the only command
-    // that gets the Send screen building again.
-    let banner = if !pending {
-        0
-    } else if b.width >= 140 {
-        1
-    } else if b.width >= 70 {
-        2
-    } else {
-        3
-    };
+    // The banner carries the txid AND both commands in full (§7a), which is about 135 columns of
+    // text — so its height is the wrap of its own text at this width, measured with the same
+    // helper that draws it. A hand-written ladder dropped the `clear-pending` half at 45 columns,
+    // and that is the only command that gets the Send screen building again.
+    let banner = m
+        .status
+        .as_ref()
+        .and_then(|s| s.pending.as_ref())
+        .map_or(0, |p| {
+            wrap_words(&pending_banner_text(p), b.width as usize).len() as u16
+        });
     let rows = Flex::vertical()
         .constraints([
             Constraint::Fixed(1),
@@ -190,27 +187,32 @@ fn tab_strip(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
     );
 }
 
+/// The §7a banner's text, in one place so that `view` can measure what `pending_banner` draws.
+///
+/// **Both commands written out in full**: `history --limit 5 | clear-pending --yes` is not two
+/// commands, it is one command piped into a program that does not exist — and this is the one
+/// banner whose whole job is telling the user how to find out whether their money moved.
+fn pending_banner_text(p: &fmonero_core::PendingStatus) -> String {
+    let txid: String = p
+        .txs
+        .first()
+        .map_or("—".into(), |t| t.txid.chars().take(8).collect());
+    format!(
+        "SEND IN FLIGHT {} XMR → {} {}/{} · tx {txid} · fmonero wallet history --limit 5 · fmonero wallet clear-pending --yes",
+        p.total_amount_xmr,
+        short_addr(&p.dest),
+        p.relayed_count,
+        p.total_count
+    )
+}
+
 /// The §7a red banner: on **every** screen while a `pending.json` record is unresolved.
 fn pending_banner(m: &Tui, area: Rect, frame: &mut Frame) {
     let th = &m.theme;
     let Some(p) = m.status.as_ref().and_then(|s| s.pending.as_ref()) else {
         return;
     };
-    let txid: String = p
-        .txs
-        .first()
-        .map_or("—".into(), |t| t.txid.chars().take(8).collect());
-    // Both commands written out in full: `history --limit 5 | clear-pending --yes` is not two
-    // commands, it is one command piped into a program that does not exist, and this is the one
-    // banner whose whole job is telling the user how to find out whether their money moved.
-    let text = format!(
-        "SEND IN FLIGHT {} XMR → {} {}/{} · tx {txid} · fmonero wallet history --limit 5 · fmonero wallet clear-pending --yes",
-        p.total_amount_xmr,
-        short_addr(&p.dest),
-        p.relayed_count,
-        p.total_count
-    );
-    let lines = wrap_words(&text, area.width as usize)
+    let lines = wrap_words(&pending_banner_text(p), area.width as usize)
         .into_iter()
         .map(|l| Line::styled(l, th.err()))
         .collect();
