@@ -115,6 +115,14 @@ sandbox() {
   # reads its mode, so a umask-mode directory would report `fail` for the wrong reason too.
   chmod 700 "$XDG_DATA_HOME/fmonero" "$XDG_DATA_HOME/fmonero/wallets" \
             "$XDG_DATA_HOME/fmonero/wallets/mainnet"
+  # `node.data_dir` is the one remaining path that decides an OUTCOME from the machine: §1.3's
+  # 120 GB floor is measured on the filesystem holding it (`fsinfo::free_bytes`, which walks up to
+  # the nearest existing ancestor), and `setup --units` refuses below it — correctly. Left at
+  # `$HOME/.bitmonero` that makes every `setup` assertion depend on where $HOME happens to live: on
+  # a tmpfs scratch HOME the floor refusal fires and six assertions of the `setup` case fail for a
+  # reason none of them names. It is pinned to a directory on the filesystem this repo is on, and
+  # nothing here creates it; the floor refusal itself gets its own case below, on purpose.
+  "$FM" settings set node.data_dir "$ROOT/target/e2e-data/$CASE/bitmonero" >/dev/null
 }
 
 OUT=""; ERR=""; RC=0
@@ -581,6 +589,38 @@ else
 fi
 fm setup --json
 expect_rc 2 "setup with no target is exit 2"
+
+# §1.3's free-space floor, which §4b listed as RED with "nothing exercises it" — and which is a
+# purely local `statvfs` measurement, so nothing about it needs a daemon. It is measured on the
+# filesystem holding `node.data_dir`, so pointing that at one with less than 120 GB free is the
+# whole test. `$WORK` is `mktemp -d`; when it is roomy this case says so rather than passing.
+step "§1.3: setup --units refuses under the 120 GB floor, and --full-chain --yes overrides it"
+sandbox diskfloor
+FREE_KB="$(df -Pk "$WORK" | awk 'NR==2 {print $4}')"
+FLOOR_KB=$((120 * 1024 * 1024))
+fm settings set node.data_dir "$WORK/$CASE/bitmonero" --json
+if [ "${FREE_KB:-0}" -ge "$FLOOR_KB" ]; then
+  skip "§1.3: $(( FREE_KB / 1048576 )) GB free on $WORK — the floor cannot be crossed here"
+else
+  fm setup --units --dry-run --json
+  expect_rc 3 "setup --units below the floor"
+  expect_reason full_chain_refused "full_chain_refused"
+  expect_contains "ESTIMATE" "and the message says the floor is an estimate, not a measurement (§1.3)"
+  # `--dry-run` so the global needs_yes check does not answer first: §4.2's own refusal is the
+  # one being tested, and it is the flag PAIR that overrides the floor, never the flag.
+  fm setup --units --full-chain --dry-run --json
+  expect_rc 3 "--full-chain without --yes is still refused"
+  expect_reason full_chain_refused "the flag PAIR is the escape hatch, not the flag"
+  fm setup --units --full-chain --yes --dry-run --json
+  expect_rc 0 "--full-chain --yes --dry-run overrides the floor and writes nothing"
+  expect_json '[.actions[] | select(.status == "written")] | length' '0' "a dry run writes nothing"
+  CONF="$(printf '%s' "$OUT" | jq -r '.actions[] | select(.what == "monerod.conf") | .diff // ""')"
+  if printf '%s' "$CONF" | grep -q 'prune-blockchain'; then
+    bad "§1.3: --full-chain must render a conf with no prune-blockchain" "$(printf '%s' "$CONF" | grep -n prune)"
+  else
+    ok "§1.3: and the rendered conf carries no prune-blockchain"
+  fi
+fi
 
 # ================================================================ AMBER (§4b)
 step "AMBER — against fmonero-mock over the derived fixtures (§4b)"
