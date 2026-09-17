@@ -128,11 +128,6 @@ is the only way back: v0.1 ships no rescan command.
 
 Bound every send with `--max-fee`. The reason is below.
 
-**Do not run `fmonero doctor --fix` while in remote mode** until the defect recorded in
-`DECISIONS.md` is fixed: it rewrites `node.mode` back to `local` and leaves the wallet unit
-pointing at the public node. `fmonero doctor` on its own is safe, and the one `settings_valid`
-warning it prints on a remote-mode machine is that defect rather than a broken config.
-
 **What the node learns.** This machine's IP address and the timing of every request, including
 the burst that accompanies a send. Which blocks the wallet asks for, which bounds the wallet's
 restore height and therefore its age. And, if you mark it trusted, the amounts the wallet holds
@@ -241,15 +236,20 @@ refresh gate, which is the point of the row: the wallet's `last_refresh_at` adva
 build, nothing was relayed, and no pending record was written. A real send or sweep of any amount
 is still RED, in this mode as in the other.
 
-**Two defects that live run found, both reported and neither fixed yet.** `fmonero doctor --fix`
-**silently rewrites `node.mode` from `remote` back to `local`** on a correctly configured machine —
-a false `settings_valid` warning whose repair drops the key — and leaves the wallet unit still
-pointing at the public node. Until it is fixed, run `fmonero doctor` but not `fmonero doctor --fix`
-while in remote mode. And `wallet create` against a remote node can exit 5 `killed_at_deadline`
-on `set_daemon` **after the wallet file has been created**, which also means its
-"back up your seed" hint is never printed; `wallet open <name>` afterwards works, and the seed is
-read with `monero-wallet-cli --wallet-file <wallet.dir>/<name> --offline`. Both are written up in
-full, with their real output, in `DECISIONS.md`.
+**Three defects that live run found, all three since fixed and re-checked against the same public
+node.** `fmonero doctor --fix` used to rewrite `node.mode` from `remote` back to `local` on a
+correctly configured machine, from a `settings_valid` warning that was itself false; the check now
+validates the whole document rather than one key at a time, and `doctor --fix --dry-run` in remote
+mode plans nothing. `wallet create` against a remote node could exit 5 `killed_at_deadline` **after
+the wallet file had been created**, taking its "back up your seed" hint with it; the create and open
+sequences now run under `timeouts.refresh_sec` — every one of their calls waits behind the new
+wallet's first refresh against the node — and the hint is printed the moment the wallet file exists,
+on every path. Three consecutive `wallet create` against a real public node now exit 0 (4.7 s,
+14.8 s, 6.8 s; the middle one is longer than the old 5 s deadline). And `send.lock` could answer
+`send_in_progress` with nobody holding it, because a `flock` outlives a sibling thread's `fork`
+until the child `exec`s; it now retries for 500 ms first, which is three orders of magnitude clear
+of a fork window and one clear of a real holder. All three are written up in full, with their real
+output, in `DECISIONS.md`.
 
 **RED, and therefore unverified.** A real `node up`, `node down` or `node restart` against
 `monerod`. Real sync progress, a real peer list, a real balance, a real `refresh`. A real send

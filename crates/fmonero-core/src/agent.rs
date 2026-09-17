@@ -63,9 +63,11 @@ wallet create, wallet open, wallet refresh (which fetched a real block), wallet 
 wallet address, wallet history, wallet close, status, node info, the nine node commands that \
 need the local daemon each exiting 4 remote_node, the TUI's Node screen on a real pty, and \
 node local --yes. wallet send --dry-run reached exit 14 insufficient_funds AFTER the remote \
-refresh gate, relaying nothing. Two defects that run found are recorded in DECISIONS.md and \
-not yet fixed: doctor --fix rewrites node.mode from remote back to local on a correct machine, \
-and wallet create can exit 5 killed_at_deadline on set_daemon after the wallet file exists.
+refresh gate, relaying nothing. The two defects that run found are FIXED and re-checked live on \
+the same node: doctor --fix no longer rewrites node.mode on a correctly configured machine (it \
+plans nothing there), and three consecutive wallet create against the public node exit 0 \
+(4.7 s, 14.8 s, 6.8 s) with the seed backup hint printed on every path, including the paths \
+that fail. Both are recorded with their real output in DECISIONS.md.
 
 RED — never verified, and not claimed anywhere: a real node start, stop or restart, real sync \
 progress, real peers, and — against a local monerod, which has never run here — a real balance, \
