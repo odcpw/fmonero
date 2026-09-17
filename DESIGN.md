@@ -1769,7 +1769,10 @@ exit 2 the values are `bad_args` · `unknown_key` · `bad_amount` · `non_loopba
 `txid_mismatch`** (§2a.9 — the one exit-1 path where retrying is the wrong reflex, and
 `capabilities.reasons` is generated from `Error::REASONS`, so a documented pair that cannot be
 constructed would be a drift this table exists to prevent);
-`null` for every other code. **An agent branches on
+`null` for every other code. Two of the exit-4 values are answered **before any `systemctl`
+call and within milliseconds** (§2i, v5.1): `unit_missing` when the unit file is not in
+`paths.systemd_user_dir`, and `not_installed` when the daemon binary is not on `PATH` — for
+`node up`, `node restart`, `wallet open` and `wallet create`. **An agent branches on
 `code_name` + `reason` and never on prose.** It is the difference between "append `--yes`" and "a
 transaction may be in flight". Exit 5 is the case that makes this load-bearing off the money path:
 a §2d breaker can hold it armed for up to 60 s, and `stalled` means *wait or pass `--force`* while
@@ -2316,9 +2319,13 @@ appeared in two or three — and a gate its own document fails is a gate an agen
   process, which no mock supplies), real sync progress, real peers, a real balance, a real
   `refresh`, a **real send or sweep of any amount**, a real `open_wallet` against a real wallet
   file, a real `setup`/`setup --units`/`--plugin`/`--menu` run (the one real `setup` belongs to the
-  Phase 4 verifier, through `scripts/install.sh --yes`), the disk-space floor of
-  §1.3, the §2l (c) warm timing, and every doctor check in the `node`, `wallet` and `storage` groups
-  against a live daemon. (**Background sync is not on this list**: §0 cuts the three
+  Phase 4 verifier, through `scripts/install.sh --yes` — **done**, twice, and again after the v5.1
+  fix-up), `setup --units`' refusal under the §2i `system_unit` layout (which needs Arch's own
+  `monerod.service` on the machine), **the §1.3 disk-space floor as a NUMBER** — the refusal it
+  drives is GREEN since v5.1, because free space is a local `statvfs` measurement and a test may
+  point `node.data_dir` at a filesystem under the floor; what stays RED is the 120 GB figure
+  itself, which §1.3 states as an estimate —, the §2l (c) warm timing, and every doctor check in
+  the `node`, `wallet` and `storage` groups against a live daemon. (**Background sync is not on this list**: §0 cuts the three
   `*_background_sync` methods from v0.1 and §1b.4 lists them as having no consumer. A cut feature
   inside the honesty instrument implies a path that merely has not been tested yet.)
   **The exact commands the owner runs to turn these GREEN**, in order. The rehearsal runs on
@@ -4481,6 +4488,17 @@ the idempotence claim the Phase 2 docs gate could not make, because at `gate-1a`
 still a stub — confirms the bar widget loads, re-runs `scripts/check.sh --full`,
 re-fills §4b from real output, appends the result to DECISIONS.md, and reports honestly — including
 that every RED row is still RED until the owner runs the §4b command list with Monero installed.
+
+**And a fix-up pass closes what the verification found.** The verifier reports; it does not fix,
+because the run that proves a claim and the change that makes it true must not be the same commit.
+The first verification (2026-09-17) returned three findings and ten failing assertions, and every
+one of them needed either a contract amendment or a change to the harness — so a fix-up phase
+exists, it works against an amended brief (this document became **v5.1** there), it re-runs every
+gate on this machine **and under a `HOME` that has never been set up**, and it re-fills §4b again.
+Its ledger is the last section of DECISIONS.md. Two rules it inherits from §2j: an assertion is
+never relaxed to make a test pass — a test a correct installer breaks is fixed by giving the test
+its own directory, not by deleting the assertion — and the suite must leave the machine exactly as
+it found it, which `tests/e2e.sh`'s own last step now asserts.
 
 ---
 
