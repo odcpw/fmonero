@@ -18,6 +18,12 @@
 # --password-file, and --log-level is absent here because monerod takes it from the config file.
 # The credential lives in that --config-file at mode 0600 (§2c), NOT in argv, because
 # /proc/<pid>/cmdline is world-readable.
+# DESIGN.md v5.1: --config-file carries the ABSOLUTE, XDG-resolved paths.monerod_conf(),
+# never `%h/.config/...`. systemd has no specifier for XDG_CONFIG_HOME, so with that
+# variable set anywhere but ~/.config the %h literal named a file `setup --units` never
+# wrote: monerod exits on a missing NAMED config file (§1b.6), Restart=on-failure retries
+# it, and `node up` reported "did not answer get_info within 30s" (`secrets-5`). The
+# synthetic home here is /home/user, matching expect.json's _settings.
 # THE LEADING '#' LINES ARE THE PROVENANCE HEADER (§1.1) AND ARE NOT PART OF THE RENDERED UNIT.
 # systemd ignores '#' lines, so this file still loads; but it can never byte-match
 # units::render_node_unit, which is why the units_present fixture is the DRIFTED case (see
@@ -31,7 +37,7 @@ Wants=fmonero-wallet-rpc.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/monerod --config-file %h/.config/fmonero/monerod.conf --non-interactive
+ExecStart=/usr/bin/monerod --config-file /home/user/.config/fmonero/monerod.conf --non-interactive
 Restart=always
 RestartSec=5
 # monerod is I/O-heavy and must never compete with the desktop

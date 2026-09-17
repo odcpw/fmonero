@@ -17,7 +17,17 @@
 //!   never half-write a real unit (§4.2).
 //! * [`ensure_running`] **probes first** and starts the unit only when the probe fails —
 //!   "start, then probe" would spawn `systemctl start` against a unit that does not exist on
-//!   every AMBER wallet row of §4b.
+//!   every AMBER wallet row of §4b — and when it does start one, [`preflight`] has already
+//!   answered "no unit" and "no binary" in milliseconds (§2i, v5.1), so a machine that
+//!   `setup` has configured and Monero has not reached says **exit 4 `not_installed`**
+//!   instead of waiting 30 s for a unit that `203/EXEC`s every five seconds.
+//! * **No systemd specifier may reach `monerod.conf`** — boost expands none, so a `%h` there
+//!   makes monerod create a directory literally named `%h` and resync from zero. The guard is
+//!   the permanent unit test [`render_node_conf_has_no_systemd_specifiers`]. The two
+//!   `.service` files may still use `%S`/`%t` where §4.2 keeps them (the wallet unit's
+//!   `StateDirectory`, `WorkingDirectory` and `--log-file`, none of which is compared against
+//!   a setting); the node unit's `--config-file` is **rendered absolute** (v5.1), because a
+//!   non-default `XDG_CONFIG_HOME` made `%h` name a file `setup` never wrote.
 
 use std::path::Path;
 use std::time::Duration;
@@ -244,6 +254,61 @@ fn run_unit_verb(ctx: &Context, verb: &str, unit: &str, cancel: &CancelToken) ->
     .with_hint("fmonero setup --units --yes"))
 }
 
+/// The two questions that must be answered **before any `systemctl` call** (§2i, §4.1, v5.1),
+/// each in a fraction of a millisecond:
+///
+/// 1. **is the unit file there?** Else exit **4 `unit_missing`**, hint `fmonero setup --units`.
+/// 2. **is the daemon binary on `PATH`?** Else exit **4 `not_installed`**, hint
+///    `omarchy pkg add monero` — the same probe the doctor's `monerod_installed` makes.
+///
+/// Without (2), a machine that `setup --units` has configured and `omarchy pkg add monero` has
+/// not reached answers `node up` with **exit 8** after thirty seconds — "nothing is broken",
+/// pointing at `status --json`, which will say `reachable: false` without saying why — and
+/// leaves the unit restarting every five seconds on `203/EXEC`. §4a assigns that condition
+/// exit 4. This is the first state the owner of this build will meet, and it was finding 1 of
+/// the Phase 4 verification.
+///
+/// (2) is skipped under [`Systemctl::Fixture`], the §2i test seam: a fixture that reports a
+/// unit's existence and activity is standing in for the machine's daemon as well, and
+/// `fmonero-mock` is what answers the RPC in every one of those rows. The seam is honoured
+/// only under `FMONERO_STATE_DIR` (§2i), so no real invocation can reach the exemption — and
+/// [`tests::preflight_wants_a_unit_file_and_a_binary`] drives (2) directly, so it is not
+/// exempt from being tested.
+pub fn preflight(ctx: &Context, unit: &str, binary: &str) -> Result<(), Error> {
+    if !unit_file_exists(ctx, unit)? {
+        return Err(Error::backend(format!("{unit} is not installed in {}", {
+            ctx.paths.systemd_user_dir.display()
+        }))
+        .with_reason("unit_missing")
+        .with_hint("fmonero setup --units --yes"));
+    }
+    if matches!(ctx.systemctl, Systemctl::Real) && proc::which(binary).is_none() {
+        return Err(Error::backend(format!(
+            "{binary} is not installed, so {unit} would exit 203/EXEC and be restarted every \
+             {RESTART_SEC}s without ever answering"
+        ))
+        .with_reason("not_installed")
+        .with_hint("omarchy pkg add monero   # then: fmonero node up"));
+    }
+    Ok(())
+}
+
+/// `RestartSec=` in both rendered units, quoted in [`preflight`]'s message so the two cannot
+/// disagree about what a failing unit does.
+pub const RESTART_SEC: u32 = 5;
+
+/// The daemon one of the two units runs, for [`preflight`]'s second question. Derived from the
+/// unit name rather than passed in, because [`ensure_running`]'s signature is frozen (§5b) and
+/// its two callers — `wallet_session::open` and `wallet create` — would otherwise each have to
+/// name the binary, which is the "invariant that lives in two places" §2a.3 rejects.
+pub fn unit_binary(ctx: &Context, unit: &str) -> &'static str {
+    if unit == ctx.settings.wallet.unit {
+        "monero-wallet-rpc"
+    } else {
+        "monerod"
+    }
+}
+
 /// Probe first; start the unit only when the probe fails; then poll until it succeeds or the
 /// deadline. Returns whether a start was needed. fbittorrent's `backend::ensure_running`
 /// shape (`fbittorrent/src/backend.rs:17-29`).
@@ -259,6 +324,8 @@ pub fn ensure_running(
     if probe() {
         return Ok(false);
     }
+    // Only now, when a start is actually about to happen (§2i, v5.1).
+    preflight(ctx, unit, unit_binary(ctx, unit))?;
     start(ctx, unit, cancel)?;
     let started = std::time::Instant::now();
     loop {
@@ -269,8 +336,11 @@ pub fn ensure_running(
             return Ok(true);
         }
         if started.elapsed() >= deadline {
+            // We started it and it never answered, so we own it: leave nothing flapping in a
+            // `Restart=on-failure` loop behind a command that has already failed (v5.1).
+            let stopped = stop_after_failed_start(ctx, unit, cancel);
             return Err(Error::timeout(format!(
-                "{unit} started but did not answer within {}s",
+                "{unit} started but did not answer within {}s{stopped}",
                 deadline.as_secs()
             ))
             .with_hint("fmonero doctor --only units"));
@@ -279,21 +349,63 @@ pub fn ensure_running(
     }
 }
 
+/// `systemctl --user stop` a unit **we** started that never answered, then clear the failed
+/// state so the next attempt is not refused by the start limit the rendered units now set
+/// (§4.2). Returns the clause to append to the caller's error message, because an error that
+/// does not say the unit was stopped leaves the user looking for a daemon that is no longer
+/// there. Best-effort: a stop that fails is not worth losing the real error over.
+///
+/// Its other caller is `node_session::up`, whose own `get_info` poll has the same shape and the
+/// same obligation: the Phase 4 verifier's runs left both real units flapping, and that — a
+/// test-suite and command-path defect, not an accident — is what this closes (§2i, v5.1).
+pub fn stop_after_failed_start(ctx: &Context, unit: &str, cancel: &CancelToken) -> String {
+    if stop(ctx, unit, cancel).is_err() {
+        return String::new();
+    }
+    if matches!(ctx.systemctl, Systemctl::Real) {
+        let _ = proc::run_with_deadline(
+            &["systemctl", "--user", "reset-failed", unit],
+            ctx.timeouts.systemctl,
+            Some(cancel),
+        );
+    }
+    format!(", so it was stopped again ({unit} is inactive)")
+}
+
 // ---- rendering (§4.2) --------------------------------------------------------
 
-/// The node unit (§4.2). `%h`/`%S` appear here because systemd expands them in a `.service`
-/// file — and **only** here and in the wallet unit, never in the conf (see
-/// [`render_node_conf`]).
-pub fn render_node_unit(_ctx: &Context) -> String {
-    "\
+/// The node unit (§4.2).
+///
+/// **`--config-file` carries the absolute, XDG-resolved `paths.monerod_conf()`, not
+/// `%h/.config/fmonero/monerod.conf`** (v5.1, closing `secrets-5`). The two agree only while
+/// `XDG_CONFIG_HOME` is `~/.config`: with it set anywhere else, `setup --units` writes the
+/// conf where `Paths` says and `%h` names a file that is not there, `monerod` exits on a
+/// missing **named** config file (§1b.6), `Restart=on-failure` retries it, and `node up`
+/// reports "did not answer get_info within 30s" — the symptom pointing away from the cause.
+/// systemd has no specifier for `XDG_CONFIG_HOME`, so the fix is the one
+/// [`render_wallet_unit`] already applies to `--wallet-dir`: render the path.
+///
+/// `%S` still appears in the wallet unit, where nothing is compared against a setting.
+///
+/// `StartLimitIntervalSec`/`StartLimitBurst` are explicit because the manager defaults
+/// (10 s / 5 starts) can never be reached by a unit with `RestartSec=5`: two starts per
+/// interval, so a `203/EXEC` — the answer when the Monero binary is absent — restarts every
+/// five seconds forever. §4.2 already describes the failure as retrying "into systemd's start
+/// limit"; these two lines are what make that true.
+pub fn render_node_unit(ctx: &Context) -> String {
+    format!(
+        "\
 [Unit]
 Description=Monero daemon (fmonero)
 After=network-online.target
 Wants=network-online.target
+# Three tries in a minute, then stop: RestartSec=5 never reaches the 10 s/5 default (§4.2).
+StartLimitIntervalSec=60
+StartLimitBurst=3
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/monerod --config-file %h/.config/fmonero/monerod.conf --non-interactive
+ExecStart=/usr/bin/monerod --config-file {conf} --non-interactive
 Restart=on-failure
 RestartSec=5
 # monerod is I/O-heavy and must never compete with the desktop
@@ -303,8 +415,9 @@ IOSchedulingPriority=6
 
 [Install]
 WantedBy=default.target
-"
-    .to_string()
+",
+        conf = ctx.paths.monerod_conf().display(),
+    )
 }
 
 /// `~/.config/fmonero/monerod.conf` (§4.2, §2c). **Every path in it is ABSOLUTE**: boost's
@@ -372,6 +485,9 @@ pub fn render_wallet_unit(ctx: &Context) -> String {
 [Unit]
 Description=Monero wallet RPC (fmonero)
 After={node_unit}
+# Three tries in a minute, then stop: RestartSec=5 never reaches the 10 s/5 default (§4.2).
+StartLimitIntervalSec=60
+StartLimitBurst=3
 
 [Service]
 Type=simple
@@ -999,20 +1115,43 @@ mod tests {
         Context::for_test(dir).expect("test context")
     }
 
-    /// The two `.service` files are the **only** place a specifier belongs (§4.2), and the
-    /// wallet unit's `--wallet-dir` is a literal absolute path so the doctor's
-    /// `wallet_dir_matches_unit` can compare it byte for byte.
+    /// The wallet unit is the **only** place a specifier belongs (§4.2, v5.1), and both units
+    /// render the paths that are compared against a setting — `--wallet-dir` against
+    /// `settings.wallet.dir` (the doctor's `wallet_dir_matches_unit`) and `--config-file`
+    /// against `paths.monerod_conf()`.
     #[test]
     fn the_units_carry_the_specifiers_and_the_literal_wallet_dir() {
         let dir = std::env::temp_dir().join(format!("fmonero-units-{}", std::process::id()));
         let mut ctx = ctx_in(&dir);
         let node = render_node_unit(&ctx);
-        assert!(node.contains("--config-file %h/.config/fmonero/monerod.conf"));
+        // v5.1, closing `secrets-5`: the ABSOLUTE, XDG-resolved conf path, never `%h`. With a
+        // non-default XDG_CONFIG_HOME the `%h` literal named a file `setup --units` never
+        // wrote, and monerod exits on a missing named config file (§1b.6).
+        assert!(
+            node.contains(&format!(
+                "--config-file {} --non-interactive",
+                ctx.paths.monerod_conf().display()
+            )),
+            "{node}"
+        );
+        assert!(
+            !node.contains('%'),
+            "the node unit compares its only path against a setting, so it carries no \
+             specifier at all (§4.2 v5.1):\n{node}"
+        );
+        // A 203/EXEC must not restart every five seconds forever: RestartSec=5 can never reach
+        // the manager's 10 s / 5-start default, so both units set the limit themselves (§4.2).
+        assert!(node.contains("StartLimitIntervalSec=60"), "{node}");
+        assert!(node.contains("StartLimitBurst=3"), "{node}");
         assert!(node.contains("Restart=on-failure"));
+        assert!(node.contains(&format!("RestartSec={RESTART_SEC}")));
         assert!(!node.contains("Wants=fmonero-monerod"));
         let wallet = render_wallet_unit(&ctx);
         // §2b's test (4): asserted on the rendered text, so it needs no systemd run.
         assert!(wallet.contains("StateDirectoryMode=0700"), "{wallet}");
+        assert!(wallet.contains("StartLimitIntervalSec=60"), "{wallet}");
+        assert!(wallet.contains("StartLimitBurst=3"), "{wallet}");
+        // §4.2 keeps `%S` exactly where nothing is compared against a setting.
         assert!(wallet.contains("WorkingDirectory=%S/fmonero/run"));
         assert!(wallet.contains("--log-level 0"), "a secrets control (§4.2)");
         assert!(wallet.contains("--max-concurrency 4"));
@@ -1341,6 +1480,100 @@ mod tests {
         let text = serde_json::to_string(&planned).unwrap();
         assert!(text.contains("CreateDir wallet.dir"), "{text}");
         assert!(!text.contains("rpc-login=fmonero:"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **Finding 1 of the Phase 4 verification, as a test.** Before v5.1 neither question was
+    /// asked: on a machine `setup --units` had configured and `omarchy pkg add monero` had not
+    /// reached, `node up` spent thirty seconds waiting for a unit that exits `203/EXEC`, exited
+    /// **8** ("nothing is broken") and left the unit restarting every five seconds. §4a assigns
+    /// that condition exit **4**.
+    ///
+    /// Both cases are machine-independent: the unit file is one this test writes into its own
+    /// sandboxed `systemd_user_dir`, and the binary is named explicitly, so neither answer
+    /// depends on what is installed here.
+    #[test]
+    fn preflight_wants_a_unit_file_and_a_binary() {
+        let dir = std::env::temp_dir().join(format!("fmonero-preflight-{}", std::process::id()));
+        let ctx = ctx_in(&dir);
+        let unit = ctx.settings.node.unit.clone();
+
+        // (1) No unit file: exit 4 `unit_missing`, and the hint writes one.
+        let e = preflight(&ctx, &unit, "sh").expect_err("no unit file");
+        assert_eq!(e.exit_code(), 4, "{e}");
+        assert_eq!(e.reason(), Some("unit_missing"));
+        assert!(e.hint().contains("fmonero setup --units"), "{}", e.hint());
+
+        // (2) The unit file is there and the binary is not: exit 4 `not_installed`, with the
+        // install command as the hint — not exit 8 thirty seconds later.
+        std::fs::create_dir_all(&ctx.paths.systemd_user_dir).unwrap();
+        std::fs::write(ctx.paths.systemd_user_dir.join(&unit), b"[Unit]\n").unwrap();
+        let started = std::time::Instant::now();
+        let e = preflight(&ctx, &unit, "monerod-does-not-exist-anywhere").expect_err("no binary");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "it must answer within milliseconds, not at a deadline"
+        );
+        assert_eq!(e.exit_code(), 4, "{e}");
+        assert_eq!(e.reason(), Some("not_installed"));
+        assert!(e.hint().contains("omarchy pkg add monero"), "{}", e.hint());
+        assert!(e.to_string().contains("203/EXEC"), "{e}");
+
+        // (3) Both present: nothing to say. `sh` stands in for the daemon binary because it is
+        // on every PATH this code can run on.
+        preflight(&ctx, &unit, "sh").expect("a unit file and a binary is all it asks for");
+
+        // (4) The §2i fixture seam stands in for the machine's daemon as well — that is what
+        // lets every AMBER `node up` row of §4b run against `fmonero-mock` — but it never
+        // excuses a MISSING unit, which the fixture itself reports.
+        let fixture = dir.join("systemctl.txt");
+        std::fs::write(&fixture, format!("{unit} inactive disabled yes 0\n")).unwrap();
+        let mut fx = ctx.clone();
+        fx.systemctl = Systemctl::Fixture(fixture.clone());
+        preflight(&fx, &unit, "monerod-does-not-exist-anywhere")
+            .expect("the fixture stands in for the daemon");
+        std::fs::write(&fixture, format!("{unit} inactive disabled no -\n")).unwrap();
+        let e = preflight(&fx, &unit, "sh").expect_err("but not for the unit file");
+        assert_eq!(e.reason(), Some("unit_missing"), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The binary each unit runs, so `ensure_running` — whose signature is frozen (§5b) — can
+    /// ask [`preflight`]'s second question without a second parameter.
+    #[test]
+    fn each_unit_names_its_own_daemon() {
+        let dir = std::env::temp_dir().join(format!("fmonero-unitbin-{}", std::process::id()));
+        let ctx = ctx_in(&dir);
+        assert_eq!(unit_binary(&ctx, &ctx.settings.node.unit), "monerod");
+        assert_eq!(
+            unit_binary(&ctx, &ctx.settings.wallet.unit),
+            "monero-wallet-rpc"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A unit **we** started that never answered is stopped again, and the error says so — so a
+    /// failed `wallet open` or `node up` never leaves a `Restart=on-failure` loop behind. Driven
+    /// through the §2i fixture, whose `<is-active>` column is the observable.
+    #[test]
+    fn a_unit_that_never_answered_is_stopped_again() {
+        let dir = std::env::temp_dir().join(format!("fmonero-flap-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fixture = dir.join("systemctl.txt");
+        let mut ctx = ctx_in(&dir);
+        let unit = ctx.settings.wallet.unit.clone();
+        std::fs::write(&fixture, format!("{unit} inactive disabled yes 0\n")).unwrap();
+        ctx.systemctl = Systemctl::Fixture(fixture.clone());
+        let cancel = CancelToken::new();
+
+        let e = ensure_running(&ctx, &unit, &|| false, Duration::from_millis(300), &cancel)
+            .expect_err("a probe that never succeeds is a timeout");
+        assert_eq!(e.exit_code(), 8, "{e}");
+        assert!(e.to_string().contains("was stopped again"), "{e}");
+        assert!(
+            !state(&ctx, &unit).unwrap().active,
+            "the unit must be inactive again, not flapping"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

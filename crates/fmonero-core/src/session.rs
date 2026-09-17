@@ -170,6 +170,12 @@ pub mod node_session {
         let layout = crate::units::detect_layout(ctx)?;
         require_user_unit(layout)?;
         let unit = ctx.settings.node.unit.clone();
+        // Before any systemctl call (§2i, v5.1): the unit file, then `monerod` on PATH. Without
+        // the second, this command waits 30 s for a unit that exits 203/EXEC and is restarted
+        // every 5 s, and reports exit 8 "nothing is broken" — where §4a says exit 4
+        // `not_installed`. It is the state `scripts/install.sh --yes` leaves on a machine
+        // Monero has not reached, so it is the first thing an owner meets.
+        crate::units::preflight(ctx, &unit, "monerod")?;
 
         // The §2i single-writer precondition — the only guard against two `monerod` on one
         // LMDB (§1.2). It is a precondition of `up`, never a term in `detect_layout`: it
@@ -206,8 +212,15 @@ pub mod node_session {
                 break;
             }
             if started_at.elapsed() >= ctx.timeouts.unit_probe {
+                // We started it and it never answered: stop it again rather than leave a
+                // `Restart=on-failure` loop behind a command that has already failed (v5.1).
+                let stopped = if already_running {
+                    String::new()
+                } else {
+                    crate::units::stop_after_failed_start(ctx, &unit, cancel)
+                };
                 return Err(Error::timeout(format!(
-                    "{unit} did not answer get_info within {}s",
+                    "{unit} did not answer get_info within {}s{stopped}",
                     ctx.timeouts.unit_probe.as_secs()
                 ))
                 .with_hint("fmonero status --json"));
@@ -264,7 +277,13 @@ pub mod node_session {
     }
 
     /// `down` then `up`.
+    ///
+    /// The §2i preflight runs **here**, before `down`'s own `systemctl --user stop`: `up` would
+    /// refuse a moment later anyway, and a restart that stops the node and then reports
+    /// "monerod is not installed" has left the machine worse than it found it (v5.1).
     pub fn restart(ctx: &Context, cancel: &CancelToken) -> Result<Started, Error> {
+        require_user_unit(crate::units::detect_layout(ctx)?)?;
+        crate::units::preflight(ctx, &ctx.settings.node.unit, "monerod")?;
         down(ctx, cancel)?;
         up(ctx, None, cancel)
     }
