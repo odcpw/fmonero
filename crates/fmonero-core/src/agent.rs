@@ -16,14 +16,15 @@ use crate::status::WARNING_IDS;
 
 /// What this build actually is. `version` is the crate version; this names the phase, so a
 /// `capabilities` dump can never be mistaken for a finished tool.
-pub const BUILD_STAGE: &str = "phase-4-verified";
+pub const BUILD_STAGE: &str = "phase-4-verified-and-fixed";
 
 /// The §4b summary, in prose, and honest about the one thing that matters: **no fmonero build
 /// has ever spoken to a real `monerod` or `monero-wallet-rpc`**, because neither is installed
 /// on the machine this was written on (§1.1).
 pub const BUILD_NOTE: &str = "\
-Integrated build (DESIGN.md §8, Phases 0 to 3 merged, reviewed and fixed in Phase 4, then \
-verified by Phase 4's verifier on 2026-09-17). What has actually been observed working:
+Integrated build (DESIGN.md §8, Phases 0 to 3 merged, reviewed and fixed in Phase 4, verified \
+by Phase 4's verifier on 2026-09-17, and the three defects that verification found fixed the \
+same day against design brief v5.1). What has actually been observed working:
 
 GREEN — verified end to end on a machine with no Monero installed: status with both daemons \
 absent, wallet list, wallet validate's structural path, settings list|get|set, capabilities, \
@@ -36,7 +37,12 @@ scripts/install.sh --yes, twice — the two systemd user units (written disabled
 ~/.config/fmonero/monerod.conf at 0600 with its credential carried through unrotated, the \
 plugin symlink and the Omarchy menu entries; the bar widget loading in the live Omarchy shell \
 and polling this binary's own status --json; and the doctor's units, install and security \
-groups passing against the files that run actually wrote.
+groups passing against the files that run actually wrote. GREEN since the v5.1 fix-up: node up, \
+node restart and wallet open on a machine whose units are installed and whose Monero is not \
+exit 4 not_installed in milliseconds rather than exit 8 after thirty seconds, and leave no unit \
+restarting; setup --units refuses below §1.3's 120 GB floor with full_chain_refused and \
+--full-chain --yes overrides it; and the second setup --all --yes run reports every one of its \
+seven actions unchanged.
 
 AMBER — verified against crates/fmonero-mock serving fixtures DERIVED FROM THE MONERO SOURCE \
 at v0.18.5.1, which proves fmonero's wire format and parsing and proves NOTHING about a real \
@@ -50,13 +56,11 @@ and renders from the same status document.
 
 RED — never verified, and not claimed anywhere: a real node start, stop or restart, real sync \
 progress, real peers, a real balance, a real refresh, A REAL SEND OR SWEEP OF ANY AMOUNT, a \
-real open_wallet against a real wallet file, setup's system_unit and disk-floor refusals, the \
-120 GB disk floor, the warm timing target, and \
+real open_wallet against a real wallet file, setup's system_unit refusal, the \
+120 GB disk floor as a NUMBER (it is an estimate; only the refusal it drives is exercised), \
+the warm timing target, and \
 every doctor check in the node, wallet and storage groups against a live daemon. \
-The owner turns these green by installing Monero and running the §4b command list. \
-Known and unfixed on a machine set up but without Monero: node up and wallet open start their \
-unit, wait 30 s and exit 8 rather than exiting 4 not_installed, and leave the unit in a 5 s \
-restart loop — DECISIONS.md, Phase 4 verification, finding 1.";
+The owner turns these green by installing Monero and running the §4b command list.";
 
 /// Every command of [`COMMANDS`] that has a §4b **RED** scenario, and therefore carries
 /// `verified: "red"` — §4b's rule is that the class is "the *lowest* class any of its scenarios
@@ -70,13 +74,14 @@ restart loop — DECISIONS.md, Phase 4 verification, finding 1.";
 /// sequence on a wallet file no test has ever created); and every doctor check in the node,
 /// wallet and storage groups against a live daemon.
 ///
-/// **`setup` is still here after Phase 4's verifier ran it for real**, and the reason changed
-/// rather than went away. `setup --all --yes` through `scripts/install.sh --yes` is GREEN now —
-/// twice, with the artefacts byte-compared — but §4b's rule is the *lowest* class any scenario
-/// reaches, and two of `setup`'s scenarios have still never been exercised by anything: its
-/// refusal under §2i's `system_unit` layout, and its refusal when free space is under §1.3's
-/// 120 GB floor (which §4b lists as RED in its own right). Promoting the row on the strength of
-/// the run that did happen would claim the two that did not.
+/// **`setup` is still here after Phase 4's verifier ran it for real**, and the reason has
+/// narrowed twice rather than gone away. `setup --all --yes` through `scripts/install.sh --yes`
+/// is GREEN — twice, with the artefacts byte-compared — and since v5.1 so is its refusal below
+/// §1.3's free-space floor, which is a local `statvfs` measurement and needed no daemon to
+/// exercise. **One** scenario has still never been exercised by anything: its refusal under
+/// §2i's `system_unit` layout, which needs Arch's own `monerod.service` on the machine.
+/// Promoting the row on the strength of the scenarios that did run would claim the one that
+/// did not.
 const RED_COMMANDS: &[&str] = &[
     "status",
     "node up",
@@ -119,6 +124,10 @@ BRANCH ON code_name + reason, NEVER ON PROSE
     3 fee_above_max      -> the built fee exceeded --max-fee; nothing was relayed
     3 foreign_node       -> this monerod is not fmonero's; it is never mutated
     3 data_dir_in_use    -> another monerod already holds the data dir
+    4 not_installed     -> monerod / monero-wallet-rpc is not on PATH: `omarchy pkg add monero`.
+                            `node up`, `node restart`, `wallet open` and `wallet create` answer
+                            this in milliseconds and start nothing
+    4 unit_missing       -> no fmonero unit is installed: `fmonero setup --units --yes`
     4 unreachable        -> the daemon is not listening
     4 auth_refused       -> it is listening and refused our credential
     5 stalled            -> a call was killed at its deadline less than a minute ago: wait,
@@ -563,7 +572,7 @@ mod tests {
             "a real refresh",
             "A REAL SEND OR SWEEP OF ANY AMOUNT",
             "a real open_wallet",
-            "setup's system_unit and disk-floor refusals",
+            "setup's system_unit refusal",
             "the 120 GB disk floor",
             "every doctor check",
         ] {

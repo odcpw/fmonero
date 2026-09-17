@@ -287,8 +287,12 @@ pub fn preflight(ctx: &Context, unit: &str, binary: &str) -> Result<(), Error> {
             "{binary} is not installed, so {unit} would exit 203/EXEC and be restarted every \
              {RESTART_SEC}s without ever answering"
         ))
+        // §4a's hint for exit 4, and it is the whole fix. The follow-up is deliberately "this
+        // command" rather than a named one: `node up`, `node restart`, `wallet open` and
+        // `wallet create` all arrive here, and a hint that named one of them would be wrong for
+        // three — §4 asks for a runnable command, not a guess at which one the caller wanted.
         .with_reason("not_installed")
-        .with_hint("omarchy pkg add monero   # then: fmonero node up"));
+        .with_hint("omarchy pkg add monero   # then re-run this command"));
     }
     Ok(())
 }

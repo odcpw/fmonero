@@ -21,6 +21,10 @@ BRANCH ON code_name + reason, NEVER ON PROSE
     3 fee_above_max      -> the built fee exceeded --max-fee; nothing was relayed
     3 foreign_node       -> this monerod is not fmonero's; it is never mutated
     3 data_dir_in_use    -> another monerod already holds the data dir
+    4 not_installed     -> monerod / monero-wallet-rpc is not on PATH: `omarchy pkg add monero`.
+                            `node up`, `node restart`, `wallet open` and `wallet create` answer
+                            this in milliseconds and start nothing
+    4 unit_missing       -> no fmonero unit is installed: `fmonero setup --units --yes`
     4 unreachable        -> the daemon is not listening
     4 auth_refused       -> it is listening and refused our credential
     5 stalled            -> a call was killed at its deadline less than a minute ago: wait,
