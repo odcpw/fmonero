@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "id": "oliver.monero",
+  "name": "Monero",
+  "version": "0.1.0",
+  "author": "Oliver",
+  "license": "MIT",
+  "description": "Monero node and wallet state in the Omarchy bar, via fmonero.",
+  "kinds": ["bar-widget"],
+  "entryPoints": { "barWidget": "Panel.qml" },
+  "barWidget": {
+    "displayName": "Monero",
+    "description": "Watch the node sync, start and stop it, read the open wallet's balance, and open the fmonero TUI or doctor.",
+    "category": "Finance",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "binary": "fmonero",
+      "refreshIntervalSec": 3,
+      "idleRefreshIntervalSec": 8,
+      "showBalance": "on",
+      "tuiCommand": "omarchy-launch-or-focus-tui --app-id=fmonero fmonero tui"
+    },
+    "schema": [
+      { "key": "binary", "type": "string", "label": "fmonero binary", "defaultValue": "fmonero" },
+      { "key": "refreshIntervalSec", "type": "integer", "label": "Refresh while open (seconds)", "min": 1, "max": 60, "step": 1, "defaultValue": 3 },
+      { "key": "idleRefreshIntervalSec", "type": "integer", "label": "Refresh while closed (seconds)", "min": 2, "max": 600, "step": 1, "defaultValue": 8 },
+      { "key": "showBalance", "type": "string", "label": "Show amounts on the bar and in the panel (on/off)", "defaultValue": "on" },
+      { "key": "tuiCommand", "type": "string", "label": "TUI launch command", "defaultValue": "omarchy-launch-or-focus-tui --app-id=fmonero fmonero tui" }
+    ]
+  }
+}
