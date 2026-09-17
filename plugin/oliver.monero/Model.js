@@ -33,12 +33,14 @@ function int(value, fallback) {
   return isFinite(n) ? n : fallback
 }
 
-// Thin-space groups, so 3 541 122 reads as a height rather than a phone number.
+// Space-grouped, so 3 541 122 reads as a height rather than a phone number. An ordinary space and
+// not U+2009: the bar's font is the monospace fontconfig alias, which renders a thin space at zero
+// width — the grouping was invisible on screen when this was first drawn.
 function grouped(value) {
   var s = String(int(value, 0))
   var out = ""
   for (var i = 0; i < s.length; i++) {
-    if (i > 0 && (s.length - i) % 3 === 0) out += " "
+    if (i > 0 && (s.length - i) % 3 === 0) out += " "
     out += s.charAt(i)
   }
   return out

@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls
 import QtQuick.Layouts
 import Quickshell
 import Quickshell.Io
@@ -227,7 +228,8 @@ Panel {
                               active: root.cursorActive, opened: root.opened,
                               sections: root.navSections, alive: svc.alive,
                               binaryMissing: svc.binaryMissing, nodeUp: svc.nodeUp,
-                              synced: svc.synced, walletOpen: svc.walletOpen })
+                              synced: svc.synced, walletOpen: svc.walletOpen,
+                              iconCase: root.iconCase, iconColor: String(root.barIconColor) })
     }
   }
 
@@ -297,9 +299,8 @@ Panel {
         interactive: contentHeight > height
         // AsNeeded is the QQC2 default: transparent until the user scrolls, which is no
         // affordance at all for content they do not know exists.
-        ScrollBar.vertical: ScrollBar {
-          policy: panelFlick.contentHeight > panelFlick.height ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
-        }
+        ScrollBar.vertical: ScrollBar { policy: panelFlick.contentHeight > panelFlick.height
+                                                ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff }
 
         Column {
           id: column
