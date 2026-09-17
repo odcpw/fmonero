@@ -797,8 +797,11 @@ impl Tui {
             return Cmd::none();
         }
         // The Send screen owns every key while its form, its picker or its confirm modal is
-        // focused — otherwise typing an address would switch screens.
-        if self.screen == Screen::Send && self.send.owns_keys() {
+        // focused — otherwise typing an address would switch screens. The confirm modal owns
+        // them wherever it is drawn: a build finishes even if the user moved to another screen,
+        // and a visible modal that ignored `send`/`Esc` is the worst state the money surface
+        // could be in.
+        if self.send.confirming() || (self.screen == Screen::Send && self.send.owns_keys()) {
             return self.on_send_key(k);
         }
         if self.wallet.detail {

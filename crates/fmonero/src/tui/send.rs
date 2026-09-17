@@ -586,11 +586,15 @@ fn view_picker(m: &Tui, entries: &[BookEntry], sel: usize, frame: &mut ftui::Fra
 /// in full at every tier (§7a's resize table).
 pub(super) fn view_confirm(m: &Tui, plan: &Plan, frame: &mut ftui::Frame) {
     let th = &m.theme;
-    let addr_rows = wrapped(&plan.dest, 74).len() as u16;
+    // The modal is the whole safety surface and is never abbreviated (§7a's resize table), so
+    // its height is computed from the width it will actually get: the recipient wraps into
+    // more rows on a narrow terminal, and the typed-word prompt must still be on screen.
+    let w = 78.min(frame.bounds().width);
+    let addr_rows = wrapped(&plan.dest, w.saturating_sub(4) as usize).len() as u16;
     let Some(inner) = super::screens::overlay(
         m,
         frame,
-        78,
+        w,
         addr_rows + 11,
         " Confirm — this broadcasts a transaction ",
     ) else {

@@ -1067,17 +1067,20 @@ fn qr_modal(m: &Tui, address: &str, frame: &mut Frame) {
     let modules = code.width() as u16;
     let side = modules + quiet * 2;
     let qr_rows = side.div_ceil(2);
-    let text_rows = wrapped(address, 72).len() as u16;
+    // `overlay` spends a row and a column on its border and one more of each on its padding,
+    // so the interior it hands back is (w - 4, h - 4): asking for exactly the code's own
+    // height left the address nowhere to go and reported a 120x40 terminal as too small.
+    let text_rows = wrapped(address, side as usize).len() as u16;
     let Some(inner) = overlay(
         m,
         frame,
         side + 4,
-        qr_rows + text_rows + 2,
+        qr_rows + text_rows + 4,
         " Receive — Esc closes ",
     ) else {
         return;
     };
-    let fits = inner.height > qr_rows && inner.width >= side;
+    let fits = inner.height >= qr_rows && inner.width >= side;
     if fits {
         let colors = code.to_colors();
         let mut painter = Painter::new(side, side, Mode::HalfBlock);

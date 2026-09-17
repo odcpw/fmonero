@@ -120,6 +120,37 @@ visit "?" "help overlay" "Keys"    "help.txt"
 tmux send-keys -t "$SESSION" Escape 2>/dev/null || true
 sleep 0.4
 
+# The two overlays that matter most, against the mock only: the receive QR and the send
+# confirm modal — the whole safety surface. Nothing is broadcast: the modal wants the word
+# "send" typed and Esc discards the built transaction (do_not_relay never committed it, §2a.3).
+if [ -n "$CAPTURE" ]; then
+  DEST=42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm
+  tmux send-keys -t "$SESSION" 2 2>/dev/null || true; sleep 0.6
+  visit "Q" "receive QR" "Receive" "qr.txt"
+  tmux send-keys -t "$SESSION" Escape 2>/dev/null || true; sleep 0.4
+  tmux send-keys -t "$SESSION" 3 2>/dev/null || true; sleep 0.6
+  tmux send-keys -t "$SESSION" -l "$DEST" 2>/dev/null || true
+  tmux send-keys -t "$SESSION" Tab 2>/dev/null || true
+  tmux send-keys -t "$SESSION" -l "0.01" 2>/dev/null || true
+  sleep 0.4
+  tmux send-keys -t "$SESSION" Enter 2>/dev/null || true   # validate, then build
+  sleep 3
+  text="$(pane)"
+  case "$text" in
+    *'Type "send"'*) ok "the send confirm modal shows the built fee and wants the word"
+                     printf '%s\n' "$text" > "$CAPTURE/send-confirm.txt" ;;
+    *) bad "the confirm modal did not appear" "$(printf '%s' "$text" | sed -n '10,14p')" ;;
+  esac
+  # Esc discards: the built transaction is dropped, which releases the §2a.11 send.lock.
+  tmux send-keys -t "$SESSION" Escape 2>/dev/null || true
+  sleep 0.6
+  RELAYED="$(grep -c '"method":"relay_tx"' "$WORK/wallet.jsonl" 2>/dev/null || true)"
+  [ "${RELAYED:-0}" = "0" ] && ok "nothing was relayed (the capture run never broadcasts)" \
+    || bad "a relay_tx reached the mock during a capture run"
+  tmux send-keys -t "$SESSION" Escape 2>/dev/null || true
+  sleep 0.4
+fi
+
 # q quits, and the exit code is the TUI's own (0 on a clean quit, §7a).
 tmux send-keys -t "$SESSION" q 2>/dev/null || true
 for _ in $(seq 50); do [ -f "$WORK/rc" ] && break; sleep 0.1; done

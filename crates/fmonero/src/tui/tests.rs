@@ -409,6 +409,16 @@ fn the_send_screen_builds_once_and_relays_that_exact_transaction() {
         "the modal must demand the word: {shown}"
     );
 
+    // §7a's resize table: the confirm modal is never abbreviated, so the narrow tier still
+    // shows the recipient, the built fee and the word it wants.
+    let narrow = sim_text(&sim, 50, 16);
+    for needle in ["Amount", "Fee", "Total", "Type \"send\""] {
+        assert!(
+            narrow.contains(needle),
+            "the narrow confirm modal lost {needle}:\n{narrow}"
+        );
+    }
+
     // The typed word IS the TUI's --yes: Enter alone does not broadcast.
     sim.inject_event(key(KeyCode::Enter));
     assert_eq!(
@@ -456,6 +466,35 @@ fn the_send_screen_builds_once_and_relays_that_exact_transaction() {
     assert!(log_has_it, "the announce line is missing: {announced:?}");
 }
 
+/// A build survives leaving the Send screen, so the modal it produces must own the keys
+/// wherever it lands — including over the Wallet screen.
+#[test]
+fn the_confirm_modal_owns_the_keys_even_on_another_screen() {
+    let w = World::new("modal-keys");
+    let mut sim = ProgramSimulator::new(model(&w.ctx, Screen::Send));
+    sim.init();
+    type_str(&mut sim, DEST);
+    sim.inject_event(key(KeyCode::Tab));
+    type_str(&mut sim, "0.1");
+    sim.inject_event(key(KeyCode::Enter));
+    // While the build runs the form holds no keys, so the user can walk away.
+    sim.inject_event(key(KeyCode::Char('2')));
+    assert_eq!(sim.model().screen, Screen::Wallet);
+    run_action(&mut sim);
+    assert!(matches!(sim.model().send.stage, Stage::Built(_)));
+    let shown = sim_text(&sim, 110, 34);
+    assert!(shown.contains("Type \"send\""), "{shown}");
+    // `2` would switch screens on the Wallet screen; here the modal eats it.
+    sim.inject_event(key(KeyCode::Char('2')));
+    assert_eq!(sim.model().send.typed, "2", "the modal must own the key");
+    sim.inject_event(key(KeyCode::Escape));
+    assert!(
+        matches!(sim.model().send.stage, Stage::Form),
+        "Esc discards"
+    );
+    assert_eq!(w.count("relay_tx"), 0, "nothing may be broadcast");
+}
+
 #[test]
 fn the_open_wallet_modal_masks_the_password_and_lists_the_wallet_dir() {
     let w = World::new("open");
@@ -483,9 +522,15 @@ fn the_qr_modal_draws_the_address_and_the_code() {
     s.inject_event(key(KeyCode::Char('Q')));
     let text = sim_text(&s, 120, 40);
     assert!(text.contains("Receive"), "{text}");
-    // The address is wrapped, never elided (§7a).
+    // The code itself, in half-block cells — not the "too small" fallback.
     assert!(
-        text.contains(&DEST[..40]) || text.contains(&DEST[..20]),
+        !text.contains("too small for a QR"),
+        "a 120x40 terminal has room for the code:\n{text}"
+    );
+    assert!(
+        text.contains('\u{2580}') || text.contains('\u{2584}') || text.contains('\u{2588}'),
         "{text}"
     );
+    // The address is wrapped, never elided (§7a).
+    assert!(text.contains(&DEST[..20]), "{text}");
 }
