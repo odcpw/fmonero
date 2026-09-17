@@ -1,4 +1,4 @@
-# fmonero — design brief v5.2 (source of truth for every agent working on this repo)
+# fmonero — design brief v5.3 (source of truth for every agent working on this repo)
 
 A fast Monero node + wallet front end for Omarchy: a Rust CLI + engine (`crates/fmonero-core`,
 `crates/fmonero`), a FrankenTUI app (`fmonero tui`), a `doctor`, and a thin Quickshell bar widget
@@ -158,15 +158,46 @@ the TUI needs, each re-checked in the local registry on 2026-09-16 so this list 
 `hyperfine` and `/usr/bin/time` are **both absent** (verified 2026-09-16: neither
 `/usr/bin/hyperfine` nor `/usr/bin/time` exists — the `time` package is not installed and `time` is
 only a bash keyword, so `/usr/bin/time -f %e` fails with exit 127 and every timing gate that
-prescribes it stalls on a missing tool). Measure with a 20-iteration loop around `date +%s%N`,
-reporting mean and max, e.g.
+prescribes it stalls on a missing tool). Measure with a 20-iteration loop,
+**timing each iteration separately and reporting the minimum, the mean and the max** (v5.3), e.g.
 
 ```bash
-S=$(date +%s%N); for i in $(seq 20); do fmonero status --json >/dev/null; done; E=$(date +%s%N)
-echo "$(( (E-S)/20000000 ))ms mean"
+MIN=; SUM=0; MAX=0
+for i in $(seq 20); do
+  S=${EPOCHREALTIME/./}; fmonero status --json >/dev/null; E=${EPOCHREALTIME/./}
+  US=$(( E - S ))
+  if [ -z "$MIN" ] || [ "$US" -lt "$MIN" ]; then MIN=$US; fi
+  if [ "$US" -gt "$MAX" ]; then MAX=$US; fi
+  SUM=$(( SUM + US ))
+done
+echo "min $(( MIN/1000 ))ms  mean $(( SUM/20000 ))ms  max $(( MAX/1000 ))ms"
 ```
 
 and say so in DECISIONS.md — or `omarchy pkg add hyperfine` first and say that instead.
+
+**The §2l budget is compared against `MIN`; the mean and the max are recorded next to it and are
+not the gate** (v5.3, and the reason is in §2l). Two details of the recipe are load-bearing and
+replaced the v5.2 one-`date`-pair-per-loop form:
+
+- **the clock is bash's `EPOCHREALTIME`, not `$(date +%s%N)`.** A `date` subshell is a fork and an
+  exec and costs **~3.6 ms** on this machine (measured 2026-09-17, same 20-iteration method), and
+  with one `date` closing each sample most of that lands *inside* the measured interval — the
+  harness charging the binary for the harness's own fork. Dividing one elapsed total by 20
+  amortised it to 0.18 ms and hid it; timing each iteration does not, so the clock has to stop
+  costing anything. `EPOCHREALTIME` is a shell variable with microsecond resolution (bash ≥ 5) and
+  spawns nothing;
+- **timing each iteration is what makes a minimum exist at all.** The older recipe could only
+  produce a mean.
+
+**And the machine measured must be the machine the claim names.** Claim (a) is `status` on a
+configured machine whose daemons are down — not on one that has never run `setup --units`. The
+difference is not cosmetic: with no unit file present, `units::detect_layout` falls through to
+`system_node_present` and spends two extra `systemctl` round trips on the **system** manager
+(`is-active monerod.service`, and then `is-enabled` when `/etc/monerod.conf` exists, which it does
+wherever the Arch package is installed) — ~20 ms per invocation that a configured machine never
+pays. A sandbox with an empty `FMONERO_SYSTEMD_USER_DIR` therefore measures a third of a budget's
+worth of a code path claim (a) is not about, and `tests/e2e.sh` renders the two units into the
+timing sandbox before it measures.
 
 ### 1.5 Omarchy plugin host (Quickshell) — the facts that bite
 
@@ -1169,8 +1200,36 @@ Each of these is a testable statement, and the test that proves it is named. Pha
     `relay_tx`, the `store` and the resolve step are therefore one critical section, and the TUI's
     confirm modal deliberately holds it for as long as the human takes.
 
-    A lock already held means another fmonero process is between a build and a relay: exit
-    **3 `safety`**, `reason: send_in_progress`,
+    **`EWOULDBLOCK` does not by itself mean another fmonero process has the lock, and v5.3
+    corrects that.** A `flock` belongs to the **open file description**, not to the process, and
+    `fork(2)` — by *any* thread — copies the descriptor table, so a child holds a reference to
+    that description until it `exec`s. Rust opens every file `O_CLOEXEC`, which bounds the window
+    to fork→exec rather than to the child's whole life; it does not close it. A
+    `std::process::Command` on one thread — a `systemctl` probe, a mock server a test starts —
+    therefore keeps *another* thread's already-dropped `send.lock` alive for a few microseconds,
+    and a bare non-blocking `flock` reports `send_in_progress` with nobody holding anything. The
+    Phase 4 verifier measured **8 122 spurious `EWOULDBLOCK` in 20 000** on a private lock file
+    with four sibling threads doing nothing but spawning `/bin/true`, and `/proc/locks` empty
+    every time anyone looked. The CLI is single-threaded on the money path; **the TUI is not**,
+    so a legitimate send can be refused.
+
+    So `take_send_lock` **retries the non-blocking `flock` for up to 500 ms** (`send::LOCK_RETRY_BUDGET`,
+    a short exponential backoff from 200 µs) before it declares `send_in_progress`. The interlock
+    is not weakened, and the two timescales are the argument: a fork window lasts microseconds,
+    while a genuine holder holds the lock across a build, a human's confirm modal and every
+    `relay_tx` — seconds at best. The second sender therefore still meets a lock that will be held
+    long after the budget expires, and a real refusal costs only that budget in latency. Three
+    alternatives were considered and rejected: `O_CLOEXEC` is **already** set and is exactly what
+    leaves the fork→exec window; `fcntl(F_OFD_SETLK)` is an open-file-description lock too and is
+    inherited by `fork` in the same way, so it closes nothing; and process-associated `F_SETLK`
+    would close it only by moving to the lock family §2i's `flock`-vs-`fcntl` choice deliberately
+    keeps clear of, while adding POSIX record locking's "any close drops the lock" footgun to the
+    one path that must not lose a lock silently. Blocking (`LOCK_EX` without `LOCK_NB`) is not an
+    option either: it would make a second `send` wait indefinitely behind a TUI confirm modal a
+    human may never answer.
+
+    A lock still held after the retry budget means another fmonero process is between a build and
+    a relay: exit **3 `safety`**, `reason: send_in_progress`,
     `error: "another fmonero send is building or relaying"`,
     `hint: fmonero status --json   # wait for pending to clear, then retry`. **`flock` does not
     name the holder** and the lock file stays empty, so the message carries no pid; the holder is
@@ -1200,6 +1259,10 @@ a unit test asserts `TransferRequest`'s sweep constructor sets it unconditionall
 against the mock, and asserts `pending.json` is present and complete after every iteration**
 (§2a.4) — which requires the mock's thread-per-connection accept loop (§8 Phase 0), since fmonero
 holds its socket for the life of the process (§2c);
+**a unit test takes and drops `send.lock` on its own private state directory 400 times while four
+sibling threads spawn `/bin/true`, and asserts zero `send_in_progress`** (v5.3; it answers ~29 % of
+the time on the bare non-blocking `flock`), **and its converse asserts that a lock really held is
+still refused, and only after the 500 ms budget**;
 **a second concurrency test starts two `send --yes` processes against one mock started with
 `--delay-ms 1500`**, so the first process is provably still holding `send.lock` when the second
 reaches it (against an instant mock the first can finish build → relay → resolve before the second
@@ -1792,6 +1855,36 @@ The `status` figure covers, with a wallet open, five loopback RPCs (node `get_in
 `wallet history` tops up from the wallet daemon first and has **no** budget: it inherits
 `timeouts.wallet_sec`. Measured as §1.4 says and pasted into DECISIONS.md — a miss is recorded with
 the real number, not hidden.
+
+**The gate compares the budget against the MINIMUM of the 20 iterations, and records the mean and
+the max beside it** (v5.3). The budgets above do not move; what moves is which statistic the pass
+or fail is read from, and the reason is that the other two do not measure what the row claims to
+measure. A budget in this section is a property of **the binary** — "this much work, on this
+machine, per invocation" — and every iteration of the loop measures that work *plus* whatever else
+the desktop was doing in that millisecond. The mean is therefore the binary's cost plus the
+average interference, and on a machine carrying a standing load average near 2.6 that interference
+was 10–18 ms: claims (a) and (b) failed by exactly that margin, on a tree with **no v5.2 code in
+it** as well as on one with it, which is the proof that the number being reported was the
+desktop's and not the binary's. The minimum over 20 runs is the iteration that met the least
+interference, so it is the closest estimate of the binary's own cost that this method can produce,
+and it is the only one of the three that does not get worse when someone opens a browser. The mean
+and the max are still printed and still pasted into DECISIONS.md — they are the honest record of
+what the owner will actually feel, and a max that grows while the min does not is a scheduling
+story worth reading — but they are **not** the gate, because a gate that fails for a reason the
+committed tree cannot change is a gate that gets relaxed on the next miss, which is the §2j
+failure in the section that exists to make speed claims honest.
+
+Two measurement faults were found with it and are fixed in §1.4 rather than here, because they
+are properties of the recipe: the harness was charging the binary ~3.6 ms per sample for its own
+`date` fork, and the timing sandbox had no unit files, so every sample paid `system_node_present`'s
+two extra `systemctl` round trips against the **system** manager — ~20 ms of a code path claim (a)
+is not about, since claim (a) is `status` on a machine that has been set up and whose daemons are
+merely down.
+
+This is an amendment, not a relaxation, and the distinction is worth stating because it is the one
+a future agent will be tempted to reuse: the *budget* is unchanged, the *measurement* is narrowed
+to the quantity the budget was always about. Widening the budget because a run missed it would be
+the other thing entirely, and is still forbidden.
 
 **Claim (a)'s budget is set above its own measured floor, not below it.** Two
 `systemctl --user is-active` spawns measure **~19 ms for the pair** on this machine (20-iteration
@@ -2915,6 +3008,38 @@ address-derived value of §2m.3), username, password }`, with the credential rea
 omitted. In **remote** mode it is `{ address: settings.node.remote, trusted:
 settings.node.remote_trusted, ssl_support: "autodetect" }` — `"disabled"` for a loopback
 `node.remote` — with **no** `username` and **no** `password`, ever (§2m.3).
+
+**The whole post-open sequence runs under `timeouts.refresh_sec`, not under the 5 s probe
+deadline** (v5.3, and the defect a live rehearsal against a real public node found). "`set_daemon`
+opens no socket" (§1b.9 item 1) is true of the call and false of its **latency**:
+`wallet2::set_daemon` takes `m_daemon_rpc_mutex` as its first statement, and `on_create_wallet`
+leaves the new wallet open with `monero-wallet-rpc`'s idle handler already refreshing it from the
+restore height the **node** just handed it (§2m.3) — in remote mode, over the internet. Every call
+that follows is then waiting behind that refresh, and the rehearsal killed three different ones at
+5 s: `units::ensure_running`'s own `get_version` probe (reported as `unit_missing` — a daemon that
+is running and merely busy), `set_daemon`, and `auto_refresh`. **One `wallet create` in three
+failed after the wallet file already existed.** So:
+
+- `WalletClient::set_daemon` is issued under `Deadline::Refresh`;
+- `wallet create` and `wallet open` build their client from
+  `Context::with_wallet_probe_at_refresh()` (§5b), which raises the wallet **probe** deadline to
+  `timeouts.refresh` for that command only.
+
+`timeouts.refresh_sec` (120 s) and not `timeouts.open_sec` (300 s), because the thing being waited
+on **is a refresh**: `refresh_sec` is this document's one budget for "the wallet is fetching blocks
+from a daemon", while `open_sec` is the budget for decrypting a wallet file — a different quantity,
+five minutes long, during which a command would look like a hang. A daemon that is **down** is
+unaffected either way: a refused connection is an error, not a deadline, so `wallet create` against
+a dead `monero-wallet-rpc` still fails in milliseconds. `--timeout N` lowers both deadlines before
+the raise, so it still wins (§4). Nothing else moves: `get_balance`, `get_address` and `get_height`
+on the `status` hot path keep `timeouts.wallet_sec`, which is what keeps §2l's budgets and §2e's
+"status never hangs" true.
+
+**And `wallet create` prints the `seed_backup_hint` the moment `create_wallet` returns**, on stderr,
+before the daemon step — not only in the success payload. From that line on the wallet file exists,
+so making the one output that says "back up your seed before funding this wallet" conditional on a
+later step is the §2a failure of treating a money-visibility fact as a footnote. The JSON payload
+still carries `seed_backup_hint` (§5c is unchanged); stderr is not the data stream (§4).
 
 **It cannot be issued before `open_wallet`.** `on_set_daemon` begins
 `if (!m_wallet) return not_open(er);` (`src/wallet/wallet_rpc_server.cpp:4692`), i.e. it answers
@@ -4519,6 +4644,20 @@ makes it, per the rule at the top of §5b. Nothing else in §5b moves.
 | 11 | `units::remote_node_error(ctx, verb: Option<&str>)` is new, and `send::refuse_if_send_in_flight(ctx)` is the §2a.4 entry check's unrelayed half, extracted from `send::preflight` | §2m.3 prescribes the refusal's wording per verb (`fmonero node <verb> needs the local monerod; node.mode is remote (<addr>)`), and `NodeClient::from_ctx` — the structural gate — does not know which command called it. One constructor, two callers, `None` for the plural. The second is `node_mode`'s money guard: it needs the unrelayed check and **not** the resolve step that follows it, because resolving asks the wallet daemon those commands are about to restart (§2m.5). |
 | 12 | `settings::{remote_host, remote_host_port, is_loopback_host, is_private_host}` and `paths::systemd_user_dir_is_sandboxed` are new | The first four are the address predicates §2m.2, §2m.3 and §2m.6 name, in one place rather than four; `units::ssl_for_address`, `status`'s `remote_node_trusted` and the doctor's `remote_node_untrusted` all read them. The fifth narrows §4.2's "a test never installs a unit" by exactly one case — a unit written into `FMONERO_SYSTEMD_USER_DIR` **while `Systemctl::Fixture` is also set** is not a real unit, and §4b's AMBER `node remote <addr> --yes` row has no other way to exist. Either half alone still refuses. |
 
+### 5b.2 The v5.3 amendments, in full
+
+Four changes, all additive: no existing signature moves, so nothing compiled against §5b needs
+recompiling against a different shape. They are listed for the same reason §5b.1 lists behaviour
+changes — "compile against exactly these signatures" does not warn a reader that a call's
+**deadline** or a hint's **text** moved.
+
+| # | Change | Why |
+|---|---|---|
+| 1 | `Context::with_wallet_probe_at_refresh()` is new, and `WalletClient::set_daemon` keeps its signature while moving from `Deadline::Probe` to `Deadline::Refresh` | The whole post-create/post-open sequence waits behind the new wallet's first refresh, which in remote mode is an internet round trip (§4.2). One `wallet create` in three failed at 5 s **after the wallet file existed**, and the three calls killed were not all the same one — `get_version`, `set_daemon` and `auto_refresh` — so a per-call patch would have closed one third of it. |
+| 2 | `Error::retarget_sandbox_hint(own_dry_run)` is new, and `units::install`'s sandbox refusal gains `reason: "sandboxed_units"` | The refusal is raised in core, which cannot know whether the caller was `setup --units`, `node remote` or `node local`; §4's rule is that a hint is the user's own command. The reason is also the guard that keeps the rewrite from touching any other error. |
+| 3 | `send::LOCK_RETRY_BUDGET` is new and `send::take_send_lock` keeps its signature while retrying `EWOULDBLOCK` for 500 ms | §2a.11: a `flock` survives in a forked child until it `exec`s, so a sibling thread's `Command::spawn` refused a legitimate send ~29–40 % of the time. The budget is public because a test has to assert the refusal comes **after** it. |
+| 4 | `probes::read_settings_document` and `probes::SettingsDocument` are new (crate-internal to `fmonero`, not core) and `inspect_settings` becomes a thin wrapper | §7.1: the `settings_valid` detector and the `RepairSettings` fixer replayed `config.toml` **twice**, and the two disagreed about `node.mode` — the disagreement being exactly what took a correctly configured machine out of remote mode. |
+
 ## 5c. Per-command JSON payloads
 
 `--json` is promised on every command (§4) and agents are the stated audience, but before v2 only
@@ -4923,6 +5062,23 @@ and `render_* + WriteFile` — a guess that decides whether `doctor undo` works 
   reload is a fixer that reports success and changes nothing.
 - `monerod_conf_mode` → `RunArgv{["chmod","600",path], inverse: ["chmod","<old>",path]}`.
 - `settings_valid` → `WriteFile{config_file(), Settings::to_toml_bytes(&repaired), 0o600}`.
+  **The detector and the fixer replay the document through ONE function** (v5.3,
+  `probes::read_settings_document`): the detector reports its `problems`, the fixer writes its
+  `Settings`, and a key the detector considers fine can no longer be reset by the fixer. Two
+  replays that could disagree is not a tidiness question — it is how `doctor --fix` came to rewrite
+  `node.mode` from `remote` to `local` on a correctly configured machine.
+  **And §2m.1's invariant is validated on the whole document, not key by key.** `node.mode =
+  remote` is legal exactly when `node.remote` — wherever it sits in the file — is a valid address,
+  so its validity is a property of the document. `toml::Value`'s table is a `BTreeMap`, `mode`
+  sorts before `remote`, and a one-key-at-a-time replay onto `Settings::default()` therefore
+  validated `mode = remote` against an address the same file supplies three lines further down and
+  had not read yet: `settings_valid` warned `invalid_keys` on a correct machine, and the fixer —
+  which drops every key the detector named — rewrote `node.mode` to its default while the installed
+  wallet unit kept naming the public node, which is the state §2m exists to prevent. The two keys
+  of the pair are lifted out of the per-key pass and applied after it, the address first, which
+  makes the outcome independent of the order the keys appear in and puts the invariant exactly
+  where `Settings::invalid_keys` already puts it: on the finished document, reported under
+  `node.mode`, whose documented default (`local`) is also its repair.
 - `state_valid` → `WriteFile{state_file(), StateDoc::default().to_bytes(), 0o600}`.
 - `wallet_dir_exists` → one `CreateDir{dir, 0o700}` per missing ancestor.
 - `plugin_linked` → `CreateSymlink{plugin_link(), the repo's plugin dir}`.
