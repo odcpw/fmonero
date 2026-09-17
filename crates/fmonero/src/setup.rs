@@ -191,17 +191,25 @@ fn units_step(ctx: &mut Context, args: &SetupArgs) -> Result<Vec<FileAction>, Er
             diff: None,
         })
         .collect();
-    if !args.dry_run && !changed.is_empty() {
-        ctx.settings.save(ctx)?;
-    }
-
     // `units::install` renders the three files, compares byte-for-byte, and creates
     // `wallet.dir` and every missing ancestor at 0700 first (§4.2).
+    //
+    // **It runs BEFORE `Settings::save`, and the order is the point.** `install` renders from
+    // `ctx.settings` in memory, so the mutations above are already in force — but saving first
+    // meant a failing `install` (a read-only `~/.config/systemd/user`, the §2i system-unit
+    // refusal, no `systemctl` in the session) left `node.url`, `wallet.url`, `wallet.port`,
+    // `wallet.dir` and — under `--full-chain --yes` — `node.prune` rewritten on disk, with the
+    // `actions` list that would have said so discarded along with the error. §4.2 says "running
+    // it twice leaves the same machine"; a run that reports failure and changes five keys is
+    // neither idempotent nor honest, and the next `status` then talks to the wrong port.
     let written = if args.rotate_rpc_login {
         units::install_rotating(ctx, args.dry_run)?
     } else {
         units::install(ctx, args.dry_run)?
     };
+    if !args.dry_run && !changed.is_empty() {
+        ctx.settings.save(ctx)?;
+    }
     if args.rotate_rpc_login && !args.dry_run {
         actions.push(FileAction {
             what: "the node credential was rotated: restart the node before using it".into(),

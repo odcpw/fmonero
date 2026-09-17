@@ -451,9 +451,22 @@ if [ -n "$UNIT_DIR" ] && [ "$UNIT_DIR" = "$WANT_DIR" ]; then
 else
   bad "§4.2: --wallet-dir mismatch" "unit: $UNIT_DIR" "setting: $WANT_DIR"
 fi
-# §4.2: a test never installs a unit.
+# §4.2: a test never installs a unit — and `units::install` refusing is exactly the failure
+# that used to leave the DERIVED settings rewritten on disk. §4.2 promises "running it twice
+# leaves the same machine"; a run that reports failure and has already changed `node.url`,
+# `wallet.url`, `wallet.port` and `wallet.dir` is neither idempotent nor honest, and the next
+# `status` then talks to the wrong port. Byte-compare config.toml across the failure.
+fm settings set node.url "http://127.0.0.1:19999" >/dev/null
+fm settings set wallet.port 19998 >/dev/null
+cp "$FMONERO_CONFIG_DIR/config.toml" "$WORK/setup/config.before"
 fm setup --units --yes --json
 expect_rc 3 "setup --units --yes refuses to write under FMONERO_STATE_DIR (§4.2)"
+if cmp -s "$WORK/setup/config.before" "$FMONERO_CONFIG_DIR/config.toml"; then
+  ok "§4.2: and a failed --units left config.toml byte-identical"
+else
+  bad "§4.2: a failed setup --units kept the settings it had already rewritten" \
+      "$(diff "$WORK/setup/config.before" "$FMONERO_CONFIG_DIR/config.toml" | head -6)"
+fi
 fm setup --json
 expect_rc 2 "setup with no target is exit 2"
 
