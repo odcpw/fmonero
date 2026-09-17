@@ -4769,3 +4769,166 @@ and `storage` groups against a live daemon. They need `omarchy pkg add monero` a
 password, which no agent on this machine has (§1.1), and §4b's rehearsal list — on **stagenet**
 first — is the exact sequence that turns them green. Phase 4's verifier owns the one real
 `scripts/install.sh --yes`.
+
+---
+
+## Phase 4 — fixer: the three reviewers' findings, confirmed and applied (2026-09-17)
+
+Forty-five findings arrived from four read-only reviewers (money/bugs, honesty, plugin/TUI UX).
+Each was confirmed **in code** before anything changed — by reading the file, and wherever a
+mock or a pty could reach it, by reproducing the failure and then re-running the same
+reproduction after the fix.
+
+| Outcome | Count | Ids |
+|---|---|---|
+| **fixed** | 42 | money-1…money-10 · honesty-1…honesty-10 · secrets-1, secrets-2, secrets-3 · ux-1…ux-18, ux-20 |
+| **duplicate** | 1 | secrets-4 (the same defect as money-1, stated from the §2d-invariant side; fixed by money-1's change) |
+| **deferred** | 2 | secrets-5, ux-19 — both need a DESIGN.md change, below |
+| **refuted** | 0 | — |
+
+Every finding was reproducible. Nothing was waved through, and nothing that could be fixed
+without editing the contract was deferred.
+
+### The two deferred, and exactly what would close them
+
+- **secrets-5 — the node unit's `--config-file %h/.config/fmonero/monerod.conf` versus the
+  XDG-resolved `paths.monerod_conf()`.** Confirmed: with `XDG_CONFIG_HOME` set to anything but
+  `~/.config`, `setup --units` writes `monerod.conf` where `Paths` says and the unit names a file
+  that is not there, so `node up` starts a monerod that exits on a missing *named* config file
+  (§1b.6), `Restart=on-failure` retries into systemd's start limit, and `node up` reports exit 8
+  "did not answer get_info within 30s" — the symptom pointing away from the cause. systemd has no
+  specifier for `XDG_CONFIG_HOME`, so the fix is to render the absolute path, exactly as
+  `render_wallet_unit` already does for `--wallet-dir`.
+  **Deferred because §4.2 prescribes the literal in as many words**: "`%S` stays in
+  `StateDirectory=`/`WorkingDirectory=`/`--log-file`, which nothing compares against a setting,
+  and **`%h` stays in the node unit's `--config-file`**, likewise uncompared." The reviewer said
+  the same ("the code conforms and the design is what needs the change"). Closing it is one line
+  in `units::render_node_unit`, one line in `units::tests::the_units_carry_the_specifiers_…`, and
+  a §4.2 amendment — and §4.2's own reasoning for rendering `--wallet-dir` absolutely applies
+  verbatim, so whoever owns §4.2 should take it.
+- **ux-19 — `src/tui/{mod,theme,screens,send,subs}.rs` is 4 400 lines against §7a's ≤ 1 800.**
+  Confirmed by `wc -l`, and **carried forward unchanged from the Phase 2 TUI gate and the Phase 3
+  ledger**, which both reported it rather than closing it. This phase added about 120 lines of
+  comment and layout to those files, so it moved in the wrong direction; the honest lever is
+  §7a's scope or §7a's number, and both are the contract's. Not re-litigated here.
+
+### Deviations this phase recorded (§2k)
+
+1. **§2a.2's `--max-fee` refusal moved from `send::build` to its caller** — `send::check_max_fee`
+   is now public and `main.rs` runs it on the returned plan, immediately after the build and
+   before its `--yes` check, which is §2a.1's step 9 in the same position. §2a.2 says "`send::build`
+   raises it"; §5c says the same refusal must emit "the complete `wallet send` key set … with
+   `fee_pico`/…/`txs` carrying the **built** transaction's real numbers"; and §5b freezes
+   `build -> Result<Plan, Error>`, where an `Err` destroys the `Plan` that payload is rendered
+   from. The three cannot all hold. `relay` re-checks it as the enforcing gate — §2a.2's own
+   words, "so a caller that builds a plan by other means still cannot relay past it" — and the
+   TUI's Send screen has no `--max-fee` field (§7a gives it none), so the early check has exactly
+   one caller and §2a.3's "an invariant that lives in both of them holds in one" is not engaged.
+2. **§2j's marker set is NARROWER than Phase 3 left it**: `never` and `not yet` are no longer
+   honesty markers. Phase 3 widened the set for good reasons (README says "RED, and therefore
+   unverified", `build_note` says "no send has ever been broadcast") but `never` is ordinary
+   English this codebase writes on 6% of README's lines — "the doctor never deletes anything",
+   "core never prints", "status never starts anything" — so with ±1 adjacency about a fifth of the
+   file was pre-excused, and a fixture with an outright false RED claim one line under a "never"
+   sentence passed in silence. `unverified`, `RED`/`AMBER`, `no send`, `nothing has been` and
+   `cannot be verified` remain, which covers every honest wording in the 1 440-line corpus, and
+   the narrowing has its own self-test. Two supporting changes: the JSON payloads are unescaped
+   into real lines before the scan (`build_note` was one line with literal `\n`s, so "adjacent"
+   meant nothing inside it, and `\n\nRED` put a letter immediately before the marker); and the
+   claim pattern gained `every step is idempotent` and `wires up`, which is how README claimed a
+   RED `setup` run.
+3. **`Service.qml` carries `pending` forward on a failed poll**, alongside the `node`/`wallet`
+   rows §6.3 names. It is the one row that warns a send may be in flight, and dropping it made the
+   warning vanish at exactly the moment the balance beside it went stale. Showing a warning that
+   may be a few seconds old is the conservative direction; hiding a live one is not.
+4. **`node_synced` reports `sync_percent` and no ETA** (§7.1's row promises "the ETA from two
+   height samples"). This is not a new deviation — it is the Phase 2 doctor's behaviour, recorded
+   now because honesty-9 found it absorbed rather than written down. It is **correct** for §7's
+   architecture: a detector is a pure `fn detect(&Probes) -> Verdict` over **one** run's probes, so
+   an ETA would have to come from one sample, which means inventing a number about how long a sync
+   will take (the rendered untruth §2j forbids) or sleeping inside a probe (the hang §2d forbids).
+   The ETA lives in the TUI's Node screen, which does hold two samples (`update_eta`). No code
+   change. The next agent to read §7.1's row should find this entry rather than re-implement it.
+5. **`capabilities.commands[].verified` is applied from a table, not trusted in the column.**
+   §4b's rule is that a class "mirrors the *lowest* class any of its scenarios reaches", and seven
+   rows sat above theirs — `node down` reading `amber` beside `node restart`'s `red` when both have
+   exactly one mock scenario and one unrun real one. `RED_COMMANDS` now names every command §4b's
+   RED list reaches, with the clause that puts it there, and the field is rendered through it so a
+   single edited literal cannot promote a row. Fourteen of the thirty-six commands are `red`; that
+   is what §4b says, and it is the honest number on a machine where no Monero binary is installed.
+
+### What was fixed, by area
+
+**Money (10).** The TUI's relay consulted the §2d breaker that §2d forbids, and could leave a
+`pending.json` record for a transaction that was never broadcast — fixed on the transport, so the
+exemption is a property of `send::relay` rather than of whichever client a caller happened to
+pass. An unparsable `pending.json` blocked every send for good while the one escape hatch §2a.4
+documents failed identically — `wallet clear-pending` now tolerates it, and takes the §2a.11 lock
+it was missing. The no-`--yes` hint dropped `--below`, `--max-fee` and `--note`, so running the
+hint moved different money than the refusal printed. A refused relay stranded the Send screen on
+"broadcasting" for the session with the plan dropped. The `fee_above_max` refusal carried no
+machine-readable fee. A `relay_tx` that never answered was reported as a rejection. An overflowing
+total rendered as `18446744.07…` in JSON and `0.0000` in the confirm modal. A non-loopback
+`node.url` became exit 4 `unreachable` with a hint that itself exits 2. And a `set_daemon` failure
+other than the one §4.2 exempts reported a successful `wallet open` for a wallet with no daemon
+credential.
+
+**Secrets (3 + 1 duplicate).** `wallet set-daemon` sent no credential, which upstream turns into
+*clearing* the wallet's daemon login (`wallet2.cpp:1393`) rather than keeping it — so the command
+the doctor recommends broke a working wallet. That doctor command also hard-coded port 18081, which
+on §4b's own stagenet rehearsal points at nothing. And three of `check.sh`'s structural greps were
+per-file allowlists where DESIGN words them as directory scans.
+
+**Honesty (10).** `tests/tui_tmux.sh` leaked the TUI out of its sandbox whenever a tmux server was
+already running — verified on this machine — which made the only TUI-against-mock gate vacuous and,
+in `--capture` mode, drove a real `transfer` against the owner's wallet while the "nothing was
+relayed" assertion read an empty mock log. Fixed with `env` in the pane plus three positive
+assertions and a port-ownership check; `--capture` now passes 16/0 with a live tmux server, and it
+failed loudly on the first run because another session had left mocks on those ports. Then: the
+`verified` column, README's install claim, the §2a.3 grep's path list, the uncounted COMMANDS
+table, the §5c step that asserted nothing, the `never` marker, `build_stage`, the `node_synced`
+deviation, and three README sentences each a little stronger than the code.
+
+**Plugin and TUI UX (19).** The panel rendered a stale balance as current and ran a plain `doctor`
+for a `--only` hint. In the TUI: three overlay heights each one row short — including the confirm
+modal's typed-word echo, so the TUI's `--yes` was typed blind — two false keymap rows, a log search
+destroyed once a second by its own follow poll, two blank panes at 70x20 where the only error
+surface belongs, a clipped `fmonero setup --unit`, an unscannable receive QR (both halves: the
+canvas's both-lit cells and the CLI's uncoloured glyphs), a truncated monetary column, an
+off-screen account selector, two panes describing a state the same screen contradicts, a stale
+exit code surviving a recovery, a banner offering `history | clear-pending`, a `setup --units`
+failure that kept the settings it had already rewritten, two DESIGN.md section numbers in
+user-facing copy, and a log title with no room for `follow on/off`.
+
+One part of ux-4 was **not** taken: the TUI_POLISH_PLAYBOOK's `current/total` match count on the
+Log screen's search row. It is a feature request rather than the finding's failure scenario (the
+search being wiped), and §7a does not ask for it.
+
+### Gates, re-run after every fix
+
+```
+cargo fmt --check                        pass
+cargo clippy --all-targets -- -D warnings  pass
+cargo test                               pass — 219 tests (was 210: +9 this phase)
+scripts/check.sh --full                  pass — 50 ok, 1 honest skip (shellcheck absent, §1.4)
+tests/e2e.sh --fast                      pass — 331 passed, 0 failed, 2 skipped (was 301)
+tests/e2e.sh --full                      pass — 357 passed, 0 failed, 2 skipped (was 327)
+tests/plugin-smoke.sh                    pass — 32 passed, 0 failed
+tests/tui_tmux.sh                        pass — 10 passed, 0 failed
+tests/tui_tmux.sh --capture DIR          pass — 16 passed, 0 failed, WITH a tmux server already
+                                         running: the condition honesty-1 is about
+```
+
+The §2l timings, re-measured with §1.4's `date +%s%N` loop after the changes:
+`(a) 52 ms` mean against a 60 ms GREEN budget · `(b) 54 ms` against 80 ms AMBER ·
+`(d) 3 ms` against 50 ms AMBER. **(c) is RED and is neither measured nor claimed.**
+
+### Every RED row is still RED
+
+Nothing in this phase installed Monero, started a daemon, or broadcast anything. `monerod` and
+`monero-wallet-rpc` are still absent (§1.1), every §4b RED row is still RED, and the three honesty
+surfaces say so — `build_stage` is now `phase-3-integrated` with the doctor and TUI added to its
+GREEN and AMBER sentences and one clause **added** to its RED sentence (every doctor check in the
+node, wallet and storage groups against a live daemon), and fourteen of the thirty-six
+`capabilities.commands` rows read `verified: "red"`. The one real `scripts/install.sh --yes` is the
+Phase 4 **verifier's**, not the fixer's, and it has not been run here.
