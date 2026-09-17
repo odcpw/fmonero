@@ -786,7 +786,12 @@ fn command_path(cmd: &Cmd) -> String {
 /// no-`--yes` refusal and for a relayed success, so an agent parses **one** shape and reads
 /// `relayed` to learn what happened.
 fn plan_payload(plan: &Plan, txids: &[String], relayed: bool, dry_run: bool) -> serde_json::Value {
-    let total = plan.total().map(|t| t.0).unwrap_or(u64::MAX);
+    // §5's shape rule: "Unknown is `null` — never an absent key, never `{}`, never a zero
+    // standing in for unknown." `amount + fee` can only exceed `u64::MAX` on a malformed or
+    // hostile wallet-rpc answer, and `Piconero::checked_add` exists precisely so money is never
+    // wrapped or invented — `u64::MAX` here rendered a fabricated `18446744.073709551615 XMR`
+    // total beside a real amount and a real fee.
+    let total = plan.total().ok();
     let txs: Vec<serde_json::Value> = plan
         .txs
         .iter()
@@ -810,8 +815,8 @@ fn plan_payload(plan: &Plan, txids: &[String], relayed: bool, dry_run: bool) -> 
         "amount_xmr": plan.total_amount.to_xmr_string(),
         "fee_pico": plan.total_fee.0,
         "fee_xmr": plan.total_fee.to_xmr_string(),
-        "total_pico": total,
-        "total_xmr": Piconero(total).to_xmr_string(),
+        "total_pico": total.map(|t| t.0),
+        "total_xmr": total.map(Piconero::to_xmr_string),
         "dest": plan.dest,
         "account_index": plan.account_index,
         "priority": plan.priority,
@@ -870,8 +875,20 @@ fn print_qr(out: &Out, text: &str) -> Result<(), Error> {
     let side = width + quiet * 2;
     let dark_at =
         |x: usize, y: usize| -> bool { x >= quiet && y >= quiet && dark(x - quiet, y - quiet) };
+    // The glyphs draw the DARK modules, so the code only scans if the ink is dark and the paper
+    // light. A bare glyph takes the terminal's own colours, which on Omarchy's dark theme renders
+    // the whole code inverted — including a dark quiet zone, which is the part a decoder uses to
+    // find the code at all. So each row carries an explicit black-on-white. `print_qr` runs only
+    // on a TTY (§4), so colour is available unless the user turned it off, and with it off the
+    // glyphs are still the honest best a monochrome terminal allows.
+    let (open, close) = if out.color {
+        ("\x1b[30;47m", "\x1b[0m")
+    } else {
+        ("", "")
+    };
     for row in (0..side).step_by(2) {
-        let mut line = String::with_capacity(side);
+        let mut line = String::with_capacity(side + open.len() + close.len());
+        line.push_str(open);
         for x in 0..side {
             let top = dark_at(x, row);
             let bottom = row + 1 < side && dark_at(x, row + 1);
@@ -882,6 +899,7 @@ fn print_qr(out: &Out, text: &str) -> Result<(), Error> {
                 (false, false) => ' ',
             });
         }
+        line.push_str(close);
         out.line(line);
     }
     Ok(())
@@ -1497,8 +1515,21 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                     max_fee: max_fee.as_deref().map(Piconero::parse).transpose()?,
                 };
                 let w = WalletClient::from_ctx(&ctx)?;
-                let n = NodeClient::from_ctx(&ctx).ok();
+                // §2c: `NodeClient::from_ctx` fails only for a non-loopback URL (exit 2
+                // `non_loopback_url`) or an unreadable monerod.conf (exit 1) — never because
+                // the node is down. Discarding that error made both report as exit 4
+                // `unreachable` with `fmonero node up` as the hint, which itself exits 2 on the
+                // same configuration: a diagnosis pointing away from the cause, on the money
+                // path.
+                let n = Some(NodeClient::from_ctx(&ctx)?);
                 let plan = send::build(&ctx, &w, n.as_ref(), &req, &cancel)?;
+                // §2a.1 step 9, and §5c's money exception: the refusal must carry the BUILT
+                // transaction's key set, so it is raised here — with the plan in hand — rather
+                // than inside `build`, whose `Err` would destroy it (§2a.2).
+                if let Err(e) = send::check_max_fee(&plan) {
+                    let payload = plan_payload(&plan, &[], false, false);
+                    return Ok(refuse_with_plan(&out, &e, ok(payload)));
+                }
                 if dry_run {
                     // --dry-run beats --yes: it never relays (§4).
                     out.emit("wallet send", ok(plan_payload(&plan, &[], false, true)));
@@ -1520,6 +1551,10 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                         Some(&amount),
                         acct,
                         prio,
+                        &[
+                            ("--max-fee", max_fee.as_deref()),
+                            ("--note", note.as_deref()),
+                        ],
                     ));
                     return Ok(refuse_with_plan(&out, &e, ok(payload)));
                 }
@@ -1559,8 +1594,14 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                     max_fee: max_fee.as_deref().map(Piconero::parse).transpose()?,
                 };
                 let w = WalletClient::from_ctx(&ctx)?;
-                let n = NodeClient::from_ctx(&ctx).ok();
+                // As `wallet send` above: a loopback or config failure keeps its own exit code
+                // rather than becoming exit 4 `unreachable` (§2c).
+                let n = Some(NodeClient::from_ctx(&ctx)?);
                 let plan = send::build_sweep(&ctx, &w, n.as_ref(), &req, &cancel)?;
+                if let Err(e) = send::check_max_fee(&plan) {
+                    let payload = plan_payload(&plan, &[], false, false);
+                    return Ok(refuse_with_plan(&out, &e, ok(payload)));
+                }
                 if dry_run {
                     out.emit("wallet sweep", ok(plan_payload(&plan, &[], false, true)));
                     return Ok(0);
@@ -1575,7 +1616,17 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                         plan.total_fee.to_xmr_string()
                     ))
                     .with_reason("needs_yes")
-                    .with_hint(send_hint("sweep", &to, None, acct, prio));
+                    .with_hint(send_hint(
+                        "sweep",
+                        &to,
+                        None,
+                        acct,
+                        prio,
+                        &[
+                            ("--below", below.as_deref()),
+                            ("--max-fee", max_fee.as_deref()),
+                        ],
+                    ));
                     return Ok(refuse_with_plan(&out, &e, ok(payload)));
                 }
                 let payload = plan_payload(&plan, &[], true, false);
@@ -1597,16 +1648,36 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                 Ok(0)
             }
             WalletCmd::ClearPending => {
-                let record = state::pending_send(&ctx)?;
+                // §2a.11: the record's third writer enters the same critical section. Without
+                // this a `clear-pending` between two `relay_tx` calls of a sweep removes the
+                // record under the relay, `state::mark_relayed` fails for a transaction that
+                // really went out, and nothing is left on disk to block the next send.
+                let _lock = send::take_send_lock(&ctx)?;
+                // §2a.4 makes this command "the manual escape hatch after a crash", and §4
+                // makes every hint a runnable command — so the one command the `pending_send`
+                // refusal points at must work even on a record fmonero cannot parse. A
+                // hand-edited record, one written by a future build with a new field, or a
+                // truncated copy would otherwise block every `send` and every `sweep` for good,
+                // with the printed hint failing the same way.
+                let (record, unreadable) = match state::pending_send(&ctx) {
+                    Ok(r) => (r, false),
+                    Err(_) => (None, true),
+                };
                 let rendered = record
                     .as_ref()
                     .map(|r| PendingStatus::from_record(r, fmonero_core::now_unix()));
                 if record.is_some() {
                     out.note("check whether these transactions landed before clearing the record:");
                     out.note("  fmonero wallet history --limit 5");
+                } else if unreadable {
+                    out.note(format!(
+                        "{} exists but cannot be parsed, so it names no transaction to check:",
+                        ctx.paths.pending_file().display()
+                    ));
+                    out.note("  fmonero wallet history --limit 5   # check the last few by hand");
                 }
                 require_yes(yes, "fmonero wallet clear-pending")?;
-                let cleared = record.is_some();
+                let cleared = record.is_some() || unreadable;
                 state::clear_pending_send(&ctx)?;
                 out.emit(
                     "wallet clear-pending",
@@ -1747,7 +1818,21 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
             WalletCmd::SetDaemon { address, trusted } => {
                 require_yes(yes, "fmonero wallet set-daemon")?;
                 let w = WalletClient::from_ctx(&ctx)?;
-                w.set_daemon(&address, trusted, None)?;
+                // Omitting the two credential fields does not KEEP the wallet's daemon login,
+                // it clears it: `on_set_daemon` builds the optional login only from a non-empty
+                // username/password (`wallet_rpc_server.cpp:4754-4757`) and `wallet2::set_daemon`
+                // then assigns `m_daemon_login = std::move(daemon_login)` unconditionally
+                // (`wallet2.cpp:1393`). fmonero's own node requires `rpc-login` (§4.2), so a
+                // loopback target carries it — from the same `monerod.conf` that
+                // `wallet_session::open` reads — and a remote one still receives nothing,
+                // because a remote node is reached by monero-wallet-rpc, not by fmonero (§2c).
+                let login =
+                    if fmonero_core::rpc::require_loopback(&format!("http://{address}")).is_ok() {
+                        fmonero_core::rpc::Login::from_monerod_conf(&ctx.paths.monerod_conf())?
+                    } else {
+                        None
+                    };
+                w.set_daemon(&address, trusted, login.as_ref())?;
                 out.emit(
                     "wallet set-daemon",
                     ok(serde_json::json!({
@@ -1873,16 +1958,46 @@ fn require_yes(yes: bool, what: &str) -> Result<(), Error> {
         .with_hint(format!("{what} --yes")))
 }
 
-/// The `--yes` hint is the user's **own** command with `--yes` appended verbatim (§4).
-fn send_hint(verb: &str, to: &str, amount: Option<&str>, account: u32, priority: u32) -> String {
-    match amount {
-        Some(a) => format!(
-            "fmonero wallet {verb} {to} {a} --account {account} --priority {priority} --yes"
-        ),
-        None => {
-            format!("fmonero wallet {verb} {to} --account {account} --priority {priority} --yes")
+/// The `--yes` hint is the user's **own** command with `--yes` appended **verbatim** (§4).
+///
+/// Every bound the user gave has to come back, not just the ones a template happened to carry:
+/// a hint that drops `--below` turns a bounded sweep into the whole account, and one that drops
+/// `--max-fee` prescribes the rebuild §2a.2 warns may charge a different fee — with the user's
+/// own ceiling removed. `--note` is quoted because it is free text.
+fn send_hint(
+    verb: &str,
+    to: &str,
+    amount: Option<&str>,
+    account: u32,
+    priority: u32,
+    extra: &[(&str, Option<&str>)],
+) -> String {
+    let mut s = format!("fmonero wallet {verb} {to}");
+    if let Some(a) = amount {
+        s.push(' ');
+        s.push_str(a);
+    }
+    s.push_str(&format!(" --account {account} --priority {priority}"));
+    for (flag, value) in extra {
+        if let Some(v) = value {
+            s.push_str(&format!(" {flag} {}", shell_quote(v)));
         }
     }
+    s.push_str(" --yes");
+    s
+}
+
+/// Single-quote a value for a hint the user pastes into a shell. fmonero itself never builds a
+/// shell string (§2f) — this is the one place a *printed* command has to survive a copy-paste,
+/// and a note is the only free-text argument on the money path.
+fn shell_quote(s: &str) -> String {
+    if !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./@:=+,".contains(c))
+    {
+        return s.to_string();
+    }
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// A wallet **filename** may not contain `/`: `on_open_wallet` and friends refuse it with a
