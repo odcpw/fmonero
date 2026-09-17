@@ -6556,3 +6556,238 @@ looking for a false claim in them and did not find one. It could not move the tw
 before `install.sh --yes`, so the idempotence evidence above is the second run's seven-of-seven
 `unchanged` plus the unit checksums, not a written-then-unchanged pair — said plainly rather than
 rounded up.
+
+
+## Hint fix-up (real output)
+
+The three defects the previous entry found and deliberately did not fix — **V1** (medium),
+**V2** (cosmetic) and **V3** (low-medium) — fixed on 2026-09-17 in
+`/home/oliver/Projects/odcpw/fmonero` on `main`, in three commits:
+
+```
+9b42f3f  core: the unit_missing hint names a setup command that runs                (V2)
+24ea6eb  agent: capabilities splits wallet book, so needs_yes is true on remove      (V3)
+bc4b117  cli: every needs_yes hint is the user's own command, and a test runs it     (V1)
+```
+
+All three are in the hint and capability surfaces — the machine-readable half of §4 — and none
+of them touches money, secrets or the units. **No Monero binary is installed and `sudo` needs a
+password** (§1.1), so every §4b RED row is still RED and nothing below claims one. Nothing here
+broadcast a transaction, started a `monerod` or a `monero-wallet-rpc`, opened or created a wallet
+file, ran `sudo`, or pushed. **No §5b signature and no `Cargo.toml` changed.** `docs/ROBOT.md` is
+untouched because `ROBOT_GUIDE` is untouched — `e2e.sh`'s byte-comparison against
+`fmonero robot-docs` passes on the tracked file, 69 lines. The one DESIGN.md edit is §2i's layout
+table, which carried V2's short hint as the contract.
+
+### V1 — the refusal hint is the user's own command, and running it now reaches the machine
+
+`require_yes` built `"{what} --yes"` and dropped the positional. It now appends `--yes` to the
+user's own arguments, the way `send_hint` already did for `send`/`sweep`. The three commands the
+previous entry named, in a sandboxed `FMONERO_STATE_DIR` / `FMONERO_SYSTEMD_USER_DIR` /
+`XDG_DATA_HOME`, with the hint of each refusal then run verbatim (`code` is the exit code, §4):
+
+```
+$ fmonero wallet create zzhint --json
+{"code":3,"reason":"needs_yes","hint":"fmonero wallet create zzhint --yes"}
+$ fmonero wallet create zzhint --yes --json                       # running that hint
+{"code":4,"reason":"unit_missing","error":"fmonero-wallet-rpc.service is not installed in <sandbox>/systemd"}
+
+$ fmonero wallet book remove 3 --json
+{"code":3,"reason":"needs_yes","hint":"fmonero wallet book remove 3 --yes"}
+$ fmonero wallet book remove 3 --yes --json                       # running that hint
+{"code":4,"reason":"unreachable","error":"monero-wallet-rpc is not answering: io: Connection refused (os error 111)"}
+
+$ fmonero wallet set-daemon 127.0.0.1:18081 --json
+{"code":3,"reason":"needs_yes","hint":"fmonero wallet set-daemon 127.0.0.1:18081 --yes"}
+$ fmonero wallet set-daemon 127.0.0.1:18081 --yes --json          # running that hint
+{"code":4,"reason":"unreachable","error":"monero-wallet-rpc is not answering: io: Connection refused (os error 111)"}
+
+$ fmonero wallet list --json
+{"dir":"<sandbox>/data/fmonero/wallets/mainnet","ok":true,"schema":1,"wallets":[]}
+```
+
+**Exit 4, not exit 2** — the hint now fails on the machine (no unit, no daemon) instead of on its
+own argv, which is the whole defect. No wallet file was created by either invocation: the refusal
+is before the password prompt and the run stops at §2i's preflight.
+
+Every flag the user passed comes back too, for the reason `send_hint` gives — a hint that drops a
+bound is a different command — so `wallet set-daemon <addr> --trusted` hints
+`… --trusted --yes`, and `wallet create` carries `--allow-empty-password` and `--password-file`
+when they were given. `--language` is omitted when it is the default clap filled in, because a
+hint is read as well as run.
+
+`node down`, `node restart` and `wallet clear-pending` were already runnable and are unchanged in
+behaviour; they are now gated by the same test and the same six e2e rows.
+
+### V2 — every `unit_missing` hint names a `setup` command that itself runs
+
+Two sites, `session.rs` (`node up`/`down`/`restart`) and `rpc/node.rs` (`NodeClient::mutators`),
+said `fmonero setup --units`, which is itself an exit 3 `needs_yes`. And `setup --units` refused
+without `--yes` by hinting `fmonero setup --all --yes`, widening what the user asked for. Both
+now name the user's own command:
+
+```
+$ fmonero node up --json
+{"code":4,"reason":"unit_missing","error":"no fmonero node unit is installed","hint":"fmonero setup --units --yes"}
+$ fmonero setup --units --json
+{"code":3,"reason":"needs_yes","error":"fmonero setup needs --yes","hint":"fmonero setup --units --yes"}
+```
+
+`SetupArgs::own_command` rebuilds the invocation from the flags that were passed, so
+`setup --plugin` hints `fmonero setup --plugin --yes` and not `--all`. The **bad-args** refusal
+(no target flag at all) still hints `fmonero setup --all --yes`, on purpose: there the user named
+no target for `own_command` to echo back. DESIGN.md §2i's layout table, which is where the short
+form was written down as the contract, is corrected in the same commit.
+
+### V3 — `capabilities` splits `wallet book`, so `needs_yes` is true exactly where `--yes` is
+
+§4.1's Y column for that row reads "on remove" and one bool per row cannot say it. The row is
+split per subcommand exactly as `settings list|get|set` already is — the smaller of the two fixes
+the verifier named, and the one that keeps `needs_yes` the boolean an agent branches on and the
+§5c key set unchanged:
+
+```
+$ fmonero capabilities --json | jq -c '.commands[]|select(.name|startswith("wallet book"))'
+{"accepts_dry_run":false,"args":"","mutating":false,"name":"wallet book list","needs_node":false,
+ "needs_wallet":true,"needs_yes":false,"output_format":"json","verified":"amber"}
+{"accepts_dry_run":false,"args":"ADDRESS DESC","mutating":true,"name":"wallet book add",
+ "needs_node":false,"needs_wallet":true,"needs_yes":false,"output_format":"json","verified":"amber"}
+{"accepts_dry_run":false,"args":"INDEX","mutating":true,"name":"wallet book remove",
+ "needs_node":false,"needs_wallet":true,"needs_yes":true,"output_format":"json","verified":"amber"}
+
+$ fmonero capabilities --json | jq -c '[.commands[]|select(.needs_yes)|.name]'
+["node down","node restart","wallet create","wallet send","wallet sweep","wallet clear-pending",
+ "wallet book remove","wallet set-daemon","setup"]
+$ fmonero capabilities --json | jq '.commands|length'
+38
+```
+
+`wallet book list` also stops claiming to be mutating. The table is 38 rows where it was 36, and
+both directions of `scripts/check.sh`'s drift check still hold — every name is
+`fmonero <name> --help`-able ("38 of them") and every subcommand of the binary is documented.
+`docs/ROBOT.md` did not change: the guide is prose and names no command row.
+
+### The four new gates, and the proof that none of them is vacuous
+
+Three unit tests in `crates/fmonero/src/main.rs` and one step in `tests/e2e.sh`:
+
+```
+test tests::every_needs_yes_hint_parses_under_clap ... ok      # drives the real clap tree
+test tests::every_require_yes_call_site_is_listed_here ... ok  # the table is the source's
+test tests::capabilities_needs_yes_matches_the_handlers ... ok # both directions
+== §4: every needs_yes hint is the user's own command, and running it gets past clap   (e2e.sh)
+```
+
+`every_needs_yes_hint_parses_under_clap` collects every `needs_yes` hint this binary can print —
+the six `require_yes` sites, `setup`'s own refusal and both `send_hint` forms — and parses each
+through `Cli::try_parse_from` with the hint's own argv. `every_require_yes_call_site_is_listed_here`
+greps this file for `require_yes(yes, "…` and fails if the count differs from the table's, so a
+seventh call site cannot arrive without a row. Each was re-run against the defect it is about,
+which is the only way to know a new test is worth its line count:
+
+```
+# require_yes reverted to format!("{what} --yes"):
+thread 'tests::every_needs_yes_hint_parses_under_clap' panicked:
+  assertion `left == right` failed: fmonero wallet create: the hint is not the user's command
+# …and with the equality assertion removed too, so the clap half has to answer:
+thread 'tests::every_needs_yes_hint_parses_under_clap' panicked:
+  the hint `fmonero wallet create --yes` does not parse: error: the following required arguments
+  were not provided:
+# `wallet book remove` flipped back to needs_yes: false in COMMANDS:
+thread 'tests::capabilities_needs_yes_matches_the_handlers' panicked:
+  `wallet book remove` refuses without --yes, and capabilities says needs_yes: false
+# and the e2e step, against a release binary built from the pre-fix require_yes:
+  FAIL  §4: the hint is not the user's own command with --yes appended
+        want: fmonero wallet create zzhint --yes
+        got:  fmonero wallet create --yes
+  FAIL  §4: the hint fails on its own argv, not on the machine
+        exit 2, reason bad_args
+  FAIL  and the hint's own exit is the machine's answer: expected exit 4, got 2
+e2e.sh (fast): 380 passed, 9 failed, 2 skipped
+```
+
+Nine failures, three per broken hint, and the tree was restored and rebuilt immediately
+afterwards (`git status` clean, `e2e.sh --fast` 389/0 again). The e2e step itself reads:
+
+```
+== §4: every needs_yes hint is the user's own command, and running it gets past clap
+  ok    node down without --yes (exit 3)
+  ok    needs_yes (reason needs_yes)
+  ok    §4: the hint is the user's own command — fmonero node down --yes
+  ok    §4: `fmonero node down --yes` gets past clap (exit 4, reason unit_missing)
+  ok    and the hint's own exit is the machine's answer (exit 4)
+  …one such group per command…
+  ok    §4: `fmonero wallet clear-pending --yes` gets past clap (exit 0, reason null)
+  ok    §4: `fmonero wallet book remove 3 --yes` gets past clap (exit 4, reason unreachable)
+  ok    §4: `fmonero wallet set-daemon 127.0.0.1:18081 --yes` gets past clap (exit 4, reason unreachable)
+  ok    §4: `fmonero wallet create zzhint --yes` gets past clap (exit 4, reason unit_missing)
+  ok    and neither invocation created a wallet file
+  ok    node up with no unit installed (exit 4)
+  ok    §4: the unit_missing hint runs, rather than refusing in turn
+  ok    setup --units without --yes (exit 3)
+  ok    §4: and setup hints the user's own command, not --all
+```
+
+### The six gates, re-run on the finished tree
+
+```
+$ cargo fmt --check                                   exit 0
+$ cargo clippy --all-targets -- -D warnings           Finished `dev` profile — no warnings, exit 0
+                                                      (after touching every crate root, so it
+                                                       really re-checked rather than replaying)
+$ cargo test
+running 79 tests   test result: ok. 79 passed; 0 failed      # crates/fmonero      (76 before: +3)
+running 144 tests  test result: ok. 144 passed; 0 failed     # crates/fmonero-core
+running 3 tests    test result: ok. 3 passed; 0 failed       # crates/fmonero-mock
+running 0 tests    test result: ok. 0 passed; 0 failed       # Doc-tests fmonero_core
+                                                      226 tests, 0 failed   (223 before)
+$ scripts/check.sh --full
+  ok    §7a: 4557 lines across src/tui/{mod,theme,screens,send,subs}.rs (budget 4600, tests.rs excluded)
+  ok    §6.1: 1243 lines of manifest + QML + Model.js (budget 1310)
+  ok    every command capabilities lists exists in the clap tree (38 of them)
+  ok    and every subcommand the binary offers is documented
+  ok    no RED claim in README, 1505 lines of --help/robot-docs/capabilities
+  skip  shellcheck is not installed on this machine (§1.4); bash -n ran instead
+check.sh: PASS                                        52 ok, 1 honest skip, 0 FAIL
+$ tests/e2e.sh --fast
+e2e.sh (fast): 389 passed, 0 failed, 2 skipped        real 0m8.905s   (352 before: +37)
+$ tests/e2e.sh --full
+e2e.sh (full): 415 passed, 0 failed, 2 skipped        real 2m1.544s   (378 before: +37)
+```
+
+The two `e2e.sh` skips are still `tui` and `robot-docs`, the two rows §5c marks exempt. The §2j
+corpus grew from 1477 to **1505** lines because `capabilities` now lists three `wallet book`
+subcommands and `check.sh` reads the `--help` of every row it lists; the scan still finds no
+unmarked RED claim, with all four of its self-tests firing. `§5c coverage` now compares 36
+commands rather than 34 — `wallet book list`, `wallet book add` and `wallet book remove` each
+already had their own `expect_keys` assertion, so the split arrived with its coverage intact.
+
+### The machine, before and after
+
+```
+$ systemctl --user show -p ActiveState,UnitFileState,NRestarts fmonero-monerod.service fmonero-wallet-rpc.service
+before everything   ActiveState=inactive  UnitFileState=disabled  NRestarts=0   (both units)
+before e2e --fast   ActiveState=inactive  UnitFileState=disabled  NRestarts=0   (both units)
+after  e2e --fast   ActiveState=inactive  UnitFileState=disabled  NRestarts=0   (both units)
+before e2e --full   ActiveState=inactive  UnitFileState=disabled  NRestarts=0   (both units)
+after  e2e --full   ActiveState=inactive  UnitFileState=disabled  NRestarts=0   Result=success
+```
+
+`NRestarts` never left 0 and neither unit was ever loaded, started or enabled by this session. No
+`setup` was run for real: the new e2e step asserts the `setup --units --yes` hint by reading it,
+not by running it, because a real `setup --units` calls `systemctl --user daemon-reload` and
+`systemctl --user disable` on the **owner's** unit names, which is a side effect this suite does
+not take. That is the one claim in this entry that is a comparison rather than an execution, and
+it is said here rather than glossed.
+
+### What this entry did not do
+
+It did not install Monero, start a daemon, create or open a wallet, broadcast anything, run
+`sudo`, or push. It did not touch `README.md`, `docs/ROBOT.md`, any §5b signature, any
+`Cargo.toml`, any unit file, `monerod.conf`, `~/.local/bin/fmonero` or
+`~/.config/omarchy/shell.json`. **Carried forward, unchanged and not re-litigated:** every §4b
+RED row is still RED and the owner command list that turns them green is the previous entry's,
+unchanged; `scripts/uninstall.sh` is still RED (`bash -n` only); `setup`'s refusal under Arch's
+`system_unit` layout is still the one scenario that keeps `setup` a RED command; the 120 GB floor
+is still an estimate; and README's Install section still describes `uninstall.sh`'s behaviour from
+its source rather than from a run — the honesty edge the verifier recorded and did not fix.
