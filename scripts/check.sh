@@ -259,6 +259,41 @@ else
   printf '  skip  crates/fmonero/src/tui does not exist yet (Phase 2 owns it)\n'
 fi
 
+# ---------------------------------------------------------------- §7a / §6.1 line budgets
+#
+# §7a's budget is a **ceiling against growth**, not a target: DESIGN.md v5.1 replaced "≤ 1 800"
+# with the measured 4 600 after three phases reported the overrun and none of them closed it
+# (`ux-19`). The gate exists so the next agent cannot quietly add another 2 000 lines the way
+# these five files got their first 2 600 — and it is measured here, in a gate that fails, rather
+# than recorded in a ledger nothing reads. `tests.rs` is excluded by §7a: it is test code.
+step "§7a  the TUI fits its line budget · §6.1 the plugin fits its own"
+TUI_BUDGET=4600
+if [ -d "$BIN/tui" ]; then
+  TUI_FILES=()
+  for f in mod theme screens send subs; do
+    [ -f "$BIN/tui/$f.rs" ] && TUI_FILES+=("$BIN/tui/$f.rs")
+  done
+  TUI_LINES="$(cat "${TUI_FILES[@]}" 2>/dev/null | grep -c '')"
+  if [ "$TUI_LINES" -le "$TUI_BUDGET" ]; then
+    pass "§7a: $TUI_LINES lines across src/tui/{mod,theme,screens,send,subs}.rs (budget $TUI_BUDGET, tests.rs excluded)"
+  else
+    fail "§7a: $TUI_LINES lines across src/tui/{mod,theme,screens,send,subs}.rs exceeds the $TUI_BUDGET-line ceiling"
+  fi
+else
+  printf '  skip  §7a line budget: crates/fmonero/src/tui does not exist yet\n'
+fi
+QML_BUDGET=1310
+if [ -d plugin/oliver.monero ]; then
+  QML_LINES="$(cat plugin/oliver.monero/*.qml plugin/oliver.monero/*.js plugin/oliver.monero/manifest.json 2>/dev/null | grep -c '')"
+  if [ "$QML_LINES" -le "$QML_BUDGET" ]; then
+    pass "§6.1: $QML_LINES lines of manifest + QML + Model.js (budget $QML_BUDGET)"
+  else
+    fail "§6.1: $QML_LINES lines of manifest + QML + Model.js exceeds the $QML_BUDGET-line budget"
+  fi
+else
+  printf '  skip  §6.1 line budget: plugin/oliver.monero does not exist yet\n'
+fi
+
 # ---------------------------------------------------------------- shell scripts
 step "shell scripts parse"
 for f in scripts/*.sh tests/*.sh; do

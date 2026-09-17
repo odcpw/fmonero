@@ -70,8 +70,26 @@ done
 
 # ---------------------------------------------------------------- harness
 #
-# `sandbox <name>` points the three XDG overrides at a fresh directory, so no case can see
-# another's state, config or cache — and none of them can see the owner's.
+# `sandbox <name>` points every override at a fresh directory, so no case can see another's
+# state, config or cache — and none of them can see the owner's.
+#
+# **Five directories, not three, and the two added in v5.1 are what make this suite survive its
+# own installer.** Until the Phase 4 verifier ran `scripts/install.sh --yes`, `systemd_user_dir`
+# and `wallet.dir` were read from the real machine, so five assertions here silently asserted
+# "nothing is installed" and failed the moment something was: `node up with no units` found a
+# unit, `wallet open` started one, and the `CreateDir wallet.dir` row found the directory already
+# there. A test a correct installer breaks is a test that gets deleted, so:
+#
+#   FMONERO_SYSTEMD_USER_DIR  the §2i seam, now honoured by `Paths::discover` itself (§2i v5.1),
+#                             so `detect_layout`, `units::state`, `units::preflight` and the
+#                             doctor all look at THIS directory — empty unless a case fills it.
+#   XDG_DATA_HOME             `paths.wallet_dir` is `$XDG_DATA_HOME/fmonero/wallets` (§3), and
+#                             `setup --units` derives `settings.wallet.dir` from it (§4.2), so
+#                             this is the only way to move both together.
+#
+# No case starts or stops a real systemd unit: every one that could either finds no unit file
+# (exit 4 in milliseconds, §2i) or runs under a `FMONERO_SYSTEMCTL_FIXTURE`, and the last step of
+# this file asserts both of the owner's units are still inactive afterwards.
 CASE=""
 sandbox() {
   # The ports are fixed (the login file is named after the bind port, §2c), so a previous
@@ -82,13 +100,21 @@ sandbox() {
   export FMONERO_STATE_DIR="$WORK/$CASE/state"
   export FMONERO_CONFIG_DIR="$WORK/$CASE/config"
   export FMONERO_CACHE_DIR="$WORK/$CASE/cache"
+  export FMONERO_SYSTEMD_USER_DIR="$WORK/$CASE/systemd"
+  export XDG_DATA_HOME="$WORK/$CASE/data"
   unset FMONERO_SYSTEMCTL_FIXTURE FMONERO_PROC_ROOT FMONERO_WALLET_PASSWORD
-  mkdir -p "$FMONERO_STATE_DIR/run" "$FMONERO_CONFIG_DIR" "$FMONERO_CACHE_DIR"
+  mkdir -p "$FMONERO_STATE_DIR/run" "$FMONERO_CONFIG_DIR" "$FMONERO_CACHE_DIR" \
+           "$FMONERO_SYSTEMD_USER_DIR" "$XDG_DATA_HOME/fmonero/wallets/mainnet"
   # 0700, including `run/`: that is the mode `Paths::ensure_dirs` creates them at (§2b.7) and the
   # mode the doctor's `state_perms` checks. A bare `mkdir -p` leaves them at the shell's umask —
   # 0755 — and `state_perms` then reports `fail:bad_mode` on a sandbox that is only sloppy, which
   # would make the §4b GREEN row below ("exactly two checks fail") false for the wrong reason.
   chmod 700 "$FMONERO_STATE_DIR" "$FMONERO_STATE_DIR/run" "$FMONERO_CONFIG_DIR" "$FMONERO_CACHE_DIR"
+  # The wallet directory exists at 0700 in every case but the `setup` one, which removes it to
+  # observe the `CreateDir wallet.dir` action §4.2 promises. The doctor's `wallet_dir_exists`
+  # reads its mode, so a umask-mode directory would report `fail` for the wrong reason too.
+  chmod 700 "$XDG_DATA_HOME/fmonero" "$XDG_DATA_HOME/fmonero/wallets" \
+            "$XDG_DATA_HOME/fmonero/wallets/mainnet"
 }
 
 OUT=""; ERR=""; RC=0
@@ -369,6 +395,7 @@ expect_rc 9 "wallet open with no TTY and no password source is exit 9 (§2b.1)"
 expect_contains "FMONERO_WALLET_PASSWORD" "and the hint names the way an agent supplies one"
 FMONERO_WALLET_PASSWORD=x fm --timeout 3 wallet open main --json
 expect_rc 4 "wallet open with a password but no unit is exit 4 (§4b)"
+expect_reason unit_missing "unit_missing, answered from the unit directory — not exit 8 30 s later"
 
 fm tui
 expect_rc 2 "tui without a TTY is exit 2 (§4)"
@@ -418,9 +445,52 @@ esac
 fm --timeout 3 wallet send "$DEST" 0.1 --dry-run --yes --json
 expect_rc 4 "--dry-run --yes with no daemon is the same, which is proof the pair cannot relay"
 
+# ---- the unit is there and the DAEMON is not: exit 4 not_installed (§2i, §4b) --------------
+#
+# Finding 1 of the Phase 4 verification, and the state `scripts/install.sh --yes` leaves on a
+# machine `omarchy pkg add monero` has not reached — so it is the first thing an owner meets.
+# Before v5.1 both commands waited 30 s, exited **8** ("nothing is broken") and left the unit
+# restarting every 5 s on 203/EXEC.
+#
+# Two deliberate choices make this case safe to run and impossible to fake:
+#   * no `FMONERO_SYSTEMCTL_FIXTURE`, because the fixture stands in for the machine's daemon as
+#     well (§2i) and would excuse the very check this case exists to prove;
+#   * a unit NAME systemd has never heard of, so even a regression that reached
+#     `systemctl --user start` could neither start nor leave flapping one of the owner's units.
+step "§2i: a unit that is installed with no Monero binary is exit 4 not_installed"
+sandbox notinstalled
+if command -v monerod >/dev/null 2>&1; then
+  skip "monerod is on PATH on this machine, so not_installed is unobservable here"
+else
+  fm settings set node.unit fmonero-e2e-nosuch-node.service --json
+  fm settings set wallet.unit fmonero-e2e-nosuch-wallet.service --json
+  printf '[Unit]\n' > "$FMONERO_SYSTEMD_USER_DIR/fmonero-e2e-nosuch-node.service"
+  printf '[Unit]\n' > "$FMONERO_SYSTEMD_USER_DIR/fmonero-e2e-nosuch-wallet.service"
+  START="$(date +%s%N)"
+  fm node up --json
+  expect_rc 4 "node up with a unit installed and monerod absent"
+  expect_reason not_installed "not_installed, not the exit 8 of a 30 s wait (finding 1)"
+  expect_contains "omarchy pkg add monero" "and the hint installs what is missing (§4a)"
+  FMONERO_WALLET_PASSWORD=x fm wallet open main --json
+  expect_rc 4 "wallet open with a unit installed and monero-wallet-rpc absent"
+  expect_reason not_installed "not_installed"
+  fm node restart --yes --json
+  expect_rc 4 "node restart refuses BEFORE its own systemctl stop"
+  expect_reason not_installed "not_installed"
+  ELAPSED_MS=$(( ( $(date +%s%N) - START ) / 1000000 ))
+  if [ "$ELAPSED_MS" -lt 3000 ]; then
+    ok "all three answered in ${ELAPSED_MS}ms — milliseconds, not deadlines (§2i)"
+  else
+    bad "§2i: the preflight took ${ELAPSED_MS}ms for three commands; it must not wait on anything"
+  fi
+fi
+
 # §4.2's two gate lines, run against the REAL config dir's renderer but writing nothing.
 step "setup --units --dry-run (§4.2)"
 sandbox setup
+# The one case that needs `wallet.dir` ABSENT: §4.2 promises a `CreateDir` action per missing
+# ancestor, and `sandbox` creates the directory for every other case.
+rm -rf "$XDG_DATA_HOME/fmonero"
 fm setup --units --dry-run --json
 expect_rc 0 "setup --units --dry-run"
 expect_keys "setup" "ok schema actions dry_run"
@@ -441,16 +511,58 @@ elif printf '%s' "$CONF_HUNK" | grep -q '%[hSt]'; then
 else
   ok "§4.2: no %h, %S or %t in the rendered monerod.conf"
 fi
-# And `--wallet-dir` in the rendered unit equals `settings get wallet.dir`, read from the
-# OUTPUT because a dry run writes no file.
+# And `--wallet-dir` in the RENDERED unit equals `settings get wallet.dir`. The sandbox's
+# systemd directory is empty, so the wallet unit is always `planned` and always carries a diff —
+# which is what this used to assume and, on a machine `setup --units` had already configured,
+# was false: an `unchanged` action carries `"diff": null` by contract (§5b `FileAction`) and the
+# grep then read an empty string, reporting a mismatch against a correct machine.
 UNIT_DIR="$(printf '%s' "$OUT" | jq -r '.actions[] | select(.what == "wallet unit") | .diff // ""' \
             | grep -o -- '--wallet-dir [^ ]*' | head -1 | cut -d' ' -f2)"
 WANT_DIR="$("$FM" settings get wallet.dir --json | jq -r .value)"
 if [ -n "$UNIT_DIR" ] && [ "$UNIT_DIR" = "$WANT_DIR" ]; then
-  ok "§4.2: the unit's --wallet-dir is settings.wallet.dir byte for byte"
+  ok "§4.2: the rendered unit's --wallet-dir is settings.wallet.dir byte for byte"
 else
-  bad "§4.2: --wallet-dir mismatch" "unit: $UNIT_DIR" "setting: $WANT_DIR"
+  bad "§4.2: --wallet-dir mismatch in the rendered unit" "unit: $UNIT_DIR" "setting: $WANT_DIR"
 fi
+# And the same equality on the INSTALLED unit — the file the machine actually runs, read from
+# disk rather than from an action diff, with the sandbox dropped so both sides are the owner's.
+# This is the row the Phase 4 verifier had to check by hand.
+INSTALLED_WALLET_UNIT="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/fmonero-wallet-rpc.service"
+unsandboxed() { env -u FMONERO_STATE_DIR -u FMONERO_CONFIG_DIR -u FMONERO_CACHE_DIR \
+                   -u FMONERO_SYSTEMD_USER_DIR -u XDG_DATA_HOME "$FM" "$@"; }
+if [ -f "$INSTALLED_WALLET_UNIT" ]; then
+  IU_DIR="$(grep -o -- '--wallet-dir [^ ]*' "$INSTALLED_WALLET_UNIT" | head -1 | cut -d' ' -f2)"
+  IW_DIR="$(unsandboxed settings get wallet.dir --json | jq -r .value)"
+  if [ -n "$IU_DIR" ] && [ "$IU_DIR" = "$IW_DIR" ]; then
+    ok "§4.2: and the INSTALLED unit's --wallet-dir equals this machine's wallet.dir"
+  else
+    bad "§4.2: the installed unit and the settings disagree" "unit: $IU_DIR" "setting: $IW_DIR"
+  fi
+else
+  skip "§4.2: no wallet unit is installed on this machine, so there is no file to read"
+fi
+# §4.2 v5.1: the node unit's `--config-file` is the absolute, XDG-resolved `monerod.conf`, never
+# `%h/...` — with a non-default XDG_CONFIG_HOME the specifier named a file setup never wrote
+# (`secrets-5`), which is why this reads the CONFIG DIR the sandbox set rather than a literal.
+NODE_HUNK="$(printf '%s' "$OUT" | jq -r '.actions[] | select(.what == "node unit") | .diff // ""')"
+WANT_CONF="${FMONERO_CONFIG_DIR}/monerod.conf"
+if printf '%s' "$NODE_HUNK" | grep -q -- "--config-file $WANT_CONF --non-interactive"; then
+  ok "§4.2: the rendered node unit names $WANT_CONF absolutely"
+else
+  bad "§4.2: the node unit's --config-file is not the XDG-resolved conf path" \
+      "$(printf '%s' "$NODE_HUNK" | grep -o -- '--config-file [^ ]*' | head -1)" "want: $WANT_CONF"
+fi
+if printf '%s' "$NODE_HUNK" | grep -q '%'; then
+  bad "§4.2 v5.1: a systemd specifier is left in the node unit" \
+      "$(printf '%s' "$NODE_HUNK" | grep -n '%')"
+else
+  ok "§4.2 v5.1: the node unit carries no specifier at all"
+fi
+# The INSTALLED node unit is deliberately **not** asserted here. Whether the file on disk carries
+# the absolute path is a question about whether `setup --units` has been re-run since this build,
+# which is the doctor's `units_present` (it compares the installed bytes against `render_*` byte
+# for byte) — and an e2e case that failed until the owner re-ran the installer would be a case
+# that fails for a reason it does not name.
 # §4.2: a test never installs a unit — and `units::install` refusing is exactly the failure
 # that used to leave the DERIVED settings rewritten on disk. §4.2 promises "running it twice
 # leaves the same machine"; a run that reports failure and has already changed `node.url`,
@@ -1418,6 +1530,34 @@ if grep -rq 'rpc-login=fmonero:[0-9a-f]' "$WORK"/*/state 2>/dev/null; then
   bad "§2b: the node credential leaked into a state directory"
 else
   ok "§2b: the node credential is nowhere outside monerod.conf"
+fi
+
+# ================================================================ no side effect on the machine
+#
+# The Phase 4 verifier's runs left both of the owner's systemd user units flapping in a
+# `Restart=on-failure` loop, and had to stop them by hand. That is a test-suite defect, not an
+# accident of the machine: a suite that mutates the system it is measuring cannot be trusted about
+# anything else it reports. Every case above either finds no unit file (exit 4 in milliseconds,
+# §2i) or runs under a `FMONERO_SYSTEMCTL_FIXTURE`, so nothing here can reach
+# `systemctl --user start` on a real unit — and this step is what makes that claim falsifiable
+# rather than an argument.
+step "no side effect: the owner's two units are untouched by this run"
+if command -v systemctl >/dev/null 2>&1; then
+  LEFT_RUNNING=""
+  for unit in fmonero-monerod.service fmonero-wallet-rpc.service; do
+    ACTIVE="$(systemctl --user show -p ActiveState --value "$unit" 2>/dev/null || echo unknown)"
+    case "$ACTIVE" in
+      active|activating|reloading|deactivating) LEFT_RUNNING="$LEFT_RUNNING $unit=$ACTIVE" ;;
+    esac
+  done
+  if [ -z "${LEFT_RUNNING// /}" ]; then
+    ok "both fmonero units are inactive — no case started one"
+  else
+    bad "a case started one of the owner's units and left it running" "$LEFT_RUNNING" \
+        "stop it with: systemctl --user stop$LEFT_RUNNING"
+  fi
+else
+  skip "systemctl is not on PATH, so there are no user units to leave behind"
 fi
 
 printf '\n'
