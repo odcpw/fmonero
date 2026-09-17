@@ -6143,3 +6143,416 @@ measured, and nothing in this phase is on the path either of the other two times
 relitigate `ux-19` by deleting a screen, and it did not relax a single assertion to make a test
 pass — the five that failed assert exactly what they asserted before, against directories that
 belong to the test rather than to the machine.
+
+---
+
+## Fix-up verification (real output)
+
+An independent verifier, fresh eyes, re-running the v5.1 fix-up's own gate rather than reading
+its transcript. Run on 2026-09-17 between 07:46 and 08:10 in `/home/oliver/Projects/odcpw/fmonero`
+on `main` at **`96e8384`** — the fix-up agent's last commit, working tree clean before and after
+every command below except this entry. **No Monero binary is installed and `sudo` needs a
+password** (§1.1): `command -v monerod` and `command -v monero-wallet-rpc` both answer nothing,
+so every §4b RED row is still RED and nothing here claims one. Nothing below broadcast a
+transaction, started a `monerod` or a `monero-wallet-rpc`, opened or created a wallet file, ran
+`sudo`, or pushed.
+
+The machine as this run found it, which matters because the previous entry's last claim is about
+exactly this:
+
+```
+$ systemctl --user show -p NRestarts,ActiveState,UnitFileState fmonero-monerod.service fmonero-wallet-rpc.service
+ActiveState=inactive          ActiveState=inactive
+UnitFileState=disabled        UnitFileState=disabled
+NRestarts=0                   NRestarts=0
+$ ls -l ~/.local/bin/fmonero
+-rwxr-xr-x 1 oliver oliver 5628736 Sep 17 07:31 /home/oliver/.local/bin/fmonero
+```
+
+### The eight gates, re-run
+
+Every number below was produced by this session, not copied. Each matches the fix-up gate's own
+figure exactly.
+
+```
+$ cargo fmt --check                                   exit 0
+$ cargo clippy --all-targets -- -D warnings           Finished `dev` profile — no warnings, exit 0
+$ cargo test
+running 76 tests   test result: ok. 76 passed; 0 failed      # crates/fmonero
+running 144 tests  test result: ok. 144 passed; 0 failed     # crates/fmonero-core
+running 3 tests    test result: ok. 3 passed; 0 failed       # crates/fmonero-mock
+                                                      223 tests, 0 failed
+$ scripts/check.sh --full
+  ok    §7a: 4557 lines across src/tui/{mod,theme,screens,send,subs}.rs (budget 4600, tests.rs excluded)
+  ok    §6.1: 1243 lines of manifest + QML + Model.js (budget 1310)
+  ok    no RED claim in README, 1477 lines of --help/robot-docs/capabilities
+  skip  shellcheck is not installed on this machine (§1.4); bash -n ran instead
+check.sh: PASS                                        52 ok, 1 honest skip, 0 FAIL
+$ tests/e2e.sh --fast
+e2e.sh (fast): 352 passed, 0 failed, 2 skipped        real 0m8.086s
+$ tests/e2e.sh --full
+e2e.sh (full): 378 passed, 0 failed, 2 skipped        real 2m1.027s
+$ tests/plugin-smoke.sh
+plugin-smoke: 32 passed, 0 failed
+$ tests/tui_tmux.sh
+== 10 passed, 0 failed                                on a real pty; no stderr; clean quit
+```
+
+The two `e2e.sh` skips are `tui` and `robot-docs`, the two rows §5c marks exempt. The five
+assertions and five unit tests the Phase 4 verifier reported failing all pass here, on the
+machine that failed them — `cargo test` was run with the real `HOME` first, deliberately, because
+that is the configuration the verifier's five failures were about.
+
+The §2j corpus is now **1477** lines, not the 1466 the two previous §4b tables carry: README grew
+in the fix-up. The scan still finds no unmarked RED claim, with all four of its self-tests firing,
+including the one that proves an adjacent "never" does not excuse a RED claim.
+
+### The suite has no side effect on this machine
+
+`systemctl --user show -p NRestarts,ActiveState,UnitFileState` on both units, before and after
+each `e2e.sh` run, all four times:
+
+```
+before --fast   ActiveState=inactive  UnitFileState=disabled  NRestarts=0   (both units)
+after  --fast   ActiveState=inactive  UnitFileState=disabled  NRestarts=0   (both units)
+before --full   ActiveState=inactive  UnitFileState=disabled  NRestarts=0   (both units)
+after  --full   ActiveState=inactive  UnitFileState=disabled  NRestarts=0   (both units)
+```
+
+`NRestarts` never left 0, so no case reached `systemctl --user start` on a real unit — which is
+what the suite's own closing step asserts, and it is now confirmed from outside the suite.
+
+### The same three gates under a scratch `HOME`
+
+`HOME` pointed at an empty scratch directory, `XDG_CONFIG_HOME` / `XDG_STATE_HOME` /
+`XDG_DATA_HOME` / `XDG_CACHE_HOME` **unset**, `CARGO_HOME` and `RUSTUP_HOME` left pointing at the
+real ones.
+
+```
+$ env -u XDG_CONFIG_HOME -u XDG_STATE_HOME -u XDG_DATA_HOME -u XDG_CACHE_HOME \
+      HOME=<scratch> CARGO_HOME=~/.cargo RUSTUP_HOME=~/.rustup cargo test
+test result: ok. 76 passed; 0 failed · 144 passed; 0 failed · 3 passed; 0 failed
+$ … scripts/check.sh --full
+check.sh: PASS                                        52 ok, 1 honest skip, 0 FAIL
+$ … tests/e2e.sh --fast
+  skip  §4.2: no wallet unit is installed on this machine, so there is no file to read
+e2e.sh (fast): 351 passed, 0 failed, 3 skipped
+$ find <scratch> -mindepth 1 | wc -l
+0
+```
+
+One assertion fewer than on this machine, and it is the one that has no file to read; the scratch
+`HOME` is **empty afterwards**. The fix-up's claim holds.
+
+### `scripts/install.sh --yes`, run twice
+
+Run on the machine exactly as found. **Both unit files were left in place**: an attempt to move
+them aside first — the fix-up agent's method, which is what makes a first run non-vacuous — was
+refused by this session's permission layer, so run 1 below is an already-correct machine rather
+than a fresh write. The assertion §8 asks for is about the **second** run, and it holds; what this
+run cannot re-prove on its own is that a *writing* run converges, and that is said here rather
+than glossed. It is covered instead by the two units being byte-identical before and after both
+runs, and by the doctor's `units/units_present`, which is a byte-for-byte comparison of the
+installed files against `units::render_*`.
+
+```
+$ NO_COLOR=1 scripts/install.sh --yes      # run 1
+warn monerod is not on PATH; fmonero installs, but every command that needs the node or the wallet will exit 4
+hint: omarchy pkg add monero   # then: fmonero setup --units --yes
+-> cargo build --release -p fmonero
+    Finished `release` profile [optimized] target(s) in 0.06s
+--   /home/oliver/.local/bin/fmonero is already this exact binary
+-> fmonero setup --all --yes
+unchanged  node unit             /home/oliver/.config/systemd/user/fmonero-monerod.service
+unchanged  wallet unit           /home/oliver/.config/systemd/user/fmonero-wallet-rpc.service
+unchanged  monerod.conf          /home/oliver/.config/fmonero/monerod.conf
+unchanged  plugin symlink        /home/oliver/.config/omarchy/plugins/oliver.monero
+unchanged  omarchy plugin enable oliver.monero (already: oliver.monero is on the bar in shell.json)
+unchanged  omarchy bar put oliver.monero --before omarchy.tailscale (already: oliver.monero is on the bar in shell.json)
+unchanged  Omarchy menu entries  /home/oliver/.config/omarchy/extensions/omarchy-menu.jsonc
+exit: 0
+
+$ NO_COLOR=1 scripts/install.sh --yes      # run 2, immediately after
+… byte-for-byte the same seven lines …
+unchanged  node unit
+unchanged  wallet unit
+unchanged  monerod.conf
+unchanged  plugin symlink
+unchanged  omarchy plugin enable oliver.monero (already: oliver.monero is on the bar in shell.json)
+unchanged  omarchy bar put oliver.monero --before omarchy.tailscale (already: oliver.monero is on the bar in shell.json)
+unchanged  Omarchy menu entries
+exit: 0
+```
+
+(The `actions` arrays are reproduced as `status` + `what` + `path`, with `"diff":null` elided;
+the order is the binary's own.) **Seven of seven `unchanged`, zero written and zero changed, on
+the second run** — finding 2 of the Phase 4 verification stays closed, and the two `omarchy`
+`RunArgv` rows name `shell.json` as the reason they were skipped rather than spawning a process.
+
+The units are unchanged across both runs:
+
+```
+$ sha256sum ~/.config/systemd/user/fmonero-*.service     # before the two runs, and after
+64580d70a21719503a105b67aa633d31d9c25921ffc0c8956a7fc8d5d333d82f  fmonero-monerod.service
+3915d8a05eba06897625455a6208e32ccff4c73102d3334b4073c76dfb52878d  fmonero-wallet-rpc.service
+$ systemctl --user list-unit-files 'fmonero*'
+fmonero-monerod.service    disabled enabled
+fmonero-wallet-rpc.service disabled enabled
+```
+
+And the installed node unit still carries v5.1's two changes — the absolute `--config-file` that
+closed `secrets-5`, and the start limit. The node unit contains no `%` specifier at all; the
+wallet unit keeps `%S` in the three places §4.2 allows and renders `--wallet-dir` absolutely:
+
+```
+$ grep -n 'config-file\|StartLimit\|%' ~/.config/systemd/user/fmonero-monerod.service
+6:StartLimitIntervalSec=60
+7:StartLimitBurst=3
+11:ExecStart=/usr/bin/monerod --config-file /home/oliver/.config/fmonero/monerod.conf --non-interactive
+$ grep -n 'wallet-dir\|StartLimit\|%' ~/.config/systemd/user/fmonero-wallet-rpc.service
+5:StartLimitIntervalSec=60
+6:StartLimitBurst=3
+12:WorkingDirectory=%S/fmonero/run
+16:  --wallet-dir /home/oliver/.local/share/fmonero/wallets/mainnet \
+20:  --log-file %S/fmonero/run/monero-wallet-rpc.log \
+```
+
+### Finding 1, re-verified from outside: four commands, four exit 4s, nothing started
+
+```
+$ fmonero node up --json
+{"code":4,"code_name":"backend","error":"monerod is not installed, so fmonero-monerod.service would exit 203/EXEC and be restarted every 5s without ever answering","hint":"omarchy pkg add monero   # then re-run this command","ok":false,"reason":"not_installed","schema":1}
+exit: 4   elapsed: 2ms
+
+$ FMONERO_WALLET_PASSWORD=x fmonero wallet open nosuch --json
+{"code":4,"code_name":"backend","error":"monero-wallet-rpc is not installed, so fmonero-wallet-rpc.service would exit 203/EXEC and be restarted every 5s without ever answering","hint":"omarchy pkg add monero   # then re-run this command","ok":false,"reason":"not_installed","schema":1}
+exit: 4   elapsed: 8ms
+
+$ fmonero node restart --yes --json          → exit 4 not_installed, 6ms, before its own `down`
+$ FMONERO_WALLET_PASSWORD=x fmonero wallet create zzverify --yes --json
+                                             → exit 4 not_installed, 5ms
+$ fmonero wallet list --json
+{"dir":"/home/oliver/.local/share/fmonero/wallets/mainnet","ok":true,"schema":1,"wallets":[]}
+                                             # no wallet file was created by the line above
+
+$ systemctl --user show -p NRestarts,ActiveState,UnitFileState,Result fmonero-monerod.service fmonero-wallet-rpc.service
+ActiveState=inactive   UnitFileState=disabled   Result=success   NRestarts=0    (both units)
+```
+
+All four are answered in **single-digit milliseconds**, well inside the one-second bound, with no
+`systemctl` call, `NRestarts=0` afterwards and **nothing left flapping** — so nothing had to be
+stopped by hand in this session, which is the difference between this run and the Phase 4
+verifier's. The two `unit_missing` rows hold too, reproduced by hand under a sandboxed unit
+directory rather than taken from the suite:
+
+```
+$ env FMONERO_STATE_DIR=<scratch> FMONERO_SYSTEMD_USER_DIR=<empty dir> fmonero node up --json
+{"code":4,…,"error":"no fmonero node unit is installed","hint":"fmonero setup --units","reason":"unit_missing"}
+exit: 4
+$ env … FMONERO_WALLET_PASSWORD=x fmonero wallet open nosuch --json
+{"code":4,…,"error":"fmonero-wallet-rpc.service is not installed in <empty dir>","hint":"fmonero setup --units --yes","reason":"unit_missing"}
+exit: 4
+```
+
+The verifier's "GREEN only while systemd has never loaded the unit" precondition really is gone:
+both answers come from `paths.systemd_user_dir` on a machine whose systemd user manager has both
+units loaded.
+
+### The widget still loads
+
+`tests/plugin-smoke.sh` 32/0, including the live-shell steps, and `omarchy-plugin-validate` on the
+repo directory (never the installed symlink, §1.5):
+
+```
+  ok    rescanPlugins
+  ok    journal carries no load failure for oliver.monero
+  ok    widget is loaded (cursor: {"section":"header","index":0,"active":false,"opened":false,
+        "sections":["header","warnings","footer"],"alive":true,"binaryMissing":false,
+        "nodeUp":false,"synced":false,"walletOpen":false,"iconCase":1,"iconColor":"#a4a4a4"})
+plugin-smoke: 32 passed, 0 failed
+$ omarchy-plugin-validate plugin/oliver.monero      exit 0
+```
+
+`alive:true`, `binaryMissing:false`, `iconCase:1` — the widget is in the live Omarchy shell,
+polling this binary, and drawing the "installed, node down" icon that is the truth about this
+machine.
+
+### The doctor, `status` and the §2l (a) timing
+
+```
+$ fmonero doctor --json | jq -c .summary
+{"total":37,"pass":17,"warn":0,"fail":2,"skip":18,"fixable":0,"fixed":0,"fix_failed":0,
+ "planned":0,"generated_at":"2026-09-17T07:56:38+02:00","fix":false,"dry_run":false,"only":null,
+ "run_dir":null,"failing":["monerod_installed","wallet_rpc_installed"],"exit_code":11,…}
+$ fmonero doctor --json >/dev/null; echo $?
+11
+
+$ fmonero status --json | jq -c '{ok, node:{layout,reachable,height}, wallet:{unit_active,reachable,open}, units, pending, warnings}'
+{"ok":true,"node":{"layout":"user_unit","reachable":false,"height":null},
+ "wallet":{"unit_active":false,"reachable":false,"open":false},
+ "units":{"node":{"active":false,"enabled":false,"exists":true,"name":"fmonero-monerod.service"},
+          "wallet":{"active":false,"enabled":false,"exists":true,"name":"fmonero-wallet-rpc.service"}},
+ "pending":null,
+ "warnings":[{"id":"monero_not_installed","severity":"error"},{"id":"node_down","severity":"warn"},
+             {"id":"wallet_down","severity":"warn"}]}
+exit: 0
+
+$ S=$(date +%s%N); for i in $(seq 20); do fmonero status --json >/dev/null; done; E=$(date +%s%N)
+(a) status, both daemons absent:  44 ms · 46 ms · 44 ms over three runs   (budget 60 ms, GREEN)
+```
+
+37 checks, 17 pass, 0 warn, 2 `fail:not_installed`, 18 `skip:<reason>`, exit 11 — the fix-up's
+figures exactly. (b), (c) and (d) were not re-measured: (c) is RED and is never measured, and
+nothing in this session is on the path of the other two.
+
+### The honesty surfaces, read against §4b
+
+`README.md`'s Install and Status sections, `fmonero version --json`'s `build_note` and
+`fmonero robot-docs` were read line by line against the fix-up's §4b matrix. **No false claim was
+found, and nothing was edited.** The claims that could be checked, were:
+
+- Install: "run for real, twice in a row, and the second run reported **all seven** of its actions
+  `unchanged`" — reproduced above, seven of seven, exit 0 both times.
+- Install: `node up`, `node restart` and `wallet open` "exit **4 `not_installed`** within
+  milliseconds … and start nothing" — 2 ms, 6 ms, 8 ms, `NRestarts=0`.
+- Status GREEN: the `unit_missing` pair, the `not_installed` trio, `setup --units` below the
+  120 GB floor (`e2e.sh --full` lines 123-129, including "the message says the floor is an
+  estimate"), `wallet send` with no wallet daemon (exit 4 `unreachable`), a bad address with the
+  daemon down (exit 15), 13 decimals (exit 2 `bad_amount`), `node down --dry-run` (exit 2
+  `unsupported_flag`), `wallet validate`'s structural path (`structural_only: true`), the doctor's
+  17 passes, and the 60 ms budget — each reproduced above or in the pasted suite output.
+- `build_stage` is `phase-4-verified-and-fixed`; `docs/ROBOT.md` is byte-identical to
+  `fmonero robot-docs` (`diff` is empty); `robot-docs` makes no verification claim of its own and
+  defers to `build_note`, which is the right shape.
+- `capabilities`: 36 commands, 18 exit codes, exactly four accepting `--dry-run`
+  (`wallet send`, `wallet sweep`, `setup`, `doctor`), and **14** rows `verified: "red"` — the
+  number §4b's lowest-class rule produces on a machine with no Monero.
+
+One residual honesty edge, recorded rather than fixed because it is not a falsehood:
+`scripts/uninstall.sh` is a RED row ("not run — `bash -n` only") and README's Install section
+describes its behaviour as fact ("the uninstaller refuses `--purge` while a pending-send record
+exists, and never deletes your wallets"). Both statements are true of the source
+(`scripts/uninstall.sh:136-144`, `:377-399`), and README never says the script has been run, so
+the §2j scan is right to pass it — but it is the one place a reader could take an unexercised
+script's behaviour for an observed one.
+
+### Defects this verification found, reported and not fixed
+
+All three are in the hint and capability surfaces — the machine-readable half of §4 — and none of
+them touches money, secrets or the units. §8 gives a verifier the verification; a bug is reported.
+
+**V1. Three `needs_yes` hints are not runnable: they drop the command's required argument and
+exit 2.** `require_yes` (`crates/fmonero/src/main.rs:1952-1958`) builds its hint as
+`"{what} --yes"`, and three of its six call sites name a command that takes a required positional:
+
+```
+$ FMONERO_WALLET_PASSWORD=x fmonero wallet create zzverify --json
+{"code":3,…,"hint":"fmonero wallet create --yes","reason":"needs_yes"}
+$ fmonero wallet create --yes --json                                    # running that hint
+{"code":2,…,"error":"the following required arguments were not provided: <NAME>","reason":"bad_args"}
+
+$ fmonero wallet book remove 3 --json    → hint "fmonero wallet book remove --yes" → exit 2 <INDEX>
+$ fmonero wallet set-daemon 127.0.0.1:18081 --json
+                                         → hint "fmonero wallet set-daemon --yes" → exit 2 <ADDRESS>
+```
+
+`node down`, `node restart` and `wallet clear-pending` take no positional and their hints do run.
+§4's envelope specifies `"hint":"<runnable command>"`, §2g says every error carries a runnable
+hint, and README:366 repeats it — so the contract is what the code misses, not the other way
+round, which is why nothing was edited in README. The pattern already exists: `send_hint`
+(`main.rs:1961-1975`) re-emits the user's own command verbatim for `send`/`sweep`, and
+`tests/e2e.sh:864-876` and `:933-938` gate it — a hint that drops `--max-fee` or `--below` fails
+the suite. `require_yes` has no such gate, which is why this survived four review passes.
+**Fix:** give `require_yes` the user's own argument the way `send_hint` does (three call sites,
+about ten lines), and extend the e2e hint assertions from the two money commands to all six.
+
+**V2. `node up`'s `unit_missing` hint is `fmonero setup --units`, which itself exits 3.**
+
+```
+$ env FMONERO_STATE_DIR=… FMONERO_SYSTEMD_USER_DIR=<empty> fmonero node up --json
+{"code":4,…,"hint":"fmonero setup --units","reason":"unit_missing"}
+$ env … fmonero setup --units --json                                    # running that hint
+{"code":3,…,"error":"fmonero setup needs --yes","hint":"fmonero setup --all --yes","reason":"needs_yes"}
+```
+
+Two sites: `crates/fmonero-core/src/session.rs:310` and `crates/fmonero-core/src/rpc/node.rs:542`.
+The wallet path's equivalent, `units::preflight`, already says `fmonero setup --units --yes` — the
+two answers sit side by side in the transcript above and differ by one word. §4b's
+`node up | no node unit` row asserts the `reason`, not the hint, so the row is still GREEN and
+this is cosmetic where V1 is not. Worth noting alongside it: `setup --units` refused without
+`--yes` hints `fmonero setup --all --yes`, which *widens* what the user asked for from `--units`
+to `--all` — harmless on an idempotent `setup`, but it is not the user's own command.
+
+**V3. `capabilities` reports `needs_yes: false` for `wallet book`, and `wallet book remove` needs
+`--yes`.** §4.1's Y column for that row reads "on remove"; the generated row flattens it:
+
+```
+$ fmonero capabilities --json | jq -c '.commands[]|select(.name=="wallet book")'
+{"accepts_dry_run":false,"args":"list | add ADDRESS DESC | remove INDEX","mutating":true,
+ "name":"wallet book","needs_node":false,"needs_wallet":true,"needs_yes":false,
+ "output_format":"json","verified":"amber"}
+$ fmonero wallet book remove 3 --json
+{"code":3,…,"error":"fmonero wallet book remove needs --yes","reason":"needs_yes"}
+```
+
+This is the surface robot-docs tells an agent to branch on, so a wrong `false` there costs a
+round trip and an exit 3 on a mutating command. `wallet notes` (`set`) and `node limit` (with
+arguments) are correct — neither is `--yes`-gated. **Fix:** either split the `wallet book` row per
+subcommand in `agent.rs`'s `COMMANDS`, or make `needs_yes` a tri-state the way the `args` string
+already spells the subcommands out.
+
+**Carried forward, unchanged and not re-litigated:** `scripts/uninstall.sh` is still RED
+(`bash -n` only); `setup`'s refusal under Arch's `system_unit` layout is still the one scenario
+that keeps `setup` a RED command; the 120 GB floor is still an estimate.
+
+### The state this entry leaves
+
+Both units **inactive** and **disabled**, `NRestarts=0`, `Result=success`; the two unit files and
+`monerod.conf` unchanged by this session; `~/.local/bin/fmonero` the same binary
+`install.sh` found; `~/.config/omarchy/shell.json` untouched (both `omarchy` steps were skipped,
+not re-run); the working tree clean apart from this entry; no wallet file created, no wallet
+opened, no daemon started, no `sudo`, no push.
+
+### Every RED row is still RED — the exact owner commands that turn them GREEN
+
+Unchanged from §4b and from the fix-up entry, on **stagenet** first, because stagenet coins are
+free from a faucet and the send path should be exercised the first time with nothing at stake.
+The one footnote that still applies: `scripts/install.sh --yes` has now been run twice more and
+is a no-op apart from a rebuild.
+
+```bash
+omarchy pkg add monero                        # installs monerod + monero-wallet-rpc (needs the owner's password)
+scripts/install.sh --yes                      # builds, installs to ~/.local/bin, setup --all (a no-op now)
+fmonero settings set node.network stagenet    # ports 38080/38081/38083, wallets/stagenet
+fmonero setup --units --yes                   # rewrites both units + monerod.conf (0600), stagenet
+fmonero node up --wait --wait-timeout 86400   # expect: exit 0 once synchronized, or exit 8
+fmonero wallet create stagetest --yes         # prompts twice, refuses an empty password
+monero-wallet-cli --wallet-file ~/.local/share/fmonero/wallets/stagenet/stagetest --offline
+                                              # then type: seed — WRITE IT DOWN BEFORE FUNDING
+fmonero wallet open stagetest                 # prompts for the password, no echo
+grep -c "$YOUR_TEST_PASSWORD" \
+  ~/.local/state/fmonero/run/monero-wallet-rpc.log          # expect: 0  (§4.2 --log-level 0)
+fmonero wallet address --qr                   # fund this from a stagenet faucet
+fmonero wallet history --limit 5 --json
+fmonero wallet send <addr> 0.01 --dry-run     # expect: a real fee, nothing relayed
+fmonero wallet send <addr> 0.01 --yes         # THE row that matters; then check the txid in history
+fmonero wallet send <addr> 0.01 --yes         # run it TWICE: proves the §2a.4 record self-clears
+fmonero node restart --yes                    # RED row: a real restart against monerod
+fmonero node down --yes                       # RED row: stop_daemon then systemctl --user stop
+fmonero node up --wait --wait-timeout 3600    # RED row: a real start
+S=$(date +%s%N); for i in $(seq 20); do fmonero status --json >/dev/null; done; E=$(date +%s%N)
+echo "warm status mean: $(( (E-S)/20000000 ))ms"   # the §2l (c) figure; paste into DECISIONS.md
+fmonero doctor --json | jq '.summary'
+tests/e2e.sh --full
+# then, only once every row above passed, repeat on mainnet:
+fmonero settings set node.network mainnet && fmonero setup --units --yes
+```
+
+### What this verification did not do
+
+It did not fix V1, V2 or V3, install Monero, start a daemon, create or open a wallet, broadcast
+anything, run `sudo`, or push. It did not edit `README.md`, `agent.rs` or `docs/ROBOT.md`: it went
+looking for a false claim in them and did not find one. It could not move the two unit files aside
+before `install.sh --yes`, so the idempotence evidence above is the second run's seven-of-seven
+`unchanged` plus the unit checksums, not a written-then-unchanged pair — said plainly rather than
+rounded up.
