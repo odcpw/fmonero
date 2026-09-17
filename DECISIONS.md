@@ -4240,3 +4240,532 @@ owns §7a — not to this agent silently dropping a screen.
 - `zero()` overwrites the password `TextInput`'s buffer on close, which is best-effort inside
   safe Rust: what actually carries §2b.4 is that the `String` never outlives the modal and is
   never copied, because `Action` is neither `Clone` nor `Debug`.
+
+---
+
+## Phase 3 — integrate (2026-09-17)
+
+Four merges, the four Phase 2 evidence files folded in above, the four worktrees removed, every
+gate §8 lists run, and four ergonomics findings fixed. The transcripts below are real output from
+this checkout at the commits named; nothing here is a summary of a run that was not made.
+
+### What Phase 3 changed, and why it was allowed to
+
+§8 gives Phase 3 the merges, the fold, the gates, "fix cross-module breakage (you may touch any
+file for that)" and the lite ergonomics pass. Eight files outside the merge were edited, each for
+one of those reasons; the four behaviour changes each ship with a regression test:
+
+| File | Change | Why Phase 3 |
+|---|---|---|
+| `tests/e2e.sh` | the doctor rows became assertions; §2b gained its key-name grep and a self-test; `docs/ROBOT.md` staleness; `sandbox` chmods `run/` 0700 | it asserted `doctor` was the §8 handover stub (exit 1) and the doctor merge makes it exit 11 — breakage caused by a merge, and §4b names **this script** for the replacement assertion |
+| `scripts/check.sh` | the §2j RED-claim scan with three self-tests; the env round trip's second direction with a self-test | §8 Phase 3 lists both greps; neither could exist before `README.md` and `doctor/probes.rs` were on `main` |
+| `docs/ROBOT.md` | generated | §8: "Regenerate docs/ROBOT.md" |
+| `crates/fmonero/src/main.rs` | a leading `help` is rewritten to `--help` on that command path | ergonomics: `--help` quality. No §5b signature touched, no new command in the tree |
+| `crates/fmonero-core/src/rpc/node.rs` | `mutators` answers layout `none` as §2i's table does | ergonomics: hint runnability. The old hint named a unit that does not exist |
+| `crates/fmonero-core/src/settings.rs` | a numeric range's hint names the key's documented default | ergonomics: hint runnability |
+| `crates/fmonero-core/src/agent.rs` | `capabilities.env` documents `FMONERO_SYSTEMD_USER_DIR` | ergonomics: capabilities accuracy — the round trip §5b asks this pass to assert |
+| `decisions/phase2-doctor-gate.sh` | both `cd`s repointed at the main checkout | the worktree it named is the one Phase 3 removed |
+
+No `Cargo.toml` was touched, no §5b signature changed, and `DESIGN.md` was not edited.
+
+### Cross-module breakage found by the merges: one row, and it was the expected handover
+
+`tests/e2e.sh --fast` after the fourth merge: **264 passed, 1 failed, 2 skipped**, the single
+failure being
+
+```
+  FAIL  doctor exited 11: it is expected to be the §8 handover stub at this phase
+```
+
+which is Phase 1b's own placeholder meeting Phase 2's doctor. Nothing else broke: no conflict, no
+compile error, no test regression across four merges. Ownership really was disjoint.
+
+### The agent-ergonomics pass, lite (§8: `--help` quality, hint runnability, `capabilities` and `robot-docs` accuracy)
+
+No audit workspace and no scorecard files, as §8 says. The pass was four questions asked against
+the built binary; each answer that was wrong is fixed with a regression test beside it.
+
+**1. `--help` quality.** `fmonero`, `fmonero --help`, every group and every leaf print real
+content, and a group with no subcommand is a usage error naming that group's help. One hole: the
+first thing both a person and an agent type.
+
+```
+$ fmonero help wallet          # BEFORE
+{"code":2,...,"error":"unrecognized subcommand 'help'","hint":"fmonero --help",...}
+
+$ fmonero help wallet send     # AFTER
+Send an exact amount to one recipient
+
+Usage: fmonero wallet send [OPTIONS] <TO> <AMOUNT>
+```
+
+`disable_help_subcommand` stays on, so `help` never appears in the command tree, in
+`capabilities.commands` or in §5c's key-set gate; only a **leading** `help` is rewritten, so
+`fmonero wallet notes get help` still reports `'help' is not a transaction id`. Both are unit
+tests in `main.rs`.
+
+**2. Hint runnability.** Thirty-four invocations were run — thirty-two of them failures, plus
+`wallet list` and `node log`, which succeed with nothing installed — and every `hint` was read out
+of the JSON envelope. All of them are commands that run, in the sense §4 means: a literal command,
+or a literal command with an explicit `<placeholder>` the caller substitutes (`fmonero wallet
+validate <address>`, `sudo systemctl <verb> monerod`, `FMONERO_WALLET_PASSWORD=… fmonero wallet
+open <name>`). None was prose, none named a flag that does not exist, and none pointed at a
+different tool's syntax. Two ran and taught the wrong thing:
+
+| Before | After | Why it mattered |
+|---|---|---|
+| `node ban 1.2.3.4` → exit 3 `foreign_node`, `sudo systemctl <verb> monerod` | exit 4 `unit_missing`, `fmonero setup --units` | layout `none` — no monerod at all. The old hint named a unit that does not exist and called an absent node foreign. §2i's own layout table gives `none` exit 4 with that hint, which `node_session::up`/`down` already answered |
+| `settings set wallet.priority 9` → `fmonero settings set wallet.priority 0` | `… wallet.priority 2` | 0 is the cheapest tier and an alias of 1 (§1b.4); §4's default is 2. The hint taught the opposite of the default every time a priority was mistyped. Now every numeric hint names the key's documented default from `KEY_TABLE`, and the test asserts the hint is accepted |
+
+Intent inference, unchanged and already good: `--jsonn` → "a similar argument exists: '--json'",
+`wallet balence` → "'balance'", `sttus` → "'setup', 'settings', 'status'", `settings set
+wallet.priorityy` → `fmonero settings set wallet.priority 2   # did you mean this?`.
+
+**3. `capabilities` accuracy.** 36 commands — exactly §4.1's list, with `bare fmonero` not being a
+command and `settings list|get|set` counted as three; 18 exit codes; `accepts_dry_run` true for
+exactly `wallet send`, `wallet sweep`, `setup`, `doctor`; `output_format` non-`json` for exactly
+`tui` (`tty`) and `robot-docs` (`text`); every `reason` in `.reasons` constructible because it is
+printed from `Error::REASONS`. One drift, found by writing the check §5b asks for:
+
+```
+$ # the reverse direction, against the PRE-FIX documented list
+would-be-undocumented against the PRE-FIX list: FMONERO_SYSTEMD_USER_DIR
+```
+
+The Phase 2 doctor added a third test seam (`probes.rs::systemd_user_dir`) and recorded it as a
+deviation; nothing tied it back to `capabilities.env`, because `check.sh` only ever checked
+"documented ⇒ read". It now checks both directions, with a self-test, and `agent.rs` documents the
+variable as `test_only: true`. `PATH` is excluded by name and the exclusion is stated in the check:
+`proc::which` reads it, every process has one, and documenting it would claim a knob fmonero does
+not have. Known limit, stated rather than hidden: the reverse scan reads `env::var*("LITERAL")` and
+`env_dir("LITERAL")`, so a **new** variable read through a `const` (as `FMONERO_WALLET_PASSWORD`
+is) would be caught by the forward direction only if it is documented — a new undocumented one
+behind a const would slip past. The fix is to keep new reads literal.
+
+**4. `robot-docs` accuracy.** Every `reason` it prints is in `Error::REASONS` (checked pairwise
+against `capabilities`), every command it names exists, and it says in as many words that the node
+and wallet paths are verified against a fixture mock rather than a real daemon. `docs/ROBOT.md` is
+now its byte-identical output, and `tests/e2e.sh` fails if the two drift.
+
+## Phase 3 gate (real output)
+
+Run at `HEAD` = the commit this entry lands with, in the main checkout, with **no Monero installed
+and no sudo** (§1.1, §4b). Every daemon-facing row is served by `crates/fmonero-mock` over fixtures
+derived from the v0.18.5.1 source; no send has been broadcast from this build.
+
+### `cargo fmt --check` · `cargo clippy --all-targets -- -D warnings` · `cargo test`
+
+```
+$ cargo fmt --check
+exit: 0
+
+$ cargo clippy --all-targets -- -D warnings
+    Checking fmonero-core v0.1.0 (/home/oliver/Projects/odcpw/fmonero/crates/fmonero-core)
+    Checking fmonero v0.1.0 (/home/oliver/Projects/odcpw/fmonero/crates/fmonero)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.75s
+exit: 0
+
+$ cargo test
+     Running unittests src/main.rs (target/debug/deps/fmonero-...)
+running 69 tests
+test result: ok. 69 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.77s
+     Running unittests src/lib.rs (target/debug/deps/fmonero_core-...)
+running 138 tests
+test result: ok. 138 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.15s
+     Running unittests src/main.rs (target/debug/deps/fmonero_mock-...)
+running 3 tests
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+   Doc-tests fmonero_core
+running 0 tests
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+exit: 0
+```
+
+210 tests: 69 in the binary (doctor, tui, setup, prompt, and `main.rs`'s two new `help` tests),
+138 in the engine, 3 in the mock.
+
+### `scripts/check.sh --full` — the structural greps, each with its self-test
+
+```
+
+== cargo fmt --check
+  ok    formatted
+
+== cargo clippy --all-targets -- -D warnings
+  ok    no warnings
+
+== cargo test
+  ok    all tests
+
+== §2f  argv only — no shell strings anywhere
+  ok    no argv array runs a shell
+  ok    no Command::new("sh")
+  ok    self-test: shell argv fires on its own fixture
+  ok    self-test: shell argv (sh) fires on its own fixture
+  ok    self-test: Command::new fires on its own fixture
+
+== §2g  the core is silent
+  ok    no print macro in fmonero-core
+  ok    self-test: print macro fires on its own fixture
+  ok    self-test: dbg macro fires on its own fixture
+  ok    fmonero-core has no anyhow
+
+== §2h  no stubs, no placeholders
+  ok    no todo/unimplemented/FIXME/XXX/placeholder
+  ok    self-test: todo! fires on its own fixture
+  ok    self-test: FIXME fires on its own fixture
+  note  0 Error::unimplemented call site(s) left (§2h: zero by the Phase 3 gate)
+
+== §2b  secrets
+  ok    query_key is out of scope
+  ok    self-test: query_key fires on its own fixture
+
+== §2a.5  no f64 touches a monetary value
+  ok    no 'as f64' outside status.rs's sync percentage
+  ok    self-test: as f64 fires on its own fixture
+  note  status.rs is excluded and audited by hand: §5 types sync_percent as f64.
+        538:        (i.height as f64) / (i.target_height.max(i.height) as f64) * 100.0
+
+== §2a.3  only send.rs may build or relay a transaction
+  ok    the binary never builds or relays directly
+  ok    self-test: a direct relay fires on its own fixture
+  ok    only send.rs, rpc/wallet.rs and state.rs name the money calls
+
+== §2d  no code path can call ureq without a deadline
+  ok    ureq is named only in rpc/mod.rs
+  ok    self-test: a stray ureq call fires on its own fixture
+  ok    the agent still sets timeout_global
+
+== §2c  loopback plaintext only
+  ok    fmonero never binds a port
+  ok    self-test: a listener fires on its own fixture
+  note  crates/fmonero-mock and rpc/mock_tests.rs are excluded BY PATH: the mock binds
+        a port on purpose (§8 Phase 0) and is never installed.
+  ok    no rustls/native-tls/openssl/hyper-tls/tokio in the binary
+  ok    self-test: the TLS grep fires on a tree that has rustls
+
+== §7a  the TUI's Action derives neither Clone nor Debug
+  ok    Action carries no derived Clone or Debug
+
+== shell scripts parse
+  ok    bash -n scripts/check.sh
+  ok    bash -n scripts/install.sh
+  ok    bash -n scripts/uninstall.sh
+  ok    bash -n tests/e2e.sh
+  ok    bash -n tests/plugin-smoke.sh
+  ok    bash -n tests/tui_tmux.sh
+  skip  shellcheck is not installed on this machine (§1.4); bash -n ran instead
+
+== §2j  README, every --help and robot-docs claim nothing §4b marks RED
+  ok    self-test: the RED-claim scan fires on its own fixture
+  ok    self-test: and it leaves a line adjacent to 'unverified' alone
+  ok    self-test: and it leaves a line adjacent to the class name RED alone
+  ok    no RED claim in README, 1421 lines of --help/robot-docs/capabilities
+
+== --full: cargo build --release
+  ok    release build
+
+== --full: cargo doc -p fmonero-core
+  ok    rustdoc
+
+== --full: the documented environment variables and the read ones are the same set (§5b)
+  ok    every documented variable is read somewhere under crates/ (9 of them)
+  ok    and every variable the tree reads is documented (PATH excluded by name)
+  ok    self-test: the reverse env scan sees a var read in a source file
+
+check.sh: PASS (/home/oliver/Projects/odcpw/fmonero)
+```
+
+The four non-negotiable greps §8 Phase 3 names, and where each one lives:
+
+| Non-negotiable | Where | Self-test that proves it can fail |
+|---|---|---|
+| core is silent (§2g) | `check.sh` | a fixture with `println!`, and one with `dbg!` |
+| no shell strings (§2f) | `check.sh` (Rust) · `tests/plugin-smoke.sh` (QML) | `["bash","-c",…]`, `["sh","-c",…]`, `Command::new("bash")`; in QML `execDetached(["bash"` and `bar.run(` |
+| no `query_key`, no secret in output (§2b) | `check.sh` (the `query_key` grep) · `tests/e2e.sh` (both of §2b's own tests) | `query_key` on a fixture; a payload carrying `tx_key`/`password`/`tx_metadata`; a **planted leak file** for the known-value scan |
+| nothing RED claimed (§2j) | `check.sh` | a fixture saying "has successfully broadcast a real send to mainnet" with no marker, plus one negative fixture per marker family |
+
+Two of those four did not exist before this phase, and one of the two that did was vacuous:
+
+- §2b's **first** test — the key-name grep over "the full `--json` and `-v` output of every
+  command" — had no implementation at all. It now runs over a transcript of every `fm` invocation
+  in `tests/e2e.sh` plus a deliberate `-vv` pass over both mocks, matching JSON **keys**
+  (`"tx_key":`) rather than substrings, so `seed_backup_hint` and `pruning_seed` — both honest keys
+  — do not fire. Both of those negatives are self-tested.
+- §2b's **second** test was written as `grep -rql … | head -1 | grep -q .`, and `-q` silences
+  `-l`, so the pipeline could never print a filename: the known-value scan could not fail. It now
+  scans for real, and it has a planted-leak self-test for exactly that reason.
+- §2j's scan did not exist; §4b assigns it to Phase 3 ("Phase 3 greps README, every `--help`
+  string and `robot-docs`"), and it could not have existed earlier because `README.md` arrived with
+  the docs merge.
+
+### §2j's scan, and what it deliberately does not do
+
+The claim pattern matches **achieved** capability — `successfully (sent|swept|broadcast|relayed|
+synced)`, `(has|was) … broadcast to`, `(a|the) (real|live) (send|sweep|broadcast|sync|peer list|
+balance|refresh)`, `(sends|relays) (real|mainnet|stagenet)`, `(verified|proven|tested) (against|
+with|on) (a) (real|live)` — and not mechanism prose. On the 1 421-line corpus (both READMEs, all
+41 `--help` outputs, `robot-docs`, `version --json`, `capabilities --json`) it finds exactly one
+line, README's own
+
+```
+132:**RED, and therefore unverified.** A real `node up`, `node down` or `node restart` against
+133:`monerod`. Real sync progress, a real peer list, a real balance, a real `refresh`. A real send
+```
+
+which the adjacent marker qualifies. Two widenings of §4b's sentence, recorded because they are
+deviations:
+
+1. **the marker is `unverified` OR `RED`/`AMBER` OR `never`/`not yet`/`no send`**, not the single
+   word §4b names. README says "RED, and therefore unverified" and `build_note` says "no send has
+   ever been broadcast"; demanding one spelling would fail on text that is already honest, and a
+   check that fails on correct output is the check the next agent deletes.
+2. **"adjacent" is ±1 line**, because these are wrapped paragraphs and not one sentence per line.
+
+A third thing it does *not* do: it reads `robot-docs` and `capabilities` output, which are generated
+from `agent.rs`, so a dishonest sentence added to a **code comment** is out of its scope. That is
+what the Phase 4 honesty reviewer is for (§8 Phase 4).
+
+### `tests/e2e.sh --fast` and `--full`
+
+```
+$ tests/e2e.sh --fast
+e2e.sh (fast): 301 passed, 0 failed, 2 skipped        # 5 s wall, budget < 20 s
+
+$ tests/e2e.sh --full
+e2e.sh (full): 327 passed, 0 failed, 2 skipped        # 118 s wall, budget < 90 s — over, see below
+  ok    §2l (a) status, both daemons absent: 56ms mean (budget 60 ms, GREEN)
+  ok    §2l (b) status against the mock: 66ms mean (budget 80 ms, AMBER)
+  ok    §2l (d) wallet history --cached: 4ms mean (budget 50 ms, AMBER)
+  note  §2l (c) — warm, against a REAL monerod and monero-wallet-rpc — is RED and is
+        neither measured nor claimed here (§4b, §2j).
+```
+
+The two skips are the only two §5c marks exempt: `tui` (interactive, exits 2 on a non-TTY stdout)
+and `robot-docs` (plain text by contract). Every other command of §4.1 has its top-level key set
+asserted exactly.
+
+**`--full` takes 118 s against §3's "< 90 s" target, and that is reported rather than trimmed.**
+The cost is deliberate waiting, not slowness: the `--full` cases include a 10 s slow-route deadline
+kill, a 60 s-breaker sequence, `node up --wait --wait-timeout 2`, two `--delay-ms 1500`
+double-send interlock races and a `status`-under-load loop. Cutting to 90 s means cutting one of
+those, and each is the only test of a money or hang guarantee. `--fast` — the one an agent runs in a
+loop — is 5 s against its 20 s target.
+
+The rows Phase 3 added, all previously skipped as the §8 doctor handover:
+
+```
+== §4b GREEN: doctor on this machine — exit 11 and that exact failure set
+  ok    doctor with no Monero installed (exit 11)
+  ok    §5c key set: doctor
+  ok    exactly monerod_installed and wallet_rpc_installed fail (§4b)
+  ok    and both say fail:not_installed, not a bare fail
+  ok    every node/wallet/storage check is a skip:<reason> (§7.1)
+  ok    and every one of those skips names its reason, never a bare skip
+  ok    the install group has real verdicts, not skips (§4b)
+  ok    and the security group's own two locally-answerable checks pass
+  ok    the summary agrees with the process exit code (§2j)
+  ok    doctor capabilities (exit 0)
+  ok    §5c key set: doctor capabilities
+  ok    the seven §7 groups
+  ok    three safety classes — there is no class C (§7)
+  ok    doctor --only security (exit 0)
+  ok    and it ran only that group
+
+== §4b GREEN: doctor --fix and doctor undo latest, byte for byte
+  ok    both class-A detectors see the corruption
+  ok    --fix --dry-run plans the class-A repairs
+  ok    --fix --dry-run changed neither file (§7)
+  ok    doctor --fix (exit 11: fail rows remain — monerod is still not installed)
+  ok    both class-A fixers report fixed
+  ok    and both files are valid afterwards
+  ok    the repaired key is at its documented default, not at 9
+  ok    doctor undo latest (exit 0)
+  ok    §5c key set: doctor undo
+  ok    it was not refused
+  ok    and it undid the run --fix had just written
+  ok    every recorded action reversed
+  ok    the two files are byte-for-byte the corrupt originals again (§7 axiom 3)
+  ok    doctor undo against a tampered backup (exit 13)
+  ok    refused, with the integrity failure named
+
+== docs/ROBOT.md is `fmonero robot-docs` output, not a hand-edited copy of it (§3)
+  ok    docs/ROBOT.md is byte-identical to this binary's robot-docs (65 lines)
+
+== §2b test (1): the key-name grep over every command's --json and -v output
+  ok    §2b: no seed/spend_key/view_key/tx_key/tx_metadata/password/login key in any output (416 lines)
+  ok    self-test: the key-name grep fires on its own fixture
+  ok    self-test: and it leaves seed_backup_hint and pruning_seed alone
+
+== §2b test (2): the known-value grep over everything this run wrote
+  ok    self-test: the known-value scan fires on a planted leak
+  ok    §2b: the wallet password and the mock's credential appear in nothing this run wrote
+  ok    §2b: and in neither DECISIONS.md nor any fixture
+  ok    §2b: on the wire the password appears only in open_wallet/create_wallet (create_wallet,open_wallet)
+  ok    §2b: the node credential is nowhere outside monerod.conf
+
+e2e.sh (fast): 301 passed, 0 failed, 2 skipped
+```
+
+`doctor` is now the §4b GREEN row asserted **positively**: which two ids fail, that both carry
+`fail:not_installed`, that no `node`/`wallet`/`storage` check is anything but a `skip` with a
+reason, that the `install` group has no skip at all. When the owner installs Monero those two
+become passes and this case fails until it is updated — which is the direction §4b asks for.
+
+### `tests/plugin-smoke.sh` and `tests/tui_tmux.sh`
+
+```
+plugin-smoke: /home/oliver/Projects/odcpw/fmonero/plugin/oliver.monero
+  ok    omarchy-plugin-validate
+  ok    manifest id is oliver.monero
+  ok    schemaVersion is 1
+  ok    kinds contains bar-widget
+  ok    entryPoints.barWidget = Panel.qml
+  ok    defaultSection = right
+  ok    allowMultiple = false
+  ok    manifest.json exists
+  ok    Panel.qml exists
+  ok    Service.qml exists
+  ok    MoneroIcon.qml exists
+  ok    Model.js exists
+  ok    README.md exists
+  ok    qmllint: no syntax errors
+  ok    Panel.qml sets manageIpc: false
+  ok    no execDetached(["bash" …])
+  ok    self-test: execDetached bash fires on its own fixture
+  ok    no bar.run()
+  ok    self-test: bar.run fires on its own fixture
+  ok    every manifest default has an in-code fallback
+  ok    no money argv element
+  ok    self-test: money argv fires on its own fixture
+  ok    self-test: money argv leaves its negative fixture alone
+  ok    no wallet secret named in QML
+  ok    self-test: secret name fires on its own fixture
+  ok    no float arithmetic on money
+  ok    self-test: parseFloat fires on its own fixture
+  ok    self-test: Number() fires on its own fixture
+  ok    self-test: pico / 1e12 fires on its own fixture
+  ok    rescanPlugins
+  ok    journal carries no load failure for oliver.monero
+  ok    widget is loaded (cursor: {"section":"header","index":0,"active":false,"opened":false,"sections":["header","footer"],"alive":false,"binaryMissing":true,"nodeUp":false,"synced":false,"walletOpen":false,"iconCase":0,"iconColor":"#a5a5a5"})
+
+plugin-smoke: 32 passed, 0 failed
+
+
+== build
+  ok    cargo build --release
+
+== the TUI on a pty (both daemons absent)
+  ok    fmonero tui opened on a pty
+  ok    Node screen renders (Node)
+  ok    Wallet screen renders (Balance)
+  ok    Send screen renders (Priority)
+  ok    Log screen renders (Log)
+  ok    help overlay renders (Keys)
+  ok    q quits cleanly (exit 0)
+  ok    no print macro under src/tui
+  ok    the TUI wrote nothing to stderr
+
+== 10 passed, 0 failed
+```
+
+`omarchy-plugin-validate`, `qmllint` and `omarchy-shell shell rescanPlugins` all ran for real
+against the repo directory and the live shell; the widget reports `binaryMissing: true` because
+`~/.local/bin/fmonero` does not exist yet — `scripts/install.sh` is the Phase 4 verifier's one real
+run (§4b), and the widget rendering that state honestly is the §6.3 behaviour.
+
+### Line budgets, measured
+
+| Budget | Spec | Real | Verdict |
+|---|---|---|---|
+| QML + `Model.js` + manifest (§6.1, ≤ 1 310) | 1 310 | **1 241** (manifest 32 · Service 287 · Panel 700 · MoneroIcon 80 · Model.js 142) | pass, every per-file budget met too |
+| `src/tui/{mod,theme,screens,send,subs}.rs` (§7a, ≤ 1 800) | 1 800 | **4 339** (+ 632 in `tests.rs`, which §7a does not name) | **FAIL**, inherited from the Phase 2 TUI gate, which reported it rather than closing it |
+
+The TUI overrun is carried forward unchanged and unclosed. Phase 3 will not cut it, for the reason
+that agent gave and that this phase agrees with: every screen, key, modal and state §7a specifies
+is implemented, so reaching 1 800 means deleting §7a's own content, which §2h and §2j forbid more
+strongly than §8 forbids a long file — and fproton's TUI, the one §7a scaled from, is itself 2 634
+lines against its own 1 200. The honest lever is scope and it belongs to whoever owns §7a.
+
+### The gate ledger, line by line
+
+| §8 Phase 3 gate line | Result |
+|---|---|
+| `git merge --no-ff` × 4, in order, each green before the next | **pass** — no conflict, `cargo build --release` green after each |
+| fold `decisions/phase2-*.md` into `DECISIONS.md`, `git rm` the four | **pass** — above, under one dated heading, in order docs, plugin, doctor, tui |
+| remove the finished worktrees, keep the branches | **pass** — four removed (`phase0/mock`, `phase2/{docs,tui,doctor}`), `git worktree prune` run, five branches still on the same `.git` |
+| `cargo fmt --check` | **pass** |
+| `cargo clippy --all-targets -- -D warnings` | **pass** |
+| `cargo test` | **pass** — 210 tests |
+| `scripts/check.sh --full` | **pass** — 43 `ok`, 1 honest skip (shellcheck absent, §1.4) |
+| `tests/e2e.sh --fast` | **pass** — 301/0/2 |
+| `tests/e2e.sh --full` | **pass** — 327/0/2; 118 s against a < 90 s target, reported |
+| `tests/plugin-smoke.sh` | **pass** — 32/0, `omarchy-plugin-validate` + live `rescanPlugins` |
+| `tests/tui_tmux.sh` | **pass** — 10/0 on a real pty |
+| silent core (§2g), with a self-test | **pass** |
+| no shell strings (§2f), with self-tests | **pass** — Rust in `check.sh`, QML in `plugin-smoke.sh` |
+| no `query_key`, no secret in output (§2b), with self-tests | **pass** — and both halves of §2b's own test now exist and can fail |
+| nothing RED claimed (§2j), with self-tests | **pass** — written this phase |
+| regenerate `docs/ROBOT.md` | **pass** — and `e2e.sh` now fails when it drifts |
+| agent-ergonomics lite pass | **pass** — four findings, four fixes, four regression tests |
+| `src/tui/**` ≤ 1 800 lines (§8's Phase 2 TUI gate, re-measured here) | **FAIL** — 4 339; inherited, reported, not closed |
+| shellcheck on the shell scripts | **skip** — not installed (§1.4); `bash -n` ran on all six instead |
+| `hyperfine` / `/usr/bin/time` | **skip** — not installed (§1.4); the §2l timings used §1.4's `date +%s%N` loop |
+| anything needing a live `monerod` or `monero-wallet-rpc` | **not run — RED by design** (§4b, §1.1). Nothing in README, `--help`, `robot-docs` or `build_note` claims otherwise, and the §2j scan is what enforces that |
+
+### Design deviations recorded by this phase (§2k)
+
+1. **`NodeClient::mutators` answers layout `none` with exit 4 `unit_missing`, not exit 3
+   `foreign_node`.** §5b's one-sentence description says "Returns `Error::Safety` … unless
+   UserUnit", but §2i's prose names only `system_unit` and `remote` for that refusal, and §2i's own
+   layout table gives `none` "exits **4 `backend`**: `hint: fmonero setup --units`" — which is
+   already what `node_session::up`/`down` answer. The old behaviour told every user of a fresh
+   machine to `sudo systemctl <verb> monerod` about a unit that does not exist, and called an
+   absent node foreign, which is a rendered untruth of the kind §2j forbids. `system_unit` and
+   `remote` keep exit 3 `foreign_node` and the `sudo systemctl` hint verbatim; the §2i tests that
+   pin them are unchanged and still pass.
+2. **§2b's known-value grep excludes the mock's request log, and reads `DECISIONS.md` for the
+   wallet password only.** The password reaches `monero-wallet-rpc` inside the `open_wallet` and
+   `create_wallet` request bodies by construction (§1b.4) and the mock logs every body verbatim, so
+   `*.jsonl` is excluded **by name** — and replaced by a stronger assertion: on the wire the
+   password appears in those two methods and in no other. For `DECISIONS.md` the excluded needle is
+   `fmonero:t3st`, because §8's own Phase 1b gate line is
+   `printf 'fmonero:t3st' > $FMONERO_STATE_DIR/run/monero-wallet-rpc.<port>.login`, required to be
+   pasted into this file as real output, and this file is append-only (§2j) — so the contradiction
+   cannot be resolved by editing the log. The harness's stand-in wallet **password** is scanned
+   there and is absent — and this paragraph deliberately does not spell it, because spelling it
+   would make that scan fail on its own explanation.
+3. **§2j's marker set is wider than the single word `unverified`, and "adjacent" is ±1 line.**
+   Stated in full above, with the reason: README and `build_note` already word it as "RED, and
+   therefore unverified" and "no send has ever been broadcast".
+4. **`docs/ROBOT.md` is compared, not overwritten, by `tests/e2e.sh`.** §3 says the file is
+   "generated by `fmonero robot-docs > docs/ROBOT.md` in `tests/e2e.sh`". A test that rewrote a
+   tracked file would destroy `git status` as the oracle the doctor's `--dry-run` assertions use,
+   and could not fail on a hand edit — which is the thing §3 actually forbids. It fails with the
+   regeneration command as its hint.
+5. **`tests/e2e.sh`'s `sandbox` now creates `run/` at 0700.** `Paths::ensure_dirs` creates every
+   directory 0700 (§2b.7) and the doctor's `state_perms` checks it; a bare `mkdir -p` left it at
+   the shell's umask, so the doctor correctly reported `fail:bad_mode` on a sandbox that was merely
+   sloppy — which would have made §4b's "exactly two checks fail" false for the wrong reason.
+6. **`capabilities.env` gains `FMONERO_SYSTEMD_USER_DIR`**, the Phase 2 doctor's third test seam.
+   §5b's env list did not name it because it did not exist when §5b was written; §5b's own
+   instruction to this phase ("every variable read is documented") is what required the addition.
+7. **`decisions/phase2-doctor-gate.sh` is kept, with its `cd`s repointed.** §8 tells Phase 3 to
+   `git rm` the four `.md` files; the doctor agent also left a runnable gate script that
+   `phase2-doctor.md` cites by path. Deleting it would leave that citation dangling, so it stays
+   and now points at the main checkout instead of the removed worktree.
+
+Two earlier deviations are **carried forward, not re-litigated**: the Phase 2 TUI's line-budget
+overrun (above) and the Phase 2 doctor's `quarantine/` extension to §7's "never removes a file"
+(recorded in its own evidence, folded in above).
+
+### What is still RED, and what turns it green
+
+Unchanged from §4b, and nothing in this build claims otherwise: a real `node up|down|restart`
+against `monerod`, real sync progress, a real peer list, a real balance, a real `refresh`, **a real
+send or sweep of any amount**, a real `open_wallet` against a real wallet file, a real `setup`
+run, the §1.3 disk floor, the §2l (c) warm timing, and every doctor check in the `node`, `wallet`
+and `storage` groups against a live daemon. They need `omarchy pkg add monero` and the owner's
+password, which no agent on this machine has (§1.1), and §4b's rehearsal list — on **stagenet**
+first — is the exact sequence that turns them green. Phase 4's verifier owns the one real
+`scripts/install.sh --yes`.
