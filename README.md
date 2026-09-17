@@ -61,9 +61,14 @@ scripts/install.sh --yes              # build, install to ~/.local/bin, wire up 
 ```
 
 That is `cargo build --release -p fmonero`, an atomic install of `~/.local/bin/fmonero`, and
-`fmonero setup --all --yes`. **`--yes` has never been run on this machine**: a real `setup` is
-RED in `DESIGN.md` §4b, so every step is *written* to be idempotent and safe to re-run after a
-`git pull`, and that is unverified — see Status. `--dry-run` prints the whole plan and is GREEN.
+`fmonero setup --all --yes`. It has now been run for real, twice in a row, and the second run
+reported five of its seven actions `unchanged` while leaving every artefact byte-identical to
+the first run's — so it is safe to re-run after a `git pull`. The two actions that do **not**
+report `unchanged` are the `omarchy plugin enable` and `omarchy bar put` calls: they are
+re-executed on every run and reported `written` whether or not they changed anything, which is a
+reporting defect (`DECISIONS.md`, Phase 4 verification, finding 2) and not a second write —
+`shell.json` still holds exactly one `oliver.monero` entry, in the same place.
+`--dry-run` prints the whole plan and changes nothing.
 `scripts/uninstall.sh` reverses it (`--menu` also strips the menu entries, `--purge` also
 deletes fmonero's own config, state and cache). Neither script uses sudo, writes outside
 `$HOME`, or touches a wallet file; the uninstaller refuses `--purge` while a pending-send
@@ -77,9 +82,12 @@ fmonero setup --units --yes           # two systemd USER units + ~/.config/fmone
 fmonero node up --wait                # start monerod and wait for it to report itself synced
 ```
 
-Those three commands are unverified: no Monero binary is installed on the machine this was
-built on, so nothing in this section has been seen to work against a real daemon. See
-[Status](#status).
+The first and third of those are unverified: no Monero binary is installed on the machine this
+was built on, so nothing that needs a daemon has been seen to work. `setup --units` itself has
+run (the middle line is part of `setup --all`), and on a machine in exactly this state — set up,
+Monero absent — `fmonero node up` waits 30 s and exits 8 rather than exiting 4 `not_installed`,
+leaving the unit retrying every 5 s. That is a known defect, unfixed, recorded as finding 1 of
+the Phase 4 verification in `DECISIONS.md`. See [Status](#status).
 
 `setup --units` writes `fmonero-monerod.service` and `fmonero-wallet-rpc.service` into
 `~/.config/systemd/user/` and leaves both **disabled**: they start on demand, not at login.
@@ -99,8 +107,9 @@ The Omarchy shell's PATH includes `~/.local/bin` but not `~/.cargo/bin`, so inst
 The project tracks every (command, scenario) pair in one of three classes, defined in
 `DESIGN.md` §4b. A row counts as verified only once `DECISIONS.md` carries its real command
 output, and `fmonero version --json` carries `build_stage` and `build_note` for the build you
-actually have: this README was written at the API-freeze gate, so that field, not this section,
-is the authority on how much of the list below the binary in your hands has run.
+actually have: this section mirrors the matrix as Phase 4's verifier refilled it on 2026-09-17,
+but that field, not this section, is the authority on how much of the list below the binary in
+your hands has run.
 
 | Class | What it means |
 |---|---|
@@ -113,13 +122,28 @@ is the authority on how much of the list below the binary in your hands has run.
 `capabilities`; `robot-docs`; `version`; `setup --dry-run`; `doctor`, which exits 11 with
 `monerod_installed` and `wallet_rpc_installed` failing and every node, wallet and storage check
 skipped with a stated reason; `doctor capabilities` and the `doctor undo latest` round trip;
-`tui` opening, rendering every screen's empty state and quitting cleanly; `node up` with no
-units and `wallet open` with no unit (exit 4); `wallet send` with no wallet daemon (exit 4 at
+`tui` opening, rendering every screen's empty state and quitting cleanly; `node up` with no node
+unit (exit 4 `unit_missing`); `wallet send` with no wallet daemon (exit 4 at
 the reachability probe, before any build, so a bad address is still exit 15 and an unresolved
 pending send is still exit 3); `node down --dry-run` (exit 2, because `--dry-run` is implemented
 by exactly four commands); `wallet clear-pending`; `node log` with no log file; bare `fmonero`
 on a pipe and on a pty; every `--help`; every usage error; amount and address parsing; and the
 60 ms `status` budget.
+
+Also GREEN since Phase 4's verifier ran it: `setup --all --yes` for real, through
+`scripts/install.sh --yes`, twice — the two systemd user units (both left disabled),
+`~/.config/fmonero/monerod.conf` at 0600 with its `rpc-login` carried through unrotated, the
+plugin symlink, and the menu entries; the bar widget loading in the live Omarchy shell and
+polling that binary's own `status --json`; the `--wallet-dir` in the installed unit being
+`settings.wallet.dir` byte for byte; the stagenet and `--rotate-rpc-login` renderings through
+`--dry-run`; and the doctor's `units`, `install` and `security` groups — 17 checks — passing
+against the files that run actually wrote.
+
+One GREEN row of §4b is no longer reproducible on a machine that has been set up, and saying so
+is the point of this section: `wallet open` with no unit is documented as exit 4, and it is exit
+4 only while the unit is absent from systemd's user manager as well as from disk. Once
+`setup --units` has run, `wallet open` starts the unit, waits 30 s and exits 8 — the same defect
+as `node up` above.
 
 **AMBER.** `node info|peers|bans|ban|unban|limit`;
 `wallet open|close|create|balance|address|new-address|history|refresh|book|notes|set-daemon`;
@@ -133,9 +157,11 @@ deadline, breaker and `--force` paths; and the layout refusals against a synthet
 
 **RED, and therefore unverified.** A real `node up`, `node down` or `node restart` against
 `monerod`. Real sync progress, a real peer list, a real balance, a real `refresh`. A real send
-or sweep of any amount. A real `open_wallet` against a real wallet file. A real `setup` run.
-The 120 GB disk floor. The warm `status` timing. Every doctor check in the node, wallet and
-storage groups against a live daemon.
+or sweep of any amount. A real `open_wallet` against a real wallet file. `setup`'s two refusals —
+under Arch's `system_unit` layout, and under the 120 GB free-space floor — which nothing has
+exercised, and which keep `setup` RED as a command even though the run above is GREEN.
+The 120 GB disk floor itself. The warm `status` timing. Every doctor check in the node, wallet
+and storage groups against a live daemon.
 
 `DESIGN.md` §4b lists the exact commands that turn those green, in order, and they run on
 **stagenet** first: stagenet coins are free from a faucet, so the send path is exercised the

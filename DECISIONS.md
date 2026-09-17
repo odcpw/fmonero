@@ -4932,3 +4932,644 @@ GREEN and AMBER sentences and one clause **added** to its RED sentence (every do
 node, wallet and storage groups against a live daemon), and fourteen of the thirty-six
 `capabilities.commands` rows read `verified: "red"`. The one real `scripts/install.sh --yes` is the
 Phase 4 **verifier's**, not the fixer's, and it has not been run here.
+
+---
+
+## Phase 4 verification (real output)
+
+DESIGN.md §8 Phase 4, the verifier's half: `scripts/install.sh --yes` twice — the one real `setup`
+run §4b reserves for this phase — the bar widget confirmed loading, `scripts/check.sh --full`,
+`tests/e2e.sh --fast` and `--full` re-run, §4b refilled from this run's output, and an honest
+report of what still fails.
+
+Run on 2026-09-17 in `/home/oliver/Projects/odcpw/fmonero` on `main`, at the tree this entry lands
+with. **No Monero binary is installed and `sudo` needs a password** (§1.1): `command -v monerod`
+and `command -v monero-wallet-rpc` both answer nothing, so every §4b RED row is still RED and
+nothing below claims one. Nothing in this phase broadcast a transaction, started a `monerod`, or
+opened a wallet file.
+
+### The state of the machine before the run, because it was not pristine
+
+An `install.sh --yes` had already been run at **05:48**, five minutes after the Phase 4 fixer's
+last commit (`46afd9f`, 05:43) and after its entry was written — so that entry's closing sentence
+("The one real `scripts/install.sh --yes` is the Phase 4 **verifier's** … and it has not been run
+here") is true of the fixer and false of the machine. `DECISIONS.md` is append-only (§2j), so this
+paragraph is the correction rather than an edit.
+
+What was on disk at 06:07, before this phase's first run (sha256 truncated to 16, then mode):
+
+```
+e07cb3d30b4ef695  755  ~/.local/bin/fmonero
+3c793e486bcaad34  600  ~/.config/systemd/user/fmonero-monerod.service
+8faf1960a33f933e  600  ~/.config/systemd/user/fmonero-wallet-rpc.service
+bed63c9603dc9f5c  600  ~/.config/fmonero/monerod.conf
+d375efcb2ff80fc9  644  ~/.config/omarchy/extensions/omarchy-menu.jsonc
+```
+
+A first run onto that state would have reported every action `unchanged` and the idempotence
+assertion §8 asks for would have been vacuous — "the second run reports what the first run
+reported" proves nothing when the first run did nothing. So **the two unit files were moved into
+the scratchpad and deleted from `~/.config/systemd/user/` before the first run**, and nothing else
+was touched: the credential file was left alone (deleting it would draw a fresh `rpc-login` and
+break the byte comparison), and the Omarchy menu file was left alone (it is user-owned and holds
+entries that are not fmonero's). That is the whole of the setup, stated so that the transition the
+first run shows is attributable.
+
+### `scripts/install.sh --yes`, run twice
+
+First run — the two units are written, everything else is already in place:
+
+```
+$ NO_COLOR=1 scripts/install.sh --yes
+warn monerod is not on PATH; fmonero installs, but every command that needs the node or the wallet will exit 4
+hint: omarchy pkg add monero   # then: fmonero setup --units --yes
+-> cargo build --release -p fmonero
+    Finished `release` profile [optimized] target(s) in 0.06s
+--   /home/oliver/.local/bin/fmonero is already this exact binary
+-> fmonero setup --all --yes
+{"actions":[
+ {"path":".../fmonero-monerod.service",     "status":"written",  "what":"node unit"},
+ {"path":".../fmonero-wallet-rpc.service",  "status":"written",  "what":"wallet unit"},
+ {"path":".../fmonero/monerod.conf",        "status":"unchanged","what":"monerod.conf"},
+ {"path":".../plugins/oliver.monero",       "status":"unchanged","what":"plugin symlink"},
+ {"path":".../plugins/oliver.monero",       "status":"written",  "what":"RunArgv omarchy plugin enable oliver.monero"},
+ {"path":".../plugins/oliver.monero",       "status":"written",  "what":"RunArgv omarchy bar put oliver.monero --before omarchy.tailscale"},
+ {"path":".../extensions/omarchy-menu.jsonc","status":"unchanged","what":"Omarchy menu entries"}],
+ "dry_run":false,"ok":true,"schema":1}
+exit: 0
+```
+
+(The `actions` array is reproduced with its `"diff":null` fields elided and the paths shortened;
+nothing else is changed, and the key order is the binary's own.)
+
+Second run, immediately after, unedited:
+
+```
+$ NO_COLOR=1 scripts/install.sh --yes
+...
+--   /home/oliver/.local/bin/fmonero is already this exact binary
+-> fmonero setup --all --yes
+{"actions":[
+ {"status":"unchanged","what":"node unit"},
+ {"status":"unchanged","what":"wallet unit"},
+ {"status":"unchanged","what":"monerod.conf"},
+ {"status":"unchanged","what":"plugin symlink"},
+ {"status":"written",  "what":"RunArgv omarchy plugin enable oliver.monero"},
+ {"status":"written",  "what":"RunArgv omarchy bar put oliver.monero --before omarchy.tailscale"},
+ {"status":"unchanged","what":"Omarchy menu entries"}],
+ "dry_run":false,"ok":true,"schema":1}
+exit: 0
+```
+
+**The assertion §8 asks for does not fully hold, and here is exactly how far it does.** Five of the
+seven actions report `unchanged` on the second run; the two `omarchy` invocations report `written`
+on **every** run, including a third and fourth pair run at the end of this phase after the
+honesty-surface edits. The machine state is nevertheless identical:
+
+```
+3c793e486bcaad34  600  ~/.config/systemd/user/fmonero-monerod.service   # byte-identical to the
+8faf1960a33f933e  600  ~/.config/systemd/user/fmonero-wallet-rpc.service # 05:48 copies, cmp -s
+bed63c9603dc9f5c  600  ~/.config/fmonero/monerod.conf                    # credential carried through
+d375efcb2ff80fc9  644  ~/.config/omarchy/extensions/omarchy-menu.jsonc
+$ grep -c oliver.monero ~/.config/omarchy/shell.json
+1
+$ # bar layout, right section
+['omarchy.tray', 'oliver.monero', 'oliver.background-weather', 'oliver.torrents',
+ 'oliver.protonvpn', 'omarchy.tailscale', ...]
+$ systemctl --user list-unit-files 'fmonero*'
+fmonero-monerod.service    disabled enabled
+fmonero-wallet-rpc.service disabled enabled
+```
+
+Two units, both **disabled** (§4.2: on-demand, never at login). `monerod.conf` unchanged, so the
+`rpc-login` line was carried through rather than re-minted — the §4.2 idempotence rule, observed.
+The units the first run rewrote are `cmp -s`-identical to the 05:48 copies, so `units::render_*`
+is deterministic across a rebuild. Exactly one `oliver.monero` in `shell.json`, still before
+`omarchy.tailscale`. No `sudo` anywhere: the string appears in this codebase only inside hint text
+(`sudo systemctl <verb> monerod   # fmonero does not use sudo`) and in `install.sh`'s comment
+saying it never uses it. No daemon was started by either run — both units were `inactive`
+afterwards and no `monerod` or `monero-wallet-rpc` process existed (neither binary exists).
+
+### The installed units against §4.2, checked on the files `setup` actually wrote
+
+```
+$ grep -o -- '--wallet-dir [^ ]*' ~/.config/systemd/user/fmonero-wallet-rpc.service
+--wallet-dir /home/oliver/.local/share/fmonero/wallets/mainnet
+$ fmonero settings get wallet.dir --json | jq -r .value
+/home/oliver/.local/share/fmonero/wallets/mainnet          # BYTE-EQUAL
+$ grep -n '%[hSt]' ~/.config/fmonero/monerod.conf
+                                                           # nothing: boost expands no specifiers
+$ grep -o -- '--config-file [^ ]*' ~/.config/systemd/user/fmonero-monerod.service
+--config-file %h/.config/fmonero/monerod.conf              # §4.2's literal; see finding 4
+$ grep -n StateDirectory ~/.config/systemd/user/fmonero-wallet-rpc.service
+7:StateDirectory=fmonero/run
+8:StateDirectoryMode=0700
+$ systemd-analyze --user verify ~/.config/systemd/user/fmonero-*.service; echo $?
+fmonero-wallet-rpc.service: Command /usr/bin/monero-wallet-rpc is not executable: No such file or directory
+fmonero-monerod.service: Command /usr/bin/monerod is not executable: No such file or directory
+0
+```
+
+Both units verify clean; the two notes are Monero's absence, not a unit defect. §2b's test (4) —
+`StateDirectoryMode=0700` in the rendered wallet unit — now holds on the installed file rather
+than on a dry run's text.
+
+### The bar widget loads, and polls this binary
+
+`omarchy restart shell` at 06:09:23, then:
+
+```
+$ omarchy plugin list | grep -i monero
+oliver.monero                    enabled   third-party bar-widget         Monero
+$ omarchy-plugin-validate plugin/oliver.monero; echo $?
+0
+$ omarchy-shell oliver.monero cursor
+{"section":"header","index":0,"active":false,"opened":false,
+ "sections":["header","warnings","footer"],"alive":true,"binaryMissing":false,
+ "nodeUp":false,"synced":false,"walletOpen":false,"iconCase":1,"iconColor":"#a4a4a4"}
+$ journalctl --user -t omarchy-shell --since '2026-09-17 06:09:23' | grep -ci oliver.monero
+0                          # and 11 lines of ordinary shell startup, so the window is not empty
+```
+
+`alive: true` **is** the answer to "does its `Service` poll `fmonero status --json` without
+errors": §6.3 derives `alive` from `status.ok === true`, so the widget spawned
+`[bin, "status", "--json"]`, got exit 0 and parsed the schema-1 document. `binaryMissing: false`
+is `which fmonero` succeeding on the shell's PATH — the Phase 3 capture of this same probe read
+`alive:false, binaryMissing:true`, because `~/.local/bin/fmonero` did not exist until this run.
+`iconCase: 1` is §6.4's second row (a warning of severity `error`), which is `monero_not_installed`
+— the honest icon for this machine. `sections` now includes `warnings`, which the Phase 3 capture
+did not: that section is only built when a warning exists and the poll succeeded.
+
+`tests/plugin-smoke.sh` — 32 passed, 0 failed, including `omarchy-plugin-validate`, `qmllint`, the
+money-argv and `parseFloat` greps with their self-tests, a live `rescanPlugins`, and the same
+`cursor` probe.
+
+### The gates, re-run — and two of them now FAIL
+
+```
+cargo fmt --check                          pass
+cargo clippy --all-targets -- -D warnings  pass
+cargo test                                 FAIL — 214 passed, 5 failed (219 total)
+scripts/check.sh --full                    FAIL — 49 ok, 1 honest skip, 1 FAIL (cargo test)
+tests/e2e.sh --fast                        FAIL — 326 passed, 5 failed, 2 skipped
+tests/e2e.sh --full                        FAIL — 352 passed, 5 failed, 2 skipped (151 s)
+tests/plugin-smoke.sh                      pass — 32 passed, 0 failed
+tests/tui_tmux.sh                          pass — 10 passed, 0 failed on a real pty
+```
+
+§2l, re-measured with §1.4's `date +%s%N` loop on the installed binary:
+**(a) 29 ms** against a 60 ms GREEN budget · **(b) 30 ms** against 80 ms AMBER ·
+**(d) 1 ms** against 50 ms AMBER. **(c) is RED and is neither measured nor claimed.**
+
+**All ten failures are one defect class, and it is the harness rather than the product.** Every one
+of them asserts a premise that the run §8 assigns to this phase destroys: *nothing is installed*.
+The proof is a control run of the whole suite under a scratch `HOME`, with `CARGO_HOME` and
+`RUSTUP_HOME` left pointing at the real ones:
+
+```
+$ env HOME=$SCRATCH/fakehome XDG_CONFIG_HOME=… XDG_STATE_HOME=… XDG_DATA_HOME=… \
+      XDG_CACHE_HOME=… CARGO_HOME=~/.cargo RUSTUP_HOME=~/.rustup ~/.cargo/bin/cargo test
+test result: ok. 75 passed; 0 failed    # crates/fmonero      (3 of the 5 failures)
+test result: ok. 141 passed; 0 failed   # crates/fmonero-core (the other 2)
+test result: ok. 3 passed; 0 failed     # crates/fmonero-mock
+```
+
+219 tests, none failing, on the same tree. The five:
+
+| Test | Asserts | Why it fails now |
+|---|---|---|
+| `doctor::checks::the_one_line_predicates_answer_as_the_table_says` | `binary_on_path(&p).reason == Some("not_installed")` | `p` is built from the real machine, where `~/.local/bin/fmonero` now exists |
+| `doctor::mutate::under_a_test_state_dir_no_fixer_may_reach_outside_it` | `!unit.exists()` after the chokepoint refuses | the refusal still works; the unit exists because `setup` wrote it |
+| `tui::node_mutations_are_refused_when_fmonero_does_not_own_the_node` | `u`/`d`/`L` open no modal "without a user unit" | there **is** a user unit now, so §2i legitimately allows them |
+| `status::with_both_daemons_absent_the_document_is_all_null_and_still_ok` | `node.layout == "none"` | it is `"user_unit"`, which is the correct answer |
+| `units::a_dry_run_plans_the_three_files_and_redacts_the_credential` | all three files `planned` | the two units are `unchanged`, which is the point of idempotence |
+
+and the five `tests/e2e.sh` assertions:
+
+```
+  FAIL  node up with no units is exit 4 (§4b): expected exit 4, got 8
+  FAIL  unit_missing: expected reason unit_missing, got null
+  FAIL  wallet open with a password but no unit is exit 4 (§4b): expected exit 4, got 8
+  FAIL  it lists a CreateDir action for wallet.dir when it is absent (§4.2): … = false
+  FAIL  §4.2: --wallet-dir mismatch     unit: (empty)  setting: …/wallets/mainnet
+```
+
+The last one is worth its own sentence: it reads the unit's `--wallet-dir` out of the **diff** of
+`setup --units --dry-run`, and an `unchanged` action carries `"diff": null` by contract (§5b
+`FileAction`), so the grep has nothing to read. §8's Phase 1b gate line chose the `--dry-run`
+output precisely because "a dry run writes no file"; the case it did not anticipate is the file
+being there and already correct. Each of the four affected rows was re-verified by hand below, so
+the matrix is filled from output that exists rather than from an assertion that could not run.
+
+**Nothing here was fixed.** §8 gives this phase the verification and the honesty surfaces, and the
+brief it ran under says a false claim is fixed while a bug is reported. The five tests and the five
+assertions are bugs; the fixes are named in the findings.
+
+### Findings — reported, not fixed
+
+**1. `node up` and `wallet open` never check that the Monero binary exists, so on a machine that
+`setup` has configured and Monero has not reached, they wait 30 s and exit 8 instead of exiting 4
+`not_installed` — and leave the unit retrying every 5 s.** This is the state `install.sh --yes`
+leaves on this machine, so it is the first thing the owner will meet.
+
+```
+$ time fmonero node up --json
+{"code":8,"code_name":"timeout","error":"fmonero-monerod.service did not answer get_info within 30s",
+ "hint":"fmonero status --json","ok":false,"reason":null,"schema":1}
+30 s
+
+$ systemctl --user status fmonero-monerod.service
+Active: activating (auto-restart) (Result: exit-code)
+Process: ExecStart=/usr/bin/monerod --config-file … (code=exited, status=203/EXEC)
+```
+
+`203/EXEC` is systemd saying the binary is not there. §4a assigns that condition exit **4**
+(`backend`: "`monerod`/`monero-wallet-rpc` not installed, unit missing, …") with the hint
+`omarchy pkg add monero`; exit 8 is defined as "nothing is broken" and its hint
+(`fmonero status --json`) points at a document that will say `reachable: false` without saying why.
+§4.2 spends a paragraph on exactly this failure shape for `wallet.dir` — "`Restart=on-failure`
+retries it every 5 s into systemd's start limit, and every fmonero command reports 'the wallet
+daemon is not running' — the symptom pointing away from the cause" — and the same shape is here,
+one layer up. Both restart loops were stopped by hand after every run in this phase
+(`systemctl --user stop`), and both units are `inactive` and `disabled` as this entry lands.
+**Fix:** one `proc::which` in `node_session::up` and in `units::ensure_running`, before
+`units::start`, returning `Error::backend(…).with_reason("not_installed")` with the
+`omarchy pkg add monero` hint — the same probe the doctor's `monerod_installed` already makes.
+It also restores §4b's two GREEN rows, which currently read `unit_missing` for a case that is
+really `not_installed`.
+
+**2. `setup --plugin` runs `omarchy plugin enable` and `omarchy bar put` on every invocation and
+reports them `written` whether or not anything changed.** §4.2 says "each skipped when already
+done", and `setup.rs`'s own comment above the loop repeats it —
+`// argv only, never a shell string (§2f), and each step is skipped when already done` — but the
+loop has no pre-check: it spawns both commands and maps `out.success()` to `FileStatus::Written`.
+The commands are themselves idempotent, so the machine is unharmed (one `oliver.monero` entry,
+same position, verified above); what is wrong is the report, and the report is what §8's
+idempotence assertion reads. **Fix:** ask `omarchy plugin list` whether the id is enabled and
+`shell.json` whether it is in the bar layout, and emit `FileStatus::Unchanged` without spawning —
+`menu_step` and `plugin_step`'s symlink branch already work that way.
+
+**3. `Paths` has no seam for `systemd_user_dir`, so no test can make `units::detect_layout` see a
+machine without units.** `Paths::discover` sets it from the real `XDG_CONFIG_HOME`
+(`paths.rs:92`), `FMONERO_SYSTEMD_USER_DIR` is read only by the doctor's `probes.rs` (a Phase 2
+deviation, recorded there), and `tests/e2e.sh`'s `sandbox()` redirects state, config and cache but
+not this. That is why the ten failures above exist at all, and why pointing
+`FMONERO_SYSTEMD_USER_DIR` at an empty directory changed nothing:
+
+```
+$ env FMONERO_SYSTEMD_USER_DIR=$SCRATCH/nounits tests/e2e.sh --fast
+e2e.sh (fast): 326 passed, 5 failed, 2 skipped        # identical
+```
+
+**Fix:** move the override into `Paths::discover` under the same `under_test_state_dir()` guard the
+`FMONERO_PROC_ROOT` seam already uses, have `probes.rs::systemd_user_dir` read the field instead of
+the environment, and add one line to `sandbox()`. It is one field, and it is the difference between
+a suite that survives its own installer and a suite that has to be run on a machine nobody has used.
+A second, independent hole stays open even then, and finding 1 is what makes it visible: systemd's
+user manager holds a unit it has already loaded, so `units::start` can succeed against a unit file
+no longer on disk. `wallet open` with no unit file is exit 8, not the exit 4 §4b's GREEN row names,
+even under a config home with no units at all — reproduced below.
+
+**4. Still open from the Phase 4 fixer, unchanged: `secrets-5`,** the node unit's
+`--config-file %h/.config/fmonero/monerod.conf` against the XDG-resolved `paths.monerod_conf()`.
+This machine has `XDG_CONFIG_HOME=/home/oliver/.config`, so the two agree and the installed unit is
+correct; the divergence needs a non-default `XDG_CONFIG_HOME` and §4.2 prescribes the literal, so
+it remains a contract change. The `ux-19` TUI line budget is likewise carried forward untouched
+(4 400 lines against §7a's ≤ 1 800); this phase added nothing to those files.
+
+### The four rows the harness could not reach, re-verified by hand
+
+With `XDG_CONFIG_HOME` pointed at a directory that has no `systemd/user` (real `HOME`, so the
+disk-floor check still sees `/home`'s 238 GB), and the state, config and cache dirs sandboxed:
+
+```
+$ fmonero node up --json
+{"code":4,"code_name":"backend","error":"no fmonero node unit is installed",
+ "hint":"fmonero setup --units","ok":false,"reason":"unit_missing","schema":1}
+exit: 4                                     # §4b GREEN row: holds
+
+$ FMONERO_WALLET_PASSWORD=x fmonero wallet open somewallet --json
+{"code":8,"code_name":"timeout","error":"fmonero-wallet-rpc.service started but did not answer within 30s",
+ "hint":"fmonero doctor --only units","ok":false,"reason":null,"schema":1}
+exit: 8                                     # §4b GREEN row: DOES NOT HOLD — finding 3
+```
+
+`wallet open` is the one matrix row this phase could not make true. `units::ensure_running` probes,
+fails, and calls `units::start`, which is `systemctl --user start fmonero-wallet-rpc.service` — and
+systemd answers from the unit it loaded at daemon-reload, not from the directory fmonero is looking
+at. So the row's exit 4 is reachable only on a machine whose systemd user manager has never seen
+the unit. It is recorded below as GREEN-with-a-precondition rather than quietly kept.
+
+The `setup` rows, against a sandboxed config where `node.network` is `stagenet`, which is also the
+first exercise of §4's network substitution table:
+
+```
+$ fmonero settings set node.network stagenet --json
+{"key":"node.network","new":"stagenet","ok":true,"old":"mainnet","schema":1}
+$ fmonero setup --units --dry-run --json | jq -r '.actions[] | "\(.status)  \(.what)"'
+planned  settings node.url: http://127.0.0.1:18081 -> http://127.0.0.1:38081
+planned  settings wallet.url: http://127.0.0.1:18083 -> http://127.0.0.1:38083
+planned  settings wallet.port: 18083 -> 38083
+planned  settings wallet.dir: …/wallets/mainnet -> …/wallets/stagenet
+planned  CreateDir wallet.dir
+unchanged  node unit
+planned  wallet unit
+planned  monerod.conf
+$ # the rendered hunks
++  --rpc-bind-port 38083 \
++  --wallet-dir /home/oliver/.local/share/fmonero/wallets/stagenet \
++  --daemon-address 127.0.0.1:38081 \
++  --stagenet \
++rpc-bind-port=38081
++stagenet=1
+```
+
+`CreateDir wallet.dir` is present, so that §4.2 row holds; the node unit is `unchanged` because it
+is network-independent (its `ExecStart` names only `--config-file`), which is correct. And
+`--rotate-rpc-login --dry-run` against the real conf, which writes nothing:
+
+```
+$ fmonero setup --units --rotate-rpc-login --dry-run --json | jq -r '.actions[] | select(.what=="monerod.conf") | .status, (.diff // "no diff")'
+planned
+--- current
++++ rendered
+@@ -20,0 +20,0 @@
+$ sha256sum ~/.config/fmonero/monerod.conf | cut -c1-16
+bed63c9603dc9f5c                            # unchanged, as a dry run must leave it
+```
+
+The status is `planned`, not `unchanged`, so the rotation is real; the diff body is empty because
+the only differing line is `rpc-login=`, which §4.2 requires the displayed diff to redact — after
+redaction the two sides are equal. Correct, and worth knowing before someone reads the empty hunk
+as "nothing would change".
+
+### The doctor, on the machine `install.sh` left
+
+The §4b GREEN row, and for the first time with real artefacts under the `units`, `install` and
+`security` groups rather than a sandbox:
+
+```
+$ fmonero doctor --json | jq .summary
+{"total":37,"pass":17,"warn":0,"fail":2,"skip":18,"fixable":0,"fixed":0,"fix_failed":0,
+ "planned":0,"generated_at":"2026-09-17T06:20:34+02:00","fix":false,"dry_run":false,"only":null,
+ "run_dir":null,"failing":["monerod_installed","wallet_rpc_installed"],"exit_code":11,
+ "next":["fmonero doctor --json | jq '.checks[] | select(.status != \"pass\")'"]}
+exit: 11
+```
+
+The two failures are `fail:not_installed`, every `node`/`wallet`/`storage` check is a
+`skip:<reason>` naming `monerod_not_installed` or `wallet_rpc_not_installed`, and the 17 passes are:
+
+```
+units/units_present · units/unit_loopback · units/unit_no_password_in_argv ·
+units/unit_no_node_wants · units/unit_enabled_state · units/wallet_dir_matches_unit ·
+units/wallet_port_consistent · install/binary_on_path · install/state_valid ·
+install/settings_valid · install/history_cache_fresh · install/plugin_linked ·
+install/plugin_enabled · install/menu_entries · security/monerod_conf_mode ·
+security/state_perms · security/ports_owned
+```
+
+Before this run `binary_on_path`, `plugin_linked`, `plugin_enabled`, `menu_entries` and all seven
+`units` checks had never been answered against anything but a fixture. `status` on the same
+machine, for the record:
+
+```
+$ fmonero status --json | jq -c '{ok, node:{layout,reachable,height}, wallet:{unit_active,reachable,open}, pending, warnings:[.warnings[]|{id,severity}]}'
+{"ok":true,"node":{"layout":"user_unit","reachable":false,"height":null},
+ "wallet":{"unit_active":false,"reachable":false,"open":false},"pending":null,
+ "warnings":[{"id":"monero_not_installed","severity":"error"},{"id":"node_down","severity":"warn"},
+             {"id":"wallet_down","severity":"warn"}]}
+exit: 0
+```
+
+`layout: "user_unit"` is new — every earlier phase saw `"none"`, because no unit existed.
+
+### §4b verification matrix, refilled from this run
+
+§4b's six columns. **Every GREEN and AMBER row below was exercised in this phase**, by
+`tests/e2e.sh --fast`/`--full` (352 passing assertions), `cargo test` (219 under the control HOME),
+`tests/plugin-smoke.sh` (32), `tests/tui_tmux.sh` (10), or by a command reproduced in this entry.
+The unit of the matrix is a (command, scenario) pair, and a command's class in README is the lowest
+class any of its scenarios reaches (§4b). "README?" is what README's Status section says about the
+row: `GREEN`/`AMBER` mean it is listed under that heading, `RED` means it is named as unverified.
+
+| command | scenario | class | how verified | evidence | README? |
+|---|---|---|---|---|---|
+| `status` | both daemons absent | GREEN | `tests/e2e.sh`, and pasted above | exit 0, `layout:"user_unit"`, `reachable:false`, `height:null`, warnings `monero_not_installed`+`node_down`+`wallet_down` | GREEN |
+| `status` | both mocks up, wallet open | AMBER | `tests/e2e.sh`, `rpc::mock_tests` | balance `1.234567891234`, `subaddress_count: 3`, `authenticated: true` | AMBER |
+| `status` | restricted node (`--scenario restricted`) | AMBER | `tests/e2e.sh`, `rpc::mock_tests` | every poisoned field `null`, `database_size_rounded: true`, `node_no_peers` NOT raised | AMBER |
+| `status` | syncing node (`--scenario syncing`, BUSY header) | AMBER | `tests/e2e.sh`, `rpc::mock_tests` | `top_block_age_sec: null`, exit 0 | AMBER |
+| `status` | a §2d breaker armed | AMBER | `tests/e2e.sh --full` | exit 0 with `node_stalled`; never blocked | AMBER |
+| `status` | non-loopback `node.url`, `--force` | GREEN | `tests/e2e.sh` | exit 2 `non_loopback_url` | GREEN |
+| `status` | §2l (a) timing | GREEN | the `date +%s%N` loop | **29 ms mean** (budget 60 ms) | GREEN |
+| `status` | §2l (b) timing, against the mock | AMBER | the `date +%s%N` loop | **30 ms mean** (budget 80 ms) | AMBER |
+| `status` | real daemons, warm | **RED** | not run | — | RED |
+| `node up` | no node unit on disk **and none loaded by systemd** | GREEN | reproduced above under a config home with no units | exit 4 `unit_missing`; the `tests/e2e.sh` case fails on this machine — finding 3 | GREEN |
+| `node up` | unit installed, `monerod` absent | **bug** | reproduced above | exit **8** after 30 s + a 5 s restart loop, where §4a says exit 4 `not_installed` — finding 1 | named in Install and Status |
+| `node up` | `user_unit` fixture + mock | AMBER | `tests/e2e.sh` | exit 0, full §5c key set | AMBER |
+| `node up` | our own node already holds the data dir | AMBER | `rpc::mock_tests` | exit 0, `already_running: true`, no second start | AMBER |
+| `node up` | a FOREIGN monerod holds the data dir (fcntl read lock from a forked child) | AMBER | `rpc::mock_tests` | exit 3 `data_dir_in_use`, naming the pid | AMBER |
+| `node up --wait` | never synchronized, `--wait-timeout 2` | AMBER | `rpc::mock_tests` | exit 8 "still syncing", under 6 s | AMBER |
+| `node up` | Arch's system unit present | AMBER | `tests/e2e.sh` (system_unit fixture) | exit 3 `foreign_node` | AMBER |
+| `node up` | a real `monerod` | **RED** | not run | — | RED |
+| `node down` | `user_unit` + mock | AMBER | `tests/e2e.sh` | exit 0; `stop_daemon` recorded before the unit stop | AMBER |
+| `node down` | `system_unit`, with `--force` | AMBER | `tests/e2e.sh` | exit 3 `foreign_node`, **zero requests recorded** | AMBER |
+| `node down` | no `--yes` | GREEN | `tests/e2e.sh` | exit 3 `needs_yes` | GREEN |
+| `node down` | `--dry-run` | GREEN | `tests/e2e.sh` | exit 2 `unsupported_flag` | GREEN |
+| `node down` | a real `monerod` | **RED** | not run | — | RED |
+| `node restart` | `user_unit` + mock | AMBER | `tests/e2e.sh` | exit 0 | AMBER |
+| `node restart` | a real `monerod` | **RED** | not run | — | RED |
+| `node info` | mock | AMBER | `tests/e2e.sh` | §5c key set; the two fork versions kept apart; `rpc.version_major: 3` | AMBER |
+| `node info` | restricted node | AMBER | `rpc::mock_tests` | `sync: null` rather than zeros | AMBER |
+| `node info` | a real node | **RED** | not run | — | RED |
+| `node log` | no log file | GREEN | `tests/e2e.sh` | exit 0, `lines: []`, "no log yet" on stderr | GREEN |
+| `node log` | a synthetic log | GREEN | `log::tests` | last-N and `--grep`, 4 MiB bound | GREEN |
+| `node log --follow` | CLI | GREEN | `tests/e2e.sh` | exit 2 `unsupported_flag` | GREEN |
+| `node peers` | mock | AMBER | `tests/e2e.sh` | both arrays' `port` rendered as an integer | AMBER |
+| `node peers` | restricted node | AMBER | `tests/e2e.sh`, `rpc::mock_tests` | exit 5 `restricted` (HTTP 404 on the legacy transport) | AMBER |
+| `node peers` | a real peer list | **RED** | not run | — | RED |
+| `node bans` | mock | AMBER | `tests/e2e.sh` | §5c key set | AMBER |
+| `node ban` / `node unban` | `user_unit` + mock | AMBER | `tests/e2e.sh`, `rpc::mock_tests` | §5c key set; the recorded `set_bans` body | AMBER |
+| `node ban` / `unban` / `limit` | `system_unit` | AMBER | `tests/e2e.sh` | exit 3, zero requests | AMBER |
+| `node limit` | no arguments (read only) | AMBER | `tests/e2e.sh` | `changed: false`; every `out_peers` body has `set: false` | AMBER |
+| `node limit --up` | `user_unit` + mock | AMBER | `tests/e2e.sh` | `changed: true`, the node's own echo | AMBER |
+| `wallet list` | empty directory | GREEN | `tests/e2e.sh` | exit 0, both hints, no wallet bytes read | GREEN |
+| `wallet list` | `*.keys` basenames, sorted | GREEN | `wallet_dir::tests` | only `.keys`, sorted, a missing dir is empty | GREEN |
+| `wallet open` | no TTY, no password source | GREEN | `tests/e2e.sh` | exit 9 with the `FMONERO_WALLET_PASSWORD` hint | GREEN |
+| `wallet open` | password, no unit **and none loaded by systemd** | GREEN (precondition) | reproduced above | exit 4 only while systemd has never loaded the unit; on this machine it is exit 8 after 30 s — findings 1 and 3 | GREEN, with that sentence spelled out |
+| `wallet open` | mock | AMBER | `tests/e2e.sh`, `rpc::mock_tests` | the order `open_wallet, set_daemon, auto_refresh`; the credential travels; `period: 20` | AMBER |
+| `wallet open` | `set_daemon` answers `-38` | AMBER | `rpc::mock_tests` | the open still succeeds | AMBER |
+| `wallet open` | a real wallet file | **RED** | not run | — | RED |
+| `wallet close` | mock | AMBER | `tests/e2e.sh` | §5c key set | AMBER |
+| `wallet create` | mock (**no wallet file is ever created**) | AMBER | `tests/e2e.sh` | §5c key set, the seed-backup hint, no seed and no password in the payload | AMBER |
+| `wallet create` | empty password, no `--allow-empty-password` | AMBER | `tests/e2e.sh` | exit 2 | AMBER |
+| `wallet create` | a name containing `/` | GREEN | `tests/e2e.sh` | exit 2, refused locally | GREEN |
+| `wallet create` | a real wallet | **RED** | not run | — | RED |
+| `wallet balance` | mock, with and without `--subaddresses` | AMBER | `tests/e2e.sh` | §5c key set; one funded row of three subaddresses | AMBER |
+| `wallet balance` | `--fail get_balance=-17` | AMBER | `tests/e2e.sh` | exit 14 | AMBER |
+| `wallet balance` | no login file | AMBER | `tests/e2e.sh` | exit 4 `auth_refused`, a different answer from `unreachable` | AMBER |
+| `wallet balance` | a real balance | **RED** | not run | — | RED |
+| `wallet address` | mock, `--index`, a bad index | AMBER | `tests/e2e.sh` | §5c key set; exit 2 for an index the account lacks | AMBER |
+| `wallet address --qr` | mock, on a pty | AMBER | `tests/tui_tmux.sh`, `tui::tests` | the QR renders and scans (both halves fixed in Phase 4) | AMBER |
+| `wallet new-address` | mock | AMBER | `tests/e2e.sh` | §5c key set | AMBER |
+| `wallet history` | mock, full top-up | AMBER | `tests/e2e.sh`, `rpc::mock_tests` | `filter_by_height: true` beside `min_height`; a `block` row deserializes | AMBER |
+| `wallet history --cached` | zero RPC | AMBER | `tests/e2e.sh`, `rpc::mock_tests` | no request at all; `confirmations`/`locked` `null`; the footer | AMBER |
+| `wallet history --pool` | the daemon round trip fails | AMBER | `tests/e2e.sh`, `rpc::mock_tests` | retried exactly once without `pool` | AMBER |
+| `wallet history` | §2l (d) timing | AMBER | the `date +%s%N` loop | **1 ms mean** (budget 50 ms) | AMBER |
+| `wallet history` | `locked`/`confirmations` against the wallet's own height | GREEN | `history::locked`, `history::confirmations` unit tests | `unlock_time == 0` unlocked at `wh = h+10`, locked at `h+9`; `1_900_000_000` read as a timestamp | GREEN |
+| `wallet send` | argument and amount checks | GREEN | `tests/e2e.sh` | exit 2 for 13 decimals, `all`, priority 9, a missing argument | GREEN |
+| `wallet send` | a bad address, daemon down | GREEN | `tests/e2e.sh` | exit 15 — steps 1–4 are local | GREEN |
+| `wallet send` | a valid address, daemon down | GREEN | `tests/e2e.sh` | exit 4 `unreachable`, **not** the no-`--yes` 3 | GREEN |
+| `wallet send --dry-run --yes` | daemon down | GREEN | `tests/e2e.sh` | exit 4; proof the pair cannot relay | GREEN |
+| `wallet send --dry-run` | mock | AMBER | `tests/e2e.sh` | one `transfer`, zero `relay_tx`, the mock's real fee | AMBER |
+| `wallet send` | no `--yes`, mock | AMBER | `tests/e2e.sh` | exit 3 `needs_yes` + the complete send key set with `ok: false` | AMBER |
+| `wallet send --yes` | mock | AMBER | `tests/e2e.sh`, `rpc::mock_tests` | one `transfer`, one `relay_tx` with byte-identical metadata, one `store`, the record self-clears | AMBER |
+| `wallet send` | `--max-fee` below the built fee | AMBER | `tests/e2e.sh`, `rpc::mock_tests` | exit 3 `fee_above_max`, zero `relay_tx`, the built fee in the payload | AMBER |
+| `wallet send` | `-18`, `-2`, `-13`, `code: 0` | AMBER | `tests/e2e.sh` | exits 16 `too_large`, 15, 9 `not_open`, 5 `rpc_error` | AMBER |
+| `wallet send` | an unrelayed record, with `--yes --force` | AMBER | `tests/e2e.sh`, `rpc::mock_tests` | exit 3 `pending_send`, **zero requests** | AMBER |
+| `wallet send` | an unparsable `pending.json` | AMBER | `rpc::mock_tests` | blocks; `clear-pending` still clears it (Phase 4 fix) | AMBER |
+| `wallet send` | a fully-relayed record the wallet confirms | AMBER | `rpc::mock_tests` | exit 0 and an empty record | AMBER |
+| `wallet send` | a `failed`-type row from `get_transfer_by_txid` | AMBER | `rpc::mock_tests` | counts as found; the record clears | AMBER |
+| `wallet send` | `-8 "Transaction not found."` | AMBER | `rpc::mock_tests` | blocks, exit 3 | AMBER |
+| `wallet send` | a resolve call that merely fails | AMBER | `rpc::mock_tests` | does **not** block; the record stays | AMBER |
+| `wallet send` | a `tx_hash` that differs from the built txid | AMBER | `rpc::mock_tests` | exit 1 `txid_mismatch`, entry still `relayed: false`, `send_may_be_in_flight` | AMBER |
+| `wallet send` | two processes at once (`--delay-ms 1500`) | AMBER | `tests/e2e.sh --full` | one exit 0, one exit 3 `send_in_progress`, **exactly one `transfer`** | AMBER |
+| `wallet send` | `@label`: 0, 2 and 1 matches | AMBER | `rpc::mock_tests` | exit 6, exit 7, and the resolved **address** on the wire | AMBER |
+| `wallet send` | node not synchronized | AMBER | `rpc::mock_tests` | exit 10, nothing built | AMBER |
+| `wallet send` | a wrong-nettype recipient | AMBER | `rpc::mock_tests` | exit 15 naming the nettype, nothing built | AMBER |
+| `wallet send` | an armed breaker with a built plan | AMBER | `tui::tests`, `rpc::mock_tests` | the relay proceeds (§2d) — Phase 4 fix | AMBER |
+| `wallet send` | **a real broadcast** | **RED** | not run, not claimed | — | RED |
+| `wallet sweep --dry-run` | mock | AMBER | `tests/e2e.sh` | two transactions; every body carries `subaddr_indices_all: true` | AMBER |
+| `wallet sweep --yes` | mock | AMBER | `tests/e2e.sh` | one `relay_tx` per `tx_metadata_list` entry, in order | AMBER |
+| `wallet sweep` | SIGKILL between the two relays | AMBER | `tests/e2e.sh --full`, `rpc::mock_tests` | exactly one `relayed: true`; the next send is refused | AMBER |
+| `wallet sweep` | a refused relay | AMBER | `rpc::mock_tests` | exit 16 naming "0 of 1 broadcast"; the record stays | AMBER |
+| `wallet sweep` | a concurrent `status` loop | AMBER | `tests/e2e.sh --full` | the sweep succeeds; `pending.json` complete throughout | AMBER |
+| `wallet sweep` | **a real broadcast** | **RED** | not run, not claimed | — | RED |
+| `wallet clear-pending` | no record, and a record | GREEN | `tests/e2e.sh` | exit 0 `cleared:false` / `cleared:true`; exit 3 without `--yes` | GREEN |
+| `wallet validate` | structural only (daemon down) | GREEN | `tests/e2e.sh` | `structural_only: true`, the decoded nettype | GREEN |
+| `wallet validate` | mock | AMBER | `tests/e2e.sh` | `any_net_type: true`, `allow_openalias: false` | AMBER |
+| `wallet validate` | unparsable | GREEN | `tests/e2e.sh` | exit 15 | GREEN |
+| `wallet book` | list / add / remove, mock | AMBER | `tests/e2e.sh` | three §5c key sets; exit 3 without `--yes` on remove | AMBER |
+| `wallet refresh` | mock | AMBER | `tests/e2e.sh` | §5c key set | AMBER |
+| `wallet refresh` | a real refresh | **RED** | not run | — | RED |
+| `wallet notes` | get / set, mock | AMBER | `tests/e2e.sh` | §5c key sets; exit 2 for a malformed txid | AMBER |
+| `wallet set-daemon` | mock | AMBER | `tests/e2e.sh` | §5c key set; the credential travels (Phase 4 fix); exit 3 without `--yes` | AMBER |
+| `settings list` \| `get` \| `set` | real `config.toml` | GREEN | `tests/e2e.sh`, `settings::tests`, and pasted above | the 20 keys; the "did you mean" redirect; exit 2 for a non-loopback URL on **both** URL keys | GREEN |
+| `settings set node.network stagenet` | sandboxed config | GREEN | pasted above | the four derived keys replanned, `--stagenet`, ports 38081/38083 | GREEN |
+| `setup --dry-run` | real config dir, writes nothing | GREEN | `tests/e2e.sh`, and pasted above | the planned files, the credential redacted, no `%h` in the conf | GREEN |
+| `setup --all --yes` | **for real, twice, through `scripts/install.sh --yes`** | GREEN | this phase — pasted above | two units written then `unchanged`, both disabled; conf `unchanged`, credential carried through; plugin symlink `unchanged`; menu `unchanged`; every artefact byte-identical; exit 0 both times | GREEN |
+| `setup --all --yes` | the second run's report | **partly GREEN** | this phase | 5 of 7 actions `unchanged`; the two `omarchy` `RunArgv` rows say `written` every time — finding 2 | stated in Install |
+| `setup --units --dry-run` | `stagenet`, `CreateDir wallet.dir`, `--wallet-dir` byte-equality | GREEN | pasted above | `CreateDir wallet.dir` planned; the installed unit's `--wallet-dir` equals `settings.wallet.dir` byte for byte | GREEN |
+| `setup --units --rotate-rpc-login --dry-run` | real conf | GREEN | pasted above | `planned`, diff body empty because the only changed line is redacted; the file is untouched | GREEN |
+| `setup --units --yes` | under `FMONERO_STATE_DIR` | GREEN | `tests/e2e.sh` | exit 3, and the derived settings are **not** left rewritten | GREEN |
+| `setup --units` | Arch `system_unit` layout refusal | **RED** | nothing exercises it | — | RED |
+| `setup --units` | the §1.3 free-space floor refusal | **RED** | nothing exercises it | — | RED |
+| `doctor` | this machine, after the real install | GREEN | `tests/e2e.sh`, and pasted above | exit 11; 37 checks, 17 pass, 0 warn, 2 `fail:not_installed`, 18 `skip:<reason>`; the `units`, `install` and `security` groups pass against real files | GREEN |
+| `doctor --fix` / `doctor undo latest` | class-A round trip under `FMONERO_STATE_DIR` | GREEN | `tests/e2e.sh` | corrupt → `--fix` → `undo latest` → byte-for-byte the originals | GREEN |
+| `doctor undo` | a tampered backup | GREEN | `tests/e2e.sh` | exit 13, the integrity failure named | GREEN |
+| `doctor --fix --dry-run` | changes nothing | GREEN | `tests/e2e.sh` | `git status` clean + a state-dir checksum | GREEN |
+| `doctor capabilities`, `doctor --only GROUP` | — | GREEN | `tests/e2e.sh` | §5c key set; the seven groups; three classes, no class C | GREEN |
+| `doctor` | the seven parsing detectors | AMBER | `doctor::fixture_tests` | every fixture case answers its `expect.json` | AMBER |
+| `doctor` | every `node`/`wallet`/`storage` check against a live daemon | **RED** | not run | — | RED |
+| `tui` | non-TTY stdout | GREEN | `tests/e2e.sh` | exit 2 with the `status --json` hint | GREEN |
+| `tui` | opens on a real pty, four screens, help, clean quit | GREEN | `tests/tui_tmux.sh` | 10/10; no stderr; no print macro under `src/tui` | GREEN |
+| `tui` | every screen against the mock, four resize tiers, the send simulator | AMBER | `tui::tests` | one `transfer` + one `relay_tx`; the `Action` redaction test; the confirm modal's typed word echoes | AMBER |
+| `tui` | against real daemons | **RED** | not run | — | RED |
+| bar widget | loads in the live shell and polls this binary | GREEN | `omarchy restart shell` + `tests/plugin-smoke.sh`, pasted above | `alive:true`, `binaryMissing:false`, `iconCase:1`; zero plugin errors in the journal; 32/0 | GREEN |
+| bar widget | the §6.7 greps and their self-tests | GREEN | `tests/plugin-smoke.sh` | money argv, `password`, `parseFloat`/`Number(`/`/ 1e`, `bar.run(`, `execDetached(["bash"` — each with a positive and a negative fixture | GREEN |
+| bar widget | a wallet open and a balance on the bar | **RED** | needs a real wallet | — | RED |
+| `capabilities` | — | GREEN | `tests/e2e.sh`, `scripts/check.sh` | 18 exit codes; 36 commands, each existing in the clap tree; exactly four accept `--dry-run`; every `reason` constructible | GREEN |
+| `robot-docs` | — | GREEN | `tests/e2e.sh` | plain text; `docs/ROBOT.md` byte-identical to this binary's output | GREEN |
+| `version` | — | GREEN | `tests/e2e.sh`, and pasted above | `build_stage: phase-4-verified`; the note names GREEN/AMBER/RED and the un-broadcast send | GREEN |
+| bare `fmonero` | on a pipe | GREEN | `tests/e2e.sh` | `status --json` | GREEN |
+| bare `fmonero` | on a pty | GREEN | `tests/tui_tmux.sh` | the TUI opens | GREEN |
+| every `--help` | — | GREEN | `tests/e2e.sh`, `scripts/check.sh` | exit 0 on every one; the §2j scan reads them all and finds no unmarked claim in its 1 466-line corpus | GREEN |
+| amount and address parsing | — | GREEN | `amount::tests`, `address::tests` | the `to_xmr_string` round trip; nine forms; the two-digit testnet leading set | GREEN |
+| §2l (c) warm, real daemons | — | **RED** | not measured, not claimed | — | RED |
+| the §1.3 disk floor | — | **RED** | not measured against a real chain | the floor is stated as an ESTIMATE wherever it is printed | RED |
+| `scripts/uninstall.sh` | — | **RED** | not run — reversing this phase's install was out of scope | `bash -n` only | not claimed to have run |
+
+**133 rows: 44 GREEN · 66 AMBER · 20 RED · 1 "GREEN (precondition)" · 1 "partly GREEN" · 1 "bug".**
+The last three are spelled out rather than rounded into a class: `wallet open` with no unit is GREEN
+only on a machine whose systemd user manager has never loaded the unit, the second `setup` run is
+`unchanged` for five of seven actions, and `node up` against an installed unit with no `monerod` is
+a defect rather than a verification result. Every command of §4.1 appears at least once.
+
+### Every RED row is still RED, and the exact commands that turn them GREEN
+
+Nothing in this phase installed Monero, started a daemon, opened a wallet file or broadcast
+anything. `omarchy pkg add monero` needs the owner's password, which no agent on this machine has
+(§1.1). §4b's rehearsal list, unchanged, on **stagenet** first — stagenet coins are free from a
+faucet, so the send path is exercised the first time with nothing at stake:
+
+```bash
+omarchy pkg add monero                        # installs monerod + monero-wallet-rpc
+scripts/install.sh --yes                      # already done by this phase; re-run is a no-op
+fmonero settings set node.network stagenet    # ports 38080/38081/38083, wallets/stagenet
+fmonero setup --units --yes                   # rewrites both units + monerod.conf (0600), stagenet
+fmonero node up --wait --wait-timeout 86400   # expect: exit 0 once synchronized, or exit 8
+fmonero wallet create stagetest --yes         # prompts twice, refuses an empty password
+monero-wallet-cli --wallet-file ~/.local/share/fmonero/wallets/stagenet/stagetest --offline
+                                              # then type: seed — WRITE IT DOWN BEFORE FUNDING
+fmonero wallet open stagetest                 # prompts for the password, no echo
+grep -c "$YOUR_TEST_PASSWORD" \
+  ~/.local/state/fmonero/run/monero-wallet-rpc.log          # expect: 0  (§4.2 --log-level 0)
+fmonero wallet address --qr                   # fund this from a stagenet faucet
+fmonero wallet history --limit 5 --json
+fmonero wallet send <addr> 0.01 --dry-run     # expect: a real fee, nothing relayed
+fmonero wallet send <addr> 0.01 --yes         # THE row that matters; then check the txid in history
+fmonero wallet send <addr> 0.01 --yes         # run it TWICE: proves the §2a.4 record self-clears
+fmonero node restart --yes                    # RED row: a real restart against monerod
+fmonero node down --yes                       # RED row: stop_daemon then systemctl --user stop
+fmonero node up --wait --wait-timeout 3600    # RED row: a real start
+S=$(date +%s%N); for i in $(seq 20); do fmonero status --json >/dev/null; done; E=$(date +%s%N)
+echo "warm status mean: $(( (E-S)/20000000 ))ms"   # the §2l (c) figure; paste into DECISIONS.md
+fmonero doctor --json | jq '.summary'
+tests/e2e.sh --full
+# then, only once every row above passed, repeat on mainnet:
+fmonero settings set node.network mainnet && fmonero setup --units --yes
+```
+
+Two lines of that list are worth flagging before the owner runs it. `scripts/install.sh --yes` has
+now been run, so it is a no-op apart from a rebuild; and `fmonero node up` will keep answering exit
+8 after 30 s until finding 1 is fixed or `monerod` is on PATH — with Monero installed it answers
+honestly, so the finding does not block the rehearsal.
+
+### The honesty surfaces, updated to match this matrix
+
+Three files, and nothing else:
+
+- `crates/fmonero-core/src/agent.rs` — `BUILD_STAGE` is `phase-4-verified`; `BUILD_NOTE`'s GREEN
+  sentence gains the real `setup --all --yes` run, the bar widget loading in the live shell and the
+  doctor's three real-artefact groups; its RED sentence **drops "a real setup run"** and gains
+  `setup`'s two unexercised refusals, the 120 GB disk floor, and one sentence naming finding 1 as
+  known and unfixed. `RED_COMMANDS` keeps `setup` — §4b's rule is the lowest class any scenario
+  reaches, and the `system_unit` and disk-floor refusals are still unexercised — with the comment
+  rewritten so the reason is the new one rather than the old one. The clause list in
+  `verified_is_the_lowest_class_every_scenario_reaches` follows.
+- `README.md` — the Install section's "**`--yes` has never been run on this machine**" is now false
+  and is replaced by what the two runs actually reported, including finding 2; "those three commands
+  are unverified" is narrowed to the two that still are, and names finding 1; the Status intro no
+  longer says the section was written at the API-freeze gate; the GREEN list gains the real setup
+  run, the widget, the units' `--wallet-dir` equality, the stagenet render and the doctor's 17
+  passes, and loses the flat claim that `wallet open` with no unit is exit 4; the RED list drops
+  "A real `setup` run" and names `setup`'s two refusals instead.
+- `docs/ROBOT.md` is unchanged and still byte-identical to `fmonero robot-docs`, because
+  `ROBOT_GUIDE` did not need to change.
+
+`scripts/check.sh`'s §2j scan passes on the edited text — 1 466 lines of README, `--help`,
+`robot-docs`, `version --json` and `capabilities --json`, no unmarked claim — with all four of its
+self-tests firing, including the one that proves an adjacent "never" does not excuse a RED claim.
+The `(every|each) step is idempotent` and `(wires up|sets up)` alternatives the Phase 4 fixer added
+to that pattern are **kept** even though a real `setup` run is no longer RED: finding 2 means a
+blanket idempotence claim would still be wrong, and relaxing a check is not this phase's to do.
+
+### What this phase did not do
+
+It did not fix the five non-hermetic tests, the five `tests/e2e.sh` assertions, finding 1 or
+finding 2 — §8 gives the verifier the verification and the honesty surfaces, and the brief it ran
+under says a false claim is fixed while a bug is reported. It did not install Monero, start a
+daemon, open or create a wallet, broadcast anything, run `sudo`, or push. It did stop, by hand,
+both systemd user units that `tests/e2e.sh`'s `node up` and `wallet open` cases started during the
+runs above; both are `inactive` and `disabled` as this entry lands, and the machine's fmonero
+artefacts are byte-identical to what `install.sh --yes` wrote.

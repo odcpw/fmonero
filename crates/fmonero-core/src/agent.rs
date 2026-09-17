@@ -16,21 +16,27 @@ use crate::status::WARNING_IDS;
 
 /// What this build actually is. `version` is the crate version; this names the phase, so a
 /// `capabilities` dump can never be mistaken for a finished tool.
-pub const BUILD_STAGE: &str = "phase-3-integrated";
+pub const BUILD_STAGE: &str = "phase-4-verified";
 
 /// The §4b summary, in prose, and honest about the one thing that matters: **no fmonero build
 /// has ever spoken to a real `monerod` or `monero-wallet-rpc`**, because neither is installed
 /// on the machine this was written on (§1.1).
 pub const BUILD_NOTE: &str = "\
-Integrated build (DESIGN.md §8, Phases 0 to 3 merged, reviewed and fixed in Phase 4). What has \
-actually been observed working:
+Integrated build (DESIGN.md §8, Phases 0 to 3 merged, reviewed and fixed in Phase 4, then \
+verified by Phase 4's verifier on 2026-09-17). What has actually been observed working:
 
 GREEN — verified end to end on a machine with no Monero installed: status with both daemons \
 absent, wallet list, wallet validate's structural path, settings list|get|set, capabilities, \
 robot-docs, version, setup --dry-run, wallet clear-pending, node log with no log file, every \
 --help, every usage error, amount and address parsing, doctor (exit 11 with exactly \
 monerod_installed and wallet_rpc_installed failing), doctor capabilities, the doctor undo latest \
-round trip, and tui opening, rendering every screen's empty state and quitting cleanly.
+round trip, and tui opening, rendering every screen's empty state and quitting cleanly. Also \
+GREEN since Phase 4's verifier ran it: setup --all --yes for real, through \
+scripts/install.sh --yes, twice — the two systemd user units (written disabled), \
+~/.config/fmonero/monerod.conf at 0600 with its credential carried through unrotated, the \
+plugin symlink and the Omarchy menu entries; the bar widget loading in the live Omarchy shell \
+and polling this binary's own status --json; and the doctor's units, install and security \
+groups passing against the files that run actually wrote.
 
 AMBER — verified against crates/fmonero-mock serving fixtures DERIVED FROM THE MONERO SOURCE \
 at v0.18.5.1, which proves fmonero's wire format and parsing and proves NOTHING about a real \
@@ -44,9 +50,13 @@ and renders from the same status document.
 
 RED — never verified, and not claimed anywhere: a real node start, stop or restart, real sync \
 progress, real peers, a real balance, a real refresh, A REAL SEND OR SWEEP OF ANY AMOUNT, a \
-real open_wallet against a real wallet file, a real setup run, the warm timing target, and \
+real open_wallet against a real wallet file, setup's system_unit and disk-floor refusals, the \
+120 GB disk floor, the warm timing target, and \
 every doctor check in the node, wallet and storage groups against a live daemon. \
-The owner turns these green by installing Monero and running the §4b command list.";
+The owner turns these green by installing Monero and running the §4b command list. \
+Known and unfixed on a machine set up but without Monero: node up and wallet open start their \
+unit, wait 30 s and exit 8 rather than exiting 4 not_installed, and leave the unit in a 5 s \
+restart loop — DECISIONS.md, Phase 4 verification, finding 1.";
 
 /// Every command of [`COMMANDS`] that has a §4b **RED** scenario, and therefore carries
 /// `verified: "red"` — §4b's rule is that the class is "the *lowest* class any of its scenarios
@@ -57,8 +67,16 @@ The owner turns these green by installing Monero and running the §4b command li
 /// sync progress and real peers (`status`, `node info`, `node peers`); a real balance
 /// (`wallet balance`, `status`); a real `refresh`; a real send or sweep; a real `open_wallet`
 /// against a real wallet file (`wallet open`, and `wallet create`, which finishes the same
-/// sequence on a wallet file no test has ever created); a real `setup`; and every doctor check
-/// in the node, wallet and storage groups against a live daemon.
+/// sequence on a wallet file no test has ever created); and every doctor check in the node,
+/// wallet and storage groups against a live daemon.
+///
+/// **`setup` is still here after Phase 4's verifier ran it for real**, and the reason changed
+/// rather than went away. `setup --all --yes` through `scripts/install.sh --yes` is GREEN now —
+/// twice, with the artefacts byte-compared — but §4b's rule is the *lowest* class any scenario
+/// reaches, and two of `setup`'s scenarios have still never been exercised by anything: its
+/// refusal under §2i's `system_unit` layout, and its refusal when free space is under §1.3's
+/// 120 GB floor (which §4b lists as RED in its own right). Promoting the row on the strength of
+/// the run that did happen would claim the two that did not.
 const RED_COMMANDS: &[&str] = &[
     "status",
     "node up",
@@ -545,7 +563,8 @@ mod tests {
             "a real refresh",
             "A REAL SEND OR SWEEP OF ANY AMOUNT",
             "a real open_wallet",
-            "a real setup run",
+            "setup's system_unit and disk-floor refusals",
+            "the 120 GB disk floor",
             "every doctor check",
         ] {
             assert!(red.contains(clause), "the RED sentence must name {clause}");
