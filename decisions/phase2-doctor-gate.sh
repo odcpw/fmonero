@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# The Phase 2 doctor gate (DESIGN.md §8), run from the phase2/doctor worktree.
+# The Phase 2 doctor gate (DESIGN.md §8). Written in the phase2/doctor worktree; Phase 3
+# removed that worktree and repointed both `cd`s at the main checkout so this still runs.
 set -uo pipefail
-cd /home/oliver/Projects/odcpw/fmonero/.claude/worktrees/wf_233da421-45c-6 || exit 1
+cd /home/oliver/Projects/odcpw/fmonero || exit 1
 FM="$PWD/target/release/fmonero"
 W="$(mktemp -d)"
 trap 'rm -rf "$W"' EXIT
@@ -195,7 +196,7 @@ echo "-- an unknown group names every legal one and exits 2"
 
 # --------------------------------------------------------------- 6
 say "GATE 6: fixture-driven tests for the parsing detectors, and the Verdict round trip"
-cd /home/oliver/Projects/odcpw/fmonero/.claude/worktrees/wf_233da421-45c-6
+cd /home/oliver/Projects/odcpw/fmonero
 cargo test -p fmonero 2>&1 | sed -n '/running /,$p'
 echo "-- fixture cases on disk"
 ls -1 tests/fixtures/doctor | sed 's/^/  /'

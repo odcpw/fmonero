@@ -2132,3 +2132,2111 @@ row for its `--help` and its exit-1 handover only; its real verdicts are the Pha
 | amount and address parsing | — | GREEN | `amount::tests`, `address::tests` | the `to_xmr_string` round trip; nine forms; the two-digit testnet leading set |
 | §2l (c) warm, real daemons | — | **RED** | not measured, not claimed | — |
 | the §1.3 disk floor | — | **RED** | not measured against a real chain | the floor is stated as an ESTIMATE wherever it is printed |
+
+---
+
+## Phase 2 — the four parallel agents' evidence, folded in (2026-09-17)
+
+Phase 3's first act after the four merges (DESIGN.md §8 preamble): the four
+`decisions/phase2-<name>.md` files are concatenated here in the order **docs, plugin, doctor,
+tui** and then `git rm`-ed. Each agent wrote its own file so that two parallel agents could
+never append to one tail and stall the one-at-a-time merge loop. The text below is each file
+verbatim, with its ATX headings demoted two levels (`#` → `###`) so that the four titles sit
+under this heading; nothing else was changed, and no evidence was dropped or reordered.
+
+Merge order and the commit each landed as, every one with `cargo build --release` green before
+the next (DESIGN.md §8, Phase 3):
+
+| # | Branch | Merge commit | Files it brought | `cargo build --release` |
+|---|---|---|---|---|
+| 1 | `phase2/docs` | `4ac76f9` | `README.md`, `plugin/oliver.monero/README.md`, `scripts/{install,uninstall}.sh` | green (nothing to rebuild — no Rust file changed) |
+| 2 | `phase2/plugin` | `b6d241d` | `plugin/oliver.monero/{manifest.json,Panel.qml,Service.qml,MoneroIcon.qml,Model.js}`, `tests/plugin-smoke.sh` | green (no Rust file changed) |
+| 3 | `phase2/doctor` | `aca237a` | `crates/fmonero/src/doctor/{checks,fixture_tests,mod,mutate,probes,report}.rs`, 14 `tests/fixtures/doctor/**` expectations | green, 13.19 s |
+| 4 | `phase2/tui` | `c76984f` | `crates/fmonero/src/tui/{mod,screens,send,subs,tests,theme}.rs`, `tests/tui_tmux.sh` | green, 18.80 s |
+
+No merge had a conflict: ownership was disjoint, exactly as §2k requires. `git diff --name-status`
+against each branch's own merge base showed only that branch's owned files, and the two `M` rows
+(`doctor/mod.rs`, `tui/mod.rs`) were the 1a stubs those agents own.
+
+One file arrived beside the four: `decisions/phase2-doctor-gate.sh`, the doctor gate as a runnable
+script, which `phase2-doctor.md` cites by path. It is **kept** rather than removed — deleting it
+would leave that citation dangling — with one line changed by Phase 3: its `cd` pointed at the
+`phase2/doctor` worktree, which Phase 3 removes, so it now points at the main checkout and runs
+again. That is the only edit Phase 3 made to another agent's file for a reason other than a
+compile or test failure.
+
+---
+
+<!-- folded from decisions/phase2-docs.md -->
+
+### Phase 2 · docs — evidence and decisions
+
+Agent: Phase 2 docs (DESIGN.md §8, Phase 2 table, row "docs"). Base: tag `gate-1a`
+(`88aee19`). Branch: `phase2/docs`, in its own worktree. Date: 2026-09-17.
+Owned files: `README.md`, `plugin/oliver.monero/README.md`, `scripts/install.sh`,
+`scripts/uninstall.sh`, and this file. Nothing else was touched.
+
+Phase 3 concatenates this file into `DECISIONS.md` (§8 preamble) and then deletes it.
+
+#### 1. What was written
+
+| File | Lines | Shape it follows |
+|---|---|---|
+| `scripts/install.sh` | 299 | `fproton/scripts/install.sh`, plus the `installer-workmanship` substance named in §8 |
+| `scripts/uninstall.sh` | 403 | `fproton/scripts/uninstall.sh`, extended with the two systemd user units fmonero's `setup` creates |
+| `README.md` | 424 | `fproton/README.md`, `readme-writing` + `de-slopify` (§9) |
+| `plugin/oliver.monero/README.md` | 151 | `fproton/plugin/oliver.protonvpn/README.md`, against §6 |
+
+`plugin/oliver.monero/` did not exist at `gate-1a`; this branch creates the directory with
+only the README in it. Every other file under it belongs to the Phase 2 plugin agent (§8).
+
+#### 2. Decisions, with reasons
+
+**`cargo build --release -p fmonero`, not a bare `cargo build --release`.** fproton's installer
+builds the whole workspace because fproton has no test-only member. fmonero has
+`crates/fmonero-mock` (§8 Phase 0), which is a fixture server with `publish = false`, and §8's
+own argument for it ends "`scripts/install.sh` builds `-p fmonero` only, so it can never reach
+`~/.local/bin`". The `-p` is therefore part of the contract, not a speed optimisation.
+
+**`umask 077`, with two deliberate exceptions.** §8's docs row names the mask and §2b.7 is the
+reason: everything fmonero writes under `$HOME` is owner-only. The binary is installed with an
+explicit `install -m 0755`, which sets the mode rather than masking it, and `PREFIX` is created
+under a local `(umask 022)` subshell **only when it does not already exist**, because a bin
+directory at 0700 is a surprise nothing in this design asks for. An existing `PREFIX` is never
+chmod'd.
+
+**The installer warns about a missing `monerod` and carries on.** §1.1 says no agent can install
+Monero, and §4a maps a missing daemon to exit 4 with `omarchy pkg add monero` as the hint.
+Refusing to install fmonero because Monero is absent would make the machine this was developed
+on unable to run its own installer; warning once, with the same hint the binary gives, is the
+honest version.
+
+**The uninstaller takes the node down through `fmonero node down --yes`, not through
+`systemctl --user stop` alone.** §4.1 puts `stop_daemon` over RPC before the unit stop precisely
+so LMDB closes cleanly, and §1.2 is about what a dirty LMDB costs. The script falls back to
+`systemctl --user stop` when `node down` fails or when the binary is already gone, and it never
+touches a node it does not own: under the `system_unit` layout `node down` exits 3 by
+construction (§2i), which the script reports rather than working around.
+
+**The wallet unit is stopped with `systemctl --user stop`, deliberately not with a `wallet
+close`.** `monero-wallet-rpc` stores the open wallet in its graceful `stop()`
+(`wallet_rpc_server.cpp:294-302`), which is what SIGTERM from systemd triggers, so the plain unit
+stop already persists the wallet and needs no extra RPC.
+
+**The two unit files are removed by default; `~/.config/fmonero` is not.** The units are
+installer-created integration under `$HOME`, the same category as the plugin symlink that
+fproton's uninstaller removes by default. `~/.config/fmonero/monerod.conf` is fmonero's own
+config directory, so it goes with `--purge`, and the default run prints the paths it is keeping.
+A `daemon-reload` runs only when a unit file was actually removed.
+
+**`--purge` refuses while `pending.json` exists, and this is an addition to §8's list rather
+than a restatement of it.** §2a.4 makes that file the only thing standing between a crash
+mid-relay and a second spend of the same outputs, and its resolution needs the binary the
+uninstaller is about to delete. So the check runs first, before any step, and exits 3 with
+`fmonero wallet history --limit 5` and `fmonero wallet clear-pending --yes` as the hint. Nothing
+in DESIGN.md forbids deleting the record during an uninstall; nothing endorses it either, and an
+uninstaller that silently destroys the one money interlock in the project is the §2j failure
+applied to a script.
+
+**Wallet files and `~/.bitmonero` are unreachable from either script, under any flag.**
+`--purge` names `config_dir`, `state_dir` and `cache_dir` explicitly and never a parent:
+`~/.local/share/fmonero` holds `wallets/<network>/`, so purging that directory would delete
+wallet files, which with their password are the only copy of money that is not the seed. The
+chain is left alone as well: it is re-syncable, but it is 100+ GB and it is not ours.
+
+**`FMONERO_PREFIX` is an installer-only environment variable.** It is read by these two shell
+scripts and by nothing under `crates/`, so it is deliberately **not** in
+`capabilities.json`'s `env` list. Phase 3's ergonomics pass asserts that round trip over
+`crates/` (§5b), and adding a shell-script variable to the binary's contract would make that
+assertion fail on correct code.
+
+**README structure: Status sits third, before the CLI.** `readme-writing` says lead with value,
+and §2j says claim nothing RED. Putting the verification matrix immediately after Install means
+no reader reaches the command reference believing the real-daemon rows have been observed. The
+class table is §4b's three classes verbatim in meaning, the RED paragraph is headed "RED, and
+therefore unverified" so the Phase 3 honesty grep finds the word adjacent to every RED claim,
+and the section hands authority over to `fmonero version --json`'s `build_stage` rather than to
+itself, since this README was written at the API-freeze gate.
+
+**No badges, no `curl | bash` one-liner, no FAQ.** `readme-writing`'s hero template asks for
+all three. There is no CI workflow in v0.1 (§0 cuts it) so a CI badge would be a lie; there are
+no releases and no install URL, so a curl one-liner would point nowhere; and the questions a FAQ
+would answer are the ones Status and Limitations answer with evidence. §9 says apply substance,
+skip ceremony.
+
+**No em-dash appears as prose punctuation in either README** (`grep -c '—'` is 0 in both), and
+the `de-slopify` high-signal tells were grepped for and are absent. The prose keeps DESIGN.md's
+own wording where a sentence is a contract (for instance "a crash cannot double-send"), and
+labels it AMBER in the same section rather than leaving the absolute unqualified.
+
+#### 3. Gate
+
+The §8 docs row's gate, line by line, with real output.
+
+##### 3.1 `bash -n` on both scripts — PASS
+
+```
+$ bash -n scripts/install.sh; echo "install.sh bash -n exit=$?"
+install.sh bash -n exit=0
+$ bash -n scripts/uninstall.sh; echo "uninstall.sh bash -n exit=$?"
+uninstall.sh bash -n exit=0
+```
+
+##### 3.2 `shellcheck` — SKIPPED, tool absent
+
+```
+$ command -v shellcheck || echo "shellcheck: NOT INSTALLED"
+shellcheck: NOT INSTALLED
+```
+
+Recorded as a skip, not a pass (§2j, §4b's rule about tools this machine does not have). Both
+scripts were written to the style shellcheck enforces: every expansion quoted, `local` on every
+function variable, `[ ... ]` tests with quoted operands, `rm`/`mv`/`cp`/`install` given `--`
+before paths, `$*` used only inside the `plan`/`info` printers, and no unquoted array or glob.
+The one construct shellcheck would flag on sight, a backtick inside a double-quoted `skip`
+message, was found by reading and removed before the first commit; it would have run
+`node down` as a command substitution. A second read, standing in for shellcheck's unused-name
+warnings, removed a `run()` helper and a `PLUGIN_ID` variable from `install.sh` that fproton's
+copy also carries unused: every step of this installer prints its own `plan`/`info` line, so the
+generic wrapper had no call site.
+
+##### 3.3 `scripts/install.sh --dry-run` prints every step and touches nothing — PASS
+
+```
+$ git status --porcelain
+[empty]
+$ /tmp/claude-1000/fmonero-docs-probe.sh <worktree> > gate-home-before.txt
+$ ./scripts/install.sh --dry-run
+warn monerod is not on PATH; fmonero installs, but every command that needs the node or the wallet will exit 4
+hint: omarchy pkg add monero   # then: fmonero setup --units --yes
+would cargo build --release -p fmonero   (in /home/oliver/Projects/odcpw/fmonero/.claude/worktrees/wf_233da421-45c-4)
+would install -m 0755 /home/oliver/Projects/odcpw/fmonero/.claude/worktrees/wf_233da421-45c-4/target/release/fmonero /home/oliver/.local/bin/fmonero
+would fmonero setup --all --yes   (units written disabled, plugin link, enable, bar placement, menu entries)
+
+dry run: nothing above was executed.
+install.sh --dry-run exit=0
+```
+
+Every step the `--yes` path would take is printed: build, install, setup. The lock, the
+`mkdir -p` of the prefix and the version probe are the three things the dry run skips rather
+than prints, because none of them changes the machine's contents in a way a reader of the plan
+needs, and printing a lock the dry run does not take would be the misleading half.
+
+The proof that it touched nothing is a checksum of the state of every path the real run would
+write, taken before and after:
+
+```
+$ sha256sum gate-home-before.txt gate-home-after.txt
+1261f55dc1e3b969c054ba3b8e0b28908424c1bbe3f52c8664b8b6642bcfdb8a  gate-home-before.txt
+1261f55dc1e3b969c054ba3b8e0b28908424c1bbe3f52c8664b8b6642bcfdb8a  gate-home-after.txt
+$ diff -u gate-home-before.txt gate-home-after.txt; echo "diff exit=$?"
+diff exit=0
+$ git status --porcelain
+[empty]
+```
+
+The 16 paths in that snapshot, each recorded as a symlink target, a
+`mode size mtime sha256[0:16]`, a directory `mode mtime entry-count`, or `absent`:
+
+```
+/home/oliver/.local/bin/fmonero                                  absent
+/home/oliver/.local/bin                                          dir 755 1789444173 entries=34
+/run/user/1000/fmonero-install.lock                              absent
+<worktree>/target                                                absent
+/home/oliver/.config/systemd/user/fmonero-monerod.service        absent
+/home/oliver/.config/systemd/user/fmonero-wallet-rpc.service     absent
+/home/oliver/.config/fmonero                                     absent
+/home/oliver/.config/fmonero/monerod.conf                        absent
+/home/oliver/.config/omarchy/plugins/oliver.monero               absent
+/home/oliver/.config/omarchy/plugins                             dir 755 1789423054 entries=4
+/home/oliver/.config/omarchy/extensions/omarchy-menu.jsonc        file 644 2701 1789444173 601d6420feacf985
+/home/oliver/.config/omarchy/shell.json                          file 644 1423 1789591329 2d00f1755e995bb7
+/home/oliver/.local/share/fmonero                                absent
+/home/oliver/.local/state/fmonero                                absent
+/home/oliver/.cache/fmonero                                      absent
+/home/oliver/.bitmonero                                          absent
+```
+
+The `setup --all --dry-run` probe branch was exercised separately, with `--prefix` pointing at a
+copy of the `gate-1a` binary so that `DEST` was executable, and the `$HOME` snapshot was
+unchanged afterwards as well:
+
+```
+$ ./scripts/install.sh --dry-run --prefix /tmp/claude-1000/fakeprefix
+…
+-> /tmp/claude-1000/fakeprefix/fmonero setup --all --dry-run
+{"code":1,"code_name":"failure","error":"fmonero setup is not implemented in this build","hint":"fmonero capabilities   # what this build actually does","ok":false,"reason":null,"schema":1}
+warn that fmonero exited 1 for the setup plan (see above); the real run may differ
+
+dry run: nothing above was executed.
+EXIT=0
+```
+
+That is `setup::run`'s 1a stub answering, and it is the reason the branch degrades to a warning
+instead of failing: at `gate-1a` there is no setup plan to print, and after Phase 1b there will
+be one. The installer's own exit code stays 0 either way, because a dry run that cannot obtain a
+plan has still printed one.
+
+Exit codes, checked against §4a:
+
+```
+$ ./scripts/install.sh --bogus            -> 2   (usage; hint: scripts/install.sh --help)
+$ ./scripts/install.sh </dev/null         -> 3   (safety; needs --yes without a terminal)
+$ ./scripts/install.sh --help             -> 0
+$ ./scripts/uninstall.sh --bogus          -> 2
+$ ./scripts/uninstall.sh </dev/null       -> 3
+```
+
+##### 3.4 `scripts/uninstall.sh --dry-run` — PASS (not a named gate line; run anyway)
+
+On this machine, where nothing is installed, every step correctly reports a skip rather than
+planning a removal:
+
+```
+$ ./scripts/uninstall.sh --dry-run --menu --purge
+--   fmonero-monerod.service is not active
+--   fmonero-wallet-rpc.service is not active
+--   no /home/oliver/.config/systemd/user/fmonero-monerod.service
+--   no /home/oliver/.config/systemd/user/fmonero-wallet-rpc.service
+--   oliver.monero is not registered with omarchy
+--   no plugin link at /home/oliver/.config/omarchy/plugins/oliver.monero
+--   no binary at /home/oliver/.local/bin/fmonero
+--   no fmonero entries in /home/oliver/.config/omarchy/extensions/omarchy-menu.jsonc
+--   no /home/oliver/.config/fmonero
+--   no /home/oliver/.local/state/fmonero
+--   no /home/oliver/.cache/fmonero
+
+dry run: nothing above was executed.
+uninstall.sh --dry-run exit=0
+```
+
+The `pending.json` refusal was driven with `FMONERO_STATE_DIR` pointed at a scratch directory
+holding a record with one unrelayed entry:
+
+```
+$ FMONERO_STATE_DIR=/tmp/claude-1000/fmsb/state ./scripts/uninstall.sh --dry-run --purge
+error /tmp/claude-1000/fmsb/state/pending.json exists: a send may be in flight, and --purge would delete the record of it
+hint: fmonero wallet history --limit 5   # confirm whether it landed, then: fmonero wallet clear-pending --yes
+EXIT=3
+```
+
+The menu editing chain was exercised on a synthetic `omarchy-menu.jsonc` carrying the owner's
+own entries plus the five `monero*` ids and the `// fmonero` marker. Running the script's own
+`awk` programs against it, then its `python3` JSONC parser over the result:
+
+```
+$ awk '<menu_strip>' menu.jsonc            # removes the marker and the five monero lines
+{
+  // the owner's own entries
+  "learn": {"icon":"","label":"Learn","aliases":["learn"]},
+  "style": {"icon":"","label":"Style"},
+}
+$ awk '<menu_fix_trailing_comma>' stripped.jsonc
+{
+  // the owner's own entries
+  "learn": {"icon":"","label":"Learn","aliases":["learn"]},
+  "style": {"icon":"","label":"Style"}
+}
+$ python3 - fixed.jsonc <<'PY' … PY
+parses; keys = ['learn', 'style']
+EXIT=0
+```
+
+The owner's comments and entries survive byte for byte and the result parses. What is **not**
+proved here: the full `--menu` write path (verbatim backup, then restore when the result stops
+parsing) was not executed end to end, because `MENU_FILE` derives from `XDG_CONFIG_HOME`, which
+this agent's sandbox refuses to override, and editing the owner's real menu file is not a docs
+gate. The backup-and-restore code is fproton's, unchanged except for the id pattern.
+
+##### 3.5 The `--yes` path: read for idempotence, not executed — as §8 requires
+
+§8 is explicit that this agent must not run `install.sh --yes`: at `gate-1a` `setup::run` is
+still a stub (see the transcript in 3.3), so the run would exit 1 on its first real step, and
+§4b reserves the one real `setup` for the Phase 4 verifier. What the reading establishes, step
+by step:
+
+1. **Preflight** does `command -v` probes and `[ -w ]` tests; the only write is
+   `mkdir -p "$PREFIX"`, guarded by `[ ! -d "$PREFIX" ]`. Repeatable.
+2. **Consent** is skipped with `--yes`; nothing is written.
+3. **Lock**: `mkdir "$XDG_RUNTIME_DIR/fmonero-install.lock"`, removed by the `EXIT` trap, so a
+   second run finds no lock. A concurrent second run exits 1 rather than racing.
+4. **Build**: `cargo build --release -p fmonero` is a no-op when nothing changed.
+5. **Install**: `cmp -s` short-circuits to `--  <dest> is already this exact binary`, so the
+   second run does not even rename. When it does write, it writes `.fmonero.install.$$` beside
+   the target and `mv -f`s it over, which is atomic and safe while an fmonero is running
+   (in-place replacement of a running binary gives ETXTBSY).
+6. **Setup**: `fmonero setup --all --yes`. §4.2 makes it idempotent by contract, each part
+   skipped when already done, and §4.2's `rpc-login` rule is what keeps the second run's diff
+   empty: an existing valid credential line is carried through and no new randomness is drawn.
+7. **Summary** prints only.
+
+Nothing in the script appends to a file, edits a dotfile, or writes outside `$PREFIX`, the
+repo's `target/` and the lock. **The idempotence claim itself is therefore unproven by this
+phase**, and §8's Phase 4 verifier is where it is settled: it runs `scripts/install.sh --yes`
+twice and asserts the second run reports every action unchanged.
+
+The same reading for `uninstall.sh --yes`: every one of the seven steps is guarded by an
+existence or state test and prints a skip when there is nothing to do, which the dry run in 3.4
+demonstrates for all of them at once on a machine where nothing is installed. A second
+`uninstall.sh --yes` is therefore all skips and exit 0. `daemon-reload` runs only when a unit
+file was removed, and `--menu` is guarded by the same grep that decides whether there is
+anything to strip.
+
+##### 3.6 README: Status mirrors §4b, claims nothing RED — PASS by inspection plus a grep
+
+The Status section carries §4b's three classes with the same meanings and the same command
+lists, folded to the "lowest class any of its scenarios reaches" rule: `wallet send`, for
+instance, appears under GREEN for its refusal order with no daemon, under AMBER for the mocked
+build and relay, and under RED for a real broadcast, and the RED sentence is the one that
+carries the word "unverified".
+
+An approximation of the Phase 3 honesty grep over both READMEs:
+
+```
+$ grep -nEi 'sent |broadcast|synchronized|synced|sync progress|peer list|live peer' README.md plugin/oliver.monero/README.md
+plugin/oliver.monero/README.md:97:  … a node that is not synchronized gets a percent ring …     (icon logic, not a claim)
+README.md:34:  … the value-initialised zero the daemon sent …                                    (about a daemon response)
+README.md:75:  fmonero node up --wait   # start monerod and wait for it to report itself synced   (a command; line 78 says "Those three commands are unverified")
+README.md:133: Real sync progress, a real peer list, a real balance …                             (inside the paragraph headed "RED, and therefore unverified")
+README.md:227: **A crash cannot double-send.** … what is about to be broadcast …                  (mechanism; line 253 labels the whole section AMBER and the real broadcast unverified)
+README.md:393: Cuprate … `get_connections`, the peer list … return `not_available`                (a limitation)
+```
+
+No sentence asserts that a send, a sync or a peer list has been observed working. Three separate
+places say the opposite: the header paragraph ("Read Status before you believe anything here"),
+the note under the Monero install block, and the RED paragraph.
+
+##### 3.7 Every README claim findable in code or in the matrix
+
+Each claim was checked against a DESIGN.md section or against real `gate-1a` output. The
+non-obvious ones and where they come from:
+
+| Claim | Source |
+|---|---|
+| 109 QML files, 26 869 lines of QML, `monerod sync_info` every 2 s | DESIGN.md header, `docs/FEASIBILITY.md` §2 |
+| wallet-rpc serves RPC on one thread, yields 200-300 ms per period | §2d (`wallet_rpc_server.cpp:291-292`, `:211-280`) |
+| `"BUSY"` for the whole initial sync; `top_block_age_sec` null | §1b.3, §5 |
+| restricted node poisons uptime, free space, four peer counts | §1b.3, §5 |
+| three hot RPCs closed / five open, two `systemctl` spawns, 60 ms | §5, §2l (a) |
+| no TLS stack in the binary; loopback literal only | §2c |
+| MD5 Digest, and the browser-POST argument for it | §1b.7, §2c |
+| 60 s breaker, 100-blocks-behind exemption | §2d |
+| `node up` checks `lmdb/lock.mdb` and scans `/proc` | §2i |
+| units written disabled, `rpc-login` 0600 and not rotated, redacted diffs | §4.2 |
+| exit codes, `reason` values for exit 3, `--dry-run` on four commands | §4, §4a, and `fmonero --help` at `gate-1a` |
+| settings keys and defaults | `fmonero settings list` at `gate-1a` |
+| every command and flag in the CLI block | `fmonero {--help, wallet --help, node --help, wallet send --help, wallet sweep --help, node up --help}` at `gate-1a` |
+| the whole Money safety section | §2a.1 through §2a.11 |
+| `wallet create` does not print the seed; the two-prompt rule | §2b.2 |
+| TUI screens, the typed-word confirm, relay ignores cancellation | §7a |
+| doctor chokepoint, `actions.jsonl`, undo exit 13, never deletes | §7 |
+| widget icon states, panel order, keys, settings, greps, budgets | §6.1 through §6.7 |
+| the v0.1 cut list, 100-150 GB estimate, fork table ends at v16 | §0, §1.3, §1b.1 |
+
+`fmonero version --json` at `gate-1a`, which is what the README points readers at instead of
+trusting its own Status section:
+
+```
+$ fmonero version --json
+{"build_note":"API freeze only (DESIGN.md §8, Phase 1a). The command surface, the exit codes,
+the `reason` discriminators, the settings table, amount parsing and address parsing are
+implemented and tested. Every path that talks to monerod or monero-wallet-rpc still exits 1
+'not implemented in this build'. No Monero binary is installed on the build machine, so nothing
+that needs a live daemon has ever been observed working (§1.1, §4b RED).",
+"build_stage":"phase-1a-api-freeze","ok":true,"schema":1,"version":"0.1.0"}
+```
+
+#### 4. Notes for other phases
+
+**For the plugin agent (§1.5 / §6.6, the reload loop).** DESIGN.md says to run
+`omarchy-shell shell rescanPlugins` after every QML edit. fproton's plugin README records a
+measurement on this same machine that contradicts the useful half of that: a rescan is the
+cold-load path and did **not** re-read the QML of an already-loaded symlinked plugin, because
+the registry's reload is guarded by `Qt.clearComponentCache`; there, `omarchy restart shell` was
+what picked up an edit, and a deliberate syntax error went unnoticed by both the rescan and the
+smoke test. `plugin/oliver.monero/README.md` documents DESIGN's instruction first and this
+caveat immediately after. The plugin agent should verify which one is true here before trusting
+a green smoke test, since the failure mode is three hours of QML that never loaded.
+
+**For Phase 3.** This file is the docs half of the concatenation in §8's preamble. The README
+says `DECISIONS.md` carries the §2l (a) measurement and the §4b evidence; those come from the 1b
+and 4 gates, so if either is missing at merge time the README's pointer is the thing to fix, not
+the claim.
+
+**For Phase 4.** Two claims this phase could not close, both named above: the idempotence of
+`install.sh --yes` (3.5) and the full `--menu` write-and-restore path (3.4). The verifier's
+double `install.sh --yes` run settles the first.
+
+---
+
+<!-- folded from decisions/phase2-plugin.md -->
+
+### Phase 2 — plugin (`oliver.monero`)
+
+Agent: Phase 2 plugin. Branch `phase2/plugin`, based on `gate-1b`, worked in the **main checkout**
+(DESIGN.md §8: the Omarchy symlink must resolve to this checkout, and a worktree's QML edits would
+be invisible to the running shell). Owned files: `plugin/oliver.monero/**` except `README.md`,
+`tests/plugin-smoke.sh`, and this file. Nothing else was touched.
+
+Date: 2026-09-17. Machine: Omarchy 4.0.3, Hyprland, Quickshell (`omarchy-shell`), theme
+`colors.toml` is a greyscale one (`red = #a4a4a4`), which matters for one observation below.
+
+---
+
+#### 1. Line counts against the §6.1 budgets
+
+Measured with `wc -l` on the committed files, after the last edit:
+
+| File | Budget (§6.1) | Real | |
+|---|---|---|---|
+| `manifest.json` | ~55 | **32** | under |
+| `Service.qml` | ≤ 380 | **287** | under |
+| `Panel.qml` | ≤ 700 | **700** | at budget |
+| `MoneroIcon.qml` | ≤ 80 | **80** | at budget |
+| `Model.js` | ≤ 150 | **142** | under |
+| **Total QML + JS** | **≤ 1 310** | **1 209** | under by 101 |
+| Total including `manifest.json` | — | 1 241 | |
+
+```
+$ wc -l plugin/oliver.monero/*.qml plugin/oliver.monero/*.js plugin/oliver.monero/manifest.json
+   80 plugin/oliver.monero/MoneroIcon.qml
+  701 plugin/oliver.monero/Panel.qml     <- trimmed to 700 in the following commit
+  287 plugin/oliver.monero/Service.qml
+  142 plugin/oliver.monero/Model.js
+   32 plugin/oliver.monero/manifest.json
+ 1242 total
+
+$ cat plugin/oliver.monero/*.qml plugin/oliver.monero/*.js | wc -l
+1209
+```
+
+**§6.1's own arithmetic does not close, and the smaller number was taken as binding.** The per-file
+budgets sum to 55 + 380 + 700 + 80 + 150 = **1 365**, while the sentence under the table says
+"Total QML under **1 310** lines, the sum of the per-file budgets above". Both are satisfied here
+(1 209 of QML + JS), and every per-file budget is met individually, so nothing had to be decided —
+it is recorded because a later agent adding one screen to the panel will hit the per-file cap first
+and should know the two numbers disagree by 55.
+
+---
+
+#### 2. Gate transcript
+
+##### 2.1 `omarchy-plugin-validate` on the repository directory
+
+Validated the repo copy, never the installed link — the validator refuses any symlink inside a
+plugin folder (§1.5).
+
+```
+$ omarchy-plugin-validate plugin/oliver.monero
+omarchy-plugin-validate exit=0
+```
+
+##### 2.2 `tests/plugin-smoke.sh` — full run, with the plugin linked and enabled on this machine
+
+```
+$ ./tests/plugin-smoke.sh
+plugin-smoke: /home/oliver/Projects/odcpw/fmonero/plugin/oliver.monero
+  ok    omarchy-plugin-validate
+  ok    manifest id is oliver.monero
+  ok    schemaVersion is 1
+  ok    kinds contains bar-widget
+  ok    entryPoints.barWidget = Panel.qml
+  ok    defaultSection = right
+  ok    allowMultiple = false
+  ok    manifest.json exists
+  ok    Panel.qml exists
+  ok    Service.qml exists
+  ok    MoneroIcon.qml exists
+  ok    Model.js exists
+  skip  README.md is not here yet (owned by the docs agent, DESIGN.md §6.1)
+  ok    qmllint: no syntax errors
+  ok    Panel.qml sets manageIpc: false
+  ok    no execDetached(["bash" …])
+  ok    self-test: execDetached bash fires on its own fixture
+  ok    no bar.run()
+  ok    self-test: bar.run fires on its own fixture
+  ok    every manifest default has an in-code fallback
+  ok    no money argv element
+  ok    self-test: money argv fires on its own fixture
+  ok    self-test: money argv leaves its negative fixture alone
+  ok    no wallet secret named in QML
+  ok    self-test: secret name fires on its own fixture
+  ok    no float arithmetic on money
+  ok    self-test: parseFloat fires on its own fixture
+  ok    self-test: Number() fires on its own fixture
+  ok    self-test: pico / 1e12 fires on its own fixture
+  ok    rescanPlugins
+  ok    journal carries no load failure for oliver.monero
+  ok    widget is loaded (cursor: {"section":"header","index":0,"active":false,"opened":false,
+        "sections":["header","footer"],"alive":false,"binaryMissing":true,"nodeUp":false,
+        "synced":false,"walletOpen":false,"iconCase":0,"iconColor":"#a5a5a5"})
+
+plugin-smoke: 31 passed, 0 failed
+exit=0
+```
+
+Two lines in that transcript deserve reading rather than skimming:
+
+- **`skip README.md`.** The plugin's README is the docs agent's file (§6.1) and lands on
+  `phase2/docs`. It is not loaded by the shell, so the script reports its absence instead of
+  failing on a file this agent may not create (§2k). After the Phase 3 merge it will read `ok`.
+- **`binaryMissing: true`, `iconCase: 0`.** No `fmonero` is installed at `~/.local/bin` on this
+  machine — `scripts/install.sh` is the docs agent's file and §4b reserves the one real install for
+  the Phase 4 verifier. That is the widget's honest empty state: the bar glyph is dimmed, crossed
+  and badged, and the panel's first line is
+  `fmonero is not installed or not on PATH (~/.local/bin).` It was verified deliberately, and so
+  was the opposite state (§2.4 below).
+
+##### 2.3 The two greps and their fixtures
+
+Both greps of §6.7 pass over the plugin **and** fire on a fixture that contains the forbidden
+thing. `tests/plugin-smoke.sh` carries the harness (`forbid` / `fires` / `silent`), mirroring
+`scripts/check.sh`'s rule that a grep which cannot fail is worse than no grep.
+
+| Grep | Pattern | Positive fixture (must fire) | Negative fixture (must not) |
+|---|---|---|---|
+| money argv (§6.7, §2b.5) | `"(send\|sweep\|open\|create\|restore\|transfer\|relay)"` | `Quickshell.execDetached(["fmonero","wallet","send"])` | `Quickshell.execDetached(["fmonero","tui","--send"])` |
+| no float money (§2a.5) | `parseFloat\|Number\(\|/ 1e` | `parseFloat(status.pending.txs[0].amount_xmr)`, `Number(status.wallet.balance_xmr) + 1`, `status.wallet.balance_pico / 1e12` | — |
+| wallet secret (§2b.5) | `password` | `property string password: ""` | — |
+| shell string (§2f, §1.5) | `execDetached\(\["(ba)?sh` · `bar\.run\(` | `execDetached(["bash","-lc",…])` · `bar.run("fmonero node up")` | — |
+
+The money grep matches a **whole quoted argv element**, not a substring, which is why the constant
+literal `"--send"` that opens the TUI's Send *screen* passes while `["fmonero","wallet","send"]`
+cannot. A substring grep would fail on this design's own widget (§6.3's argv table contains
+`"--send"`), and a grep that fails on correct code is the grep the first agent to hit it relaxes —
+hence the third column.
+
+The plugin has **no money argv at all**: the whole mutating surface is `node up`, `node down --yes`
+and `wallet refresh`, plus `wl-copy` and three `omarchy-launch-or-focus-tui` launches built from
+constant literals (§1.5). There is no address, amount or label in any argv that reaches a launcher
+script's `eval`.
+
+##### 2.4 Live render against a full Status document
+
+The empty state proves the widget loads; it does not prove the wallet, pending and warning sections
+render. So the widget was pointed for the duration of the gate at a **test double** in the
+scratchpad — a one-line script printing a complete §5 Status document — through the widget's own
+`binary` setting, and the panel was driven over IPC and with `wtype`. Both machine changes were
+reverted afterwards (§4).
+
+Cursor state with that document (all five sections present, from the `cursor` IPC hook):
+
+```
+{"section":"header","index":0,"active":false,"opened":true,
+ "sections":["header","warnings","wallet","pending","footer"],
+ "alive":true,"binaryMissing":false,"nodeUp":true,"synced":false,"walletOpen":true,
+ "iconCase":1,"iconColor":"#a4a4a4"}
+```
+
+Keyboard navigation, one `wtype` keypress at a time, reading the cursor back after each:
+
+```
+j j j        -> {"section":"warnings","index":1, …}
+j j j j      -> {"section":"pending","index":0, …}
+j            -> {"section":"footer","index":0, …}
+l l          -> {"section":"footer","index":2, …}     # horizontal inside the footer
+k            -> {"section":"pending","index":0, …}    # back up a section
+c            -> clipboard := 4AdUndXHHZ6cfufTMvppY6JwXNouMBzSkbLYfpAV5Usx3skxNgYeYTRj5Uzqt…
+Escape       -> {"opened":false, …}
+```
+
+What the panel drew (screenshot inspected, not pasted here): hero
+`Node · 1 490 011` / `SYNCING 42%` / a `mainnet` pill / the node `ToggleSwitch` on; the sync gauge
+`42%  1 490 011 / 3 541 122`; `Peers ↑ 16 out · ↓ 3 in`, `Mempool 14 tx`, `Last block 47s ago`,
+`Net ↓ 375.0 KiB/s ↑ 20.5 KiB/s`; three warnings each with its runnable hint; `WALLET` with
+`Balance 1.234567891234 XMR`, `Unlocked 0.5000 XMR`, `↑ locked for 7 blocks`, `4AdUndXH…684Rge
+copy (c)` and `Refresh the wallet · 61 blocks behind`; and the pending row
+`Send in flight: 12.5000 XMR → 4AdUndXH…684Rge · 1 of 3 relayed`. The journal carried no
+`oliver.monero` line for the whole session but the two benign ones §1.5 names.
+
+Every amount there is the pre-rendered `*_xmr` string from Status JSON, copied verbatim into the
+label. Nothing in the plugin adds, divides or parses a monetary value (§2a.5).
+
+`Model.js` was additionally exercised as a pure module against a synthetic Status document, since
+formatter output is the part a screenshot cannot show precisely:
+
+```
+syncLabel       : Syncing 42%           heightLabel     : Node · 1 490 011
+peersLabel      : ↑ 16 out · ↓ 3 in     peers restricted: not available on a restricted node
+age 47/4000/90061/null : 47s / 1h 06m / 1d 1h / —
+rate 384000 / null     : 375.0 KiB/s / —
+shortAddr       : 4AdUndXH…684Rge       worstSeverity   : error
+pending on      : Send in flight: 12.5000 XMR → 4AdUndXH…684Rge · 1 of 3 relayed
+pending off     : Send in flight · 1 of 3 relayed
+pending done    : Send in flight: 12.5000 XMR → 4AdUndXH…684Rge
+safeArgv ok     : ["omarchy-launch-or-focus-tui","--app-id=fmonero","fmonero","tui"]
+safeArgv evil   : []                    # "fmonero tui; rm -rf ~" is dropped, not split
+parseStatus junk/err : {"ok":false} / {"ok":false}
+syncLabel none/down/dead/synced : No node configured / Node is not running /
+                                  fmonero is not answering / Synced
+```
+
+`pending off` is §6.5's rule made visible: with `showBalance` off the pending row carries neither
+the amount nor the destination, only the relayed counter. The setting exists so an amount can be
+kept off a bar other people can see, and pending is the row most likely to be on screen while
+someone is looking over a shoulder.
+
+---
+
+#### 3. Three defects the live shell found that no static check could
+
+Recorded because each one is invisible to `qmllint`, to `omarchy-plugin-validate` and to every
+grep, and each was caught by a different half of the gate.
+
+1. **`ScrollBar is not a type`.** `Panel.qml` used QQC2's `ScrollBar` attached property without
+   `import QtQuick.Controls`; `qmllint` reported no syntax error and the validator was happy, but
+   the widget failed to instantiate:
+   `WARN qml: Plugin widget oliver.monero failed: …/Panel.qml:300:9: ScrollBar is not a type`.
+   The journal half of `tests/plugin-smoke.sh` is what surfaced it. Fixed in `d2324fc`.
+2. **An invisible thousands separator.** `Model.grouped` joined digit groups with U+2009 THIN
+   SPACE, which the bar's monospace fontconfig alias renders at zero width: the panel showed
+   `Node · 1490011`. Only a screenshot could catch that. Now an ordinary space.
+3. **A symlinked plugin does not hot-reload, and `rescanPlugins` is not enough.** §1.5 says to run
+   `omarchy-shell shell rescanPlugins` after every QML edit. On this machine that reloads the
+   registry but does **not** re-read the QML of an already-loaded symlinked plugin: after the
+   `QtQuick.Controls` fix, two `rescanPlugins` runs still produced the old error from the old
+   bytes, and only `omarchy restart shell` picked the edit up. fproton's smoke test records the
+   same observation. The gate therefore restarts the shell before its final run, and
+   `tests/plugin-smoke.sh` says so in a comment where the next agent will read it.
+
+---
+
+#### 4. Machine state this agent changed, and what it left behind
+
+| Change | State now | Why |
+|---|---|---|
+| `~/.config/omarchy/plugins/oliver.monero` → this checkout's `plugin/oliver.monero` | **left in place** | the gate requires it (§8), and the doctor's `plugin_linked` check expects it (§7.1) |
+| `oliver.monero` enabled and put on the bar in `~/.config/omarchy/shell.json` | **left in place** | the gate requires "enabled on this machine" |
+| `binary` setting pointed at a canned-Status test double | **reverted** | a gate harness, not a configuration (§2.4) |
+| `~/.local/bin/fmonero` symlinked to `target/release/fmonero` | **removed** | installing the binary is `scripts/install.sh`'s job (docs agent) and §4b reserves the one real install run for the Phase 4 verifier; leaving a symlink to a build tree would also make the widget follow whatever any agent last compiled |
+| clipboard | overwritten by the `c` key test, with the test double's example address | it was empty beforehand |
+
+Consequence to expect: until `scripts/install.sh` runs, the bar widget correctly reports
+`fmonero is not installed or not on PATH (~/.local/bin).` That is the §4b GREEN empty state, and it
+is what the final gate transcript in §2.2 shows.
+
+---
+
+#### 5. Deviations from DESIGN.md, and one defect outside this agent's files
+
+##### 5.1 `setup --plugin` does not rescan between the symlink and the enable — **a real defect**
+
+`fmonero setup --plugin --yes` ran on this machine at the gate and produced:
+
+```json
+{"actions":[
+ {"what":"CreateSymlink -> …/plugin/oliver.monero","status":"written"},
+ {"what":"RunArgv omarchy plugin enable oliver.monero: omarchy-plugin-enable: plugin 'oliver.monero'
+          is not known; run: omarchy-shell shell rescanPlugins","status":"skipped"},
+ {"what":"RunArgv omarchy bar put oliver.monero --before omarchy.tailscale: omarchy-bar:
+          oliver.monero is not a known widget; run 'omarchy plugin list'","status":"skipped"}],
+ "dry_run":false,"ok":true,"schema":1}
+```
+
+The symlink lands, but `omarchy plugin enable` and `omarchy bar put` both fail on a **first**
+install, because the running shell has not yet noticed the new directory. §4.2 lists the three
+steps without a rescan; §6.6's manual sequence has `omarchy-shell shell rescanPlugins` **between**
+the symlink and the enable, and that is the order that works. Run by hand in that order, all three
+steps succeeded:
+
+```
+$ omarchy-shell shell rescanPlugins && omarchy plugin list | grep monero
+oliver.monero                    disabled  third-party bar-widget         Monero
+$ omarchy plugin enable oliver.monero
+Enabled oliver.monero
+$ omarchy bar put oliver.monero --before omarchy.tailscale
+oliver.monero is on the bar
+```
+
+`setup --plugin` still exits **0** with `ok: true` while two of its three actions were skipped, so
+a scripted `setup --all` on a fresh machine reports success and leaves the widget installed but
+neither enabled nor on the bar — and the doctor's `plugin_enabled` check (§7.1) is what would
+eventually say so. `crates/fmonero/src/setup.rs` is Phase 1b's file and this agent does not own it
+(§2k), so the fix is reported rather than made: **`setup --plugin` should run
+`omarchy-shell shell rescanPlugins` after creating the symlink and before `omarchy plugin enable`**,
+and should treat a skipped enable as a partial result rather than a success.
+
+##### 5.2 `MiniBar` is a local component, not a `qs.Ui` type
+
+§6.5 asks for the node detail to draw "sync `MiniBar` with percent". `MiniBar` is an **ftui** widget
+name (§1.4, the TUI's progress bar); `qs.Ui` has no such component — its nearest relative is
+`PanelSlider`, which is an interactive control and a cursor target, which this row must not be. So
+`Panel.qml` defines a local `component MiniBar` — a track, a fill and the `42%  height / target`
+caption, 20 lines, not a cursor target. The design text stays literally true and no new file was
+added.
+
+##### 5.3 The percent number is drawn inside the ring, and only on a tall bar
+
+§6.4 asks for "a percent ring around the glyph at `syncPct`, plus the number when `barSize`
+allows". `BarIconButton` loads its `iconComponent` into a fixed optical canvas inside a fixed slot
+(`Style.bar.iconCanvas` inside `Style.bar.iconSlot`), so a number drawn *beside* the glyph would
+overflow the slot and collide with the neighbouring widget. `MoneroIcon` therefore takes a
+`percentText` property and draws the number **inside** the ring in place of the M, gated on
+`bar.barSize >= 30` — below that, two digits are not legible at this icon size and only the ring is
+drawn. Same information, inside the space the host actually gives a bar widget.
+
+##### 5.4 The Monero mark is constructed geometry, not traced artwork
+
+§6.1 asks for "the Monero ⓜ glyph as `QtQuick.Shapes` + `PathSvg`; no image asset".
+`MoneroIcon.qml` draws a ring (`PathAngleArc`) and the M as one stroked `PathSvg` polyline whose
+coordinates are defined in that file, rather than a path copied from the brand SVG. It renders the
+same silhouette at bar size, it takes the theme foreground like every other bar glyph, and it
+carries no third-party artwork or licence question. The sync ring is a second `PathAngleArc` at a
+larger radius, and `filled` (a wallet is open) fills the glyph ring at 30 % alpha rather than
+knocking the M out in a background colour, which would have to guess at what is behind a
+transparent bar.
+
+##### 5.5 `showBalance` also gates the panel's balance rows
+
+§6.4 gates the tooltip on `showBalance` and §6.5 gates the pending row on it; the panel's own
+`Balance` / `Unlocked` rows are not mentioned either way. They are gated too — they render `•••••`
+with the setting off — because the setting's whole purpose is keeping an amount off a screen other
+people can see, and a setting that hides the balance on the bar while showing it two rows down does
+not mean what its name says. The manifest label states it: *Show amounts on the bar and in the
+panel (on/off)*.
+
+##### 5.6 Nothing else
+
+Every other §6 requirement is implemented as written: the manifest keys and their in-code fallbacks
+(§6.2, asserted by the smoke test), `Service.qml`'s property model verbatim (§6.3), the 3 s / 8 s
+timers with the in-flight skip and the 8 s watchdog (§6.3, §2d), the `ok === true` gate on every
+rendered value, the argv table (§6.3), the six-row first-match-wins icon table (§6.4), the section
+order, the keyboard map and `PanelKeyCatcher` owning only dispatch (§6.5), and
+`Quickshell.execDetached(argv)` everywhere with constant literals for the three launcher scripts
+(§1.5). `bar.run()` appears nowhere.
+
+---
+
+<!-- folded from decisions/phase2-doctor.md -->
+
+### Phase 2 — doctor
+
+Agent: Phase 2 `doctor` (DESIGN.md §8's Phase 2 table, row **doctor**). Branch `phase2/doctor`,
+based on `gate-1b`, in its own worktree. Date **2026-09-17**.
+
+**Owns** `crates/fmonero/src/doctor/**`, `tests/fixtures/doctor/**` (handed over by Phase 0, and
+this agent may edit them — §8) and this file. Nothing else was touched: `main.rs` already
+dispatches `doctor::run(args, ctx)` and `DoctorArgs` kept every field it froze at the 1a gate
+(§2k, §5b).
+
+#### What was built
+
+Five files, ported from `fproton/crates/fproton/src/doctor/{mod,checks,probes,mutate,report}.rs`
+and adapted to §7.1's table, plus one test module:
+
+| File | Lines | What it is |
+|---|---|---|
+| `probes.rs` | 1 269 | the **only** place the doctor spawns a process, reads a file or issues an RPC |
+| `checks.rs` | 1 961 | **37** detectors, each a pure `fn(&Probes) -> Verdict`, in one static `CHECKS` table |
+| `mutate.rs` | 1 598 | the **one** `--fix` chokepoint: scopes, verbatim backup, sha256 pair, `actions.jsonl`, `undo` |
+| `report.rs` | 433 | `report.json` / `--json`, the human table, `doctor capabilities` |
+| `mod.rs` | 511 | groups, `--only` parsing, the run loop, exit codes, run artifacts |
+| `fixture_tests.rs` | 494 | the 22 `tests/fixtures/doctor/` cases, the class-A round trip, the read-only assertion |
+
+Architecture, unchanged from §7 and the doctor kernel's axioms 1–3 and 7: detect-then-fix,
+one mutation chokepoint, verbatim backup before the mutation, a recorded inverse, read-only by
+default. The doctor **never removes a file**, never stops a daemon it did not start, never
+touches a wallet file, never touches `pending.json`, and never runs sudo. `Action` has exactly
+four variants — `WriteFile`, `CreateDir`, `CreateSymlink`, `RunArgv` — and no `RemoveFile`.
+
+#### Gate results
+
+Every line of §8's doctor gate was run, on this machine, on 2026-09-17. The script is
+reproduced at the end of this file and its full transcript follows it. Summary:
+
+| Gate line | Result |
+|---|---|
+| `fmonero doctor --json \| jq` lists every §7.1 check with a real verdict and **exits 11** | **PASS** — 37 checks, exit 11 |
+| binaries at `fail:not_installed`, exactly those two | **PASS** — asserted in jq |
+| every `node`/`wallet`/`storage` check at `skip:*` | **PASS** — asserted in jq |
+| `install` and `security` with real verdicts | **PASS** — every row carries a non-empty detail |
+| `doctor --fix --dry-run` changes nothing (`git status` + a state-dir checksum) | **PASS** — both in a sandbox (5 planned) and against the real machine (4 planned); state dir, `$HOME` (mode+size+mtime of every file) and `git status` all byte-identical |
+| class-A round trip: corrupt → `--fix` → assert → `undo latest` → compare | **PASS** — `sha256sum -c` on the corrupt bytes after undo: OK |
+| …and an undo whose backup hash no longer matches | **PASS** — exit 13, `refused: true` |
+| `doctor capabilities --json` valid | **PASS** — 37 checks, 7 groups, 3 classes, no class-D row auto-fixable |
+| `doctor --only security` works | **PASS** — and every other group, and an unknown one exits 2 naming all seven |
+| the `Verdict` status round trip (`pass`/`warn`/`fail`/`skip`) against §7's literal strings | **PASS** — `doctor::checks::tests::the_verdict_status_round_trips_through_its_documented_spelling` |
+| fixture-driven tests for the parsing detectors | **PASS** — all 22 cases, all seven §7.1 detectors covered (asserted) |
+| `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` | **PASS** — 31 tests, 0 failures, no warnings |
+
+Nothing was skipped and nothing was waved through. The doctor needs no live daemon, so — unlike
+most of §4b — **this phase's gate has no RED line**: every node/wallet/storage row is exercised
+as a `skip:<reason>`, which is the verdict §7 and §4b both prescribe for this machine, and the
+detectors behind them are exercised by the fixtures instead. What a fixture cannot prove is
+named in "Not proved" below.
+
+#### Design deviations, each with its reason
+
+##### 1. A sixth §7.1 seam: `FMONERO_SYSTEMD_USER_DIR`, resolved inside `probes.rs`
+
+Phase 0 reported this gap and named two resolutions (`tests/fixtures/README.md`, "Design gaps
+reported"): six §7.1 checks — `units_present`, `unit_loopback`, `unit_no_password_in_argv`,
+`unit_no_node_wants`, `wallet_dir_matches_unit`, `wallet_port_consistent` — read
+`~/.config/systemd/user/fmonero-*.service`, §2i freezes only `FMONERO_PROC_ROOT` and
+`FMONERO_SYSTEMCTL_FIXTURE`, and `units::install` refuses to run at all under
+`FMONERO_STATE_DIR` (§4.2), so no test may write a real unit.
+
+**Taken: the second resolution.** `probes::systemd_user_dir(ctx)` honours
+`FMONERO_SYSTEMD_USER_DIR` when `FMONERO_STATE_DIR` is also set — the same guard §2i puts on its
+own two overrides — and falls back to `ctx.paths.systemd_user_dir`. The first resolution (a
+field on `Paths`) was the one Phase 0's `_env` keys assumed, but `crates/fmonero-core` is frozen
+and is not this phase's to edit (§2k); this one lives entirely in a file this phase owns and
+needs no signature change.
+
+**Consequence for DESIGN.md:** §2i's test-seam paragraph and `agent::capabilities_json`'s `env`
+list (§5b) should both name `FMONERO_SYSTEMD_USER_DIR`, `test_only: true`, beside
+`FMONERO_PROC_ROOT` and `FMONERO_SYSTEMCTL_FIXTURE`. `agent.rs` is Phase 1b's file and is not
+this phase's to edit (§2k), so the row is **reported, not added**.
+
+`scripts/check.sh --full` still passes today, and precisely because its grep checks only one
+direction — every *documented* variable is read. §5b asks for the **round trip** ("every
+documented env var is read somewhere under `crates/` **and** every variable read is
+documented"), and Phase 3's ergonomics pass is where that second half lands. It will find this
+one. Nothing else reads an undocumented variable.
+
+##### 2. The doctor refuses every fixer that reaches outside `FMONERO_STATE_DIR`
+
+**This is the one change in this phase that prevented real damage, and it was found by running
+the gate rather than by reading.** The first `--fix` run of gate 3, in a `mktemp -d` sandbox,
+wrote `~/.config/systemd/user/fmonero-monerod.service` and `fmonero-wallet-rpc.service` into
+the **owner's real home** and would have run `fmonero setup --menu --yes` against the owner's
+real menu file. (Both units were removed and `systemctl --user daemon-reload` run; the menu file
+was never modified — its content and its pre-existing `.bak` are unchanged, and the gate now
+checks the mode, size and mtime of every file under the five relevant `$HOME` trees before and
+after.)
+
+The cause: §4.2 makes `units::install` refuse to run when `FMONERO_STATE_DIR` is set, and a
+doctor that renders and writes the two unit files *itself* walks straight around that guard.
+DESIGN.md states the rule for `units::install` and not for the doctor.
+
+So `mutate::write_scopes` is now test-aware: under a test state directory the scopes are exactly
+the three redirected locations (`FMONERO_STATE_DIR`, `FMONERO_CONFIG_DIR`, `FMONERO_CACHE_DIR`),
+and `RunArgv` is allowed only for `chmod` with in-scope path arguments — `systemctl --user
+disable`, `omarchy plugin enable` and `fmonero setup --menu` reach outside by construction and a
+path check cannot see it, because the path is not in the argv. `mutate::refused_here` asks the
+question **before** the first mutation so a sandboxed `--fix` reports
+`skipped: FMONERO_STATE_DIR is set, so the doctor will not …` rather than a failed fixer, which
+would otherwise make every run under a test state dir exit 12 and bury the class-A round trip
+the gate measures. A `--dry-run` is exempt: it mutates nothing and disclosing the blast radius is
+its whole purpose. `under_a_test_state_dir_no_fixer_may_reach_outside_it` asserts both halves —
+the pre-check and the chokepoint itself, which still refuses with exit 13.
+
+**Consequence for DESIGN.md:** §7 should say it, in the same sentence that says the doctor never
+runs sudo.
+
+##### 3. Redaction keeps the key and redacts the value — because a check has to name the flag
+
+§2b.8 says `probes.rs` rewrites a captured line matching a credential key to
+`<key>=<redacted>` before the bytes reach `runs/<id>/probes/`. Implemented literally as "replace
+the line with `<key>=<redacted>`", it deleted the very flag `unit_no_password_in_argv` exists to
+report: the `unit_no_password_in_argv__rpc_login` and `__password_file` fixtures both went from
+`fail` to **`pass`**, on a unit carrying `--rpc-login`. §2b.8's own form is the resolution — the
+**key survives** and the value does not — so `redact` now keeps every token and replaces only
+the secret, in both the `key=value` and the `--flag value` shapes, and returns a line with no
+credential key byte for byte.
+
+Two consequences, both handled:
+
+* `units_present` compares **byte for byte** against `units::render_*`, and comparing a redacted
+  copy would report drift on a correct machine the day a unit ever carried such a flag. So
+  `probes.rs` makes that comparison on the **unredacted bytes at capture time**
+  (`node_unit_matches` / `wallet_unit_matches`) and the detector reads those booleans.
+* Gate 8 proves the redactor fires end to end: a unit carrying `--rpc-login fmonero:SECRETVALUE`
+  makes `unit_no_password_in_argv` report `fail:credential_in_argv` naming `--rpc-login`, while
+  `SECRETVALUE` appears **0 times** in `report.json`, `actions.jsonl`, `facts.json` and every
+  probe artifact, which instead hold `--rpc-login <redacted>`.
+
+The **contents** of `monerod.conf` and of the wallet login file are still never carried at all
+(§2b.8): only their modes, and the two booleans `prune_configured` and `wallet_daemon_auth` need.
+
+##### 4. `settings_valid` parses leniently, and the CLI cannot reach its unparsable case
+
+§7.1's condition has two halves — "`config.toml` parses **and** every key is in the §4 table" —
+and `Settings` derives `deny_unknown_fields`, so a strict deserialize of a document with one
+stray key answers "does not parse" and hides the real defects behind it. `probes::inspect_settings`
+therefore parses to a `toml::Value`, reports unknown keys by name, and validates each known key's
+**value** through `Settings::set`. That is what makes the `settings_valid` fixture report all
+four of its defects (`node.network`, `wallet.priority`, `timeouts.node_sec`, `wallet.acount`) and
+what lets the class-A fixer keep every key that was fine, as `settings_valid__unparsable`'s own
+note requires.
+
+**A gap this phase cannot close.** `main.rs` calls `Context::load()?` before dispatch and
+`Settings::load` returns `Error::Usage` on an unparsable `config.toml`, so **`fmonero doctor`
+exits 2 on the machine whose `config.toml` is broken** — the one command whose job is to repair
+it is the one the breakage locks out, which is exactly what
+`tests/fixtures/doctor/settings_valid__unparsable/input/config.toml` warns about in its own
+header. The detector and the fixer are correct and are proved by the fixture (which drives
+`Probes::capture_install` directly); the CLI path is not reachable. Neither `settings.rs` nor
+`main.rs` is this phase's file (§2k). **Reported, not worked around.** The fix belongs in one of
+them: `Settings::load` degrading to the defaults and recording the parse error, or `main.rs`
+special-casing `doctor` — the first is better, because `settings list` has the same problem.
+
+##### 5. `fixable` means "this finding can be repaired", and `settings_valid__ok` was changed
+
+§7's check object has two notions of fixable and they are not the same. The per-run `fixable`
+key means *this finding can be repaired* — it is what `summary.fixable` counts and what makes the
+`fmonero doctor --fix --dry-run` next-step appear — and a check that **passes** has nothing to
+repair. The table column ("this check has a class-A fixer") is `auto_fixable` in
+`doctor capabilities --json`, where `settings_valid` is fixable in every state.
+`tests/fixtures/doctor/settings_valid__ok/expect.json` pinned `fixable: true` on a passing
+check; it is now `false`, with the reason written into its `_provenance`. Leaving it would have
+made a clean machine advertise a repair for a file that is already correct.
+
+##### 6. Four `_provenance`-documented fixture edits (§8 hands this directory to this phase)
+
+* **`_probe.monerod_installed: true` on all seven `node`-group cases.** Every `node` check
+  reports `skip:monerod_not_installed` when `/usr/bin/monerod` is absent — §4b's GREEN row for
+  this machine and §7.1's "every check whose precondition is missing reports `skip:<reason>`".
+  No file under `input/` can carry that fact, so the case states it and the harness applies it
+  before capturing. Without it the seven cases test the precondition, not the parser.
+* **`_probe.wallet_height` and `_probe.wallet_primary_address` on the three
+  `history_cache_fresh` cases**, both read from `tests/fixtures/wallet/{get_height,get_address}.json`
+  — the same two files those cases' own notes already compute against. §7.1's condition is "the
+  high-water height is within 1 000 of **the wallet's**" and the fingerprint is
+  `sha256(primary_address)[..16]`; neither half is decidable from `input/history.bin` alone, and
+  with no wallet the check honestly answers `skip:no_wallet_height`.
+* **`input/history.bin` grew one byte, 30 → 31: a trailing `0x00`.** §5b's snapshot is *one*
+  postcard struct — the header fields followed by `accounts: BTreeMap<u32, Vec<Transfer>>` — and
+  postcard encodes a map as a length varint then its entries, so a 30-byte file ends before that
+  length and `history::header` (which decodes the whole struct and reports `magic_ok: false` on
+  any failure) could not read the header at all: all three cases came out `warn:bad_magic`.
+  `0x00` is the empty map, which keeps the file header-only in substance — no `Transfer` bytes,
+  whose layout is Phase 1a's — while making it the decodable snapshot the check reads.
+* **`settings_valid__ok`'s `fixable`**, above.
+
+Two further notes on the harness, both recorded in `fixture_tests.rs`'s own header:
+
+* **No case sets an environment variable.** The process environment is global and `cargo test`
+  runs these in parallel threads, so each `_env` key is applied to the `Context` field it
+  resolves to (`paths.proc_root`, `systemctl = Systemctl::Fixture(..)`, `paths.cache_dir`,
+  `paths.config_dir`, `paths.systemd_user_dir`). Same seams, reached by the field.
+* **`node_data_dir_single_writer__via_config_file`** uses Phase 0's recommendation (a): the copied
+  `/proc/<pid>/cmdline` has `/etc/monerod.conf` rewritten to the copied `input/monerod.conf`,
+  because no agent on this machine can create `/etc` (§1.1). No product code, one NUL-joined argv.
+  The case is therefore **run, not skipped**, and it is the one that catches a detector reading
+  argv alone.
+
+##### 7. Readings of §7.1 this phase settled, and would settle the same way again
+
+* **`node_layout` `system_unit` is `pass`, not `warn`.** §0 says Arch's node is "detected, used
+  read-only, never fought" — a healthy layout, not a defect; the detail says so and names
+  `sudo systemctl status monerod`. `remote` is `warn` (Phase 0's reading, kept): §2c makes a
+  non-loopback `node.url` an error for *every* client, so a `config.toml` holding one is a
+  machine on which nothing that touches the node can work.
+* **`pending_send` is class D in every state**, a fully-relayed record included: a fully-relayed
+  record is `warn` (the next `send` resolves it by itself, §2a.4) and an unrelayed one is
+  `fail`, and neither is ever fixable. Of all the doctor's checks it is the only one whose fixer
+  could lose money. Asserted by `a_pending_record_is_reported_and_never_fixed`.
+* **`node_data_dir_single_writer` treats our own unit's `MainPID` as `pass`**, any other holder
+  as `fail` naming the pid — §2i's distinction, applied to a report-only check.
+* **`node_auth` skips rather than warning under the `system_unit` layout**: Arch's unit has no
+  `rpc-login` and it is not ours to change (§2c).
+* **`ports_owned` derives its port set from `node.network`** (p2p + `node.url`'s port +
+  `wallet.port`, deduplicated) rather than hard-coding §7.1's literal `18080 / 18081`. For
+  mainnet those are the same three numbers; for the stagenet rehearsal of §4b they are the right
+  ones, which a literal pair would not be.
+* **`state_perms` excludes the run directory's two daemon-owned names by name** and checks them
+  for owner-only instead, exactly as §7.1 requires, and reports them class D with
+  `systemctl --user restart` rather than chmod'ing a file the daemon recreates.
+* **`history_cache_fresh` with no snapshot is `pass`, not `skip`.** An absent cache is not a
+  missing precondition — there is no stale cache to report — and §4b asks the `install` group
+  for real verdicts.
+* **`doctor undo`'s `WriteFile` inverse quarantines rather than unlinks** when the run created
+  the file, which is the question `units_present__absent`'s note asks the Phase 2 agent to
+  decide: §7's "never removes a file" is unnarrowed, and a rename is not a removal. The file is
+  moved to `runs/<id>/quarantine/<path>`. `CreateDir`'s inverse is the one removal §7 sanctions
+  — `rmdir`, and only while the directory is still empty, asserted both ways.
+
+#### Not proved by this gate
+
+* **Every `node`, `wallet` and `storage` check against a live daemon** is RED (§4b) and stays
+  RED. The gate proves the verdict for a machine with no Monero, and the fixtures prove the
+  parsers; neither proves what a real `monerod` answers.
+* **`node_data_dir_single_writer`'s `fcntl(F_GETLK)` half** cannot be fixtured — a held POSIX
+  record lock is live kernel state. §2i names its own forked-child test for it, which belongs to
+  `crates/fmonero-core` (Phase 1b), not here. The fixture covers the `/proc` half only, and
+  `tests/fixtures/doctor/node_data_dir_single_writer/expect.json` says so at length.
+* **A passing `units_present` fixture cannot exist** (its own note explains why: the rendered
+  bytes embed `$HOME`, `wallet.port` and the network). The passing case is the render → write →
+  re-read round trip, and under a test state dir this phase's own guard (deviation 2) now
+  forbids writing a real unit — so the passing case is proved by
+  `the_journal_entry_is_written_before_the_mutation_and_the_round_trip_is_byte_exact` over an
+  in-scope file, and the class-B unit fixer's *application* is a **real-machine** operation
+  belonging to Phase 4's verifier.
+* **`plugin_linked` resolves to the main checkout, never to this worktree** — the blind spot
+  §7.1 names. On this machine it happens to `pass`, because the owner's link already points at
+  `~/Projects/odcpw/fmonero/plugin/oliver.monero`.
+* **`shellcheck` is not installed** (§4b's tooling note): the gate script was checked with
+  `bash -n` instead. It is a scratch harness, not a shipped file — `tests/e2e.sh` is Phase 1b's
+  and Phase 3 owns folding these lines into it.
+* **`tests/e2e.sh` still records the three doctor rows as skipped** ("Phase 2 owns
+  crates/fmonero/src/doctor") — that file is Phase 1b's and not this phase's to edit (§2k). Its
+  §5c key sets are asserted here instead, in gate 3b, and Phase 3 should replace that skip with
+  these assertions.
+
+#### Verified: `bash -n` on the gate script
+
+```
+$ bash -n decisions/phase2-doctor-gate.sh && echo "bash -n: clean"
+bash -n: clean
+```
+
+`shellcheck` is absent from this machine, so it was **not** run and is not claimed (§2j).
+
+---
+
+#### The gate script
+
+Reproduced in full at `decisions/phase2-doctor-gate.sh`, so the transcript below can be
+regenerated.
+
+#### The gate transcript, 2026-09-17
+
+One line was removed from the capture: the single 16 KB raw-JSON line that `doctor --json`'s own
+payload occupies in gate 1 (the same document is summarised above it, and `report.json` holds it
+verbatim). Nothing else was edited.
+
+```text
+
+===== GATE 1: fmonero doctor --json | jq — every §7.1 check with a real verdict, exit 11
+exit: 11
+jq: valid JSON
+GROUP        CHECK                          VERDICT
+binaries     monerod_installed              fail:not_installed
+binaries     wallet_rpc_installed           fail:not_installed
+binaries     version_supported              skip:monerod_not_installed
+node         node_layout                    skip:monerod_not_installed
+node         node_reachable                 skip:monerod_not_installed
+node         node_unrestricted              skip:monerod_not_installed
+node         node_synced                    skip:monerod_not_installed
+node         node_peers                     skip:monerod_not_installed
+node         node_clock                     skip:monerod_not_installed
+node         node_data_dir_single_writer    skip:monerod_not_installed
+wallet       wallet_rpc_reachable           skip:wallet_rpc_not_installed
+wallet       wallet_rpc_auth                skip:wallet_rpc_not_installed
+wallet       wallet_daemon_link             skip:wallet_rpc_not_installed
+wallet       wallet_daemon_auth             skip:wallet_rpc_not_installed
+wallet       wallet_nettype_matches         skip:wallet_rpc_not_installed
+wallet       wallet_dir_exists              skip:wallet_rpc_not_installed
+wallet       pending_send                   skip:wallet_rpc_not_installed
+units        units_present                  warn:unit_drift
+units        unit_loopback                  skip:unit_missing
+units        unit_no_password_in_argv       skip:unit_missing
+units        unit_no_node_wants             skip:unit_missing
+units        unit_enabled_state             skip:unit_missing
+units        wallet_dir_matches_unit        skip:unit_missing
+units        wallet_port_consistent         skip:unit_missing
+storage      disk_space                     skip:monerod_not_installed
+storage      prune_configured               skip:monerod_not_installed
+install      binary_on_path                 warn:not_installed
+install      state_valid                    pass
+install      settings_valid                 pass
+install      history_cache_fresh            pass
+install      plugin_linked                  pass
+install      plugin_enabled                 pass
+install      menu_entries                   warn:missing_ids
+security     monerod_conf_mode              skip:no_conf
+security     node_auth                      skip:monerod_not_installed
+security     state_perms                    pass
+security     ports_owned                    pass
+-- summary
+{"total":37,"pass":7,"warn":3,"fail":2,"skip":25,"fixable":2,"fixed":0,"fix_failed":0,"planned":0,"generated_at":"2026-09-17T02:46:48+02:00","fix":false,"dry_run":false,"only":null,"run_dir":null,"failing":["monerod_installed","wallet_rpc_installed"],"exit_code":11,"next":["fmonero doctor --fix --dry-run","fmonero doctor --json | jq '.checks[] | select(.status != \"pass\")'"]}
+-- the four §4b assertions
+binaries fail:not_installed is exactly {monerod_installed, wallet_rpc_installed}: true
+every node/wallet/storage check is skip:*: true
+every install/security check carries a real detail: true
+checks reported: 37
+-- install and security rows in full
+  binary_on_path [warn:not_installed] /home/oliver/.local/bin/fmonero does not exist. The Omarchy shell's PATH includes ~/.local/bin but NOT ~/.cargo/bin (§1.5), so the bar widget cannot find a cargo-installed binary
+  state_valid [pass] state.json does not exist yet, which is a valid empty state
+  settings_valid [pass] config.toml does not exist yet; every key is at its default
+  history_cache_fresh [pass] no history snapshot yet; `wallet history` builds one
+  plugin_linked [pass] /home/oliver/.config/omarchy/plugins/oliver.monero → /home/oliver/Projects/odcpw/fmonero/plugin/oliver.monero
+  plugin_enabled [pass] oliver.monero is listed by `omarchy plugin list`
+  menu_entries [warn:missing_ids] missing from the Omarchy menu: monero, monero.open, monero.send, monero.node, monero.doctor
+  monerod_conf_mode [skip:no_conf] /tmp/tmp.Yg5AUb5VIW/g1/config/monerod.conf does not exist yet
+  node_auth [skip:monerod_not_installed] monerod is not installed, so there is nothing to ask
+  state_perms [pass] 3 files and directories under the state, config and cache directories are owner-only
+  ports_owned [pass] nothing listens on 18080 / 18081 / 18083
+-- the human table, on a real pty (a non-TTY stdout implies --json, §4), NO_COLOR for the log
+[binaries]
+  fail:not_installed             monerod_installed             monerod is not on PATH
+                                                               fix: omarchy pkg add monero
+  fail:not_installed             wallet_rpc_installed          monero-wallet-rpc is not on PATH
+                                                               fix: omarchy pkg add monero
+  skip:monerod_not_installed     version_supported             monerod is not installed, so there is nothing to ask
+[node]
+  skip:monerod_not_installed     node_layout                   monerod is not installed, so there is nothing to ask
+  skip:monerod_not_installed     node_reachable                monerod is not installed, so there is nothing to ask
+  skip:monerod_not_installed     node_unrestricted             monerod is not installed, so there is nothing to ask
+  skip:monerod_not_installed     node_synced                   monerod is not installed, so there is nothing to ask
+  skip:monerod_not_installed     node_peers                    monerod is not installed, so there is nothing to ask
+  skip:monerod_not_installed     node_clock                    monerod is not installed, so there is nothing to ask
+  skip:monerod_not_installed     node_data_dir_single_writer   monerod is not installed, so there is nothing to ask
+[wallet]
+  skip:wallet_rpc_not_installed  wallet_rpc_reachable          monero-wallet-rpc is not installed, so there is nothing to ask
+  skip:wallet_rpc_not_installed  wallet_rpc_auth               monero-wallet-rpc is not installed, so there is nothing to ask
+  skip:wallet_rpc_not_installed  wallet_daemon_link            monero-wallet-rpc is not installed, so there is nothing to ask
+  skip:wallet_rpc_not_installed  wallet_daemon_auth            monero-wallet-rpc is not installed, so there is nothing to ask
+  skip:wallet_rpc_not_installed  wallet_nettype_matches        monero-wallet-rpc is not installed, so there is nothing to ask
+  skip:wallet_rpc_not_installed  wallet_dir_exists             monero-wallet-rpc is not installed, so there is nothing to ask
+  skip:wallet_rpc_not_installed  pending_send                  monero-wallet-rpc is not installed, so there is nothing to ask
+[units]
+  warn:unit_drift                units_present                 fmonero-monerod.service is absent: run `fmonero setup --units`; fmonero-wallet-rpc.service is absent: run `fmonero setup --units`
+                                                               fix: fmonero doctor --fix
+  skip:unit_missing              unit_loopback                 fmonero-monerod.service is not written yet
+  skip:unit_missing              unit_no_password_in_argv      fmonero-monerod.service is not written yet
+  skip:unit_missing              unit_no_node_wants            fmonero-monerod.service is not written yet
+  skip:unit_missing              unit_enabled_state            fmonero-monerod.service is not written yet
+  skip:unit_missing              wallet_dir_matches_unit       fmonero-monerod.service is not written yet
+  skip:unit_missing              wallet_port_consistent        fmonero-monerod.service is not written yet
+[storage]
+  skip:monerod_not_installed     disk_space                    monerod is not installed, so there is nothing to ask
+  skip:monerod_not_installed     prune_configured              monerod is not installed, so there is nothing to ask
+[install]
+  warn:not_installed             binary_on_path                /home/oliver/.local/bin/fmonero does not exist. The Omarchy shell's PATH includes ~/.local/bin but NOT ~/.cargo/bin (§1.5), so the bar widget cannot find a cargo-installed binary
+                                                               fix: scripts/install.sh --yes
+  pass                           state_valid                   state.json does not exist yet, which is a valid empty state
+  pass                           settings_valid                config.toml does not exist yet; every key is at its default
+  pass                           history_cache_fresh           no history snapshot yet; `wallet history` builds one
+  pass                           plugin_linked                 /home/oliver/.config/omarchy/plugins/oliver.monero → /home/oliver/Projects/odcpw/fmonero/plugin/oliver.monero
+  pass                           plugin_enabled                oliver.monero is listed by `omarchy plugin list`
+  warn:missing_ids               menu_entries                  missing from the Omarchy menu: monero, monero.open, monero.send, monero.node, monero.doctor
+                                                               fix: fmonero doctor --fix
+[security]
+  skip:no_conf                   monerod_conf_mode             /tmp/tmp.Yg5AUb5VIW/g1/config/monerod.conf does not exist yet
+  skip:monerod_not_installed     node_auth                     monerod is not installed, so there is nothing to ask
+  pass                           state_perms                   3 files and directories under the state, config and cache directories are owner-only
+  pass                           ports_owned                   nothing listens on 18080 / 18081 / 18083
+
+37 checks: 7 pass, 3 warn, 2 fail, 25 skip
+
+  next: fmonero doctor --fix --dry-run
+  next: fmonero doctor --json | jq '.checks[] | select(.status != "pass")'
+(pty exit: 11 — script reports its child's status)
+
+===== GATE 2: doctor --fix --dry-run changes nothing (git status + a state-dir checksum)
+exit: 11
+-- planned mutations, with the paths each would write to
+  [B] units_present: write /home/oliver/.config/systemd/user/fmonero-monerod.service (403 bytes, mode 0644)   -> /home/oliver/.config/systemd/user/fmonero-monerod.service
+  [B] units_present: write /home/oliver/.config/systemd/user/fmonero-wallet-rpc.service (582 bytes, mode 0644)   -> /home/oliver/.config/systemd/user/fmonero-wallet-rpc.service
+  [B] units_present: run systemctl --user daemon-reload   (undo: systemctl --user daemon-reload)   -> 
+  [A] state_valid: write /tmp/tmp.Yg5AUb5VIW/g2/state/state.json (125 bytes, mode 0600)   -> /tmp/tmp.Yg5AUb5VIW/g2/state/state.json
+  [B] menu_entries: run /home/oliver/.local/bin/fmonero setup --menu --yes   -> 
+dry_run: true · planned: 5 · run_dir: null
+state dir before: afa2735aee6e1fd56e2c09961c6834ce4b4f70a8b16e9686a8707225e5a120ec  -
+state dir after:  afa2735aee6e1fd56e2c09961c6834ce4b4f70a8b16e9686a8707225e5a120ec  -
+STATE DIR UNCHANGED
+$HOME targets before: 7f76e67f4b2c1d5a75b0ae2b9a14a5815c72ac05f2b57ca802a2f8d95a0b0c50  -
+$HOME targets after:  7f76e67f4b2c1d5a75b0ae2b9a14a5815c72ac05f2b57ca802a2f8d95a0b0c50  -
+HOME TARGETS UNCHANGED
+git status UNCHANGED
+git status --porcelain:
+   M crates/fmonero/src/doctor/checks.rs
+   M crates/fmonero/src/doctor/mod.rs
+   M crates/fmonero/src/doctor/mutate.rs
+   M crates/fmonero/src/doctor/probes.rs
+   M crates/fmonero/src/doctor/report.rs
+
+-- and the same dry run with NO test state dir: the real machine, the real blast radius
+exit: 11
+  [B] units_present: write /home/oliver/.config/systemd/user/fmonero-monerod.service (403 bytes, mode 0644)   -> /home/oliver/.config/systemd/user/fmonero-monerod.service
+  [B] units_present: write /home/oliver/.config/systemd/user/fmonero-wallet-rpc.service (582 bytes, mode 0644)   -> /home/oliver/.config/systemd/user/fmonero-wallet-rpc.service
+  [B] units_present: run systemctl --user daemon-reload   (undo: systemctl --user daemon-reload)   -> 
+  [B] menu_entries: run /home/oliver/.local/bin/fmonero setup --menu --yes   -> 
+dry_run: true · planned: 4 · run_dir: null
+$HOME before: 063a40cc926b97045ce2159d61adaef8d401f02c905a895a585c211d3c8b8843  -
+$HOME after:  063a40cc926b97045ce2159d61adaef8d401f02c905a895a585c211d3c8b8843  -
+REAL $HOME UNCHANGED (mode, size and mtime of every file)
+git status UNCHANGED
+
+-- a real --fix under FMONERO_STATE_DIR declines every fixer that reaches outside it
+exit: 11
+  units_present: skipped: FMONERO_STATE_DIR is set, so the doctor will not touch /home/oliver/.config/systemd/user/fmonero-monerod.service — the same guard §4.2 puts on units::install
+  state_valid: fixed
+  menu_entries: skipped: FMONERO_STATE_DIR is set, so the doctor will not run `/home/oliver/.local/bin/fmonero setup --menu --yes` — the same guard §4.2 puts on units::install
+  $HOME still untouched: yes
+
+===== GATE 3: class-A round trip — corrupt → --fix → assert → undo latest → compare
+-- corrupt: both class-A detectors see it
+  state_valid [warn:unparsable] /tmp/tmp.Yg5AUb5VIW/g3/state/state.json does not parse: key must be a string at line 1 column 3
+  settings_valid [warn:invalid_keys] wallet.priority: '9' is not a number in 0..=4 for wallet.priority
+-- --fix
+exit: 11
+  state_valid [pass] --fix: fixed
+  settings_valid [pass] --fix: fixed
+run_id: dbe41dc9 · fixed: 2 · fix_failed: 0
+-- assert: both files are now valid, and the repaired settings kept nothing bad
+  state_valid [pass]
+  settings_valid [pass]
+  wallet.priority is now: 2
+-- the journal
+{"seq":1,"check":"state_valid","ok":false,"phase":"intent","kind":"write_file","inverse":"restore_file"}
+{"seq":1,"check":"state_valid","ok":true,"phase":"done","kind":"write_file","inverse":"restore_file"}
+{"seq":2,"check":"settings_valid","ok":false,"phase":"intent","kind":"write_file","inverse":"restore_file"}
+{"seq":2,"check":"settings_valid","ok":true,"phase":"done","kind":"write_file","inverse":"restore_file"}
+-- modes of everything the run wrote (§2b.7: files 0600, directories 0700)
+-rw------- runs/20260917T004648Z__dbe41dc9/actions.jsonl
+-rw------- runs/20260917T004648Z__dbe41dc9/backups/tmp/tmp.Yg5AUb5VIW/g3/config/config.toml
+-rw------- runs/20260917T004648Z__dbe41dc9/backups/tmp/tmp.Yg5AUb5VIW/g3/state/state.json
+-rw------- runs/20260917T004648Z__dbe41dc9/probes/facts.json
+-rw------- runs/20260917T004648Z__dbe41dc9/probes/monero-wallet-rpc-version.txt
+-rw------- runs/20260917T004648Z__dbe41dc9/probes/monerod-version.txt
+-rw------- runs/20260917T004648Z__dbe41dc9/probes/omarchy-plugin-list.txt
+-rw------- runs/20260917T004648Z__dbe41dc9/report.json
+drwx------ 
+drwx------ runs
+drwx------ runs/20260917T004648Z__dbe41dc9
+drwx------ runs/20260917T004648Z__dbe41dc9/backups
+drwx------ runs/20260917T004648Z__dbe41dc9/backups/tmp
+drwx------ runs/20260917T004648Z__dbe41dc9/backups/tmp/tmp.Yg5AUb5VIW
+drwx------ runs/20260917T004648Z__dbe41dc9/backups/tmp/tmp.Yg5AUb5VIW/g3
+drwx------ runs/20260917T004648Z__dbe41dc9/backups/tmp/tmp.Yg5AUb5VIW/g3/config
+drwx------ runs/20260917T004648Z__dbe41dc9/backups/tmp/tmp.Yg5AUb5VIW/g3/state
+drwx------ runs/20260917T004648Z__dbe41dc9/probes
+drwx------ runs/20260917T004648Z__dbe41dc9/quarantine
+lrwxrwxrwx latest
+-- undo latest
+exit: 0
+{"ok":true,"reason":null,"refused":false,"run_id":"dbe41dc9","schema":1,"undone":[{"action":"restore_file","ok":true,"path":"/tmp/tmp.Yg5AUb5VIW/g3/config/config.toml","seq":2},{"action":"restore_file","ok":true,"path":"/tmp/tmp.Yg5AUb5VIW/g3/state/state.json","seq":1}]}
+-- compare: byte for byte the corrupt files again
+/tmp/tmp.Yg5AUb5VIW/g3/state/state.json: OK
+/tmp/tmp.Yg5AUb5VIW/g3/config/config.toml: OK
+ROUND TRIP EXACT
+-- undo against a run whose backup hash no longer matches: exit 13
+exit: 13
+{"ok":false,"refused":true,"reason":"the backup of /tmp/tmp.Yg5AUb5VIW/g3/config/config.toml has changed since the run (sha256 92e78d0b032962f47792a9fa95fd981ef63e1e3ef074d536d6304c75eddbe29f != 89dcfe850265c5c03a4dd1659cbcdd3062cb4a3c4b0fe47202ec20347d0418b7); nothing was restored"}
+
+===== GATE 3b: the §5c key sets of the three doctor payloads, asserted exactly
+doctor:              checks,ok,run_id,schema,summary
+doctor undo:         ok,reason,refused,run_id,schema,undone
+doctor undo refused: ok,reason,refused,run_id,schema,undone
+doctor keys are exactly §7's object plus the envelope: ok
+doctor undo keys are exactly §5c's row plus the envelope: ok
+undone[] is exactly {seq, action, path, ok}: ok
+checks[] carries §7's row keys (plus reason/verdict/fix_outcome/fix_error/actions): ok
+
+===== GATE 4: doctor capabilities --json is valid
+exit: 0
+jq: valid JSON
+top-level keys: checks, classes, groups, ok, schema
+checks: 37 · groups: 7 · classes: 3
+  binaries: 3 checks, needs nothing
+  node: 7 checks, needs monerod
+  wallet: 7 checks, needs monero-wallet-rpc
+  units: 7 checks, needs nothing
+  storage: 2 checks, needs monerod
+  install: 7 checks, needs nothing
+  security: 4 checks, needs nothing
+  class A: fmonero-owned state; reverts by file backup — 3 member(s)
+  class B: fmonero-created integration; reverts by a recorded inverse — 11 member(s)
+  class D: never auto-fixed; the detail names the command for a human — 23 member(s)
+-- every auto_fixable check and the Action it emits
+  wallet_dir_exists (class B) -> create_wallet_dir
+  units_present (class B) -> write_both_units
+  unit_loopback (class B) -> write_both_units
+  unit_no_node_wants (class B) -> write_both_units
+  unit_enabled_state (class B) -> disable_units
+  wallet_dir_matches_unit (class B) -> write_wallet_unit
+  wallet_port_consistent (class B) -> normalise_wallet_port
+  state_valid (class A) -> reset_state_json
+  settings_valid (class A) -> repair_settings
+  plugin_linked (class B) -> link_plugin
+  plugin_enabled (class B) -> enable_plugin
+  menu_entries (class B) -> merge_menu
+  monerod_conf_mode (class B) -> chmod_monerod_conf
+  state_perms (class A) -> fix_state_perms
+-- no class D row is auto_fixable:
+true
+
+===== GATE 5: doctor --only security works (and every other group, and a bad one exits 2)
+  --only binaries  exit 11  3 checks (0p 0w 2f 1s), only=binaries
+  --only node      exit 0   7 checks (0p 0w 0f 7s), only=node
+  --only wallet    exit 0   7 checks (0p 0w 0f 7s), only=wallet
+  --only units     exit 0   7 checks (0p 1w 0f 6s), only=units
+  --only storage   exit 0   2 checks (0p 0w 0f 2s), only=storage
+  --only install   exit 0   7 checks (5p 2w 0f 0s), only=install
+  --only security  exit 0   4 checks (2p 0w 0f 2s), only=security
+-- --only security in full
+  monerod_conf_mode [skip:no_conf] /tmp/tmp.Yg5AUb5VIW/g5/config/monerod.conf does not exist yet
+  node_auth [skip:monerod_not_installed] monerod is not installed, so there is nothing to ask
+  state_perms [pass] 3 files and directories under the state, config and cache directories are owner-only
+  ports_owned [pass] nothing listens on 18080 / 18081 / 18083
+-- an unknown group names every legal one and exits 2
+{"code":2,"code_name":"usage","error":"'keyring' is not a check group; known: binaries, node, wallet, units, storage, install, security","hint":"fmonero doctor capabilities --json","ok":false,"reason":"bad_args","schema":1}
+exit: 2
+
+===== GATE 6: fixture-driven tests for the parsing detectors, and the Verdict round trip
+running 31 tests
+test doctor::checks::tests::every_check_id_is_unique_and_every_group_has_members ... ok
+test doctor::checks::tests::the_verdict_status_round_trips_through_its_documented_spelling ... ok
+test doctor::mutate::tests::a_dry_run_records_a_plan_and_touches_nothing ... ok
+test doctor::mutate::tests::a_created_directory_is_rmdired_only_while_empty ... ok
+test doctor::mutate::tests::a_file_the_run_created_is_quarantined_on_undo_and_never_unlinked ... ok
+test doctor::mutate::tests::a_missing_or_altered_backup_refuses_with_thirteen ... ok
+test doctor::mutate::tests::a_write_outside_the_scopes_is_refused_and_a_parent_dir_component_cannot_escape ... ok
+test doctor::mutate::tests::under_a_test_state_dir_no_fixer_may_reach_outside_it ... ok
+test doctor::mutate::tests::the_journal_entry_is_written_before_the_mutation_and_the_round_trip_is_byte_exact ... ok
+test doctor::probes::tests::a_proc_net_tcp_address_is_decoded_in_inet_addr_order ... ok
+test doctor::probes::tests::a_url_port_is_read_from_the_authority_only ... ok
+test doctor::probes::tests::the_exec_start_argv_joins_systemds_line_continuations ... ok
+test doctor::probes::tests::the_redactor_fires_on_every_documented_key_and_keeps_the_rest ... ok
+test doctor::mutate::tests::undo_refuses_a_target_outside_the_write_scopes ... ok
+test doctor::report::tests::exit_codes_follow_the_section_seven_rule ... ok
+test doctor::tests::every_group_has_a_name_and_parses_back ... ok
+test doctor::tests::the_repo_plugin_dir_points_at_this_checkout_when_there_is_one ... ok
+test prompt::tests::a_password_file_must_have_no_group_or_other_bit ... ok
+test prompt::tests::one_trailing_newline_is_stripped_and_nothing_else_is ... ok
+test prompt::tests::the_file_wins_over_the_environment_and_confirm_does_not_prompt ... ok
+test doctor::report::tests::the_capability_document_names_every_check_and_no_class_d_is_fixable ... ok
+test setup::tests::a_merge_into_an_empty_document_still_parses ... ok
+test setup::tests::comments_are_stripped_only_outside_strings ... ok
+test setup::tests::the_five_menu_entries_come_from_the_asset ... ok
+test setup::tests::the_merge_inserts_only_the_absent_ids_and_keeps_every_comment ... ok
+test doctor::fixture_tests::a_class_a_fixer_round_trips_and_undo_gives_the_corrupt_bytes_back ... ok
+test doctor::checks::tests::a_pending_record_is_reported_and_never_fixed ... ok
+test doctor::checks::tests::no_class_d_check_can_name_a_plan ... ok
+test doctor::fixture_tests::a_detect_only_run_writes_nothing_under_the_state_directory ... ok
+test doctor::checks::tests::the_one_line_predicates_answer_as_the_table_says ... ok
+test doctor::fixture_tests::every_doctor_fixture_case_answers_as_its_expectation_says ... ok
+
+test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.90s
+
+-- fixture cases on disk
+  history_cache_fresh
+  history_cache_fresh__bad_magic
+  history_cache_fresh__stale
+  node_data_dir_single_writer
+  node_data_dir_single_writer__free
+  node_data_dir_single_writer__via_config_file
+  node_layout
+  node_layout__none
+  node_layout__remote
+  node_layout__system_unit
+  ports_owned
+  ports_owned__external
+  ports_owned__foreign
+  settings_valid
+  settings_valid__ok
+  settings_valid__unparsable
+  unit_no_password_in_argv
+  unit_no_password_in_argv__log_level
+  unit_no_password_in_argv__password_file
+  unit_no_password_in_argv__rpc_login
+  units_present
+  units_present__absent
+
+===== GATE 7: cargo fmt --check, clippy -D warnings, and the §2g/§2b greps over the doctor
+cargo fmt --check: clean
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.11s
+-- §2g: no print macro in the doctor (all output goes through output.rs's Out)
+  none
+-- §2f: no shell string in the doctor
+  none
+-- §2b.3: query_key
+  none
+-- §2b.8: the doctor never reads monerod.conf's or the login file's bytes into a probe
+  16://! * the **contents** of `paths.monerod_conf()` and `paths.wallet_login_file(port)` are
+  352:    pub wallet_login_file: FileProbe,
+  388:    pub monerod_conf: FileProbe,
+  389:    pub monerod_conf_prune: Option<bool>,
+  390:    pub monerod_conf_has_login: bool,
+  532:            wallet_login_file: FileProbe::default(),
+  553:            monerod_conf: FileProbe::default(),
+  554:            monerod_conf_prune: None,
+  555:            monerod_conf_has_login: false,
+  670:        self.wallet_login_file =
+  671:            FileProbe::stat(&ctx.paths.wallet_login_file(ctx.settings.wallet.port));
+  738:        let conf = ctx.paths.monerod_conf();
+  739:        self.monerod_conf = FileProbe::stat(&conf);
+  740:        if self.monerod_conf.exists {
+  742:                self.monerod_conf_has_login = text
+  745:                self.monerod_conf_prune = Some(text.lines().any(|l| {
+-- §7: no RemoveFile verb anywhere in mutate.rs's Action vocabulary
+  41-    WriteFile {
+  51-    CreateDir { path: PathBuf, mode: u32 },
+  53-    CreateSymlink { link: PathBuf, target: PathBuf },
+  55-    RunArgv {
+-- §7.1: the check count against the design table
+37
+
+===== GATE 8: the probe artifacts a --save run writes, and the §2b known-value grep over them
+run artifacts: /tmp/tmp.Yg5AUb5VIW/g8/state/doctor/runs/20260917T004651Z__86c661c3
+exit: 11
+  -rw------- 0 runs/20260917T004651Z__86c661c3/actions.jsonl
+  -rw------- 13294 runs/20260917T004651Z__86c661c3/probes/facts.json
+  -rw------- 16573 runs/20260917T004651Z__86c661c3/report.json
+  -rw------- 3695 runs/20260917T004651Z__86c661c3/probes/omarchy-plugin-list.txt
+  -rw------- 47 runs/20260917T004651Z__86c661c3/probes/monero-wallet-rpc-version.txt
+  -rw------- 47 runs/20260917T004651Z__86c661c3/probes/monerod-version.txt
+-- every credential key that appears anywhere under the run directory, with what follows it
+  login
+  login_file
+  login_port
+  password_in_argv
+  (each of those is a FIELD NAME; a value would follow a ':' or '=' — §2b.8)
+-- and the same grep over a rendered unit that DOES carry one, to prove the redactor fires
+run artifacts: /tmp/tmp.Yg5AUb5VIW/g8/state/doctor/runs/20260917T004651Z__85fa04f7
+  doctor --only units exit: 11
+  unit_no_password_in_argv [fail:credential_in_argv] fmonero-monerod.service carries --rpc-login; fmonero-wallet-rpc.service carries --rpc-login
+  SECRETVALUE anywhere in the run artifacts:
+    /tmp/tmp.Yg5AUb5VIW/g8/state/doctor/latest/report.json:0
+    /tmp/tmp.Yg5AUb5VIW/g8/state/doctor/latest/actions.jsonl:0
+    /tmp/tmp.Yg5AUb5VIW/g8/state/doctor/latest/probes/facts.json:0
+    /tmp/tmp.Yg5AUb5VIW/g8/state/doctor/latest/probes/omarchy-plugin-list.txt:0
+    /tmp/tmp.Yg5AUb5VIW/g8/state/doctor/latest/probes/monero-wallet-rpc-version.txt:0
+    /tmp/tmp.Yg5AUb5VIW/g8/state/doctor/latest/probes/monerod-version.txt:0
+    (no match)
+        "text": "[Service]\nExecStart=/usr/bin/monero-wallet-rpc --rpc-login <redacted> --log-level 0\n",
+        "text": "[Service]\nExecStart=/usr/bin/monero-wallet-rpc --rpc-login <redacted> --log-level 0\n",
+
+===== GATE 9: the check table against §7.1 — every id with its group, severity and class
+  binaries/monerod_installed  sev=error  class=D
+  binaries/wallet_rpc_installed  sev=error  class=D
+  binaries/version_supported  sev=warn  class=D
+  node/node_layout  sev=info  class=D
+  node/node_reachable  sev=error  class=D
+  node/node_unrestricted  sev=warn  class=D
+  node/node_synced  sev=warn  class=D
+  node/node_peers  sev=warn  class=D
+  node/node_clock  sev=error  class=D
+  node/node_data_dir_single_writer  sev=error  class=D
+  wallet/wallet_rpc_reachable  sev=warn  class=D
+  wallet/wallet_rpc_auth  sev=error  class=D
+  wallet/wallet_daemon_link  sev=warn  class=D
+  wallet/wallet_daemon_auth  sev=error  class=D
+  wallet/wallet_nettype_matches  sev=warn  class=D
+  wallet/wallet_dir_exists  sev=warn  class=B
+  wallet/pending_send  sev=error  class=D
+  units/units_present  sev=warn  class=B
+  units/unit_loopback  sev=error  class=B
+  units/unit_no_password_in_argv  sev=error  class=D
+  units/unit_no_node_wants  sev=error  class=B
+  units/unit_enabled_state  sev=info  class=B
+  units/wallet_dir_matches_unit  sev=error  class=B
+  units/wallet_port_consistent  sev=error  class=B
+  storage/disk_space  sev=warn  class=D
+  storage/prune_configured  sev=info  class=D
+  install/binary_on_path  sev=warn  class=D
+  install/state_valid  sev=warn  class=A
+  install/settings_valid  sev=warn  class=A
+  install/history_cache_fresh  sev=info  class=D
+  install/plugin_linked  sev=warn  class=B
+  install/plugin_enabled  sev=warn  class=B
+  install/menu_entries  sev=info  class=B
+  security/monerod_conf_mode  sev=error  class=B
+  security/node_auth  sev=warn  class=D
+  security/state_perms  sev=error  class=A
+  security/ports_owned  sev=warn  class=D
+
+===== DONE
+```
+
+---
+
+<!-- folded from decisions/phase2-tui.md -->
+
+### Phase 2 — `tui` (DESIGN.md §7a)
+
+Branch `phase2/tui`, based on `gate-1b`. Owns `crates/fmonero/src/tui/**` and
+`tests/tui_tmux.sh`; this file is its evidence (§8's preamble — Phase 3 concatenates the four
+`decisions/phase2-*.md` into `DECISIONS.md`).
+
+Every capture below was taken on a **real pty** through `tmux capture-pane`, against
+`fmonero-mock` over `tests/fixtures/` — **never a real daemon and never a real wallet**, so
+§4b's classes hold: the rendering and the request shapes are AMBER, nothing here says anything
+about a live `monerod`. §2b.2 is why: a real wallet's balance, primary address and
+counterparties would otherwise be pasted into a decisions log.
+
+Scenario for every capture: `fmonero-mock --role node/--role wallet --auth over tests/fixtures/ (no real daemon, no real wallet)`
+
+#### What was built
+
+`src/tui/{mod,theme,screens,send,subs}.rs` plus `src/tui/tests.rs`:
+
+- **mod.rs** — the `Model`: the 1 s `status` poll (dropped while one is in flight, §2d), the
+  120 ms spinner tick that touches no daemon, `Cmd::task` for every short read, one
+  `ActionSub` at a time for everything that may take a minute, the key router, the four
+  modals' state and the exit-code rule (`Ok(0)`, or the last failed action's own §4a code).
+- **theme.rs** — fproton's Omarchy loader verbatim, plus `Theme::badge` (§7a's badge colours)
+  and `Theme::qr`. **The only literal colours in `src/tui/**` are in this file.**
+- **screens.rs** — the chrome (tab strip, pending banner, status line), the Node, Wallet and
+  Log screens, the modals, the help overlay, the four resize tiers and the formatters.
+- **send.rs** — the send state machine and the confirm modal.
+- **subs.rs** — `Action` (neither `Clone` nor `Debug`, with a hand-written redacting `Debug`),
+  `execute` (the body `ActionSub::run` and the `ProgramSimulator` test share), the
+  cancellation watcher thread, and the rule that a **relay ignores the stop signal** (§7a).
+- **tests.rs** — the render tests, the empty states and the `ProgramSimulator` send test.
+
+The TUI calls `fmonero-core` in process and never spawns `fmonero`. It never calls
+`build_transfer`, `build_sweep_all` or `relay_tx` and never writes `pending.json`: the money
+path is `send::build` + `send::relay` (§2a.3). `u`/`d` go through `node_session` and the open
+modal through `wallet_session`, so the §2i single-writer precondition and the `set_daemon`
+step exist in exactly one place (§5b).
+
+#### Gate
+
+| Gate line (§8, Phase 2 "tui") | Result |
+|---|---|
+| clippy clean | **pass** — `cargo clippy --all-targets -- -D warnings`, exit 0 |
+| ≤ 1 800 lines | **FAIL — 4339 lines** in the five named files (see "The line budget" below) |
+| `fmonero tui` opens and quits on a real pty | **pass** — `tests/tui_tmux.sh`, 10 checks |
+| every screen renders with the mock up | **pass** — `tests/tui_tmux.sh --capture`, 13 checks; captures below |
+| every screen renders with both daemons absent | **pass** — `tests/tui_tmux.sh` and the tier test |
+| the four resize tiers have render tests | **pass** — `every_screen_renders_at_every_tier_with_both_daemons_absent` (4 screens × Wide/Medium/Narrow/Tiny) |
+| the `ProgramSimulator` send test: one `transfer` + one `relay_tx`, identical metadata | **pass** — `the_send_screen_builds_once_and_relays_that_exact_transaction` |
+| the `Action` redaction test | **pass** — `debugging_an_open_never_prints_the_password` |
+| no `println!` | **pass** — grep below, and `tests/tui_tmux.sh` asserts it |
+| no literal colour outside `theme.rs` | **pass** — grep below |
+| a capture of each screen, scenario named | **pass** — below |
+| *(beyond the gate)* the restricted node and the `"BUSY"` header | **pass** — `a_restricted_node_names_the_method_each_dark_pane_needs`, `a_syncing_node_shows_the_gauge_and_no_block_age` (§1b.2, §1b.3) |
+
+##### clippy
+
+```text
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.12s
+exit 0
+```
+
+##### `cargo test -p fmonero tui`
+
+```text
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
+     Running unittests src/main.rs (target/debug/deps/fmonero-7deb80b216015a31)
+
+running 36 tests
+test tui::screens::tests::the_resize_tiers_are_the_ones_the_design_names ... ok
+test tui::send::tests::the_confirm_modal_needs_the_word_not_just_enter ... ok
+test tui::send::tests::the_account_selector_stays_inside_the_accounts_the_wallet_has ... ok
+test tui::send::tests::all_is_refused_inline_and_names_the_sweep_command ... ok
+test tui::screens::tests::an_address_wraps_rather_than_eliding_when_it_is_being_confirmed ... ok
+test tui::send::tests::a_good_form_becomes_a_send_request_without_a_sweep_field ... ok
+test tui::send::tests::a_zero_amount_and_a_bad_address_are_both_refused_before_anything_is_sent ... ok
+test tui::send::tests::the_picker_yields_a_literal_address_never_a_label ... ok
+test tui::subs::tests::an_error_keeps_its_own_exit_code_and_hint ... ok
+test tui::subs::tests::labels_name_what_is_running ... ok
+test tui::subs::tests::every_action_but_a_relay_is_cancellable ... ok
+test tui::subs::tests::debugging_an_open_never_prints_the_password ... ok
+test tui::tests::mock::tests::auth_params_splits_quoted_and_bare_values ... ok
+test tui::tests::mock::tests::digest_matches_rfc2617_and_differs_from_md5_sess ... ok
+test tui::tests::mock::tests::md5_matches_rfc1321_edges ... ok
+test tui::tests::a_zero_area_frame_renders_nothing_and_does_not_panic ... ok
+test tui::tests::quitting_while_an_action_runs_takes_two_presses ... ok
+test tui::screens::tests::human_numbers_and_short_forms_read_like_the_cli_ones ... ok
+test tui::tests::the_help_overlay_lists_the_bindings_the_model_implements ... ok
+test tui::tests::the_narrow_tier_collapses_the_tab_strip ... ok
+test tui::tests::node_mutations_are_refused_when_fmonero_does_not_own_the_node ... ok
+test tui::tests::the_offline_node_screen_says_what_to_press_and_never_shows_a_zero_height ... ok
+test tui::tests::the_offline_wallet_screen_offers_the_open_key ... ok
+test tui::tests::a_syncing_node_shows_the_gauge_and_no_block_age ... ok
+test tui::tests::a_restricted_node_names_the_method_each_dark_pane_needs ... ok
+test tui::tests::the_confirm_modal_owns_the_keys_even_on_another_screen ... ok
+test tui::theme::tests::every_badge_state_has_its_own_colour ... ok
+test tui::theme::tests::hex_parsing_tolerates_the_hash_and_trailing_alpha ... ok
+test tui::theme::tests::the_qr_is_dark_on_light_whatever_the_theme_is ... ok
+test tui::tests::the_open_wallet_modal_masks_the_password_and_lists_the_wallet_dir ... ok
+test tui::tests::the_qr_modal_draws_the_address_and_the_code ... ok
+test tui::tests::the_send_screen_refuses_all_inline_and_never_reaches_the_daemon ... ok
+test tui::tests::every_screen_renders_at_every_tier_with_both_daemons_absent ... ok
+test tui::tests::the_send_screen_builds_once_and_relays_that_exact_transaction ... ok
+test tui::tests::every_screen_renders_against_the_mock ... ok
+test tui::tests::an_unresolved_pending_record_banners_every_screen ... ok
+
+test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.27s
+
+exit 0
+```
+
+##### `tests/tui_tmux.sh` — a real pty, both daemons absent (§4b GREEN)
+
+```text
+
+== build
+  ok    cargo build --release
+
+== the TUI on a pty (both daemons absent)
+  ok    fmonero tui opened on a pty
+  ok    Node screen renders (Node)
+  ok    Wallet screen renders (Balance)
+  ok    Send screen renders (Priority)
+  ok    Log screen renders (Log)
+  ok    help overlay renders (Keys)
+  ok    q quits cleanly (exit 0)
+  ok    no print macro under src/tui
+  ok    the TUI wrote nothing to stderr
+
+== 10 passed, 0 failed
+exit 0
+```
+
+##### `tests/tui_tmux.sh --capture` — a real pty against `fmonero-mock` (§4b AMBER)
+
+```text
+
+== build
+  ok    cargo build --release
+
+== the TUI on a pty (fmonero-mock --role node/--role wallet --auth over tests/fixtures/ (no real daemon, no real wallet))
+  ok    fmonero tui opened on a pty
+  ok    Node screen renders (Node)
+  ok    Wallet screen renders (Balance)
+  ok    Send screen renders (Priority)
+  ok    Log screen renders (Log)
+  ok    help overlay renders (Keys)
+  ok    receive QR renders (Receive)
+  ok    the send confirm modal shows the built fee and wants the word
+  ok    nothing was relayed (the capture run never broadcasts)
+  ok    q quits cleanly (exit 0)
+  ok    no print macro under src/tui
+  ok    the TUI wrote nothing to stderr
+
+  captures in /tmp/claude-1000/-home-oliver--config-Claude-scratch-workspaces-eff1ae0e-d485-4f42-9ffb-620b5efc18d5-813ee62c-1eed-4c69-bc1f-0b109cdbca45-scratch-2026-09-16-3ded94/4901fef8-2906-4bc0-b226-799715c2e661/scratchpad/tui-cap
+
+== 13 passed, 0 failed
+exit 0
+```
+
+##### The two greps §7a asks for
+
+```console
+$ grep -rnE "PackedRgba|rgb\(|Rgb|#[0-9a-fA-F]{6}" crates/fmonero/src/tui --include=*.rs \
+    | grep -v "^crates/fmonero/src/tui/theme.rs"
+$ echo $?
+1
+$ grep -rnE '\b(println!|print!|eprintln!|eprint!|dbg!)' crates/fmonero/src/tui
+$ echo $?
+1
+```
+
+`scripts/check.sh`'s own §7a step agrees:
+
+```console
+== §7a  the TUI's Action derives neither Clone nor Debug
+  ok    Action carries no derived Clone or Debug
+```
+
+##### Line counts
+
+```text
+  1603 crates/fmonero/src/tui/mod.rs
+  1459 crates/fmonero/src/tui/screens.rs
+   772 crates/fmonero/src/tui/send.rs
+   304 crates/fmonero/src/tui/subs.rs
+   632 crates/fmonero/src/tui/tests.rs
+   201 crates/fmonero/src/tui/theme.rs
+  4971 total
+```
+
+#### Screen captures
+
+Each is `tmux capture-pane -p` on a 120×40 pane, trailing blank rows dropped.
+
+##### Node
+
+```text
+[ 1 Node ]  2 Wallet    3 Send    4 Log                                                               ⠙ mainnet omarchy
+╭ Node ──────────────────────────────────────────────────────╮╭ Net ───────────────────────────────────────────────────╮
+│ ● Synchronized                                             ││ ↓ ↑        0 B/s   0 B/s                               │
+│ sync       ████████████ 100.0%  3541122 / 3541122          ││ limits     ↑2048 ↓8192 kB/s                            │
+│ last block 13h 15m ago                                     ││                                                        │
+│ peers      16 out · 3 in                                   │╰────────────────────────────────────────────────────────╯
+│ version    0.18.5.1-release · fork v16 · mainnet           │╭ Mempool · fees ────────────────────────────────────────╮
+│                                                            ││ pool       14 txs · 20.9 kB · oldest 13h 19m ago       │
+│                                                            ││ pool fees  0.000427 XMR · 0 failing · 0 double spends  │
+│                                                            ││ fee/byte   1:0.00000002  2:0.00000008  3:0.00000032    │
+│                                                            ││ 4:0.000004                                             │
+╰────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────────────────╯
+╭ Peers  3 · b: bans ────────────────────────────────────────────────────╮╭ Warnings ──────────────────────────────────╮
+│ HOST                   │STATE         │HEIGHT   │PRUNE │AVG ↓/↑        ││ monero_not_installed monerod is not        │
+│ 203.0.113.17           │normal        │3541122  │0     │12 B/2 B       ││ installed                                  │
+│ 198.51.100.42          │synchronizing │3541100  │384   │0 B/0 B        ││   hint: omarchy pkg add monero             │
+│ 192.0.2.201            │normal        │3541122  │0     │1 B/31 B       ││ node_low_disk the node reports 96000000000 │
+│                                                                        ││ bytes free, under the 120 GB floor for a   │
+│                                                                        ││ pruned chain — a figure that is an         │
+│                                                                        ││ ESTIMATE, not measured on this machine     │
+│                                                                        ││   hint: fmonero doctor --only storage      │
+│                                                                        ││ auth_missing the node accepted fmonero     │
+│                                                                        ││ with no credential at all                  │
+│                                                                        ││   hint: fmonero setup --units --yes        │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+╰────────────────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────╯
+● node up 3541122 16↑3↓ ● wallet up 1.234567891234 XMR                                                            ? help
+```
+
+The gauge, `height / target_height`, the peers table, the mempool, the node's own `fees[]` and
+the net limits all come from the fixtures; `monero_not_installed` is real (§1.1 — no Monero on
+this machine), which is exactly what the Warnings pane is for.
+
+##### Wallet
+
+```text
+  1 Node  [ 2 Wallet ]  3 Send    4 Log                                                               ⠙ mainnet omarchy
+╭ Balance ─────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 1.234567891234 XMR   unlocked 1.234567891234 XMR                                                                     │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭ Subaddresses — Enter copies · a new · l label ─╮╭ History  6 rows · t: all ──────────────────────────────────────────╮
+│ #  │ADDRESS ✓=used        │BALANCE             ││ / filter by txid, address or note                                  │
+│ 0  │42ey1afD…fJJQAWDm ✓   │1.234567891234      ││ WHEN         TYPE            AMOUNT   CONF LOCKED est.           F │
+│ 1  │8AsN91rz…N1EX5Mtm ✓   │—                   ││ 09-16 14:01  pending         0.1000      0 locked         0.000030 │
+│ 2  │86kKnBKF…GRsdGfNk     │—                   ││ 09-15 13:20  failed          0.0200      0 locked         0.000030 │
+│                                                ││ 09-16 10:00  out             0.2500    122                0.000030 │
+│                                                ││ 09-15 00:40  in              0.5000   1122                0.000030 │
+│                                                ││ 09-13 15:20  block           0.6000   2122                    0.00 │
+│                                                ││ 09-12 06:00  in              0.0750   3122 locked         0.000030 │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+╰────────────────────────────────────────────────╯╰────────────────────────────────────────────────────────────────────╯
+● node up 3541122 16↑3↓ ● wallet up 1.234567891234 XMR                                                            ? help
+```
+
+`—` in the BALANCE column is `get_balance.per_subaddress` holding only the **funded**
+subaddresses (§5): a zero there would read as "empty". `CONF`/`LOCKED est.` come from
+`history::confirmations` / `history::locked` against the **wallet's** height (§1b.4) and are
+never recomputed in the TUI.
+
+##### Send
+
+```text
+  1 Node    2 Wallet  [ 3 Send ]  4 Log                                                               ⠸ mainnet omarchy
+╭ Send ──────────────────────────────────────────────────────────────╮╭ Preview ───────────────────────────────────────╮
+│ To      address, or @label from the address book                   ││ To                                             │
+│                                                                    ││                                                │
+│ Amount  0.5   ·   250000000000p                                    ││ Amount  —                                      │
+│                                                                    ││ Fee     known only after the build (§2a.2)     │
+│ Note    optional note, kept in the wallet                          ││ Account 0                                      │
+│                                                                    ││ Unlocked 1.234567891234                        │
+│ Priority 0=1  1 0.00000002  2 0.00000008  3 0.00000032  4 0.000004 ││                                                │
+│                                                                    ││                                                │
+│ enter a recipient and an amount                                    ││                                                │
+│ account 0 · Tab moves · @ picks from the address book · Esc leaves ││                                                │
+│ the form                                                           ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+╰────────────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────────╯
+● node up 3541122 16↑3↓ ● wallet up 1.234567891234 XMR                                                            ? help
+```
+
+##### Send — the confirm modal, after a real build against the mock
+
+Driven on the pty: the address and `0.01` typed, `Enter` → one `validate_address`, then
+`send::build` with `do_not_relay`. The fee, the total and the weight are the built
+transaction's own (§2a.2). `Esc` discarded it; the run asserts the mock recorded **no**
+`relay_tx`.
+
+```text
+  1 Node    2 Wallet  [ 3 Send ]  4 Log                                                                 mainnet omarchy
+╭ Send ──────────────────────────────────────────────────────────────╮╭ Preview ───────────────────────────────────────╮
+│ To      DwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm  ││ To                                             │
+│                                                                    ││ 42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVd │
+│ Amount  0.01                                                       ││ FCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQA │
+│                                                                    ││ WDm                                            │
+│ Note    optional note, kept in the wallet                          ││ Amount  0.0100 XMR                             │
+│                                                                    ││ Fee     known only after the build (§2a.2)     │
+│ Priority 0=1  1 0.00000002  2 0.00000008  3 0.00000032  4 0.000004 ││ Account 0                                      │
+│                                                                    ││ Unlocked 1.234567891234                        │
+│ mainnet standard · 0.0100 XMR · Enter builds it                    ││                                                │
+│ account 0 · Tab moves · @ picks from the address book · Esc leaves ││                                                │
+│ the form                                                           ││                                                │
+│                    ╭ Confirm — this broadcasts a transaction ───────────────────────────────────╮                    │
+│                    │                                                                            │                    │
+│                    │ To                                                                         │                    │
+│                    │ 42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9Uxq │                    │
+│                    │ eoyFQMYbqSWYTfJJQAWDm                                                      │                    │
+│                    │ Amount 0.1000 XMR  (100000000000 pico)                                     │                    │
+│                    │ Fee    0.00003072 XMR  (30720000 pico)                                     │                    │
+│                    │ Total  0.10003072 XMR  (100030720000 pico)                                 │                    │
+│                    │ Account 0  Priority 2  Weight 1531                                         │                    │
+│                    │                                                                            │                    │
+│                    │ Type "send" and press Enter to broadcast · Esc to discard                  │                    │
+│                    │                                                                            │                    │
+│                    ╰────────────────────────────────────────────────────────────────────────────╯                    │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+╰────────────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────────╯
+● node up 3541122 16↑3↓ ● wallet up 1.234567891234 XMR │ built — nothing is broadcast yet                         ? help
+```
+
+##### Log
+
+```text
+  1 Node    2 Wallet    3 Send  [ 4 Log ]                                                               mainnet omarchy
+╭ Log  /tmp/tmp.2vybVzOVnx/bitmonero.log  follow on ───────────────────────────────────────────────────────────────────╮
+│ / search the log                                                                                                     │
+│ 2026-09-16 14:02:09.114 I Monero 'Fluorine Fermi' (v0.18.5.1-release) started                                        │
+│ 2026-09-16 14:02:10.002 I Synced 3541122/3541122                                                                     │
+│ 2026-09-16 14:02:11.771 I [127.0.0.1:18080 OUT] NEW BLOCK 3541122                                                    │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+● node up 3541122 16↑3↓ ● wallet up 1.234567891234 XMR │ form unfocused — 1..4 switch screens, Enter returns      ? help
+```
+
+##### The `?` overlay — which is the `KEYS` table, so help and behaviour cannot drift
+
+```text
+  1 Node    2 Wallet    3 Send  [ 4 Log ]                                                               mainnet omarchy
+╭ Log  /tmp/tmp.2vybVzOVnx/bitmonero.log  follow on ───────────────────────────────────────────────────────────────────╮
+│ / search the log                                                                                                     │
+│ 2026-09-16 14:02:09.114 I Monero 'Fluorine Fermi' (v0.18.5.1-release) started                                        │
+│ 2026-09-16 14:02:10.002 I Synced 3541122/3541122                                                                     │
+│ 2026-09-16 14:02:11.771 I [127.0.0.1:18080 OUT] NEW BLOCK 3541122                                                    │
+│                                                                                                                      │
+│                                                                                                                      │
+│         ╭ Keys — any key closes ───────────────────────────────────────────────────────────────────────────╮         │
+│         │                                                                                                  │         │
+│         │ q  Ctrl+C             quit (twice while an action runs: cancel, then quit)                       │         │
+│         │ ?                     this help                                                                  │         │
+│         │ Tab  ⇧Tab  1 2 3 4    Node · Wallet · Send · Log                                                 │         │
+│         │ r                     refresh now                                                                │         │
+│         │ Esc                   close this overlay, else cancel the running action                         │         │
+│         │ u  d                  Node: start · stop the node (confirm modal)                                │         │
+│         │ b                     Node: peers ⇄ bans                                                         │         │
+│         │ L                     cycle the daemon log level (confirm modal)                                 │         │
+│         │ o  c                  Wallet: open (modal) · close                                               │         │
+│         │ a  l                  Wallet: new subaddress · label the selected one                            │         │
+│         │ n                     Wallet: edit the selected transfer's note                                  │         │
+│         │ R  Q                  Wallet: refresh · show the address as a QR                                 │         │
+│         │ /  t                  Wallet: filter rows · cycle the type filter                                │         │
+│         │ ←→  Enter             Wallet: swap panes · copy an address · open a row                          │         │
+│         │ Send: Tab  Enter      next field · build  (Esc leaves the form, Enter returns to it)             │         │
+│         │ Send: p  Ctrl+P  @    cycle priority (on its row, or from anywhere) · address book               │         │
+│         │ Send: ←→              on the Priority or Account row: change it (accounts come from the wallet)  │         │
+│         │ Send: sweep           not in the TUI — run: fmonero wallet sweep <addr> --dry-run                │         │
+│         │ Send: type "send"     the confirm modal's --yes; Esc discards, and a relay cannot be cancelled   │         │
+│         │                                                                                                  │         │
+│         ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯         │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+● node up 3541122 16↑3↓ ● wallet up 1.234567891234 XMR │ form unfocused — 1..4 switch screens, Enter returns      ? help
+```
+
+##### Receive — the QR on an `ftui_extras` `Canvas` in `Mode::HalfBlock`
+
+```text
+  1 Node  [ 2 Wallet ]  3 Send    4 Log                                                                 mainnet omarchy
+╭ Balance ─────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 1.234567891234 XMR   unlocked 1.234567891234 XMR                                                                     │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭ Subaddresses — Enter copies · a new · l label ─╮╭ History  6 rows · t: all ──────────────────────────────────────────╮
+│ #  │ADDRESS ✓=used        │BALANC╭ Receive — Esc closes ─────────────────────────╮e                                  │
+│ 0  │42ey1afD…fJJQAWDm ✓   │1.2345│                                               │UNT   CONF LOCKED est.           F │
+│ 1  │8AsN91rz…N1EX5Mtm ✓   │—     │ ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀ │000      0 locked         0.000030 │
+│ 2  │86kKnBKF…GRsdGfNk     │—     │ ▀▀ ▄▄▄▄▄ ▀▀▀ ▀ ▄▀▀▄▄ ▄ ▀ ▄▄▀ ▀▀▀ ▀▀▀ ▄▄▄▄▄ ▀▀ │200      0 locked         0.000030 │
+│                                  │ ▀▀ ▀   ▀ ▀▀▀▀▄▄▀▀▀▀▀ ▄▄▀▀▀▄▄▀▄▄ ▄▄▄▀ ▀   ▀ ▀▀ │500    122                0.000030 │
+│                                  │ ▀▀ ▀▄▄▄▀ ▀▀▀▀▄▄ ▀▀ ▀ ▀▀  ▀▀▀▄▄▄▀   ▀ ▀▄▄▄▀ ▀▀ │000   1122                0.000030 │
+│                                  │ ▀▀▄▄▄▄▄▄▄▀▄▀▄▀▄▀▄▀▄▀ ▀ ▀ ▀▄▀▄▀▄▀▄▀ ▀▄▄▄▄▄▄▄▀▀ │000   2122                    0.00 │
+│                                  │ ▀▀ ▀▀▄▀▄▄▀▄ ▄  ▀▀▄▀▀▄▄▀▀▄▀▄▄▀▄▀▀▀ ▀ ▀▄▀▀▀▀▀▀▀ │750   3122 locked         0.000030 │
+│                                  │ ▀▀▀▀▀▀▀▀▄  ▄ ▀▄ ▀▄▀▀ ▄ ▀▄▀▀▀  ▀▄▀ ▄▀ ▀   ▀▀▀▀ │                                   │
+│                                  │ ▀▀ ▀▀▄ ▀▄▄▀▀▀ ▀ ▄ ▄▀▄▄▀▀   ▀▀ ▀▄▀▀  ▀▀  ▀▀▀▀▀ │                                   │
+│                                  │ ▀▀▀▀▀▀▀▀▄ ▄▀▀▀   ▀▀▄▄▀▄ ▀▀ ▀▀▄▄   ▀▀▄  ▄▄ ▀▀▀ │                                   │
+│                                  │ ▀▀ ▄ ▀▀▄▄▀▀ ▄▄▀ ▄▀▄▀▀▄▄▀▀ ▄▀▀▀▀▀▀▀  ▀▄▀ ▄ ▀▀▀ │                                   │
+│                                  │ ▀▀▄▀ ▄▄ ▄ ▀▀  ▄▀▀▄ ▀ ▄▀▄▀▀▀▀▄▀▀ ▀▀ ▄▄   ▄▀▀▀▀ │                                   │
+│                                  │ ▀▀▀▀▄▀▀▀▄▀   ▀ ▀ ▄▀▄ ▄▀▀▀  ▀▀ ▄▀▀ ▀▀ ▄▀▀ ▀▀▀▀ │                                   │
+│                                  │ ▀▀▄▀  ▄▀▄▀ ▄▀▀  ▀▀ ▀▄▄ ▀▀▀▄▄▀ ▀▄▀▄▀ ▄▀▀▄ ▀▀▀▀ │                                   │
+│                                  │ ▀▀▄ ▀▀ ▄▄▀▀▀▀ ▄ ▄▀▀▄▀  ▀  ▀▀▀ ▄▄▀▄ ▀▀▀▄▀▄▀▀▀▀ │                                   │
+│                                  │ ▀▀   ▄▄▀▄▄▄▀   ▀ ▀▄▄▀  ▀▄ ▄▀ ▀▄▀ ▀▀▀▀▄ ▀▄▀▀▀▀ │                                   │
+│                                  │ ▀▀▀  ▄▀▀▄▀▄▀▀▀▀ ▀▄▀▀▀▀▄▀▄▀▄▄▀▀ ▀▀  ▀▀▀▄▄▀▀▄▀▀ │                                   │
+│                                  │ ▀▀▄▀▀▀▀ ▄▄▀ ▀▄▄  ▀▀ ▄   ▀▀▄▀▄▀ ▀▄ ▄▀ ▄▀▀  ▀▀▀ │                                   │
+│                                  │ ▀▀▄▀▀▀▀▀▄▄ ▀▀  ▀▄▀▀▀▄▄▀ ▄▀ ▄▀▀ ▄▀  ▄▄▄ ▀  ▀▀▀ │                                   │
+│                                  │ ▀▀ ▄▄▄▄▄ ▀▀▀  ▀▄ ▀  ▀▀▄▀▀▀ ▀▄▀ ▀▀▀ ▀▄▀  ▀▀▀▀▀ │                                   │
+│                                  │ ▀▀ ▀   ▀ ▀▀▀▀ ▀▄▀▀ ▀▀  ▀▄▄▄▄▀ ▄▀▀▄▄▄ ▄ ▀ ▀▀▀▀ │                                   │
+│                                  │ ▀▀ ▀▄▄▄▀ ▀▀▀▀▀▀▀▀▀▀ ▀▀▀▀▀▀ ▀▄▀▀▀▀▀ ▀▀▀▄▀▄▀▄▀▀ │                                   │
+│                                  │ ▀▀▄▄▄▄▄▄▄▀▄▄▄▀▀▀▀▄▀▀▀▀▄▀▀▄▄▄▄▄▀▄▄▀▀▀▀▄▄▄▀▄▀▀▀ │                                   │
+│                                  │ ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀ │                                   │
+│                                  │ 42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRV │                                   │
+│                                  │ dFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJ │                                   │
+│                                  │ QAWDm                                         │                                   │
+│                                  │                                               │                                   │
+│                                  ╰───────────────────────────────────────────────╯                                   │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+╰────────────────────────────────────────────────╯╰────────────────────────────────────────────────────────────────────╯
+● node up 3541122 16↑3↓ ● wallet up 1.234567891234 XMR │ form unfocused — 1..4 switch screens, Enter returns      ? help
+```
+
+#### The line budget — the one gate line that fails
+
+§7a budgets **1 800 lines** across `src/tui/{mod,theme,screens,send,subs}.rs`. The real
+counts are 1603 + 201 + 1459 + 772 + 304 = **4339** (`tests.rs`, which §7a does not name, is a
+further 632). The overrun is reported rather than closed, and it is not closed
+by deleting tests or features:
+
+- Every screen, key, modal and state §7a specifies is implemented. Cutting to 1 800 means
+  cutting §7a's own content — the bans view, the label/note prompts, the detail pane, the
+  account selector, the QR, or the four tiers — which §2h and §2j forbid more strongly than
+  §8 forbids a long file.
+- The estimate looks systematically low rather than this implementation looking bloated:
+  fproton's TUI, the one §7a scales from ("1 800 rather than fproton's 1 200 because there are
+  four screens instead of three"), is itself **2 634** lines against that 1 200 — a 2.2×
+  overrun, the same ratio as this one. Four screens, a five-state send machine, four modals, a
+  QR canvas and 36 tests at fproton's own density land where this landed.
+- Two compaction passes were made before reporting: the model's state is grouped into
+  `NodeUi`/`WalletUi`/`LogUi` so the constructor is a handful of `Default`s, and every panel
+  renders through five shared helpers (`framed`, `overlay`, `kv`, `para`, `table`) instead of
+  open-coding `Block`/`Paragraph` per pane. `cargo fmt` is authoritative and it expands
+  argument lists, which is worth ~10% on its own.
+
+If a later phase wants the number met, the honest lever is scope, and it belongs to whoever
+owns §7a — not to this agent silently dropping a screen.
+
+#### Design deviations, with reasons (§2k)
+
+1. **The Send form owns printable keys; `1 2 3 4` switch screens only after `Esc`.** §7a's
+   keymap gives `Tab`/`1 2 3 4` to screens and `Tab`/`Enter`/`p`/`@` to the Send form. Both
+   cannot hold while a 95-character base58 address is being typed: `1`, `4`, `q`, `r` and `p`
+   all occur in addresses. So the form keeps the keys while it is focused, `Esc` leaves it,
+   `Enter` returns to it, and both the form's own hint line and the `?` overlay say so. The
+   pty test drives that exact sequence rather than asserting around it.
+2. **`p` cycles the priority on its own row; `Ctrl+P` cycles it from anywhere.** Same cause:
+   a bare `p` inside an address must reach the address. `Priority` and `Account` are rows in
+   the Tab cycle, where `←→` and the digits set them — which is also where §7a's "account
+   selector" lives.
+3. **The plain confirm modal uses `widgets::modal::Dialog`; the send confirm, the open-wallet
+   modal, the address-book picker and the QR are hand-drawn overlays.** §1.4 lists `Dialog`
+   for "every modal in §7a", but `Dialog` renders exactly **one centred message row** and an
+   **unmasked** input (`ftui-widgets-0.7.0/src/modal/dialog.rs:618-731`). It cannot show the
+   seven-field send breakdown with an unelided recipient, and it cannot mask a password
+   (§2b.4 needs `TextInput::with_mask`). `Dialog::confirm` is used where it fits — node
+   up/down and the log level — with `y` mapped to its primary button, as §7a asks.
+4. **`b` shows the bans; the TUI has no ban/unban action.** §7a's keymap gives `b` for "bans"
+   and nothing for adding one, while §2i speaks of "the TUI's … ban actions" being disabled
+   under a foreign layout. The read-only view is what the keymap specifies; banning stays
+   `fmonero node ban` (CLI). `u`, `d` and `L` — the mutators the TUI does have — are refused
+   under any layout but our own user unit, with the §2i text, before any RPC.
+5. **Field hints are drawn by the TUI, not set through ftui's builder for empty-field text.**
+   That builder's name is one of the words `scripts/check.sh`'s §2h grep forbids in shipped
+   source, and it would appear on every input here. A grep that fires on correct code is the
+   grep an agent relaxes (§2j), so `screens::hinted_input` draws the hint over an empty
+   input's cells instead and the gate stays as Phase 1b wrote it.
+6. **The Node screen's peers table spans the full width under the two panel columns.** §7a
+   asks for host, state, height, pruning seed and rates at the Wide tier; inside a 52 %
+   column at 120 cols those five columns cannot all be drawn, and a cut column is worse than
+   a moved panel.
+7. **The daemon log level is a TUI-side 0→4→0 pointer.** `set_log_level` has no reader —
+   `get_info` does not report the level — so the cycle advances when the call is sent. The
+   confirm modal names the level it is about to set, and nothing claims to know the daemon's.
+
+8. **The confirm modal owns the keys wherever it is drawn.** A build is not cancelled by
+   leaving the Send screen, so `Msg::ActionDone(Built)` can arrive over the Wallet screen; the
+   key router therefore sends every key to the modal while one exists. A visible confirm modal
+   whose `send`/`Esc` went to the screen behind it is the worst state the money surface could
+   be in, and `the_confirm_modal_owns_the_keys_even_on_another_screen` pins it.
+9. **The pending banner takes a second row below 120 columns.** It has to carry the txid *and*
+   both commands (§7a); on a narrower terminal one row cuts `clear-pending --yes`, which is the
+   half a reader needs.
+
+#### Two things a reviewer should check next
+
+- The `ProgramSimulator` test counts only the mock's `status: 200` log lines. Every
+  `Cmd::task` builds its own `WalletClient`, so each also produces one 401 handshake line
+  (§2c); counting those would have made "exactly one `transfer`" read as two and the central
+  §2a.3 assertion vacuous. The filter is in `World::count`.
+- `zero()` overwrites the password `TextInput`'s buffer on close, which is best-effort inside
+  safe Rust: what actually carries §2b.4 is that the `String` never outlives the modal and is
+  never copied, because `Action` is neither `Clone` nor `Debug`.
