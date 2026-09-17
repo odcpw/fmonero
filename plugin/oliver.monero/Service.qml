@@ -168,9 +168,11 @@ Item {
       root.status = parsed
       root.localError = ""
     } else {
-      // Keep the last good node/wallet rows for display — the panel dims them rather than
-      // blanking out mid-poll — but `ok` is false, so nothing is presented as current (§6.3).
-      root.status = { ok: false, node: root.node, wallet: root.wallet }
+      // Keep the last good node/wallet rows — the panel gates every rendered value on `alive`
+      // (§6.3), so nothing is presented as current — and `pending` with them: it is the one row
+      // that warns a send may be in flight, and a failed poll dropping it made the warning
+      // vanish at exactly the moment the balance beside it went stale.
+      root.status = { ok: false, node: root.node, wallet: root.wallet, pending: root.pending }
       var msg = String(stderrText || "").trim()
       root.localError = msg !== "" ? msg.split("\n")[0] : "fmonero status failed (exit " + exitCode + ")"
     }

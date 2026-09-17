@@ -142,7 +142,7 @@ Panel {
     if (!w) return
     var hint = String(w.hint || "")
     if (hint === "") return
-    if (hint.indexOf("fmonero doctor") === 0) { svc.openDoctor(); root.close(); return }
+    if (hint === "fmonero doctor") { svc.openDoctor(); root.close(); return }
     svc.copyText(hint)
   }
 
@@ -445,7 +445,7 @@ Panel {
             Column {
               width: parent.width
               spacing: Style.space(3)
-              visible: svc.walletOpen
+              visible: svc.alive && svc.walletOpen
 
               DetailRow {
                 label: "Balance"
@@ -470,14 +470,14 @@ Panel {
               spacing: Style.space(4)
 
               ListRow {
-                visible: svc.walletOpen
+                visible: svc.alive && svc.walletOpen
                 section: "wallet"; idx: 0; width: parent.width
                 title: svc.walletOpen && svc.wallet.primary_address
                   ? Model.shortAddr(svc.wallet.primary_address) : "no address yet"
                 meta: "copy (c)"
               }
               ListRow {
-                visible: svc.walletOpen
+                visible: svc.alive && svc.walletOpen
                 section: "wallet"; idx: 1; width: parent.width
                 title: "Refresh the wallet"
                 meta: svc.walletOpen && svc.wallet.blocks_behind !== null
@@ -485,7 +485,7 @@ Panel {
                   ? Model.int(svc.wallet.blocks_behind, 0) + " blocks behind" : ""
               }
               ListRow {
-                visible: !svc.walletOpen && svc.walletReachable
+                visible: svc.alive && !svc.walletOpen && svc.walletReachable
                 section: "wallet"; idx: 0; width: parent.width
                 title: "No wallet is loaded — load one in the TUI"
                 meta: "open TUI (t)"
@@ -493,7 +493,7 @@ Panel {
             }
 
             Text {
-              textFormat: Text.PlainText; visible: !svc.walletReachable; width: parent.width
+              textFormat: Text.PlainText; visible: !svc.alive || !svc.walletReachable; width: parent.width
               text: svc.alive ? "Wallet daemon is not running." : "No wallet state — fmonero is not answering."
               color: root.dim; font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall; wrapMode: Text.WordWrap
