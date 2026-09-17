@@ -192,8 +192,7 @@ Panel {
     })
   }
 
-  implicitWidth: button.implicitWidth
-  implicitHeight: button.implicitHeight
+  implicitWidth: button.implicitWidth; implicitHeight: button.implicitHeight
 
   onOpenedChanged: {
     svc.opened = opened
