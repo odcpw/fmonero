@@ -500,23 +500,28 @@ fn a_txid_mismatch_exits_one_and_leaves_the_entry_unrelayed() {
 }
 
 /// §2a.2: `--max-fee` refuses **after the build and before the `--yes` check**, and the mock
-/// records **zero** `relay_tx`.
+/// records **zero** `relay_tx`. The refusal is `send::check_max_fee` on the returned plan, so
+/// the caller still has the plan §5c's refusal payload is rendered from.
 #[test]
 fn a_fee_above_max_refuses_and_relays_nothing() {
     let w = World::new("max-fee", &[], &[]);
     let mut req = a_send(DEST);
     // The fixture's fee is 30_720_000 piconero.
     req.max_fee = Some(Piconero(1));
-    let e = send::build(
+    let plan = send::build(
         &w.ctx,
         &w.wallet(),
         Some(&w.node()),
         &req,
         &CancelToken::new(),
     )
-    .unwrap_err();
+    .expect("the build itself succeeds; step 9 is the caller's check");
+    let e = send::check_max_fee(&plan).unwrap_err();
     assert_eq!(e.exit_code(), 3);
     assert_eq!(e.reason(), Some("fee_above_max"));
+    // §5c: the plan survives the refusal, so the payload can carry the BUILT numbers.
+    assert_eq!(plan.total_fee, Piconero(30_720_000));
+    drop(plan);
     assert_eq!(w.count(&w.wallet_log, "relay_tx"), 0);
     assert_eq!(w.count(&w.wallet_log, "transfer"), 1, "it did build first");
 
@@ -528,6 +533,49 @@ fn a_fee_above_max_refuses_and_relays_nothing() {
         .expect("a fee exactly at the bound is allowed");
     assert_eq!(plan.total_fee, Piconero(30_720_000));
     drop(plan);
+}
+
+/// §2d: "**`send::relay` likewise never consults a breaker**: once a plan is built the §2a.11
+/// `send.lock` is held and the transaction exists, so exiting 5 there would abandon a built
+/// transaction rather than protect anything."
+///
+/// The relay must therefore go through even on a client that has never completed a request —
+/// which is exactly the TUI's `Action::Relay`, built with `WalletClient::from_ctx` after
+/// `Action::BuildTx` finished on a different one. The first assertion proves the breaker really
+/// is armed, so this test cannot pass by the breaker being absent.
+#[test]
+fn an_armed_breaker_never_blocks_a_relay_even_on_a_fresh_client() {
+    let w = World::new("relay-breaker", &[], &[]);
+    let plan = send::build(
+        &w.ctx,
+        &w.wallet(),
+        Some(&w.node()),
+        &a_send(DEST),
+        &CancelToken::new(),
+    )
+    .expect("a plan");
+    // §2d says a wallet probe killed at its 5 s deadline while another caller holds a long call
+    // is killed "by construction", so this state is ordinary rather than exceptional.
+    crate::state::note_stall(&w.ctx, crate::Daemon::Wallet).expect("arm the breaker");
+    let blocked = w.wallet().get_height().unwrap_err();
+    assert_eq!(
+        blocked.reason(),
+        Some("stalled"),
+        "the breaker must really be armed, or this test proves nothing"
+    );
+
+    let fresh = w.wallet();
+    let txids = send::relay(&w.ctx, &fresh, plan, &|_| {}, &CancelToken::new())
+        .expect("§2d: a relay is never blocked by a breaker");
+    assert_eq!(txids.len(), 1);
+    // The fresh client has no Digest session yet, so its first request is answered 401 and
+    // retried once (§2c) — both attempts are logged. What matters is that it got through.
+    assert!(
+        w.count(&w.wallet_log, "relay_tx") >= 1,
+        "the relay never reached the daemon"
+    );
+    // And it left no record claiming a transaction nobody broadcast (§2a.4).
+    assert!(crate::state::pending_send(&w.ctx).unwrap().is_none());
 }
 
 /// §2a.11: **only one build→relay sequence may be in flight.** The lock is taken before the

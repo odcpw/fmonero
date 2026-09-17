@@ -225,8 +225,12 @@ impl std::fmt::Debug for Plan {
 ///    `Plan.dest`, every line `relay` announces and the record carry;
 /// 6. `validate_address` and the nettype check (§2a.6) → exit 15;
 /// 7. the `get_info.synchronized` gate → exit 10;
-/// 8. the build;
-/// 9. `--max-fee` → exit 3 `fee_above_max`, **before** the caller's `--yes` check.
+/// 8. the build.
+///
+/// Step 9, `--max-fee` → exit 3 `fee_above_max`, is [`check_max_fee`], which the caller runs on
+/// the returned plan immediately and **before** its `--yes` check: §5c requires that refusal to
+/// carry the built transaction's key set, and an `Err` from here would destroy the `Plan` it has
+/// to be rendered from. [`relay`] re-checks it as the enforcing gate.
 ///
 /// The ONLY state it writes is the §2a.4 resolve step's clear (`state::clear_pending_send`):
 /// it never creates, extends or marks an entry. `n` is `None` only when the caller has
@@ -267,9 +271,9 @@ pub fn build(
         max_fee: req.max_fee,
         _lock: lock,
     };
-    // 9. `--max-fee`, raised HERE — before the caller's `--yes` check — so a no-`--yes` run
-    //    with `--max-fee` says so rather than printing a fee it would have refused (§2a.2).
-    check_max_fee(&plan)?;
+    // Step 9, `--max-fee`, is `check_max_fee(&plan)` in the caller — before its `--yes` check,
+    // so a no-`--yes` run with `--max-fee` still says so, and with the plan in hand so §5c's
+    // refusal can carry the built fee (§2a.2, §5c).
     Ok(plan)
 }
 
@@ -309,13 +313,14 @@ pub fn build_sweep(
         max_fee: req.max_fee,
         _lock: lock,
     };
-    check_max_fee(&plan)?;
+    // Step 9 is `check_max_fee(&plan)` in the caller, as in `build` above (§2a.2, §5c).
     Ok(plan)
 }
 
 /// Relays a plan, in this order and no other (§2a.2, §2a.4, §2a.9):
 ///
-/// re-check `max_fee` (the enforcing gate) → `announce` the built recipient, amount, fee,
+/// stop consulting the §2d breaker (§2d) → re-check `max_fee` (the enforcing gate) →
+/// `announce` the built recipient, amount, fee,
 /// total, priority and account **before the first `relay_tx`**, through the caller's sink
 /// because core stays silent (§2g) → write and fsync the **whole** `pending.json` record →
 /// `relay_tx` each transaction in order, comparing every returned `tx_hash` with the built
@@ -332,8 +337,14 @@ pub fn relay(
     announce: &dyn Fn(&str),
     cancel: &CancelToken,
 ) -> Result<Vec<String>, Error> {
-    // The enforcing gate: `build` raised it first, so a caller that built a plan by other
-    // means still cannot relay past it (§2a.2).
+    // §2d, in one line and for every caller: "`send::relay` likewise never consults a
+    // breaker: once a plan is built the §2a.11 `send.lock` is held and the transaction exists,
+    // so exiting 5 there would abandon a built transaction rather than protect anything."
+    // Leaving this to the transport's `any_success` flag made it true only for a caller that
+    // relays on the client that built — the CLI does, the TUI does not.
+    w.disable_breaker();
+    // The enforcing gate: the caller checked it immediately after the build, so a caller that
+    // built a plan by other means still cannot relay past it (§2a.2).
     check_max_fee(&plan)?;
     if cancel.is_cancelled() {
         return Err(Error::Interrupted);
@@ -397,11 +408,7 @@ pub fn relay(
                 } else {
                     format!("{i} of {total} broadcast ({ids})")
                 };
-                return Err(Error::tx_rejected(format!("{e}; {detail}"))
-                    .with_reason("relay_refused")
-                    .with_hint(format!(
-                        "fmonero wallet history --limit {total}   # then: fmonero wallet clear-pending --yes"
-                    )));
+                return Err(relay_failure(e, &detail, total));
             }
         }
     }
@@ -611,7 +618,55 @@ fn require_synchronized(n: Option<&NodeClient>) -> Result<(), Error> {
     .with_hint("fmonero status --json"))
 }
 
-fn check_max_fee(plan: &Plan) -> Result<(), Error> {
+/// What a failed `relay_tx` means, and only what it means (§2a.9, §2j).
+///
+/// `relay_tx` returning is the only positive evidence the daemon accepted a transaction, but a
+/// *failure* is not evidence of rejection: a call killed at its 30 s deadline, a 401, or a
+/// broken socket may all have delivered the transaction first. Flattening every one of those
+/// into exit 16 `tx_rejected`/`relay_refused` states that the daemon refused it, which §2j does
+/// not allow a check to claim beyond its mechanism — and an agent whose reflex on exit 16 is
+/// "build a smaller transaction and retry" would then attempt a second spend.
+///
+/// So the underlying error's class and `reason` survive — exit 5 `killed_at_deadline`/`stalled`,
+/// exit 4 `auth_refused`/`unreachable` — and the message says the outcome is unknown. Exit 16
+/// `relay_refused` is reserved for a JSON-RPC answer, which is the daemon actually refusing.
+/// The hint is the same in both cases: only `wallet history` can settle it.
+fn relay_failure(e: Error, detail: &str, total: usize) -> Error {
+    let hint = format!(
+        "fmonero wallet history --limit {total}   # then: fmonero wallet clear-pending --yes"
+    );
+    let unknown = matches!(
+        e.reason(),
+        Some("killed_at_deadline" | "stalled" | "unreachable" | "auth_refused")
+    );
+    if !unknown {
+        return Error::tx_rejected(format!("{e}; {detail}"))
+            .with_reason("relay_refused")
+            .with_hint(hint);
+    }
+    let text = format!(
+        "{e}; {detail}; the daemon never answered relay_tx, so whether it received the \
+         transaction is unknown"
+    );
+    let out = if e.exit_code() == 4 {
+        Error::backend(text)
+    } else {
+        Error::upstream(text)
+    };
+    let out = match e.reason() {
+        Some(r) => out.with_reason(r),
+        None => out,
+    };
+    out.with_hint(hint)
+}
+
+/// §2a.2's `--max-fee` gate. Public because §5c requires the `fee_above_max` refusal to carry
+/// the **built** transaction's key set, and `build`'s frozen signature (§5b) is
+/// `Result<Plan, Error>` — an `Err` destroys the `Plan` the payload has to be rendered from.
+/// The caller therefore raises it immediately after `build` returns and before its `--yes`
+/// check, which is §2a.1's step order; `relay` re-checks it as the enforcing gate, so a caller
+/// that skips this still cannot relay past it (§2a.2's own words).
+pub fn check_max_fee(plan: &Plan) -> Result<(), Error> {
     let Some(max) = plan.max_fee else {
         return Ok(());
     };
@@ -658,7 +713,13 @@ fn announce_line(plan: &Plan) -> String {
 /// [`Plan`] and released only when it drops — after `relay`, after a `--dry-run` or a
 /// no-`--yes` discard, or when the process dies, which is what makes it crash-safe with no
 /// marker to clean up.
-fn take_send_lock(ctx: &Context) -> Result<std::fs::File, Error> {
+///
+/// Public because `wallet clear-pending` is §2a.4's third writer of the record and must enter
+/// the same critical section: without the lock it can delete the record between two `relay_tx`
+/// calls of a sweep, `state::mark_relayed` then fails for a transaction that really went out,
+/// and **no** record is left — the lost update §2a.4 put the record in its own file to prevent.
+/// The returned file is the lock; dropping it releases it.
+pub fn take_send_lock(ctx: &Context) -> Result<std::fs::File, Error> {
     use std::os::unix::fs::OpenOptionsExt;
     use std::os::unix::io::AsRawFd;
     ctx.paths.ensure_dirs()?;
@@ -711,6 +772,57 @@ mod tests {
         assert!(shown.contains(&"c".repeat(64)));
         assert!(!shown.contains("deadbeefnotarealblob"), "{shown}");
         assert!(shown.contains("<redacted>"));
+    }
+
+    /// §2a.9/§2j: a `relay_tx` that never came back is not a rejection. The only failure
+    /// fmonero may report as `tx_rejected`/`relay_refused` is a JSON-RPC answer; a deadline
+    /// kill, an armed breaker, a 401 or a broken socket keep their own class and say the
+    /// outcome is unknown, because an agent whose reflex on exit 16 is "retry smaller" would
+    /// otherwise attempt a second spend of the same outputs.
+    #[test]
+    fn a_relay_that_never_answered_is_not_reported_as_a_rejection() {
+        // The daemon answered and refused: -4 GENERIC_TRANSFER_ERROR (§1b.4).
+        let refused = relay_failure(
+            Error::from_wallet_rpc(-4, "Transaction was rejected by daemon"),
+            "0 of 1 broadcast",
+            1,
+        );
+        assert_eq!(refused.exit_code(), 16);
+        assert_eq!(refused.reason(), Some("relay_refused"));
+        assert!(refused.hint().contains("clear-pending"));
+
+        // We never heard back. Three shapes, one per §4 reason that means "unknown".
+        for (e, code, reason) in [
+            (
+                Error::upstream("killed").with_reason("killed_at_deadline"),
+                5,
+                "killed_at_deadline",
+            ),
+            (
+                Error::upstream("stalled").with_reason("stalled"),
+                5,
+                "stalled",
+            ),
+            (
+                Error::backend("no socket").with_reason("unreachable"),
+                4,
+                "unreachable",
+            ),
+            (
+                Error::backend("401").with_reason("auth_refused"),
+                4,
+                "auth_refused",
+            ),
+        ] {
+            let out = relay_failure(e, "0 of 1 broadcast", 1);
+            assert_eq!(out.exit_code(), code, "{reason}");
+            assert_eq!(out.reason(), Some(reason));
+            assert!(
+                out.to_string().contains("unknown"),
+                "{reason}: the report must not assert a rejection that may not have happened"
+            );
+            assert!(out.hint().contains("wallet history"), "{reason}");
+        }
     }
 
     /// §2a.8 as a property of the type: there is no field to put an `unlock_time` or a

@@ -178,6 +178,15 @@ impl WalletClient {
         Self::build(ctx, false)
     }
 
+    /// §2d's "`send::relay` never consults a breaker", as a property of the relay rather than
+    /// of the caller. Called by `send::relay` on whatever client it was handed — the CLI
+    /// reuses the one that built the plan, the TUI builds a fresh one for `Action::Relay`, and
+    /// only the first of those was exempt by `any_success` alone. Crate-private, so the frozen
+    /// API (§5b) is unchanged.
+    pub(crate) fn disable_breaker(&self) {
+        self.t.disable_breaker();
+    }
+
     fn build(ctx: &Context, breaker: bool) -> Result<WalletClient, Error> {
         let url = &ctx.settings.wallet.url;
         crate::rpc::require_loopback(url)?;

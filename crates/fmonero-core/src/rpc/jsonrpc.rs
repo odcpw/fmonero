@@ -59,6 +59,16 @@ struct Live {
     /// Set by the first request that came back 200. After that the §2d breaker is no longer
     /// consulted on this client, which is what keeps `send::relay` out of its reach (§2d).
     any_success: bool,
+    /// Set by [`Transport::disable_breaker`], which `send::relay` calls as its first
+    /// statement. §2d: "**`send::relay` likewise never consults a breaker**: once a plan is
+    /// built the §2a.11 `send.lock` is held and the transaction exists, so exiting 5 there
+    /// would abandon a built transaction rather than protect anything." `any_success` alone
+    /// made that true only for a caller that happened to reuse the client that built the
+    /// plan — the CLI does, the TUI builds a fresh client for `Action::Relay` — so the
+    /// exemption lives on the transport and is switched on by `relay` itself, for every
+    /// caller. Arming is unaffected: a `relay_tx` killed at its deadline still records the
+    /// stall, it is only never *blocked* by one.
+    breaker_off: bool,
 }
 
 /// One daemon's HTTP transport.
@@ -159,6 +169,16 @@ impl Transport {
         &self.base
     }
 
+    /// Stop consulting the §2d breaker on this transport, for good. `send::relay` calls it as
+    /// its first statement so that the exemption §2d states in words is a property of the
+    /// relay itself rather than of whichever client the caller happened to pass (§2d).
+    pub(crate) fn disable_breaker(&self) {
+        match self.live.lock() {
+            Ok(mut l) => l.breaker_off = true,
+            Err(p) => p.into_inner().breaker_off = true,
+        }
+    }
+
     /// One POST, with at most one 401 retry. Returns the response body.
     fn post(&self, path: &str, body: &[u8], d: Deadline) -> Result<Vec<u8>, RpcError> {
         let mut live = match self.live.lock() {
@@ -171,7 +191,7 @@ impl Transport {
                 l
             }
         };
-        if !live.any_success {
+        if !live.any_success && !live.breaker_off {
             if let Some(ctx) = &self.breaker {
                 if !ctx.force {
                     if let Ok(Some(left)) = state::stall_remaining(ctx, self.who) {
@@ -366,9 +386,19 @@ fn shared_error(daemon: &str, what: &str, e: RpcError) -> Error {
         ))
         .with_reason("stalled")
         .with_hint("fmonero doctor   # or re-run with --force"),
-        RpcError::Transport(msg) => {
-            Error::backend(format!("{daemon} is not answering: {msg}")).with_reason("unreachable")
-        }
+        // The most frequently hit error path in the tool — every command against a stopped
+        // daemon — and the only exit-4 reason that used to carry no hint of its own, so it fell
+        // through to `Error::default_hint`'s `omarchy pkg add monero`: an install command for a
+        // daemon that is installed and merely not running. §7.1 names the right one for each of
+        // these two conditions (`node_reachable` → `fmonero node up`, `wallet_rpc_reachable` →
+        // start the unit); `omarchy pkg add monero` belongs to `reason: not_installed` alone.
+        RpcError::Transport(msg) => Error::backend(format!("{daemon} is not answering: {msg}"))
+            .with_reason("unreachable")
+            .with_hint(if daemon == "monerod" {
+                "fmonero node up"
+            } else {
+                "fmonero wallet open <name>   # starts the unit on demand, then opens"
+            }),
         RpcError::Rpc { code, message } => {
             Error::upstream(format!("{daemon}: {message} ({code})")).with_reason("rpc_error")
         }
