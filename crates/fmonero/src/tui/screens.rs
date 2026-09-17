@@ -720,8 +720,11 @@ fn subaddress_pane(m: &Tui, area: Rect, frame: &mut Frame) {
     let title = " Subaddresses — Enter copies · a new · l label ";
     let Some(set) = &m.wallet.addresses else {
         if let Some(inner) = framed(area, th, title, focused, frame) {
-            let text = m.wallet.err.clone().unwrap_or_else(|| "loading…".into());
-            para(text, th.dimmed(), true).render(inner, frame);
+            let (text, style) = match &m.wallet.err {
+                Some(e) => (format!("{e}\nr retries"), th.err()),
+                None => ("loading…".to_string(), th.dimmed()),
+            };
+            para(text, style, true).render(inner, frame);
         }
         return;
     };

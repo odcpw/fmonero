@@ -857,6 +857,8 @@ impl Tui {
                 match self.screen {
                     Screen::Node => cmds.push(self.load_extras()),
                     Screen::Wallet => {
+                        self.wallet.err = None;
+                        self.wallet.rows_err = None;
                         cmds.push(self.load_wallet());
                         cmds.push(self.load_history());
                     }
@@ -1422,7 +1424,11 @@ impl Model for Tui {
                         let opened = s.wallet.open;
                         self.status_err = None;
                         self.status = Some(s);
-                        if opened && self.wallet.addresses.is_none() {
+                        // Load once when a wallet appears, and **not** again every second
+                        // after a failure: a 1 Hz retry of four RPCs against a wallet that is
+                        // answering errors is the pile-up §2d exists to prevent. `r` retries,
+                        // and the pane says so.
+                        if opened && self.wallet.addresses.is_none() && self.wallet.err.is_none() {
                             return Cmd::batch(vec![self.load_wallet(), self.load_history()]);
                         }
                         if !opened {
