@@ -61,7 +61,9 @@ scripts/install.sh --yes              # build, install to ~/.local/bin, wire up 
 ```
 
 That is `cargo build --release -p fmonero`, an atomic install of `~/.local/bin/fmonero`, and
-`fmonero setup --all --yes`. Run it again after a `git pull`; every step is idempotent.
+`fmonero setup --all --yes`. **`--yes` has never been run on this machine**: a real `setup` is
+RED in `DESIGN.md` §4b, so every step is *written* to be idempotent and safe to re-run after a
+`git pull`, and that is unverified — see Status. `--dry-run` prints the whole plan and is GREEN.
 `scripts/uninstall.sh` reverses it (`--menu` also strips the menu entries, `--purge` also
 deletes fmonero's own config, state and cache). Neither script uses sudo, writes outside
 `$HOME`, or touches a wallet file; the uninstaller refuses `--purge` while a pending-send
@@ -241,8 +243,10 @@ and holds it until the plan is dropped, which makes the entry check, the build, 
 write, every relay and the resolve step one critical section. The TUI's confirm modal holds it
 for as long as the human takes.
 
-Also, by construction: amounts are `u64` piconero end to end, with no `f64` anywhere in Rust or
-in QML (the widget formats from a pre-rendered string and never divides). Recipients are
+Also, by construction: amounts are `u64` piconero end to end, and no `f64` touches a monetary
+value anywhere, in Rust or in QML — the widget formats money from a pre-rendered string, and the
+only `f64`s in the tree are a sync percentage, a byte rate, a byte-size formatter and a disk
+figure, each named in `scripts/check.sh`. Recipients are
 validated twice, structurally and then by the wallet daemon, and a recipient on the wrong
 network is refused by name, with the wallet's own primary address deciding which network that
 is. The request builder has no `unlock_time`, no `payment_id`, no `ring_size` and no
@@ -298,12 +302,15 @@ and, where one exists, a `fix_cmd` you can run yourself. Exit 11 means it found 
 precondition is missing reports `skip:<reason>`, never `pass`.
 
 `--fix` applies only repairs that are reversible, and every mutation goes through one
-chokepoint that appends its inverse to `runs/<id>/actions.jsonl` with a verbatim backup and a
-SHA-256 before and after. `fmonero doctor undo latest` replays that log in reverse and refuses
-with exit 13 if a backup is missing or its hash no longer matches. The doctor never stops a
-daemon it did not start, never touches a wallet file, never deletes anything, and never runs
-sudo. The pending-send record is report-only in every state, a fully relayed one included: it
-is the one check whose fixer could lose money.
+chokepoint that appends its inverse to `runs/<id>/actions.jsonl` — with a verbatim backup and a
+SHA-256 before and after for every file it rewrites, and a recorded inverse for everything else
+(a created directory records whether it existed, a symlink its old target, an argv its reversal).
+`fmonero doctor undo latest` replays that log in reverse and refuses with exit 13 if a backup is
+missing or its hash no longer matches. The doctor never stops a daemon it did not start, never
+touches a wallet file, never deletes a file — an undo moves a file the run created into that
+run's `quarantine/`, and removes only a directory the run created itself, while it is still
+empty — and never runs sudo. The pending-send record is report-only in every state, a fully
+relayed one included: it is the one check whose fixer could lose money.
 
 ## Layout
 

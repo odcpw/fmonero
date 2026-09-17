@@ -16,31 +16,65 @@ use crate::status::WARNING_IDS;
 
 /// What this build actually is. `version` is the crate version; this names the phase, so a
 /// `capabilities` dump can never be mistaken for a finished tool.
-pub const BUILD_STAGE: &str = "phase-1b-core";
+pub const BUILD_STAGE: &str = "phase-3-integrated";
 
 /// The §4b summary, in prose, and honest about the one thing that matters: **no fmonero build
 /// has ever spoken to a real `monerod` or `monero-wallet-rpc`**, because neither is installed
 /// on the machine this was written on (§1.1).
 pub const BUILD_NOTE: &str = "\
-Core implemented (DESIGN.md §8, Phase 1b). What has actually been observed working:
+Integrated build (DESIGN.md §8, Phases 0 to 3 merged, reviewed and fixed in Phase 4). What has \
+actually been observed working:
 
 GREEN — verified end to end on a machine with no Monero installed: status with both daemons \
 absent, wallet list, wallet validate's structural path, settings list|get|set, capabilities, \
 robot-docs, version, setup --dry-run, wallet clear-pending, node log with no log file, every \
---help, every usage error, and amount and address parsing.
+--help, every usage error, amount and address parsing, doctor (exit 11 with exactly \
+monerod_installed and wallet_rpc_installed failing), doctor capabilities, the doctor undo latest \
+round trip, and tui opening, rendering every screen's empty state and quitting cleanly.
 
 AMBER — verified against crates/fmonero-mock serving fixtures DERIVED FROM THE MONERO SOURCE \
 at v0.18.5.1, which proves fmonero's wire format and parsing and proves NOTHING about a real \
 daemon: node info|peers|bans|ban|unban|limit, wallet open|close|balance|address|new-address|\
 history|refresh|book|notes|set-daemon|create, wallet send and sweep including the \
 do_not_relay build, the real fee, the no---yes refusal and the relay sequence, MD5 Digest \
-authentication, the wallet-RPC error map, the restricted-node degradation and the deadline, \
-breaker and --force paths.
+authentication, the wallet-RPC error map, the restricted-node degradation, the deadline, \
+breaker and --force paths, the TUI's ProgramSimulator send (one transfer, one relay_tx) and \
+every TUI screen rendered against the mock. The Quickshell bar widget loads in the live shell \
+and renders from the same status document.
 
 RED — never verified, and not claimed anywhere: a real node start, stop or restart, real sync \
 progress, real peers, a real balance, a real refresh, A REAL SEND OR SWEEP OF ANY AMOUNT, a \
-real open_wallet against a real wallet file, a real setup run, and the warm timing target. \
+real open_wallet against a real wallet file, a real setup run, the warm timing target, and \
+every doctor check in the node, wallet and storage groups against a live daemon. \
 The owner turns these green by installing Monero and running the §4b command list.";
+
+/// Every command of [`COMMANDS`] that has a §4b **RED** scenario, and therefore carries
+/// `verified: "red"` — §4b's rule is that the class is "the *lowest* class any of its scenarios
+/// reaches", and the test below ties this list to `BUILD_NOTE`'s own RED sentence so the two
+/// halves of this file cannot disagree (§2j).
+///
+/// Each name is here because §4b's RED list names it: a real `node up`/`down`/`restart`; real
+/// sync progress and real peers (`status`, `node info`, `node peers`); a real balance
+/// (`wallet balance`, `status`); a real `refresh`; a real send or sweep; a real `open_wallet`
+/// against a real wallet file (`wallet open`, and `wallet create`, which finishes the same
+/// sequence on a wallet file no test has ever created); a real `setup`; and every doctor check
+/// in the node, wallet and storage groups against a live daemon.
+const RED_COMMANDS: &[&str] = &[
+    "status",
+    "node up",
+    "node down",
+    "node restart",
+    "node info",
+    "node peers",
+    "wallet open",
+    "wallet create",
+    "wallet balance",
+    "wallet refresh",
+    "wallet send",
+    "wallet sweep",
+    "setup",
+    "doctor",
+];
 
 /// The agent handbook, plain text (§4). Claims only GREEN and AMBER, and says which (§2j).
 pub const ROBOT_GUIDE: &str = "\
@@ -130,13 +164,13 @@ struct Command {
 /// The whole §4.1 table, as data. `capabilities` prints it and `scripts/check.sh` counts it,
 /// so a command that exists in `main.rs` and not here is visible rather than undocumented.
 const COMMANDS: &[Command] = &[
-    cmd("status", "", false, false, false, false, false, "green"),
-    cmd("node up", "[--wait] [--wait-timeout SECONDS]", true, false, false, false, false, "amber"),
-    cmd("node down", "", true, true, false, false, false, "amber"),
+    cmd("status", "", false, false, false, false, false, "red"),
+    cmd("node up", "[--wait] [--wait-timeout SECONDS]", true, false, false, false, false, "red"),
+    cmd("node down", "", true, true, false, false, false, "red"),
     cmd("node restart", "", true, true, false, false, false, "red"),
-    cmd("node info", "", false, false, false, true, false, "amber"),
+    cmd("node info", "", false, false, false, true, false, "red"),
     cmd("node log", "[--lines N] [--grep TEXT]", false, false, false, false, false, "green"),
-    cmd("node peers", "[--white|--gray] [--limit N]", false, false, false, true, false, "amber"),
+    cmd("node peers", "[--white|--gray] [--limit N]", false, false, false, true, false, "red"),
     cmd("node bans", "", false, false, false, true, false, "amber"),
     cmd("node ban", "HOST [--seconds N]", true, false, false, true, false, "amber"),
     cmd("node unban", "HOST", true, false, false, true, false, "amber"),
@@ -146,14 +180,14 @@ const COMMANDS: &[Command] = &[
         true, false, false, true, false, "amber",
     ),
     cmd("wallet list", "", false, false, false, false, false, "green"),
-    cmd("wallet open", "NAME [--password-file P]", true, false, false, false, false, "amber"),
+    cmd("wallet open", "NAME [--password-file P]", true, false, false, false, false, "red"),
     cmd("wallet close", "", true, false, true, false, false, "amber"),
     cmd(
         "wallet create",
         "NAME [--language L] [--allow-empty-password] [--password-file P]",
-        true, true, false, false, false, "amber",
+        true, true, false, false, false, "red",
     ),
-    cmd("wallet balance", "[--account N] [--subaddresses]", false, false, true, false, false, "amber"),
+    cmd("wallet balance", "[--account N] [--subaddresses]", false, false, true, false, false, "red"),
     cmd("wallet address", "[--account N] [--index N] [--qr]", false, false, true, false, false, "amber"),
     cmd("wallet new-address", "[--account N] [--label TEXT]", true, false, true, false, false, "amber"),
     cmd(
@@ -174,7 +208,7 @@ const COMMANDS: &[Command] = &[
     cmd("wallet clear-pending", "", true, true, false, false, false, "green"),
     cmd("wallet validate", "ADDRESS", false, false, false, false, false, "green"),
     cmd("wallet book", "list | add ADDRESS DESC | remove INDEX", true, false, true, false, false, "amber"),
-    cmd("wallet refresh", "[--start-height H]", true, false, true, true, false, "amber"),
+    cmd("wallet refresh", "[--start-height H]", true, false, true, true, false, "red"),
     cmd("wallet notes", "get TXID | set TXID TEXT", true, false, true, false, false, "amber"),
     cmd("wallet set-daemon", "ADDRESS [--trusted]", true, true, true, false, false, "amber"),
     cmd("settings list", "", false, false, false, false, false, "green"),
@@ -188,7 +222,7 @@ const COMMANDS: &[Command] = &[
     cmd(
         "doctor",
         "[--fix] [--only GROUP] [--save] | undo RUN|latest | capabilities",
-        true, false, false, false, true, "green",
+        true, false, false, false, true, "red",
     ),
     Command {
         name: "tui",
@@ -360,7 +394,10 @@ pub fn capabilities_json(ctx: &Context) -> serde_json::Value {
                 "needs_node": c.needs_node,
                 "output_format": c.output_format,
                 "accepts_dry_run": c.accepts_dry_run,
-                "verified": c.verified,
+                // The lowest class wins (§4b), and `RED_COMMANDS` is applied here rather than
+                // trusted in the column so that a row cannot be promoted above its lowest
+                // scenario by editing one literal.
+                "verified": if RED_COMMANDS.contains(&c.name) { "red" } else { c.verified },
             })
         })
         .collect();
@@ -465,6 +502,54 @@ mod tests {
                 .any(|c| c.name == "wallet send" && c.verified == "red"),
             "`wallet send` is RED until a real broadcast has happened (§4b)"
         );
+    }
+
+    /// §4b: `verified` is "the §4b class this command's *lowest* scenario reaches", and §4b's
+    /// own rule is that a class "mirrors the *lowest* class any of its scenarios reaches". This
+    /// ties the column to [`RED_COMMANDS`] in both directions, so a row cannot be promoted
+    /// above its lowest class and a name cannot be added to the RED list without the column
+    /// following — the drift that had `node down` reading `amber` beside `node restart`'s `red`
+    /// when both have exactly one mock scenario and one unrun real one.
+    #[test]
+    fn verified_is_the_lowest_class_every_scenario_reaches() {
+        for name in RED_COMMANDS {
+            let c = COMMANDS
+                .iter()
+                .find(|c| &c.name == name)
+                .unwrap_or_else(|| panic!("RED_COMMANDS names {name}, which is not a command"));
+            assert_eq!(
+                c.verified, "red",
+                "{name} has a §4b RED scenario, so its lowest class is red"
+            );
+        }
+        for c in COMMANDS {
+            if c.verified == "red" {
+                assert!(
+                    RED_COMMANDS.contains(&c.name),
+                    "{} is marked red but RED_COMMANDS does not say why (§2j)",
+                    c.name
+                );
+            }
+        }
+        // And the two halves of this file agree: every clause of BUILD_NOTE's RED sentence has
+        // a red row, so the prose and the column cannot drift apart.
+        let red = BUILD_NOTE
+            .split("RED —")
+            .nth(1)
+            .expect("BUILD_NOTE has a RED sentence");
+        for clause in [
+            "node start, stop or restart",
+            "real sync progress",
+            "real peers",
+            "a real balance",
+            "a real refresh",
+            "A REAL SEND OR SWEEP OF ANY AMOUNT",
+            "a real open_wallet",
+            "a real setup run",
+            "every doctor check",
+        ] {
+            assert!(red.contains(clause), "the RED sentence must name {clause}");
+        }
     }
 
     /// The guide is what an agent reads first, so it has to name the two things that decide
