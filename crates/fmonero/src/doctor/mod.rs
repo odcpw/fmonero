@@ -291,7 +291,7 @@ fn diagnose(args: DoctorArgs, ctx: Context, out: Out) -> anyhow::Result<i32> {
                 continue;
             }
             let before = m.log.len();
-            let outcome = apply_one(&mut m, &ctx, &probes, def, *kind);
+            let outcome = apply_one(&mut m, &ctx, &probes, def, *kind, planning_only);
             let actions: Vec<mutate::PlannedAction> = m.log[before..].to_vec();
             if let Some(row) = rows.iter_mut().find(|r| r.id == def.id) {
                 row.actions = actions;
@@ -400,10 +400,20 @@ fn apply_one(
     probes: &probes::Probes,
     def: &checks::CheckDef,
     kind: PlanKind,
+    planning_only: bool,
 ) -> Result<String, Error> {
     let actions = mutate::plan(kind, ctx, probes)?;
     if actions.is_empty() {
         return Ok("nothing to do".to_string());
+    }
+    // A sandboxed run declines what it may not touch, and says so, rather than letting the
+    // chokepoint refuse it and counting that as a failed fixer. **A dry run is exempt**: it
+    // mutates nothing by construction, and the whole point of `--dry-run` is to disclose the
+    // blast radius — including the part a sandbox would refuse to apply.
+    if !planning_only {
+        if let Some(reason) = mutate::refused_here(ctx, &actions) {
+            return Ok(reason);
+        }
     }
     let mut applied = 0;
     let mut already = 0;

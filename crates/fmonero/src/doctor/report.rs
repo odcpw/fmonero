@@ -184,7 +184,10 @@ pub fn human(out: &Out, report: &Report) {
             check.id, check.detail
         ));
         if let Some(cmd) = &check.fix_cmd {
-            if check.status != "pass" {
+            // Only for a finding. A `skip` already says why it could not be asked, and 25
+            // repetitions of `fix: omarchy pkg add monero` bury the three rows that matter —
+            // the run-level `next:` lines carry the machine-wide move instead.
+            if matches!(check.status.as_str(), "warn" | "fail") {
                 out.line(format!(
                     "{:33}{:<width$}  {}",
                     "",

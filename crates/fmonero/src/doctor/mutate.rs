@@ -117,16 +117,31 @@ fn sha256(bytes: &[u8]) -> String {
 /// `systemd_user_dir` is **not** a scope: the two unit *files* are, by name, because the
 /// directory holds every other user unit on the machine.
 pub fn write_scopes(ctx: &Context) -> Vec<PathBuf> {
-    let unit_dir = probes::systemd_user_dir(ctx);
     let mut scopes = vec![
         ctx.paths.state_dir.clone(),
         ctx.paths.config_dir.clone(),
         ctx.paths.cache_dir.clone(),
-        ctx.paths.omarchy_config_dir.join("plugins"),
-        ctx.paths.omarchy_config_dir.join("extensions"),
-        unit_dir.join(&ctx.settings.node.unit),
-        unit_dir.join(&ctx.settings.wallet.unit),
     ];
+    // **Under a test state directory the scopes stop there.** §4.2 makes `units::install`
+    // refuse to run at all when `FMONERO_STATE_DIR` is set, and a doctor that wrote the two
+    // unit files itself would walk straight around that guard: the Phase 2 gate's own
+    // `--fix` run would rewrite the OWNER's `~/.config/systemd/user`, run `systemctl --user
+    // disable` against the owner's systemd and merge the owner's Omarchy menu — from a
+    // sandbox that exists precisely so it cannot. `FMONERO_STATE_DIR`,
+    // `FMONERO_CONFIG_DIR` and `FMONERO_CACHE_DIR` are the three locations a test redirects
+    // (§4.2, §5b), so they are exactly the three a test may write. DESIGN.md states the rule
+    // for `units::install` and not for the doctor; the extension is recorded in
+    // `decisions/phase2-doctor.md`.
+    if fmonero_core::paths::under_test_state_dir() {
+        return scopes;
+    }
+    let unit_dir = probes::systemd_user_dir(ctx);
+    scopes.push(ctx.paths.omarchy_config_dir.join("plugins"));
+    scopes.push(ctx.paths.omarchy_config_dir.join("extensions"));
+    // The two unit FILES, by name — not their directory, which holds every other user unit
+    // on the machine.
+    scopes.push(unit_dir.join(&ctx.settings.node.unit));
+    scopes.push(unit_dir.join(&ctx.settings.wallet.unit));
     // `wallet_dir_exists` creates fmonero's own wallet subtree — `~/.local/share/fmonero`
     // and below — and nothing above it.
     if let Some(parent) = ctx.paths.wallet_dir.parent() {
@@ -134,6 +149,15 @@ pub fn write_scopes(ctx: &Context) -> Vec<PathBuf> {
     }
     scopes
 }
+
+/// The argv a `RunArgv` fixer may still run under a test state directory: `chmod`, whose
+/// every path argument [`require_in_scope`] then checks.
+///
+/// Every other fixer argv reaches outside the three redirected directories by construction —
+/// `systemctl --user disable` touches the owner's systemd, `omarchy plugin enable` rewrites
+/// the owner's `shell.json`, `fmonero setup --menu` merges the owner's menu file — and a path
+/// check cannot see it, because the path is not in the argv. So the allowlist is a name list.
+const TEST_SAFE_ARGV0: &[&str] = &["chmod"];
 
 /// True when `path` is inside one of [`write_scopes`].
 ///
@@ -167,6 +191,34 @@ fn require_in_scope(ctx: &Context, path: &Path) -> Result<(), Error> {
         path.display()
     ))
     .with_hint("fmonero doctor capabilities --json"))
+}
+
+/// Refuse, under a test state directory, an argv that would reach outside the three
+/// redirected directories — see [`TEST_SAFE_ARGV0`]. Applied on both the apply and the undo
+/// side, because an inverse argv runs the same commands the forward one did.
+fn require_test_safe_argv(ctx: &Context, argv: &[&str]) -> Result<(), Error> {
+    if !fmonero_core::paths::under_test_state_dir() {
+        return Ok(());
+    }
+    let program = std::path::Path::new(argv.first().copied().unwrap_or_default())
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if !TEST_SAFE_ARGV0.contains(&program.as_str()) {
+        return Err(Error::doctor_refused(format!(
+            "`{}` would change this machine outside FMONERO_STATE_DIR; the doctor refuses \
+             every fixer but chmod under a test state directory, the same guard §4.2 puts on \
+             units::install",
+            argv.join(" ")
+        ))
+        .with_hint("fmonero doctor --fix --dry-run   # to see the plan without a test state dir"));
+    }
+    for arg in argv.iter().skip(1) {
+        if arg.starts_with('/') {
+            require_in_scope(ctx, std::path::Path::new(arg))?;
+        }
+    }
+    Ok(())
 }
 
 /// Map an absolute path to the relative one used under `backups/` and `quarantine/`,
@@ -571,6 +623,7 @@ impl<'a> Mutator<'a> {
         } = step;
         // argv only, never a shell string (§2f).
         let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
+        require_test_safe_argv(self.ctx, &borrowed)?;
         if proc::which(borrowed[0]).is_none() {
             return Err(Error::backend(format!("{} is not on PATH", borrowed[0])));
         }
@@ -861,6 +914,41 @@ pub fn plan(kind: PlanKind, ctx: &Context, p: &Probes) -> Result<Vec<Action>, Er
     }
 }
 
+/// Why a planned repair cannot run here, when a test state directory narrows the scopes.
+///
+/// Asked **before** the first mutation so a sandboxed `--fix` reports "skipped, and here is
+/// why" rather than a failed fixer: the chokepoint would refuse the write anyway, but a
+/// refusal counted as `fix_failed` would make every run under `FMONERO_STATE_DIR` exit 12 and
+/// bury the class-A round trip the Phase 2 gate actually measures.
+pub fn refused_here(ctx: &Context, actions: &[Action]) -> Option<String> {
+    if !fmonero_core::paths::under_test_state_dir() {
+        return None;
+    }
+    for action in actions {
+        let outside = match action {
+            Action::WriteFile { path, .. } | Action::CreateDir { path, .. } => {
+                (!in_scope(ctx, path)).then(|| format!("touch {}", path.display()))
+            }
+            Action::CreateSymlink { link, .. } => {
+                (!in_scope(ctx, link)).then(|| format!("touch {}", link.display()))
+            }
+            Action::RunArgv { argv, .. } => {
+                let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
+                require_test_safe_argv(ctx, &borrowed)
+                    .err()
+                    .map(|_| format!("run `{}`", argv.join(" ")))
+            }
+        };
+        if let Some(what) = outside {
+            return Some(format!(
+                "skipped: FMONERO_STATE_DIR is set, so the doctor will not {what} — the same \
+                 guard §4.2 puts on units::install"
+            ));
+        }
+    }
+    None
+}
+
 /// The repaired `config.toml`: every valid key kept, every invalid one reset to its default,
 /// every unknown one dropped. A document that did not parse at all becomes the defaults.
 fn repaired_settings(p: &Probes) -> Result<Vec<u8>, Error> {
@@ -1043,6 +1131,9 @@ pub fn undo(ctx: &Context, dir: &Path) -> Result<Vec<UndoStep>, Error> {
                 if borrowed.is_empty() {
                     (true, "nothing to undo".to_string())
                 } else {
+                    // An inverse argv runs the same commands the forward one did, so it is
+                    // bounded by the same guard.
+                    require_test_safe_argv(ctx, &borrowed)?;
                     let out = proc::run_with_deadline(&borrowed, ctx.timeouts.systemctl, None)?;
                     if out.success() {
                         (true, format!("ran {}", argv.join(" ")))
@@ -1383,6 +1474,100 @@ mod tests {
         std::fs::remove_file(leaf.join("keep")).unwrap();
         undo(&ctx, &run_dir).expect("undo again");
         assert!(!leaf.exists(), "an empty one is rmdir'ed");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The guard that keeps the Phase 2 gate's own `--fix` out of the owner's home.
+    ///
+    /// It is the one test here that touches the process environment, and it is safe to run
+    /// beside the others precisely because of what it asserts: with `FMONERO_STATE_DIR` set
+    /// the scopes are the three redirected directories, which is where every other test in
+    /// this file writes.
+    #[test]
+    fn under_a_test_state_dir_no_fixer_may_reach_outside_it() {
+        let (ctx, dir) = test_ctx("guard");
+        std::env::set_var("FMONERO_STATE_DIR", &ctx.paths.state_dir);
+        let scopes = write_scopes(&ctx);
+        let unit = ctx.paths.systemd_user_dir.join(&ctx.settings.node.unit);
+        let plugin = ctx.paths.plugin_link();
+        let refused_write = refused_here(
+            &ctx,
+            &[Action::WriteFile {
+                path: unit.clone(),
+                bytes: b"[Unit]\n".to_vec(),
+                mode: 0o644,
+            }],
+        );
+        let refused_link = refused_here(
+            &ctx,
+            &[Action::CreateSymlink {
+                link: plugin,
+                target: PathBuf::from("/tmp"),
+            }],
+        );
+        let refused_systemctl = refused_here(
+            &ctx,
+            &[Action::RunArgv {
+                argv: vec![
+                    "systemctl".into(),
+                    "--user".into(),
+                    "disable".into(),
+                    "fmonero-monerod.service".into(),
+                ],
+                inverse_argv: Vec::new(),
+            }],
+        );
+        let allowed_chmod = refused_here(
+            &ctx,
+            &[Action::RunArgv {
+                argv: vec![
+                    "chmod".into(),
+                    "600".into(),
+                    ctx.paths.state_file().display().to_string(),
+                ],
+                inverse_argv: Vec::new(),
+            }],
+        );
+        let allowed_state = refused_here(
+            &ctx,
+            &[Action::WriteFile {
+                path: ctx.paths.state_file(),
+                bytes: b"{}\n".to_vec(),
+                mode: 0o600,
+            }],
+        );
+        std::env::remove_var("FMONERO_STATE_DIR");
+
+        assert_eq!(scopes.len(), 3, "{scopes:?}");
+        assert!(refused_write.is_some(), "a unit file must be refused");
+        assert!(refused_link.is_some(), "the plugin symlink must be refused");
+        assert!(
+            refused_systemctl.is_some(),
+            "systemctl --user disable must be refused"
+        );
+        assert!(allowed_chmod.is_none(), "an in-scope chmod stays allowed");
+        assert!(
+            allowed_state.is_none(),
+            "state.json is exactly what a test state dir redirects"
+        );
+        // And the chokepoint itself refuses, not only the pre-check.
+        std::env::set_var("FMONERO_STATE_DIR", &ctx.paths.state_dir);
+        let run = RunDir::create(&ctx).expect("run dir");
+        let mut m = Mutator::new(&ctx, Some(run), false);
+        let err = m
+            .mutate(
+                "units_present",
+                Class::B,
+                Action::WriteFile {
+                    path: unit.clone(),
+                    bytes: b"[Unit]\n".to_vec(),
+                    mode: 0o644,
+                },
+            )
+            .expect_err("the chokepoint must refuse it too");
+        std::env::remove_var("FMONERO_STATE_DIR");
+        assert_eq!(err.exit_code(), 13, "{err}");
+        assert!(!unit.exists());
         let _ = std::fs::remove_dir_all(dir);
     }
 

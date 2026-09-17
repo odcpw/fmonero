@@ -1706,11 +1706,15 @@ fn ports_owned(p: &Probes) -> Verdict {
         return Verdict::skip("not_taken", "the security group was not selected");
     }
     if p.ports.is_empty() {
+        // Name what was looked at, so this is distinguishable from a run against an empty
+        // /proc — which §7.1's "our unit's PID **or nothing**" also makes a `pass`.
         return Verdict::pass(format!(
-            "nothing listens on {} / {} / {}",
-            p.node_url_port.unwrap_or_default(),
-            p.settings_wallet_port,
-            p.expected_wallet_port
+            "nothing listens on {}",
+            p.ports_watched
+                .iter()
+                .map(u16::to_string)
+                .collect::<Vec<_>>()
+                .join(" / ")
         ));
     }
     let external: Vec<String> = p

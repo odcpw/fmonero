@@ -389,6 +389,9 @@ pub struct Probes {
     pub monerod_conf_prune: Option<bool>,
     pub monerod_conf_has_login: bool,
     pub ports: Vec<PortProbe>,
+    /// The ports §7.1 names, resolved for this network and deduplicated — so the `pass`
+    /// detail can say what was looked at rather than only "ok".
+    pub ports_watched: Vec<u16>,
     pub ports_taken: bool,
     pub perms: Vec<PermProbe>,
     pub free_bytes: Option<u64>,
@@ -551,6 +554,7 @@ impl Probes {
             monerod_conf_prune: None,
             monerod_conf_has_login: false,
             ports: Vec::new(),
+            ports_watched: Vec::new(),
             ports_taken: false,
             perms: Vec::new(),
             free_bytes: None,
@@ -745,7 +749,9 @@ impl Probes {
         }
 
         if group_selected(only, DoctorGroup::Security) {
-            self.ports = self.scan_ports(ctx);
+            let (watched, ports) = self.scan_ports(ctx);
+            self.ports_watched = watched;
+            self.ports = ports;
             self.ports_taken = true;
         }
         self.perms = scan_perms(ctx);
@@ -755,7 +761,7 @@ impl Probes {
     /// fixture drives it: `<proc_root>/net/tcp` gives (port → inode) and `<proc_root>/*/fd`
     /// gives (inode → pid). Never `ss` or `lsof`, neither of which is guaranteed installed
     /// (the same reason §2i rejects them).
-    fn scan_ports(&self, ctx: &Context) -> Vec<PortProbe> {
+    fn scan_ports(&self, ctx: &Context) -> (Vec<u16>, Vec<PortProbe>) {
         let mut wanted: Vec<u16> = vec![
             ctx.settings.node.network.node_p2p_port(),
             ctx.settings.wallet.port,
@@ -801,7 +807,7 @@ impl Probes {
             }
         }
         if listeners.is_empty() {
-            return Vec::new();
+            return (wanted, Vec::new());
         }
 
         let ours: Vec<i32> = [&self.node_unit_name, &self.wallet_unit_name]
@@ -809,7 +815,7 @@ impl Probes {
             .filter_map(|u| units::main_pid(ctx, u).ok().flatten())
             .collect();
         let owners = socket_owners(&ctx.paths.proc_root);
-        listeners
+        let probes = listeners
             .into_iter()
             .map(|(port, address, loopback, inode)| {
                 let pid = owners.get(&inode).map(|(pid, _)| *pid);
@@ -824,7 +830,8 @@ impl Probes {
                     ours: pid.is_some_and(|p| ours.contains(&p)),
                 }
             })
-            .collect()
+            .collect();
+        (wanted, probes)
     }
 
     // ---- storage ------------------------------------------------------------
