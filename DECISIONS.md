@@ -7162,3 +7162,38 @@ enforceable form of "fmonero never speaks to a remote node", asserted by
 rows are RED, every §4b RED row that needs a local `monerod` is still RED, `scripts/uninstall.sh`
 is still `bash -n` only, `setup`'s refusal under Arch's `system_unit` layout is still the scenario
 that keeps `setup` a RED command, and the 120 GB floor is still an estimate.
+
+### And the proof that the new assertions are not vacuous
+
+A new test is worth its line count only if it fails on the behaviour it is about. Each of these
+was re-run against the defect it exists to catch, the tree restored immediately afterwards
+(`git status` clean, and the gate above re-run on the restored tree):
+
+```
+# 1. the wallet unit reverted to its pre-v5.2 three lines (hard-coded --trusted-daemon,
+#    no --daemon-ssl at all):
+thread 'units::tests::the_wallet_unit_renders_the_daemon_target_and_one_trust_flag_in_both_modes'
+  panicked at crates/fmonero-core/src/units.rs:1342
+
+# 2. the -38 swallowed in remote mode too, which is what v5 said (§4.2's old parenthetical):
+thread 'rpc::mock_tests::a_rejected_remote_address_fails_the_open_where_a_local_one_does_not'
+  panicked at crates/fmonero-core/src/rpc/mock_tests.rs:1465
+
+# 3. NodeGate::Remote made a no-op, i.e. a build that proves nothing about the node:
+thread 'rpc::mock_tests::the_remote_send_gate_is_one_refresh_before_the_build' panicked:
+  assertion `left == right` failed: ["transfer"]
+    left: ["transfer"]           right: ["refresh", "transfer"]
+
+# 4. status reporting `reachable: false` in remote mode instead of null:
+thread 'rpc::mock_tests::status_in_remote_mode_names_the_address_and_claims_nothing_about_the_node'
+  panicked: assertion `left == right` failed: null, never false (§5)
+    left: Some(false)            right: None
+
+# 5. the widget's two remote icon cases moved BELOW the node rows (§6.4's ordering):
+  FAIL  §6.4: the remote rows must be matched BEFORE !svc.nodeUp        (plugin-smoke)
+
+# 6. `remote_node_untrusted` given the same `skip:remote_node` guard as the rest of its group —
+#    the review's minor #6, which is the one that would silently disable the warning:
+  FAIL    remote_node_untrusted runs HERE and passes on an untrusted node:
+          [.checks[] | select(.id=="remote_node_untrusted") | .status] = ["skip"], expected ["pass"]
+```
