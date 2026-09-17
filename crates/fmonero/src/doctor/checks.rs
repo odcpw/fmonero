@@ -981,7 +981,14 @@ fn wallet_daemon_auth(p: &Probes) -> Verdict {
                  restore height"
             ),
         )
-        .cmd("fmonero wallet set-daemon 127.0.0.1:18081 --trusted --yes");
+        // Built from the CONFIGURED node, never a literal: §4's network table puts the node at
+        // 38081 on stagenet and 28081 on testnet, and §4b's whole RED rehearsal runs on
+        // stagenet — so a hard-coded 18081 repointed the wallet at a port nothing is listening
+        // on, from the command this very check supplied.
+        .cmd(format!(
+            "fmonero wallet set-daemon {} --trusted --yes",
+            fmonero_core::units::host_port(&p.node_url)
+        ));
     }
     Verdict::pass(format!("wallet at {wh}, node synchronized at {nh}"))
 }
