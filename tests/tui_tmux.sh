@@ -35,9 +35,11 @@ ok "cargo build --release"
 
 WORK="$(mktemp -d)"
 SESSION="fmonero-tui-$$"
+REMOTE_SESSION="fmonero-tui-remote-$$"
 MOCKS=()
 cleanup() {
   tmux kill-session -t "$SESSION" 2>/dev/null || true
+  tmux kill-session -t "$REMOTE_SESSION" 2>/dev/null || true
   for pid in "${MOCKS[@]:-}"; do [ -n "$pid" ] && kill "$pid" 2>/dev/null || true; done
   rm -rf "$WORK"
 }
@@ -231,6 +233,69 @@ if [ -s "$WORK/tui.err" ]; then
   bad "the TUI wrote to stderr" "$(head -3 "$WORK/tui.err")"
 else
   ok "the TUI wrote nothing to stderr"
+fi
+
+# ---------------------------------------------------------------- §2m remote node mode
+#
+# The verifier's finding: the Node screen's remote rendering and the status bar's remote marker
+# were covered by unit tests and by one hand-made pty capture pasted into DECISIONS.md, and by
+# nothing that runs in a gate. This is that case. It needs **no daemon of any kind** — in remote
+# mode `status` constructs no node client and makes no node call (§2m.3) — so it runs in the
+# default mode as well as under `--capture`, which is the point: the screen a remote-mode owner
+# looks at is now asserted on every run.
+printf '\n== the TUI in remote mode (no daemon, §2m.3)\n'
+R_STATE="$WORK/remote/state"; R_CONFIG="$WORK/remote/config"; R_CACHE="$WORK/remote/cache"
+mkdir -p "$R_STATE/run" "$R_CONFIG" "$R_CACHE"
+chmod 700 "$R_STATE" "$R_STATE/run" "$R_CONFIG" "$R_CACHE"
+REMOTE_ADDR="node.example.com:18089"
+# Written with the CLI, so the settings the TUI reads are the ones §2m.1's invariant accepts —
+# and the order is the invariant's: the address first, then the mode.
+env FMONERO_STATE_DIR="$R_STATE" FMONERO_CONFIG_DIR="$R_CONFIG" FMONERO_CACHE_DIR="$R_CACHE" \
+  "$FM" settings set node.remote "$REMOTE_ADDR" >/dev/null
+env FMONERO_STATE_DIR="$R_STATE" FMONERO_CONFIG_DIR="$R_CONFIG" FMONERO_CACHE_DIR="$R_CACHE" \
+  "$FM" settings set node.mode remote >/dev/null
+tmux new-session -d -s "$REMOTE_SESSION" -x 120 -y 40 \
+  "env FMONERO_STATE_DIR=$R_STATE FMONERO_CONFIG_DIR=$R_CONFIG FMONERO_CACHE_DIR=$R_CACHE $FM tui 2>$WORK/tui-remote.err; echo \$? > $WORK/rc-remote"
+sleep 2
+tmux send-keys -t "$REMOTE_SESSION" 1 2>/dev/null || true
+sleep 1.5
+RTEXT="$(tmux capture-pane -p -t "$REMOTE_SESSION" 2>/dev/null || true)"
+[ -n "$CAPTURE" ] && printf '%s\n' "$RTEXT" > "$CAPTURE/node-remote.txt"
+case "$RTEXT" in
+  *"not available with a remote node"*)
+    ok "the Node screen says what a remote node cannot answer (§2m.3)" ;;
+  *) bad "the Node screen did not render the remote explanation" \
+         "$(printf '%s' "$RTEXT" | sed -n '1,8p')" ;;
+esac
+case "$RTEXT" in
+  *"node remote"*) ok "the status bar carries the remote marker" ;;
+  *) bad "the status bar does not say 'node remote'" \
+         "$(printf '%s' "$RTEXT" | tail -3)" ;;
+esac
+case "$RTEXT" in
+  *"$REMOTE_ADDR"*) ok "and the address in force is on screen ($REMOTE_ADDR)" ;;
+  *) bad "the remote address is not shown anywhere" "$(printf '%s' "$RTEXT" | sed -n '1,8p')" ;;
+esac
+# `u` toasts the command that would restore the local node; it must never run systemctl (§2m.3).
+tmux send-keys -t "$REMOTE_SESSION" u 2>/dev/null || true
+sleep 1
+RTEXT2="$(tmux capture-pane -p -t "$REMOTE_SESSION" 2>/dev/null || true)"
+case "$RTEXT2" in
+  *"fmonero node local --yes"*) ok "u toasts the command that would bring the local node back" ;;
+  *) bad "u did not toast 'fmonero node local --yes'" "$(printf '%s' "$RTEXT2" | tail -3)" ;;
+esac
+tmux send-keys -t "$REMOTE_SESSION" q 2>/dev/null || true
+for _ in $(seq 50); do [ -f "$WORK/rc-remote" ] && break; sleep 0.1; done
+if [ -f "$WORK/rc-remote" ]; then
+  RC="$(cat "$WORK/rc-remote")"
+  [ "$RC" = "0" ] && ok "q quits cleanly in remote mode (exit 0)" || bad "remote-mode q quit with exit $RC"
+else
+  bad "the remote-mode TUI did not exit within 5 s of q"
+fi
+if [ -s "$WORK/tui-remote.err" ]; then
+  bad "the remote-mode TUI wrote to stderr" "$(head -3 "$WORK/tui-remote.err")"
+else
+  ok "the remote-mode TUI wrote nothing to stderr"
 fi
 
 if [ -n "$CAPTURE" ]; then
