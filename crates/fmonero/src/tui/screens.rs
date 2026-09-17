@@ -63,15 +63,18 @@ pub(super) fn view(m: &Tui, frame: &mut Frame) {
         return;
     }
     let pending = m.status.as_ref().is_some_and(|s| s.pending.is_some());
-    // The banner carries the txid AND both commands (§7a), which needs a second row on a
-    // terminal narrower than 120 columns: a cut `clear-pending --yes` is the half a reader
-    // needs.
+    // The banner carries the txid AND both commands in full (§7a), which is about 135 columns
+    // of text — so the ladder has to reach three rows: at 45 columns two rows ended at
+    // `fmonero wallet history` and dropped the `clear-pending` half, which is the only command
+    // that gets the Send screen building again.
     let banner = if !pending {
         0
-    } else if b.width >= 120 {
+    } else if b.width >= 140 {
         1
-    } else {
+    } else if b.width >= 70 {
         2
+    } else {
+        3
     };
     let rows = Flex::vertical()
         .constraints([
@@ -197,18 +200,21 @@ fn pending_banner(m: &Tui, area: Rect, frame: &mut Frame) {
         .txs
         .first()
         .map_or("—".into(), |t| t.txid.chars().take(8).collect());
-    para(
-        format!(
-            "SEND IN FLIGHT {} XMR → {} {}/{} · tx {txid} · fmonero wallet history --limit 5 | clear-pending --yes",
-            p.total_amount_xmr,
-            short_addr(&p.dest),
-            p.relayed_count,
-            p.total_count
-        ),
-        th.err(),
-        area.height > 1,
-    )
-    .render(area, frame);
+    // Both commands written out in full: `history --limit 5 | clear-pending --yes` is not two
+    // commands, it is one command piped into a program that does not exist, and this is the one
+    // banner whose whole job is telling the user how to find out whether their money moved.
+    let text = format!(
+        "SEND IN FLIGHT {} XMR → {} {}/{} · tx {txid} · fmonero wallet history --limit 5 · fmonero wallet clear-pending --yes",
+        p.total_amount_xmr,
+        short_addr(&p.dest),
+        p.relayed_count,
+        p.total_count
+    );
+    let lines = wrap_words(&text, area.width as usize)
+        .into_iter()
+        .map(|l| Line::styled(l, th.err()))
+        .collect();
+    lines_at(lines, area, false, frame);
 }
 
 fn status_line(m: &Tui, area: Rect, frame: &mut Frame) {
@@ -293,18 +299,45 @@ fn node_screen(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
             warnings_pane(m, bottom[1], frame);
         }
         Tier::Medium => {
-            let rows = Flex::vertical()
-                .constraints([
-                    Constraint::Fixed(10),
-                    Constraint::Fixed(6),
-                    Constraint::Fill,
-                    Constraint::Fixed(5),
-                ])
-                .split(area);
-            node_hero(m, rows[0], frame);
-            pool_pane(m, rows[1], frame);
-            list_pane(m, rows[2], frame, false);
-            warnings_pane(m, rows[3], frame);
+            // The panes DEGRADE in priority order instead of overflowing. Fixed(10) + Fixed(6)
+            // + Fill + Fixed(5) needs 24 rows, and this tier starts at 20 (18 for the screen):
+            // the peers table and the Warnings pane were both handed less than `framed`'s
+            // 3-row minimum and drew nothing at all, so a 70x20 terminal showed two blank rows
+            // where the only `severity: error` surface on this screen should be (§7a: "Empty,
+            // error and hang states — each must render, none may be blank"). Warnings are never
+            // the pane that goes.
+            let h = area.height;
+            if h < 18 {
+                let rows = Flex::vertical()
+                    .constraints([Constraint::Fill, Constraint::Fixed(5)])
+                    .split(area);
+                node_hero(m, rows[0], frame);
+                warnings_pane(m, rows[1], frame);
+            } else if h < 24 {
+                let rows = Flex::vertical()
+                    .constraints([
+                        Constraint::Fixed(10),
+                        Constraint::Fill,
+                        Constraint::Fixed(5),
+                    ])
+                    .split(area);
+                node_hero(m, rows[0], frame);
+                list_pane(m, rows[1], frame, false);
+                warnings_pane(m, rows[2], frame);
+            } else {
+                let rows = Flex::vertical()
+                    .constraints([
+                        Constraint::Fixed(10),
+                        Constraint::Fixed(6),
+                        Constraint::Fill,
+                        Constraint::Fixed(5),
+                    ])
+                    .split(area);
+                node_hero(m, rows[0], frame);
+                pool_pane(m, rows[1], frame);
+                list_pane(m, rows[2], frame, false);
+                warnings_pane(m, rows[3], frame);
+            }
         }
         _ => {
             let rows = Flex::vertical()
@@ -333,14 +366,19 @@ fn node_hero(m: &Tui, area: Rect, frame: &mut Frame) {
             Span::styled(m.node_phrase(), th.title()),
         ]));
         if !n.reachable {
-            lines.push(Line::styled(
-                if m.monero_missing() {
-                    "Monero is not installed. omarchy pkg add monero, then fmonero setup --units"
-                } else {
-                    "Node is not running — press u to start it"
-                },
-                th.warn(),
-            ));
+            // Word-wrapped, not clipped: the hero is rendered `WrapMode::None` for its `kv`
+            // rows, and at 150 columns this 75-character line came out as
+            // `fmonero setup --unit` — a command that looks complete and exits 2.
+            let text = if m.monero_missing() {
+                "Monero is not installed. omarchy pkg add monero, then fmonero setup --units"
+            } else {
+                "Node is not running — press u to start it"
+            };
+            lines.extend(
+                wrap_words(text, inner.width as usize)
+                    .into_iter()
+                    .map(|l| Line::styled(l, th.warn())),
+            );
         }
         if let Some(pct) = n.sync_percent {
             let target = match (n.target_height, n.height) {
@@ -390,10 +428,14 @@ fn node_hero(m: &Tui, area: Rect, frame: &mut Frame) {
             ));
         }
         if n.restricted == Some(true) {
-            lines.push(Line::styled(
-                "restricted RPC: peers, net stats and bans have no source (§1b.2)",
-                th.warn(),
-            ));
+            lines.extend(
+                wrap_words(
+                    "restricted RPC: peers, net stats and bans have no source",
+                    inner.width as usize,
+                )
+                .into_iter()
+                .map(|l| Line::styled(l, th.warn())),
+            );
         }
     } else {
         lines.push(Line::styled("reading status…", th.dimmed()));
@@ -728,6 +770,15 @@ fn subaddress_pane(m: &Tui, area: Rect, frame: &mut Frame) {
         }
         return;
     };
+    // BALANCE is the table's `Constraint::Fill` column, so a value wider than what is left is
+    // **clipped with no ellipsis** — and a clipped XMR amount is itself a well-formed XMR
+    // amount, so `1.234567891234` read as `1.234567891` with nothing to notice. The width is
+    // computed here (block borders, the fixed columns and the 1-column gaps) and the value is
+    // trimmed with an explicit `…`, so the cell either holds the whole number or says it does
+    // not (§5, §2j).
+    let fixed_sum: u16 = if wide { 3 + 11 + 22 } else { 3 + 22 };
+    let gaps: u16 = if wide { 3 } else { 2 };
+    let bal_w = area.width.saturating_sub(2 + fixed_sum + gaps).max(1) as usize;
     let rows = set
         .addresses
         .iter()
@@ -743,7 +794,9 @@ fn subaddress_pane(m: &Tui, area: Rect, frame: &mut Frame) {
                         .iter()
                         .find(|s| s.address_index == a.address_index)
                 })
-                .map_or("—".to_string(), |s| s.balance.to_xmr_string());
+                .map_or("—".to_string(), |s| {
+                    fit(&s.balance.to_xmr_string(), bal_w)
+                });
             // `used` is a marker on the address rather than a column of its own: at 48
             // columns a fifth column is a cut column, and a cut `used` reads as `us`.
             let addr = format!(
@@ -977,10 +1030,20 @@ fn detail_modal(m: &Tui, frame: &mut Frame) {
 
 fn log_screen(m: &Tui, area: Rect, frame: &mut Frame) {
     let th = &m.theme;
+    // The MUTABLE state first, and the path elided to what is left. A `Block` title is clipped
+    // at the border width, so a long log path consumed all of it and `follow on/off` — the only
+    // persistent indicator of the mode that decides whether the pane scrolls under you — was
+    // never on screen at all.
+    let on_off = if m.logs.follow { "on" } else { "off" };
+    let path = m.logs.path.display().to_string();
+    let room = (area.width as usize).saturating_sub(" Log  follow off    ".len());
     let title = format!(
-        " Log  {}  follow {} ",
-        m.logs.path.display(),
-        if m.logs.follow { "on" } else { "off" }
+        " Log  follow {on_off}  {} ",
+        if path.width() <= room {
+            path
+        } else {
+            fit(&path, room).trim_end().to_string()
+        }
     );
     let Some(inner) = framed(area, th, &title, true, frame) else {
         return;
@@ -1033,7 +1096,11 @@ pub(super) fn list_modal(
     frame: &mut Frame,
 ) {
     let th = &m.theme;
-    let h = rows.len() as u16 + 4 + u16::from(input.is_some());
+    // The interior is `h - 4`, and this renders `rows.len() + 1` lines (the rows plus the
+    // "Enter · Esc cancels" row) with the input on a row of its own below them. Sizing for
+    // `rows.len()` put the input on top of the hint, so the label and note prompts — which pass
+    // no rows and a title with no key text — showed an editable field and no keys at all.
+    let h = rows.len() as u16 + 5 + u16::from(input.is_some());
     let Some(inner) = overlay(m, frame, 68, h, title) else {
         return;
     };
@@ -1099,23 +1166,41 @@ fn qr_modal(m: &Tui, address: &str, frame: &mut Frame) {
     let fits = inner.height >= qr_rows && inner.width >= side;
     if fits {
         let colors = code.to_colors();
+        let area = Rect::new(inner.x, inner.y, side, qr_rows);
+        // **Every sub-pixel gets an explicit colour, and the paper is painted first.**
+        // `Painter::halfblock_cell` returns `('▀', top_color, bot_color)` for a cell whose two
+        // sub-rows are both lit, and an uncoloured `point()` leaves both `None`
+        // (`ftui-extras-0.7.0/src/canvas.rs:989-1005`, `:251-263`) — so the base style's `bg`
+        // painted the lower half of every such cell in the OTHER colour. Lighting the light
+        // modules that way put a dark stripe through every light module pair, the quiet zone
+        // included, and no decoder locks on to that. It also skips `' '` cells entirely, so the
+        // modules it left unpainted showed the overlay's own background rather than QR black.
+        //
+        // So: lay down solid QR-light paper, then draw the DARK modules as coloured sub-pixels
+        // with `th.qr()` = dark ink on light paper. Both-dark gives fg=bg=dark (a solid dark
+        // cell), one-dark gives the right half-block, both-light is skipped and stays paper.
+        let paper = Text::from_lines(
+            (0..qr_rows).map(|_| Line::styled(" ".repeat(side as usize), th.qr())),
+        );
+        Paragraph::new(paper)
+            .wrap(WrapMode::None)
+            .render(area, frame);
         let mut painter = Painter::new(side, side, Mode::HalfBlock);
-        // Lit sub-pixels are the LIGHT modules (and the quiet zone), so the code reads
-        // dark-on-light whatever the terminal's palette is (`Theme::qr`).
+        let ink = th.qr().fg.unwrap_or_default();
         for y in 0..side {
             for x in 0..side {
                 let inside = x >= quiet && y >= quiet && x < quiet + modules && y < quiet + modules;
                 let dark = inside
                     && colors[(y - quiet) as usize * modules as usize + (x - quiet) as usize]
                         == QrColor::Dark;
-                if !dark {
-                    painter.point(i32::from(x), i32::from(y));
+                if dark {
+                    painter.point_colored(i32::from(x), i32::from(y), ink);
                 }
             }
         }
         Canvas::from_painter(&painter)
             .style(th.qr())
-            .render(Rect::new(inner.x, inner.y, side, qr_rows), frame);
+            .render(area, frame);
     } else {
         para(
             format!("terminal too small for a QR (needs {side}x{qr_rows}) — the address is below"),
@@ -1154,11 +1239,16 @@ pub(super) fn confirm_dialog(th: &Theme, title: &str, message: &str) -> Dialog {
 
 fn help(m: &Tui, frame: &mut Frame) {
     let th = &m.theme;
+    // `overlay` spends a row on each border and a row on each padding edge, so the interior is
+    // `h - 4`: asking for `KEYS.len() + 3` rendered one row short and silently dropped the LAST
+    // row of the table at every terminal size — which is the Log screen's `/ f n N`, bindings
+    // that are implemented and documented nowhere else a user can reach (§7a: the overlay IS the
+    // keymap).
     let Some(inner) = overlay(
         m,
         frame,
         100,
-        KEYS.len() as u16 + 3,
+        KEYS.len() as u16 + 4,
         " Keys — any key closes ",
     ) else {
         return;
@@ -1361,6 +1451,39 @@ pub(super) fn wrapped(s: &str, width: usize) -> Vec<String> {
         .chunks(width)
         .map(|c| c.iter().collect())
         .collect()
+}
+
+/// Word-wrap prose at a width, for the lines that carry a **runnable command**: a clipped
+/// `fmonero setup --units` reads as the complete and plausible `fmonero setup --unit`, which
+/// exits 2. `wrapped` hard-chunks and is for addresses; this breaks on spaces.
+pub(super) fn wrap_words(s: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![String::new()];
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for word in s.split_whitespace() {
+        if line.is_empty() {
+            line.push_str(word);
+        } else if line.width() + 1 + word.width() <= width {
+            line.push(' ');
+            line.push_str(word);
+        } else {
+            out.push(std::mem::take(&mut line));
+            line.push_str(word);
+        }
+        // A single word longer than the width still has to go somewhere: hard-chunk that one.
+        while line.width() > width {
+            let head: String = line.chars().take(width).collect();
+            let tail: String = line.chars().skip(width).collect();
+            out.push(head);
+            line = tail;
+        }
+    }
+    if !line.is_empty() || out.is_empty() {
+        out.push(line);
+    }
+    out
 }
 
 /// For tables and labels only, never for a recipient being confirmed.

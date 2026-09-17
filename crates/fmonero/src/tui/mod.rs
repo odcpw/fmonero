@@ -533,17 +533,21 @@ impl Tui {
             let read = || -> Result<NodeExtras, Error> {
                 let n = NodeClient::from_ctx(&ctx)?;
                 // A restricted node does not register `get_connections`/`get_bans` at all
-                // (§1b.2); the panes say so rather than rendering zeros.
-                let restricted = n.is_restricted().unwrap_or(false);
+                // (§1b.2); the panes say so rather than rendering zeros. Every other failure
+                // **propagates**: swallowing it made the Peers pane print "no connections yet"
+                // and the mempool pane sit on "reading the transaction pool…" for ever beside a
+                // hero that had already said the node is not running — two panes describing a
+                // state the same screen contradicts, which §2j forbids.
+                let restricted = n.is_restricted()?;
                 Ok(NodeExtras {
                     connections: if restricted {
                         Vec::new()
                     } else {
-                        n.get_connections().unwrap_or_default()
+                        n.get_connections()?
                     },
-                    txpool: n.get_txpool_stats().ok(),
+                    txpool: Some(n.get_txpool_stats()?),
                     bans: if bans && !restricted {
-                        n.get_bans().unwrap_or_default()
+                        n.get_bans()?
                     } else {
                         Vec::new()
                     },
@@ -664,17 +668,34 @@ impl Tui {
     // ------------------------------------------------------------ long actions
 
     fn start(&mut self, action: Action) -> Cmd<Msg> {
+        self.try_start(action).unwrap_or_else(|_| Cmd::none())
+    }
+
+    /// `start`, but it hands the action **back** when it refuses.
+    ///
+    /// Both guards below consume the `Action` and send no `Msg::ActionDone`, so a caller that
+    /// has already advanced the §7a send state machine — `SendCmd::Relay` replaces `Built` with
+    /// `Relaying`, `Msg::Validated` replaces `Form` with `Building` — would be left in a stage
+    /// only `ActionDone` can leave, with the built `Plan` (and its §2a.11 lock) dropped and
+    /// nothing on screen saying a transaction had existed. Those two callers put it back.
+    fn try_start(&mut self, action: Action) -> Result<Cmd<Msg>, Box<Action>> {
         if let Some(a) = &self.action {
             self.note(format!("{} already — Esc cancels it", a.label), true);
-            return Cmd::none();
+            return Err(Box::new(action));
         }
         let daemon = match action {
             Action::NodeUp | Action::NodeDown => Some("node_stalled"),
+            // §2d: "**`send::relay` likewise never consults a breaker**: once a plan is built
+            // the §2a.11 `send.lock` is held and the transaction exists, so exiting 5 there
+            // would abandon a built transaction rather than protect anything." This gate reads
+            // a status poll that is up to a poll-interval stale, so it could only ever refuse
+            // the relay of a transaction that already exists.
+            Action::Relay(_) => None,
             _ => Some("wallet_stalled"),
         };
         if let Some(text) = daemon.and_then(|id| self.breaker_note(id)) {
             self.note(text, true);
-            return Cmd::none();
+            return Err(Box::new(action));
         }
         self.sub_seq += 1;
         self.note(action.label(), false);
@@ -686,7 +707,7 @@ impl Tui {
             started: Instant::now(),
             slot: Arc::new(Mutex::new(Some(action))),
         });
-        Cmd::none()
+        Ok(Cmd::none())
     }
 
     /// `Esc`, or `q` twice: drop the subscription, which raises the `StopSignal`, which trips
@@ -912,7 +933,12 @@ impl Tui {
 
     fn on_wallet_key(&mut self, k: KeyEvent) -> Cmd<Msg> {
         match k.code {
-            KeyCode::Tab => {
+            // KEYS says `Tab` is the next screen on every screen and `←→` swaps the Wallet's
+            // panes — and it is also the `?` overlay, so both halves have to be true. `Tab` used
+            // to swap panes here, which made the Wallet the one screen `Tab` could not leave,
+            // and `←→` did nothing at all.
+            KeyCode::Tab => return self.set_screen(Screen::from_index(self.screen.index() + 1)),
+            KeyCode::Left | KeyCode::Right => {
                 self.wallet.pane = match self.wallet.pane {
                     Pane::Subaddresses => Pane::History,
                     Pane::History => Pane::Subaddresses,
@@ -1043,8 +1069,19 @@ impl Tui {
                     return Cmd::none();
                 };
                 self.send.typed.clear();
-                // The SAME plan that was displayed (§2a.3): it is moved, never rebuilt.
-                self.start(Action::Relay(*plan))
+                // The SAME plan that was displayed (§2a.3): it is moved, never rebuilt. And if
+                // `try_start` refuses, the plan goes back into `Built` rather than being dropped
+                // with the screen stuck on "broadcasting" for the rest of the session.
+                match self.try_start(Action::Relay(*plan)) {
+                    Ok(cmd) => cmd,
+                    Err(refused) => {
+                        match *refused {
+                            Action::Relay(plan) => self.send.stage = Stage::Built(Box::new(plan)),
+                            _ => self.send.back_to_form(),
+                        }
+                        Cmd::none()
+                    }
+                }
             }
         }
     }
@@ -1478,18 +1515,29 @@ impl Model for Tui {
                 Cmd::none()
             }
             Msg::LogLines(r) => {
+                let mut reloaded = false;
                 match *r {
                     Ok((lines, path)) => {
                         self.logs.path = path;
                         self.logs.empty = lines.is_empty();
-                        let mut log = self.logs.viewer.borrow_mut();
-                        log.clear();
-                        log.push_many(lines);
-                        log.set_auto_scroll(self.logs.follow);
+                        {
+                            let mut log = self.logs.viewer.borrow_mut();
+                            log.clear();
+                            log.push_many(lines);
+                            log.set_auto_scroll(self.logs.follow);
+                        }
+                        reloaded = true;
                     }
                     Err(e) => self.note(e, true),
                 }
                 self.drain_announce();
+                // `clear()` drops the viewer's match list along with its lines, and follow is on
+                // by default and reloads every second — so a search typed on the Log screen was
+                // wiped about a second after it matched, leaving the query on screen with no
+                // highlight and `n`/`N` inert. The query lives in the model, so it is re-applied.
+                if reloaded && !self.logs.search.value().trim().is_empty() {
+                    return self.apply_search();
+                }
                 Cmd::none()
             }
             Msg::Book(entries) => {
@@ -1499,7 +1547,16 @@ impl Model for Tui {
             Msg::Validated(r) => match *r {
                 Ok(req) => {
                     self.send.stage = Stage::Building;
-                    self.start(Action::BuildTx(req))
+                    // A refused start must return the form, not leave the screen in `Building`
+                    // for the rest of the session — reachable by pressing Enter on the Send form
+                    // while a `node up` is in flight.
+                    match self.try_start(Action::BuildTx(req)) {
+                        Ok(cmd) => cmd,
+                        Err(_) => {
+                            self.send.back_to_form();
+                            Cmd::none()
+                        }
+                    }
                 }
                 Err(e) => {
                     self.send.back_to_form();
@@ -1510,6 +1567,12 @@ impl Model for Tui {
             Msg::Task(label, r) => {
                 match *r {
                     Ok(text) => {
+                        // §7a: "`Ok(0)` on a clean quit; if the session's **last** action
+                        // failed, that error's own `exit_code()`". Without this a transient
+                        // failure early in a session — a wallet daemon still starting — left its
+                        // code armed, and a clean quit after a successful retry still reported
+                        // the session as failed. Every `ActionDone` success arm already does it.
+                        self.exit.store(0, Ordering::SeqCst);
                         self.note(text, false);
                         return Cmd::batch(vec![
                             self.poll(),

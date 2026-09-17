@@ -336,6 +336,12 @@ impl SendScreen {
                 self.typed.push(c);
                 SendCmd::None
             }
+            // A plan whose `amount + fee` overflows `u64` has no total to confirm, and the modal
+            // renders `—` for it (§5's shape rules). Confirming a sum that was never computed is
+            // the one thing this screen exists to prevent, so the word is refused.
+            KeyCode::Enter if matches!(&self.stage, Stage::Built(p) if p.total().is_err()) => {
+                SendCmd::Note("this plan's total overflows u64 — Esc discards it".into())
+            }
             KeyCode::Enter if self.typed.trim() == CONFIRM_WORD => SendCmd::Relay,
             KeyCode::Enter => SendCmd::Note(format!("type \"{CONFIRM_WORD}\" to broadcast")),
             _ => SendCmd::None,
@@ -466,17 +472,22 @@ pub(super) fn view(m: &Tui, area: Rect, frame: &mut ftui::Frame, tier: Tier) {
             },
         ));
     }
-    chips.push(Span::styled(" p · Ctrl+P cycles".to_string(), th.dimmed()));
-    chips.push(Span::styled(
-        format!("   Account {} ", s.account),
-        if s.field == Field::Account {
-            th.selected()
-        } else {
-            th.dimmed()
-        },
-    ));
-    chips.push(Span::styled("←→".to_string(), th.dimmed()));
-    Paragraph::new(Text::from_line(Line::from_spans(chips)))
+    chips.push(Span::styled(" p · Ctrl+P".to_string(), th.dimmed()));
+    // The Account field lives on its OWN line. On one line with five fee chips the row ran past
+    // the form's width at every tier, and what fell off the end was the focus highlight, the
+    // value and the `←→` affordance for the field that decides which balance is spent.
+    let account = Line::from_spans([
+        Span::styled(
+            format!("Account {} ", s.account),
+            if s.field == Field::Account {
+                th.selected()
+            } else {
+                th.dimmed()
+            },
+        ),
+        Span::styled("←→ changes it".to_string(), th.dimmed()),
+    ]);
+    Paragraph::new(Text::from_lines([Line::from_spans(chips), account]))
         .wrap(WrapMode::None)
         .render(rows[3], frame);
 
@@ -546,10 +557,7 @@ fn view_preview(m: &Tui, area: Rect, frame: &mut ftui::Frame) {
     ]));
     lines.push(Line::from_spans([
         Span::styled("Fee     ".to_string(), th.dimmed()),
-        Span::styled(
-            "known only after the build (§2a.2)".to_string(),
-            th.dimmed(),
-        ),
+        Span::styled("known only after the build".to_string(), th.dimmed()),
     ]));
     lines.push(Line::from_spans([
         Span::styled("Account ".to_string(), th.dimmed()),
@@ -591,11 +599,16 @@ pub(super) fn view_confirm(m: &Tui, plan: &Plan, frame: &mut ftui::Frame) {
     // more rows on a narrow terminal, and the typed-word prompt must still be on screen.
     let w = 78.min(frame.bounds().width);
     let addr_rows = wrapped(&plan.dest, w.saturating_sub(4) as usize).len() as u16;
+    // The body is `addr_rows + 8` lines — "To", the wrapped address, Amount/Fee/Total, Account,
+    // a blank, the typed-word prompt and the echo row — and `overlay`'s interior is `h - 4`
+    // (a border row and a padding row at each end). `addr_rows + 11` was one short, and the row
+    // that lost was the echo: the user typed the confirmation word into a modal that showed no
+    // character of it, on the one screen that moves money (§7a: never abbreviated).
     let Some(inner) = super::screens::overlay(
         m,
         frame,
         w,
-        addr_rows + 11,
+        addr_rows + 12,
         " Confirm — this broadcasts a transaction ",
     ) else {
         return;
@@ -603,8 +616,14 @@ pub(super) fn view_confirm(m: &Tui, plan: &Plan, frame: &mut ftui::Frame) {
     let bg = th.selection;
     let dim = th.dimmed().bg(bg);
     let text = th.text().bg(bg);
-    let total = plan.total().map(|t| t.to_xmr_string()).unwrap_or_default();
-    let total_pico = plan.total().map(|t| t.0).unwrap_or_default();
+    // §5's shape rule, on the screen §7a calls "the whole safety surface": unknown is `—`, never
+    // a zero. `Piconero::checked_add` fails only when `amount + fee` exceeds `u64::MAX`, and
+    // `Total 0.0000 XMR` beside a real Amount and a real Fee is not a sum of what is being spent.
+    // The confirm word is refused in that state (`SendScreen::on_key`).
+    let (total, total_pico) = match plan.total() {
+        Ok(t) => (t.to_xmr_string(), t.0.to_string()),
+        Err(_) => ("—".to_string(), "—".to_string()),
+    };
     let mut lines = vec![Line::styled("To".to_string(), dim)];
     // Wrapped, never elided (§7a).
     lines.extend(
@@ -616,9 +635,13 @@ pub(super) fn view_confirm(m: &Tui, plan: &Plan, frame: &mut ftui::Frame) {
         (
             "Amount ",
             plan.total_amount.to_xmr_string(),
-            plan.total_amount.0,
+            plan.total_amount.0.to_string(),
         ),
-        ("Fee    ", plan.total_fee.to_xmr_string(), plan.total_fee.0),
+        (
+            "Fee    ",
+            plan.total_fee.to_xmr_string(),
+            plan.total_fee.0.to_string(),
+        ),
         ("Total  ", total, total_pico),
     ] {
         lines.push(Line::from_spans([
@@ -639,7 +662,11 @@ pub(super) fn view_confirm(m: &Tui, plan: &Plan, frame: &mut ftui::Frame) {
     ]));
     lines.push(Line::styled(String::new(), dim));
     lines.push(Line::styled(
-        format!("Type \"{CONFIRM_WORD}\" and press Enter to broadcast · Esc to discard"),
+        if plan.total().is_err() {
+            "this plan's total overflows u64 and cannot be confirmed · Esc to discard".to_string()
+        } else {
+            format!("Type \"{CONFIRM_WORD}\" and press Enter to broadcast · Esc to discard")
+        },
         th.warn().bg(bg),
     ));
     lines.push(Line::from_spans([

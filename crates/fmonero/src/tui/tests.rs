@@ -298,15 +298,117 @@ fn the_offline_wallet_screen_offers_the_open_key() {
     );
 }
 
+/// §7a: the keymap table "is also the exact content of the `?` overlay — one
+/// `&[(&str,&str)]` table so help and behaviour cannot drift". **Every** row, not the first
+/// eight: the overlay was one row short of its own table at every size, and `take(8)` could
+/// never see it. The last row is the Log screen's `/ f n N`, documented nowhere else.
 #[test]
-fn the_help_overlay_lists_the_bindings_the_model_implements() {
+fn the_help_overlay_lists_every_binding_including_the_last_row() {
     let mut m = offline_model(Screen::Node);
     m.show_help = true;
     let text = screen_text(&m, 110, 40);
-    for (k, _) in KEYS.iter().take(8) {
+    for (k, _) in KEYS.iter() {
         let first = k.split_whitespace().next().unwrap_or_default();
         assert!(text.contains(first), "help is missing {first}:\n{text}");
     }
+    let (last_keys, last_action) = KEYS.last().expect("KEYS is not empty");
+    assert!(
+        text.contains(*last_action),
+        "the LAST row ({last_keys}) is missing — the overlay is short of its own table:\n{text}"
+    );
+}
+
+/// §7a's keymap is the `?` overlay, so a row that names a screen has to be a binding that
+/// screen actually consumes. `Tab` used to swap the Wallet's panes, which made the Wallet the
+/// one screen `Tab` could not leave, while `←→` — the row that claims the pane swap — did
+/// nothing at all.
+#[test]
+fn every_screen_consumes_the_navigation_keys_its_keymap_row_promises() {
+    for (from, want) in [
+        (Screen::Node, Screen::Wallet),
+        (Screen::Wallet, Screen::Send),
+        (Screen::Log, Screen::Node),
+    ] {
+        let mut m = offline_model(from);
+        let _ = m.update(Msg::Raw(key(KeyCode::Tab)));
+        assert_eq!(m.screen, want, "Tab on {from:?} must reach {want:?}");
+    }
+    // And ←→ swaps the Wallet's panes, as its row says.
+    let mut m = offline_model(Screen::Wallet);
+    let before = m.wallet.pane;
+    let _ = m.update(Msg::Raw(key(KeyCode::Right)));
+    assert_ne!(m.wallet.pane, before, "→ must swap the Wallet's panes");
+    let _ = m.update(Msg::Raw(key(KeyCode::Left)));
+    assert_eq!(m.wallet.pane, before, "← must swap them back");
+}
+
+/// §7a's empty state is a runnable command, and `lines_at` clips rather than wraps — so a hero
+/// line one character too wide became `fmonero setup --unit`, which exits 2 and looks complete.
+#[test]
+fn the_not_installed_hero_keeps_its_command_whole_at_every_width() {
+    let m = offline_model(Screen::Node);
+    for (w, h) in [(150u16, 40u16), (120, 40), (100, 30), (70, 24)] {
+        let text = screen_text(&m, w, h);
+        if !text.contains("Monero is not installed") {
+            continue; // monerod IS installed on this machine; the other empty state renders
+        }
+        assert!(
+            text.contains("fmonero setup --units"),
+            "{w}x{h}: the hero's command was clipped:\n{text}"
+        );
+    }
+}
+
+/// §7a: "Empty, error and hang states — each must render, none may be blank." At 70x20 the
+/// Medium tier's four fixed panes needed 24 rows and got 18, so the peers table and the
+/// Warnings pane — the only `severity: error` surface on this screen — both drew nothing.
+#[test]
+fn the_node_screen_still_shows_its_warnings_in_a_short_medium_terminal() {
+    let s = sim(offline_model(Screen::Node));
+    let warned = s
+        .model()
+        .status
+        .as_ref()
+        .is_some_and(|st| !st.warnings.is_empty());
+    assert!(warned, "both daemons are absent, so status must warn");
+    for (w, h) in [(70u16, 20u16), (70, 24), (80, 24), (99, 30)] {
+        let text = sim_text(&s, w, h);
+        assert!(
+            text.contains("Warnings"),
+            "{w}x{h}: the Warnings pane did not render:\n{text}"
+        );
+        // And no pane was given room it then left blank.
+        assert!(
+            !text.contains("Peers") || text.contains("no connections") || text.contains("not"),
+            "{w}x{h}: the peers pane rendered a frame with nothing in it:\n{text}"
+        );
+    }
+}
+
+/// §7a: "`Ok(0)` on a clean quit; if the session's **last** action failed, that error's own
+/// `exit_code()`." A short task's success arm did not clear the slot, so one transient failure
+/// early on — a wallet daemon still starting — left its code armed and a clean quit after a
+/// successful retry still reported the whole session as failed.
+#[test]
+fn a_successful_task_clears_a_previous_failures_exit_code() {
+    use std::sync::atomic::Ordering;
+    let mut m = offline_model(Screen::Wallet);
+    let _ = m.update(Msg::Task(
+        "new address",
+        Box::new(Err(subs::ActionErr::from(fmonero_core::Error::backend(
+            "monero-wallet-rpc is not answering",
+        )))),
+    ));
+    assert_eq!(m.exit.load(Ordering::SeqCst), 4, "the failure is recorded");
+    let _ = m.update(Msg::Task(
+        "new address",
+        Box::new(Ok("new subaddress 3".into())),
+    ));
+    assert_eq!(
+        m.exit.load(Ordering::SeqCst),
+        0,
+        "a later success must disarm the stale code"
+    );
 }
 
 #[test]
@@ -401,6 +503,77 @@ fn the_send_screen_refuses_all_inline_and_never_reaches_the_daemon() {
     assert!(text.contains("sweep is not available"), "{text}");
 }
 
+/// §7a's send machine: a **refused** start must leave the screen recoverable.
+///
+/// `Tui::start` consumes the `Action` and sends no `Msg::ActionDone`, and both of its callers
+/// in the send machine advance the stage first — so a refusal used to strand the screen in a
+/// stage only `ActionDone` can leave, with no key reaching it (the form is `busy()`, so it owns
+/// none) and the built plan dropped. This drives the `Building` half, which is reachable by
+/// pressing Enter on the Send form while another action is in flight.
+#[test]
+fn a_refused_start_returns_the_send_screen_to_its_form() {
+    let w = World::new("refused-start");
+    let mut sim = ProgramSimulator::new(model(&w.ctx, Screen::Send));
+    sim.init();
+    type_str(&mut sim, DEST);
+    sim.inject_event(key(KeyCode::Tab));
+    type_str(&mut sim, "0.1");
+    let req = sim.model().send.request(None).expect("a valid form");
+
+    // The first one arms the build.
+    sim.send(Msg::Validated(Box::new(Ok(req.clone()))));
+    assert!(sim.model().action.is_some(), "the build must be armed");
+    assert!(matches!(sim.model().send.stage, Stage::Building));
+
+    // The second is refused, because one is already in flight — and must not leave the screen
+    // in `Building` for the rest of the session.
+    sim.send(Msg::Validated(Box::new(Ok(req))));
+    assert!(
+        matches!(sim.model().send.stage, Stage::Form),
+        "a refused build must return the form, not strand the screen"
+    );
+    assert!(sim.model().note.contains("already"), "{}", sim.model().note);
+}
+
+/// §2d: "**`send::relay` likewise never consults a breaker**: once a plan is built the §2a.11
+/// `send.lock` is held and the transaction exists, so exiting 5 there would abandon a built
+/// transaction rather than protect anything." The TUI's own gate read the last status poll and
+/// refused `Action::Relay` along with everything else, which dropped the plan and left the Send
+/// screen on "broadcasting" with no `ActionDone` ever coming.
+#[test]
+fn an_armed_breaker_does_not_refuse_the_relay_of_a_built_plan() {
+    let w = World::new("relay-breaker");
+    let mut sim = ProgramSimulator::new(model(&w.ctx, Screen::Send));
+    sim.init();
+    type_str(&mut sim, DEST);
+    sim.inject_event(key(KeyCode::Tab));
+    type_str(&mut sim, "0.1");
+    sim.inject_event(key(KeyCode::Enter));
+    run_action(&mut sim);
+    assert!(matches!(sim.model().send.stage, Stage::Built(_)));
+
+    // Arm the wallet breaker and let the model see it, exactly as a poll would.
+    state::note_stall(&w.ctx, fmonero_core::Daemon::Wallet).expect("arm the breaker");
+    sim.send(Msg::Poll);
+    assert!(
+        sim.model()
+            .status
+            .as_ref()
+            .is_some_and(|s| s.warnings.iter().any(|x| x.id == "wallet_stalled")),
+        "the model must actually see an armed breaker, or this test proves nothing"
+    );
+
+    type_str(&mut sim, CONFIRM_WORD);
+    sim.inject_event(key(KeyCode::Enter));
+    assert!(
+        sim.model().action.is_some(),
+        "the relay must be armed despite the breaker: {}",
+        sim.model().note
+    );
+    run_action(&mut sim);
+    assert_eq!(w.count("relay_tx"), 1, "the plan was relayed");
+}
+
 /// The central §7a test: the Send screen drives **one** `transfer` and **one** `relay_tx`, and
 /// the `relay_tx.hex` is byte-identical to the `transfer` response's `tx_metadata` (§2a.3).
 /// The TUI holds the plan in memory between the form and the modal, so it builds once.
@@ -473,6 +646,20 @@ fn the_send_screen_builds_once_and_relays_that_exact_transaction() {
         0,
         "Enter without the word must not relay"
     );
+    // §7a: the modal "is the whole safety surface and therefore … never abbreviated". The echo
+    // row was the line that fell off the bottom at every size, so the confirmation the design
+    // deliberately made harder than Enter had no feedback at all: a mistyped word looked exactly
+    // like a correct one. Type a prefix and assert it is on screen, at every tier.
+    type_str(&mut sim, "se");
+    for (cw, ch) in [(110u16, 34u16), (150, 40), (80, 24), (50, 16)] {
+        let echo = sim_text(&sim, cw, ch);
+        assert!(
+            echo.contains("> se"),
+            "{cw}x{ch}: the confirm modal shows no echo of the typed word:\n{echo}"
+        );
+    }
+    sim.inject_event(key(KeyCode::Backspace));
+    sim.inject_event(key(KeyCode::Backspace));
     type_str(&mut sim, CONFIRM_WORD);
     sim.inject_event(key(KeyCode::Enter));
 

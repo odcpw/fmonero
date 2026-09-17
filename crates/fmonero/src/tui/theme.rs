@@ -164,10 +164,12 @@ impl Theme {
         }
     }
 
-    /// The receive QR's style: lit sub-pixels are the **light** modules, unlit ones the dark
-    /// modules, so the code reads dark-on-light whatever the terminal's palette is.
+    /// The receive QR's style: **dark ink on light paper**, whatever the terminal's palette is.
+    /// `fg` is the module colour and `bg` the quiet zone's, which is the way round a half-block
+    /// canvas needs it — an unlit cell keeps the background, so the paper must be the background
+    /// and the modules the thing that is drawn (see `screens::qr_modal`).
     pub fn qr(&self) -> Style {
-        Style::new().fg(QR_LIGHT).bg(QR_DARK)
+        Style::new().fg(QR_DARK).bg(QR_LIGHT)
     }
 }
 
@@ -188,8 +190,9 @@ mod tests {
     #[test]
     fn the_qr_is_dark_on_light_whatever_the_theme_is() {
         let t = Theme::default();
-        assert_eq!(t.qr().fg, Some(QR_LIGHT));
-        assert_eq!(t.qr().bg, Some(QR_DARK));
+        // Dark ink, light paper — the name of this test, and the polarity a decoder expects.
+        assert_eq!(t.qr().fg, Some(QR_DARK));
+        assert_eq!(t.qr().bg, Some(QR_LIGHT));
     }
 
     #[test]
