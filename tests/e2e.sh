@@ -493,6 +493,63 @@ else
   fi
 fi
 
+# ---- every needs_yes hint is the user's OWN command, and it RUNS (§4) ----------------------
+#
+# V1 of the fix-up verification. `require_yes` built its hint as `"<command> --yes"` and dropped
+# the command's required positional, so an agent that did the one thing §4 promises works on
+# exit 3 `needs_yes` — append `--yes` and re-run the hint — got exit **2** back:
+# `fmonero wallet create --yes` answers "the following required arguments were not provided:
+# <NAME>". `send`/`sweep` were gated (`--max-fee`, `--below`, above); the other six were not,
+# which is why it survived four review passes. Each row below refuses, compares the hint against
+# the user's own command, and then RUNS that hint verbatim: with no daemon and no unit it must
+# fail on the machine, never on its own argv.
+step "§4: every needs_yes hint is the user's own command, and running it gets past clap"
+sandbox hints
+hint_runs() { # hint_runs <expected hint> <the hint's own expected exit> <command…>
+  local want="$1" want_rc="$2"; shift 2
+  fm --timeout 3 "$@" --json
+  expect_rc 3 "$* without --yes"
+  expect_reason needs_yes "needs_yes"
+  local hint; hint="$(printf '%s' "$OUT" | jq -r '.hint // ""')"
+  if [ "$hint" = "$want" ]; then ok "§4: the hint is the user's own command — $hint"; else
+    bad "§4: the hint is not the user's own command with --yes appended" "want: $want" "got:  $hint"
+  fi
+  local argv; read -r -a argv <<<"${hint#fmonero }"
+  fm --timeout 3 "${argv[@]}" --json
+  local reason; reason="$(printf '%s' "$OUT" | jq -r '.reason // "null"')"
+  if [ "$RC" = 2 ] || [ "$reason" = bad_args ]; then
+    bad "§4: the hint fails on its own argv, not on the machine" "$hint" "exit $RC, reason $reason"
+  else
+    ok "§4: \`$hint\` gets past clap (exit $RC, reason $reason)"
+  fi
+  expect_rc "$want_rc" "and the hint's own exit is the machine's answer"
+}
+hint_runs "fmonero node down --yes"            4 node down
+hint_runs "fmonero node restart --yes"         4 node restart
+hint_runs "fmonero wallet clear-pending --yes" 0 wallet clear-pending
+hint_runs "fmonero wallet book remove 3 --yes" 4 wallet book remove 3
+hint_runs "fmonero wallet set-daemon 127.0.0.1:18081 --yes" 4 wallet set-daemon 127.0.0.1:18081
+# Last, because the password has to be in the environment for the hint's own run: `wallet
+# create` refuses BEFORE it asks for one (§4.1), so only the second invocation needs it.
+FMONERO_WALLET_PASSWORD=x hint_runs "fmonero wallet create zzhint --yes" 4 wallet create zzhint
+unset FMONERO_WALLET_PASSWORD
+# No wallet file was created by either invocation: the refusal is before the prompt and the run
+# stops at the missing unit (§2i's preflight).
+fm wallet list --json
+expect_json '.wallets | length' '0' "and neither invocation created a wallet file"
+#
+# V2: the `unit_missing` hint and `setup`'s own refusal. `fmonero setup --units` was itself an
+# exit 3 `needs_yes`, so the hint cost the agent a third round trip; and that refusal hinted
+# `fmonero setup --all --yes`, which WIDENS what the user asked for.
+fm node up --json
+expect_rc 4 "node up with no unit installed"
+expect_reason unit_missing "unit_missing"
+expect_json '.hint' '"fmonero setup --units --yes"' "§4: the unit_missing hint runs, rather than refusing in turn"
+fm setup --units --json
+expect_rc 3 "setup --units without --yes"
+expect_reason needs_yes "needs_yes"
+expect_json '.hint' '"fmonero setup --units --yes"' "§4: and setup hints the user's own command, not --all"
+
 # §4.2's two gate lines, run against the REAL config dir's renderer but writing nothing.
 step "setup --units --dry-run (§4.2)"
 sandbox setup

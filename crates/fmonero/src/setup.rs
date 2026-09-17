@@ -55,6 +55,31 @@ impl SetupArgs {
     fn want_menu(&self) -> bool {
         self.menu || self.all
     }
+
+    /// The user's **own** invocation with `--yes` appended (§4), for the `needs_yes` refusal.
+    ///
+    /// A template hint widens what the user asked for: `fmonero setup --units` refused with
+    /// `hint: fmonero setup --all --yes` prescribes the plugin and the menu as well, which is
+    /// harmless only because `setup` is idempotent — it is still not the command the user ran.
+    /// The bad-args refusal above keeps `--all`, because there the user named no target at all.
+    pub(crate) fn own_command(&self) -> String {
+        let mut s = String::from("fmonero setup");
+        for (flag, on) in [
+            ("--units", self.units),
+            ("--plugin", self.plugin),
+            ("--menu", self.menu),
+            ("--all", self.all),
+            ("--rotate-rpc-login", self.rotate_rpc_login),
+            ("--full-chain", self.full_chain),
+        ] {
+            if on {
+                s.push(' ');
+                s.push_str(flag);
+            }
+        }
+        s.push_str(" --yes");
+        s
+    }
 }
 
 /// Run setup. `--dry-run` prints a unified diff and changes nothing (§4.2).
@@ -72,7 +97,7 @@ pub fn run(args: SetupArgs, ctx: Context, out: Out) -> anyhow::Result<i32> {
     if !args.dry_run && !args.yes {
         return Err(Error::safety("fmonero setup needs --yes")
             .with_reason("needs_yes")
-            .with_hint("fmonero setup --all --yes")
+            .with_hint(args.own_command())
             .into());
     }
     let mut actions: Vec<FileAction> = Vec::new();

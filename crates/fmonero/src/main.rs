@@ -977,7 +977,7 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                 Ok(0)
             }
             NodeCmd::Down => {
-                require_yes(yes, "fmonero node down")?;
+                require_yes(yes, "fmonero node down", &[])?;
                 node_session::down(&ctx, &cancel)?;
                 out.emit(
                     "node down",
@@ -993,7 +993,7 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                 Ok(0)
             }
             NodeCmd::Restart => {
-                require_yes(yes, "fmonero node restart")?;
+                require_yes(yes, "fmonero node restart", &[])?;
                 let started = node_session::restart(&ctx, &cancel)?;
                 let unit = ctx.settings.node.unit.clone();
                 let active = units::state(&ctx, &unit)?.active;
@@ -1264,7 +1264,21 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
             } => {
                 check_wallet_name(&name)?;
                 coresettings::validate_seed_language(&language)?;
-                require_yes(yes, "fmonero wallet create")?;
+                let mut own = vec![name.clone()];
+                // `--language` is omitted when it is the default clap filled in: the hint is
+                // then the same command, and a hint is read as well as run.
+                if language != coresettings::DEFAULT_SEED_LANGUAGE {
+                    own.push("--language".into());
+                    own.push(language.clone());
+                }
+                if allow_empty_password {
+                    own.push("--allow-empty-password".into());
+                }
+                if let Some(p) = &password_file {
+                    own.push("--password-file".into());
+                    own.push(p.display().to_string());
+                }
+                require_yes(yes, "fmonero wallet create", &own)?;
                 // On a TTY the password is asked for twice and compared (§2b.2): a wallet whose
                 // password the user does not have can never be opened and its seed can never be
                 // read, and `create_wallet` takes the password verbatim with no emptiness check.
@@ -1676,7 +1690,7 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                     ));
                     out.note("  fmonero wallet history --limit 5   # check the last few by hand");
                 }
-                require_yes(yes, "fmonero wallet clear-pending")?;
+                require_yes(yes, "fmonero wallet clear-pending", &[])?;
                 let cleared = record.is_some() || unreadable;
                 state::clear_pending_send(&ctx)?;
                 out.emit(
@@ -1758,7 +1772,7 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                         Ok(0)
                     }
                     BookCmd::Remove { index } => {
-                        require_yes(yes, "fmonero wallet book remove")?;
+                        require_yes(yes, "fmonero wallet book remove", &[index.to_string()])?;
                         let entry = w
                             .get_address_book()?
                             .into_iter()
@@ -1816,7 +1830,11 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                 }
             }
             WalletCmd::SetDaemon { address, trusted } => {
-                require_yes(yes, "fmonero wallet set-daemon")?;
+                let mut own = vec![address.clone()];
+                if trusted {
+                    own.push("--trusted".into());
+                }
+                require_yes(yes, "fmonero wallet set-daemon", &own)?;
                 let w = WalletClient::from_ctx(&ctx)?;
                 // Omitting the two credential fields does not KEEP the wallet's daemon login,
                 // it clears it: `on_set_daemon` builds the optional login only from a non-empty
@@ -1949,13 +1967,29 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
 /// Refuse an irreversible action that was not confirmed (§4.1). The money path does **not**
 /// use this: `send`/`sweep` refuse only after a build, so that the fee they print is real
 /// (§2a.1 step 10).
-fn require_yes(yes: bool, what: &str) -> Result<(), Error> {
+///
+/// `args` carries the user's **own** arguments, and the hint is their own command with `--yes`
+/// appended — the §4 rule [`send_hint`] already follows on the money path. A template hint
+/// (`format!("{what} --yes")`) is not runnable for the three commands that take a required
+/// positional: `fmonero wallet create --yes` exits **2** with "the following required arguments
+/// were not provided: <NAME>", so the one reflex §4 promises an agent on exit 3 `needs_yes` —
+/// append `--yes` and retry — costs it a round trip and a second error instead. Every flag the
+/// user passed comes back too, for the reason [`send_hint`] gives: a hint that drops a bound is
+/// a different command. [`tests::every_needs_yes_hint_parses_under_clap`] drives the clap tree
+/// with each hint's own argv.
+fn require_yes(yes: bool, what: &str, args: &[String]) -> Result<(), Error> {
     if yes {
         return Ok(());
     }
+    let mut hint = String::from(what);
+    for a in args {
+        hint.push(' ');
+        hint.push_str(&shell_quote(a));
+    }
+    hint.push_str(" --yes");
     Err(Error::safety(format!("{what} needs --yes"))
         .with_reason("needs_yes")
-        .with_hint(format!("{what} --yes")))
+        .with_hint(hint))
 }
 
 /// The `--yes` hint is the user's **own** command with `--yes` appended **verbatim** (§4).
@@ -2043,6 +2077,180 @@ fn check_txid(txid: &str) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
+
+    use clap::Parser;
+
+    /// Every `require_yes` call site in this file, as the arguments the user's own command
+    /// carried and the hint the refusal must print (§4: "the hint is the user's own command
+    /// with `--yes` appended verbatim").
+    ///
+    /// [`every_require_yes_call_site_is_listed_here`] ties this table to the source, so a
+    /// seventh call site cannot arrive without a row here, and
+    /// [`every_needs_yes_hint_parses_under_clap`] runs every hint through the clap tree.
+    const NEEDS_YES: &[(&str, &[&str], &str)] = &[
+        ("fmonero node down", &[], "fmonero node down --yes"),
+        ("fmonero node restart", &[], "fmonero node restart --yes"),
+        (
+            "fmonero wallet create",
+            &["zzhint"],
+            "fmonero wallet create zzhint --yes",
+        ),
+        (
+            "fmonero wallet clear-pending",
+            &[],
+            "fmonero wallet clear-pending --yes",
+        ),
+        (
+            "fmonero wallet book remove",
+            &["3"],
+            "fmonero wallet book remove 3 --yes",
+        ),
+        (
+            "fmonero wallet set-daemon",
+            &["127.0.0.1:18081", "--trusted"],
+            "fmonero wallet set-daemon 127.0.0.1:18081 --trusted --yes",
+        ),
+    ];
+
+    /// Every `needs_yes` hint this binary can print, from the three places that build one:
+    /// [`super::require_yes`], `setup::run` (§4.2) and [`super::send_hint`] (§2a.1 step 10).
+    fn every_needs_yes_hint() -> Vec<String> {
+        let mut hints: Vec<String> = Vec::new();
+        for (what, args, expected) in NEEDS_YES {
+            let own: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
+            let e = super::require_yes(false, what, &own).expect_err("no --yes is a refusal");
+            assert_eq!(e.reason(), Some("needs_yes"), "{what}");
+            assert_eq!(
+                &e.hint(),
+                expected,
+                "{what}: the hint is not the user's command"
+            );
+            hints.push(e.hint());
+        }
+        hints.push(
+            crate::setup::SetupArgs {
+                units: true,
+                ..Default::default()
+            }
+            .own_command(),
+        );
+        hints.push(super::send_hint(
+            "send",
+            "@friend",
+            Some("0.1"),
+            0,
+            2,
+            &[("--max-fee", Some("1")), ("--note", Some("coffee"))],
+        ));
+        hints.push(super::send_hint(
+            "sweep",
+            "@friend",
+            None,
+            0,
+            2,
+            &[("--below", Some("0.5"))],
+        ));
+        hints
+    }
+
+    /// **V1 of the fix-up verification.** A refusal hint is a command an agent runs: the one
+    /// reflex §4 promises it on exit 3 `needs_yes` is "append `--yes` and retry", and a hint
+    /// that drops the command's required positional answers that reflex with exit 2, "the
+    /// following required arguments were not provided". This drives the real clap tree with
+    /// each hint's own argv, so a template hint cannot come back unnoticed.
+    #[test]
+    fn every_needs_yes_hint_parses_under_clap() {
+        let hints = every_needs_yes_hint();
+        assert_eq!(
+            hints.len(),
+            NEEDS_YES.len() + 3,
+            "a hint source went missing"
+        );
+        for hint in hints {
+            let argv: Vec<&str> = hint.split_whitespace().collect();
+            assert_eq!(argv.first(), Some(&"fmonero"), "{hint}");
+            assert!(argv.contains(&"--yes"), "{hint} does not carry --yes");
+            if let Err(e) = super::Cli::try_parse_from(&argv) {
+                panic!("the hint `{hint}` does not parse: {e}");
+            }
+        }
+    }
+
+    /// The table above is the source's, not a copy that can go stale: every `require_yes(yes,`
+    /// line in this file must be one of its rows.
+    #[test]
+    fn every_require_yes_call_site_is_listed_here() {
+        let src = include_str!("main.rs");
+        // A call site is a line that *starts* with the call, so this test's own mentions of
+        // the helper — this filter included — are not counted as one.
+        let sites: Vec<&str> = src
+            .lines()
+            .map(str::trim_start)
+            .filter(|l| l.starts_with("require_yes(yes, \""))
+            .collect();
+        assert_eq!(
+            sites.len(),
+            NEEDS_YES.len(),
+            "a require_yes call site has no row in NEEDS_YES: {sites:#?}"
+        );
+        for (what, _, _) in NEEDS_YES {
+            assert!(
+                sites.iter().any(|l| l.contains(&format!("\"{what}\""))),
+                "no call site names {what}"
+            );
+        }
+    }
+
+    /// **V3 of the fix-up verification.** `capabilities.commands[].needs_yes` is what an agent
+    /// branches on before it calls a mutating command, so it has to match the handlers in both
+    /// directions: `wallet book` read `needs_yes: false` while `wallet book remove` refused
+    /// with exit 3.
+    #[test]
+    fn capabilities_needs_yes_matches_the_handlers() {
+        let dir = std::env::temp_dir().join(format!("fmonero-needs-yes-{}", std::process::id()));
+        let ctx = fmonero_core::Context::for_test(&dir).expect("a test context");
+        let caps = fmonero_core::agent::capabilities_json(&ctx);
+        let _ = std::fs::remove_dir_all(&dir);
+        let rows: Vec<(&str, bool)> = caps["commands"]
+            .as_array()
+            .expect("commands")
+            .iter()
+            .map(|c| {
+                (
+                    c["name"].as_str().expect("name"),
+                    c["needs_yes"].as_bool().expect("needs_yes"),
+                )
+            })
+            .collect();
+        assert!(rows.len() > 30, "the table is not vacuous");
+        for (what, _, _) in NEEDS_YES {
+            let name = what.strip_prefix("fmonero ").expect("a fmonero command");
+            let row = rows
+                .iter()
+                .find(|(n, _)| *n == name)
+                .unwrap_or_else(|| panic!("capabilities has no row for `{name}`"));
+            assert!(
+                row.1,
+                "`{name}` refuses without --yes, and capabilities says needs_yes: false"
+            );
+        }
+        // The other direction: nothing claims `--yes` that no handler demands. The three that
+        // do not go through `require_yes` refuse elsewhere — `send`/`sweep` at §2a.1 step 10,
+        // after the build, so the fee they print is real, and `setup` in `setup::run`.
+        let mut declared: Vec<&str> = rows
+            .iter()
+            .filter(|(_, y)| *y)
+            .map(|(n, _)| *n)
+            .collect::<Vec<_>>();
+        declared.sort_unstable();
+        let mut expected: Vec<&str> = NEEDS_YES
+            .iter()
+            .map(|(w, _, _)| w.strip_prefix("fmonero ").expect("a fmonero command"))
+            .collect();
+        expected.extend(["wallet send", "wallet sweep", "setup"]);
+        expected.sort_unstable();
+        assert_eq!(declared, expected, "capabilities and the handlers disagree");
+    }
 
     fn rewrite(args: &[&str]) -> Vec<String> {
         let mut argv: Vec<OsString> = args.iter().map(OsString::from).collect();
