@@ -137,9 +137,19 @@ expect_contains() { # expect_contains <needle> <label>  (searches stdout AND std
 # §5c's gate: the top-level key set must be EXACTLY the documented one — no missing key, no
 # extra key. A superset would let a payload grow keys nothing documents; a subset would let one
 # quietly lose a key an agent parses.
+# Every label is recorded, so the coverage step near the end of this file can COMPARE the set of
+# commands asserted against the set of commands that exist. Without the tally that step printed a
+# reassuring title and two skips and asserted nothing — a new §4.1 command could arrive with no
+# `expect_keys` line at all and the run would still say "0 failed", which is the exact drift §5c
+# says it exists to prevent.
+ASSERTED="$WORK/asserted.txt"
+: > "$ASSERTED"
 expect_keys() { # expect_keys <label> <space-separated keys>
   local label="$1"; shift
   local want got
+  # The label may carry a parenthesised variant ("wallet send (dry run)"); the command is the
+  # part before it.
+  printf '%s\n' "${label%% (*}" >> "$ASSERTED"
   # shellcheck disable=SC2048,SC2086
   want="$(printf '%s\n' $* | sort -u | tr '\n' ' ')"
   got="$(printf '%s' "$OUT" | jq -r 'keys[]' 2>/dev/null | sort -u | tr '\n' ' ')"
@@ -396,6 +406,15 @@ expect_rc 15 "a bad address is exit 15 even with the wallet daemon down (§2a.1)
 fm --timeout 3 wallet send "$DEST" 0.1 --json
 expect_rc 4 "a VALID address with the wallet daemon down is exit 4, not the no---yes 3 (§4b)"
 expect_reason unreachable "reason unreachable, because nothing is listening (§2c)"
+# §4: every hint is a runnable command that HELPS. `unreachable` used to fall through to
+# `Error::default_hint`'s `omarchy pkg add monero` — an install command for a daemon that is
+# installed and merely not running, and the most frequently hit error path in the whole tool.
+HINT="$(printf '%s' "$OUT" | jq -r .hint)"
+case "$HINT" in
+  *"omarchy pkg add"*) bad "§4: 'unreachable' tells the user to install what they already have" "$HINT" ;;
+  *"fmonero wallet open"*|*"fmonero node up"*) ok "§4: and the hint names a command that STARTS it" ;;
+  *) bad "§4: the unreachable hint names no start command" "$HINT" ;;
+esac
 fm --timeout 3 wallet send "$DEST" 0.1 --dry-run --yes --json
 expect_rc 4 "--dry-run --yes with no daemon is the same, which is proof the pair cannot relay"
 
@@ -535,9 +554,29 @@ else
   bad "§4.2: the open sequence is out of order" "$ORDER"
 fi
 
+# §4.2 + upstream: `on_set_daemon` builds the optional login only from a non-empty
+# username/password (`wallet_rpc_server.cpp:4754-4757`) and `wallet2::set_daemon` then assigns
+# `m_daemon_login = std::move(daemon_login)` UNCONDITIONALLY (`wallet2.cpp:1393`) — so omitting
+# the fields does not keep the wallet's credential, it CLEARS it, and every wallet→node call
+# 401s from then on with nothing reporting an error.
+printf 'rpc-login=fmonero:0123456789abcdef0123456789abcdef\n' > "$FMONERO_CONFIG_DIR/monerod.conf"
+chmod 600 "$FMONERO_CONFIG_DIR/monerod.conf"
 fm --timeout 3 wallet set-daemon 127.0.0.1:18081 --trusted --yes --json
 expect_rc 0 "wallet set-daemon"
 expect_keys "wallet set-daemon" "ok schema address trusted authenticated"
+SD="$(jq -s '[.[] | select(.method=="set_daemon")] | last | .body.params' "$WALLET_LOG")"
+if printf '%s' "$SD" | jq -e '.username == "fmonero" and (.password | length) == 32' >/dev/null; then
+  ok "§4.2: a loopback set-daemon carries the node credential"
+else
+  bad "§4.2: set-daemon sent no credential, which CLEARS the wallet's daemon login" "$SD"
+fi
+fm --timeout 3 wallet set-daemon 10.0.0.5:18081 --trusted --yes --json
+SD="$(jq -s '[.[] | select(.method=="set_daemon")] | last | .body.params' "$WALLET_LOG")"
+if printf '%s' "$SD" | jq -e 'has("username") | not' >/dev/null; then
+  ok "§2c: and a REMOTE one still gets nothing — a remote node is monero-wallet-rpc's business"
+else
+  bad "§2c: the node credential was sent to a remote address" "$SD"
+fi
 fm --timeout 3 wallet set-daemon 127.0.0.1:18081 --json
 expect_rc 3 "wallet set-daemon without --yes is exit 3"
 
@@ -648,7 +687,29 @@ SEND_REFUSED="$OUT"
 fm --timeout 3 wallet send "$DEST" 0.1 --max-fee 0.00000001 --json
 expect_rc 3 "a built fee above --max-fee is exit 3 (§2a.2)"
 expect_reason fee_above_max "fee_above_max"
+# §5c's money exception names BOTH refusals — step 9 `fee_above_max` and step 10 `needs_yes` —
+# and the whole point is the BUILT fee being machine-readable: an agent that set --max-fee and
+# got only prose has no number to choose a new bound with, and §4 forbids parsing the prose.
+expect_keys "wallet send (the --max-fee refusal)" "ok schema code code_name error hint reason $SEND_KEYS"
+expect_json '.fee_pico' '30720000' "§5c: the fee_above_max refusal carries the BUILT fee"
+expect_json '.relayed' 'false' "and says nothing was relayed"
+expect_json '.txids | length' '0' "with no txids"
 RELAYS_BEFORE="$(logged "$WALLET_LOG" relay_tx)"
+
+# §4: "the hint is the user's own command with --yes appended VERBATIM". Every bound the user
+# gave has to come back: a hint that drops --max-fee prescribes the rebuild §2a.2 warns may
+# charge a different fee, with the ceiling removed.
+fm --timeout 3 wallet send "$DEST" 0.1 --note coffee --max-fee 1 --json
+expect_rc 3 "a send with --max-fee and --note still refuses without --yes"
+HINT="$(printf '%s' "$OUT" | jq -r .hint)"
+case "$HINT" in
+  *"--max-fee 1"*) ok "§4: the hint keeps --max-fee" ;;
+  *) bad "§4: the hint dropped --max-fee" "$HINT" ;;
+esac
+case "$HINT" in
+  *"--note coffee"*) ok "§4: and --note" ;;
+  *) bad "§4: the hint dropped --note" "$HINT" ;;
+esac
 
 fm --timeout 3 wallet send "$DEST" 0.1 --note coffee --yes --json
 expect_rc 0 "wallet send --yes"
@@ -667,13 +728,13 @@ if [ "$RELAY_HEX" = "$WANT_HEX" ]; then
 else
   bad "§2a.3: relay_tx sent the wrong blob" "sent: ${RELAY_HEX:0:60}" "want: ${WANT_HEX:0:60}"
 fi
-# Five invocations have built so far in this sandbox (--dry-run, --dry-run --yes, no ---yes,
-# --max-fee, --yes) and exactly ONE of them relayed: one build per invocation, never two per
-# send, and never a build whose plan is relayed twice (§2a.3).
-if [ "$(logged "$WALLET_LOG" transfer)" = "5" ] && [ "$(logged "$WALLET_LOG" relay_tx)" = "1" ]; then
-  ok "§2a.3: five builds, one relay — one transfer per invocation and one relay per plan"
+# Six invocations have built so far in this sandbox (--dry-run, --dry-run --yes, no ---yes,
+# --max-fee, the --max-fee/--note hint case, --yes) and exactly ONE of them relayed: one build
+# per invocation, never two per send, and never a build whose plan is relayed twice (§2a.3).
+if [ "$(logged "$WALLET_LOG" transfer)" = "6" ] && [ "$(logged "$WALLET_LOG" relay_tx)" = "1" ]; then
+  ok "§2a.3: six builds, one relay — one transfer per invocation and one relay per plan"
 else
-  bad "§2a.3: expected 5 transfer and 1 relay_tx" \
+  bad "§2a.3: expected 6 transfer and 1 relay_tx" \
       "transfer=$(logged "$WALLET_LOG" transfer) relay_tx=$(logged "$WALLET_LOG" relay_tx)"
 fi
 if [ "$(logged "$WALLET_LOG" store)" -ge 1 ]; then ok "§2a.4: one wallet store after the last relay"; else
@@ -702,6 +763,15 @@ else
 fi
 fm --timeout 3 wallet sweep "$DEST" --json
 expect_rc 3 "wallet sweep without --yes is exit 3"
+fm --timeout 3 wallet sweep "$DEST" --below 0.5 --json
+expect_rc 3 "a bounded sweep refuses without --yes too"
+HINT="$(printf '%s' "$OUT" | jq -r .hint)"
+case "$HINT" in
+  # Without it the hint sweeps the WHOLE account — a different amount and a different fee
+  # from the one the refusal just described (§4).
+  *"--below 0.5"*) ok "§4: the sweep hint keeps --below" ;;
+  *) bad "§4: the sweep hint dropped --below, so running it empties the account" "$HINT" ;;
+esac
 fm --timeout 3 wallet sweep "$DEST" --yes --json
 expect_rc 0 "wallet sweep --yes"
 expect_json '.txids | length' '2' "one relay_tx per tx_metadata_list entry, in order (§2a.4)"
@@ -723,9 +793,47 @@ fm --timeout 3 status --json
 expect_json '[.warnings[].id] | contains(["send_may_be_in_flight"])' 'true' "§5: status raises send_may_be_in_flight"
 expect_json '.pending.total_count' '1' "and surfaces the record"
 expect_json '.pending.relayed_count' '0' "with its counts pre-rendered in Rust (§5b)"
+# §2a.11: `clear-pending` is the record's third writer and must hold the same lock. Without it
+# a clear between two relay_tx calls of a sweep removes the record under the relay, mark_relayed
+# fails for a transaction that really went out, and NOTHING is left on disk to block the next
+# send — the lost update §2a.4 put the record in its own file to prevent.
+python3 - "$FMONERO_STATE_DIR/send.lock" <<'LOCK' &
+import fcntl, os, sys, time
+fd = os.open(sys.argv[1], os.O_CREAT | os.O_RDWR, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX)
+time.sleep(3)
+LOCK
+LOCKER=$!
+sleep 0.6
+fm --timeout 3 wallet clear-pending --yes --json
+expect_rc 3 "§2a.11: clear-pending refuses while a send holds send.lock"
+expect_reason send_in_progress "send_in_progress"
+if [ -s "$FMONERO_STATE_DIR/pending.json" ]; then ok "and the record is still there"; else
+  bad "§2a.11: the record was removed under a held lock"
+fi
+wait "$LOCKER" 2>/dev/null
+
 fm --timeout 3 wallet clear-pending --yes --json
 expect_rc 0 "wallet clear-pending clears it"
 expect_json '.cleared' 'true' "cleared"
+
+# §2a.4 + §4: the escape hatch the `pending_send` refusal's own hint names must work on a record
+# fmonero cannot parse — otherwise a hand-edited or truncated file blocks every send for good
+# and the printed hint fails the same way.
+printf '{"kind":"send","account_index":0}' > "$FMONERO_STATE_DIR/pending.json"
+chmod 600 "$FMONERO_STATE_DIR/pending.json"
+fm --timeout 3 wallet send "$DEST" 0.1 --json
+expect_rc 3 "an unparsable record blocks the send (§2a.4)"
+expect_reason pending_send "pending_send"
+fm --timeout 3 wallet clear-pending --yes --json
+expect_rc 0 "and clear-pending — the command that hint names — still clears it"
+expect_json '.cleared' 'true' "cleared"
+expect_json '.pending' 'null' "with no record to render"
+if [ -e "$FMONERO_STATE_DIR/pending.json" ]; then
+  bad "the unparsable record is still on disk"
+else
+  ok "the file is gone, so the next send is not blocked"
+fi
 
 # §2a's --force list: it never bypasses the §2i layout gate.
 systemctl_fixture system_unit
@@ -750,6 +858,16 @@ sed -i 's|^url = "http://127.0.0.1:18191"|url = "http://10.0.0.5:18081"|' "$FMON
 fm --timeout 3 status --force --json
 expect_rc 2 "§2a: status --force with a non-loopback node.url exits 2, not 5"
 expect_reason non_loopback_url "because require_loopback runs before any breaker"
+# §2c: the money path answers the same way. It used to discard the constructor's error and
+# report exit 4 `unreachable` with `fmonero node up` as the hint — a command that itself exits 2
+# on this configuration, so the diagnosis pointed away from the cause and an agent never
+# converged.
+fm --timeout 3 wallet send "$DEST" 0.1 --json
+expect_rc 2 "§2c: a non-loopback node.url on the send path is exit 2, not 4 unreachable"
+expect_reason non_loopback_url "non_loopback_url"
+fm --timeout 3 wallet sweep "$DEST" --json
+expect_rc 2 "§2c: and on the sweep path"
+expect_reason non_loopback_url "non_loopback_url"
 cp "$WORK/money/config.bak" "$FMONERO_CONFIG_DIR/config.toml"
 
 # ---- the §1b.4 error map, end to end ----------------------------------------
@@ -794,6 +912,31 @@ fm --timeout 3 wallet history --pool --json
 expect_rc 5 "epee's code:0 catch-all is exit 5"
 expect_reason rpc_error "rpc_error"
 expect_contains "cannot reach the daemon" "with a SYNTHESISED message, never an empty one (§2j)"
+
+# §4.2 exempts exactly ONE `set_daemon` failure from `wallet open`: `-38 NO_DAEMON_CONNECTION`,
+# where the wallet is open and simply has no daemon yet. Exit 4 is a whole CLASS, and the rest of
+# it — a 401, `-7 DENIED`, `-48 DISABLED`, `-23 NO_WALLET_DIR` — leaves the wallet open with NO
+# daemon credential, which §4.2 calls the step "whose omission means the wallet can never sync":
+# reporting that as a successful open shows a stale balance on the money surface for ever.
+mocks_down
+sandbox setdaemon
+mock_node_up
+mock_wallet_up --fail "set_daemon=-7:DENIED"
+mkdir -p "$FMONERO_STATE_DIR/wallets"
+fm settings set wallet.dir "$FMONERO_STATE_DIR/wallets" >/dev/null
+: > "$FMONERO_STATE_DIR/wallets/main.keys"
+FMONERO_WALLET_PASSWORD=t3stpw fm --timeout 3 wallet open main --json
+expect_rc 4 "a -7 DENIED from set_daemon FAILS wallet open (§4.2)"
+mocks_down
+sandbox setdaemon38
+mock_node_up
+mock_wallet_up --fail "set_daemon=-38:no connection to daemon"
+mkdir -p "$FMONERO_STATE_DIR/wallets"
+fm settings set wallet.dir "$FMONERO_STATE_DIR/wallets" >/dev/null
+: > "$FMONERO_STATE_DIR/wallets/main.keys"
+FMONERO_WALLET_PASSWORD=t3stpw fm --timeout 3 wallet open main --json
+expect_rc 0 "…while the one code §4.2 exempts, -38, does not"
+expect_json '.open' 'true' "the wallet is open, it simply has no daemon yet"
 
 # ---- the restricted node, and BUSY ------------------------------------------
 step "the restricted node and the BUSY degradation (§1b.2, §1b.3)"
@@ -1096,8 +1239,25 @@ expect_json '.refused' 'true' "refused, with the integrity failure named"
 
 # ================================================================ §5c coverage
 step "§5c: every command in §4.1 has been asserted, or is named as not covered"
-# `tui` and `robot-docs` are the two rows §5c marks exempt — the only two. Every other command
-# of §4.1 has had its top-level key set asserted above.
+# `tui` and `robot-docs` are the two rows §5c marks exempt — the only two. Every other command of
+# §4.1 must have had its top-level key set asserted above, and this COMPARES the two sets rather
+# than asserting it in a step title: the command list comes from `capabilities`, which is
+# generated from the same table §4.1 defines, so a new command arrives here on its own.
+"$FM" capabilities --json | jq -r '.commands[].name' | grep -vE '^(tui|robot-docs)$' \
+  | sort -u > "$WORK/expected-commands.txt"
+sort -u "$ASSERTED" > "$WORK/asserted-sorted.txt"
+# A label may name a SUBcommand of a §4.1 row (`wallet book list` covers `wallet book`), so the
+# match is "equal, or the row followed by a space".
+MISSING=""
+while read -r want; do
+  [ -n "$want" ] || continue
+  grep -qE "^$want( |\$)" "$WORK/asserted-sorted.txt" || MISSING="$MISSING $want,"
+done < "$WORK/expected-commands.txt"
+if [ -z "${MISSING// /}" ]; then
+  ok "every §4.1 command has its top-level key set asserted ($(grep -c '' "$WORK/expected-commands.txt") of them)"
+else
+  bad "§5c: a command of §4.1 has NO key-set assertion anywhere in this file" "missing: $MISSING"
+fi
 skip "tui — exempt: interactive, and it exits 2 on a non-TTY stdout (§5c)"
 skip "robot-docs — exempt: plain text by contract (§5c)"
 

@@ -62,6 +62,24 @@ if [ -n "$CAPTURE" ]; then
           --log "$WORK/node.jsonl" >/dev/null 2>&1 & MOCKS+=("$!")
   "$MOCK" --role wallet --port "$WALLET_PORT" --fixtures "$ROOT/tests/fixtures" \
           --log "$WORK/wallet.jsonl" --auth fmonero:t3st >/dev/null 2>&1 & MOCKS+=("$!")
+  # **Our** mocks must own those ports.` bind` failing is silent — the process exits and a
+  # listener left over from another run answers in its place, serving the same fixtures from a
+  # log this run cannot read. Everything on screen then looks right while every "the mock
+  # recorded N requests" assertion reads an empty file, which is the shape of a test that cannot
+  # fail. Probe each port and require the answer to land in OUR log.
+  for spec in "$NODE_PORT:$WORK/node.jsonl" "$WALLET_PORT:$WORK/wallet.jsonl"; do
+    port="${spec%%:*}"; log="${spec#*:}"
+    for _ in $(seq 60); do
+      curl -s -o /dev/null --connect-timeout 1 --max-time 1 -d '{}' "127.0.0.1:$port/get_height" \
+        && break
+      sleep 0.05
+    done
+    if [ ! -s "$log" ]; then
+      echo "tui_tmux.sh: port $port is served by a process that is not this run's mock" >&2
+      echo "             (nothing reached $log) — stop it and re-run" >&2
+      exit 1
+    fi
+  done
   printf 'fmonero:t3st' > "$FMONERO_STATE_DIR/run/monero-wallet-rpc.$WALLET_PORT.login"
   chmod 600 "$FMONERO_STATE_DIR/run/monero-wallet-rpc.$WALLET_PORT.login"
   "$FM" settings set node.url   "http://127.0.0.1:$NODE_PORT"   >/dev/null
@@ -86,9 +104,34 @@ fi
 printf '\n== the TUI on a pty (%s)\n' "$SCENARIO"
 # stdout MUST be the pty: `fmonero tui` refuses a redirected stdout with exit 2 (main.rs), so
 # only stderr is captured and the screen is read back with capture-pane.
+#
+# **The sandbox is forced into the pane with `env`, and that is not belt-and-braces.** A new
+# session created inside an ALREADY-RUNNING tmux server inherits the SERVER's environment, not
+# this shell's — so every `export FMONERO_*` above was invisible to the TUI whenever the owner
+# (or another agent) had a tmux server up. The TUI then ran against `~/.config/fmonero`,
+# 127.0.0.1:18081/18083 and the owner's real wallet: the gate passed vacuously in non-capture
+# mode (the words "Node", "Balance", "Priority", "Log", "Keys" all render in the empty state),
+# and in `--capture` mode it typed a mainnet address and `0.01` into the Send form and pressed
+# Enter, which is `send::build` taking the owner's real `send.lock` and issuing a real
+# `transfer`. Worse, the "nothing was relayed" assertion counts `relay_tx` in the MOCK's log,
+# which is empty precisely when nothing reached the mock — passing in exactly the case it exists
+# for. Verified on this machine: with a server already running, `tmux new-session -d 'echo
+# [$FMONERO_STATE_DIR]'` prints `[]`.
 tmux new-session -d -s "$SESSION" -x 120 -y 40 \
-  "$FM tui 2>$WORK/tui.err; echo \$? > $WORK/rc"
+  "env FMONERO_STATE_DIR=$FMONERO_STATE_DIR FMONERO_CONFIG_DIR=$FMONERO_CONFIG_DIR FMONERO_CACHE_DIR=$FMONERO_CACHE_DIR $FM tui 2>$WORK/tui.err; echo \$? > $WORK/rc"
 sleep 2
+
+# And the sandbox is asserted, not assumed: if the pane is not in it, everything below is a test
+# of the owner's own machine.
+if [ -n "$CAPTURE" ]; then
+  sleep 1
+  if grep -q '"method":"get_info"' "$WORK/node.jsonl" 2>/dev/null; then
+    ok "the TUI is talking to the sandbox's node mock"
+  else
+    bad "the TUI reached no mock — it is NOT running in this test's sandbox" \
+        "node.jsonl is empty, so every assertion below is about the owner's real configuration"
+  fi
+fi
 
 if tmux has-session -t "$SESSION" 2>/dev/null; then ok "fmonero tui opened on a pty"; else
   bad "fmonero tui did not stay open" "stderr: $(head -3 "$WORK/tui.err" 2>/dev/null)"
@@ -144,9 +187,24 @@ if [ -n "$CAPTURE" ]; then
   # Esc discards: the built transaction is dropped, which releases the §2a.11 send.lock.
   tmux send-keys -t "$SESSION" Escape 2>/dev/null || true
   sleep 0.6
+  # POSITIVELY first: the mock must have seen the build, or "zero relay_tx" is the answer an
+  # empty log gives and proves nothing (that is exactly how the sandbox leak hid itself).
+  BUILT="$(grep -c '"method":"transfer"' "$WORK/wallet.jsonl" 2>/dev/null || true)"
   RELAYED="$(grep -c '"method":"relay_tx"' "$WORK/wallet.jsonl" 2>/dev/null || true)"
+  if [ "${BUILT:-0}" -ge 1 ]; then
+    ok "the build reached the wallet mock ($BUILT transfer request(s))"
+  else
+    bad "no transfer reached the mock, so the relay assertion below would be vacuous"
+  fi
   [ "${RELAYED:-0}" = "0" ] && ok "nothing was relayed (the capture run never broadcasts)" \
     || bad "a relay_tx reached the mock during a capture run"
+  # And the Node capture is the fixture's height, not whatever the owner's node happens to say.
+  if grep -q '3541122' "$CAPTURE/node.txt" 2>/dev/null; then
+    ok "the Node capture carries the fixture height 3541122"
+  else
+    bad "the Node capture does not show the fixture height — it is not the mock's data" \
+        "$(sed -n '3,6p' "$CAPTURE/node.txt" 2>/dev/null)"
+  fi
   tmux send-keys -t "$SESSION" Escape 2>/dev/null || true
   sleep 0.4
 fi
