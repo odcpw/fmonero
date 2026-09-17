@@ -699,7 +699,22 @@ impl WalletClient {
             map.insert("username".into(), serde_json::json!(l.user));
             map.insert("password".into(), serde_json::json!(l.pass));
         }
-        match self.t.rpc("set_daemon", params, Deadline::Probe) {
+        // **`Deadline::Refresh`, not `Deadline::Probe`** — v5.3, and the defect that forced it
+        // (§4.2, §2m.3). "`set_daemon` opens no socket" (§1b.9 item 1) is true of the call and
+        // false of its latency: `wallet2::set_daemon` takes `m_daemon_rpc_mutex` as its first
+        // statement, and in remote mode the auto-refresh a freshly created or opened wallet
+        // starts holds that mutex across internet round trips. Under the 5 s
+        // `timeouts.wallet_sec` probe deadline the very first `wallet create` against a real
+        // public node exited **5 `killed_at_deadline`** for a wallet that had already been
+        // written to disk.
+        //
+        // `timeouts.refresh_sec` (120 s) rather than `timeouts.open_sec` (300 s) because the
+        // latency being waited on **is a refresh**: this design's one budget for "the wallet is
+        // fetching blocks from a daemon" is the right ceiling for waiting behind one, while
+        // `open_sec` is the budget for decrypting a wallet file — five minutes, during which a
+        // `wallet open` against a wedged daemon would look like a hang. `--timeout N` lowers it
+        // like every other deadline (§4).
+        match self.t.rpc("set_daemon", params, Deadline::Refresh) {
             Ok(_) => Ok(()),
             // **`-38` here does not mean "cannot reach the node"**, and mapping it through the
             // §1b.4 table's `unreachable` would say so. `set_daemon` opens no socket: it is

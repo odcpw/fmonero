@@ -93,6 +93,35 @@ impl Context {
         self
     }
 
+    /// A context whose **wallet probe deadline is `timeouts.refresh`** — the one the
+    /// `wallet create` and `wallet open` sequences run under (v5.3, §4.2, §2m.3).
+    ///
+    /// `on_create_wallet` leaves the new wallet open and `monero-wallet-rpc`'s idle handler
+    /// immediately starts refreshing it from the restore height the daemon just handed it
+    /// (`wallet_rpc_server.cpp:3596`, `:3606-3609`), and in remote mode those are round trips
+    /// to a stranger's node over the internet. **Every call of the sequence that follows is
+    /// then waiting behind that refresh** — not only `set_daemon`, which was the first one
+    /// observed to be killed: a live rehearsal against a real public node also killed
+    /// `ensure_running`'s own `get_version` probe (reported as `unit_missing`, a daemon that is
+    /// running and merely busy) and `auto_refresh`. Under the 5 s `timeouts.wallet_sec` probe
+    /// deadline one `wallet create` in three failed **after the wallet file existed**, which is
+    /// the worst shape a failure can have here.
+    ///
+    /// `timeouts.refresh` (120 s) rather than `timeouts.open` (300 s) because the thing being
+    /// waited on **is a refresh**: it is this design's one budget for "the wallet is fetching
+    /// blocks from a daemon", while `open_sec` is the budget for decrypting a wallet file — a
+    /// different quantity, five minutes long, during which a command would look like a hang.
+    ///
+    /// A daemon that is **down** is unaffected: a refused connection is an error, not a
+    /// deadline, so `wallet create` against a dead `monero-wallet-rpc` still fails in
+    /// milliseconds. `--timeout N` lowers both deadlines before this runs, so `max` can never
+    /// raise one above the ceiling the user set (§4).
+    #[must_use]
+    pub fn with_wallet_probe_at_refresh(mut self) -> Context {
+        self.timeouts.wallet = self.timeouts.wallet.max(self.timeouts.refresh);
+        self
+    }
+
     /// A context for tests: every fmonero directory under `dir`, default settings.
     ///
     /// **Every path a test can observe belongs to `dir`, including the three that are not
@@ -132,6 +161,28 @@ mod tests {
     fn a_context_is_send_and_sync_and_clonable() {
         fn assert_context<T: Send + Sync + Clone + 'static>() {}
         assert_context::<Context>();
+    }
+
+    /// v5.3, §4.2: the create/open sequences run under `timeouts.refresh`, and `--timeout N`
+    /// still wins. `max` rather than a plain assignment is what makes the second half true —
+    /// `clamp_to` has already lowered both by the time this runs, so the raise can never climb
+    /// back above the ceiling the user set (§4).
+    #[test]
+    fn the_create_and_open_probe_deadline_is_the_refresh_one_and_timeout_still_lowers_it() {
+        let ctx = Context::load()
+            .expect("context")
+            .with_wallet_probe_at_refresh();
+        assert_eq!(ctx.timeouts.wallet, ctx.timeouts.refresh);
+        assert!(
+            ctx.timeouts.wallet > std::time::Duration::from_secs(5),
+            "the 5 s probe deadline is what killed a create after the wallet existed"
+        );
+
+        let clamped = Context::load()
+            .expect("context")
+            .with_flags(true, 0, Some(2), false)
+            .with_wallet_probe_at_refresh();
+        assert_eq!(clamped.timeouts.wallet, std::time::Duration::from_secs(2));
     }
 
     #[test]

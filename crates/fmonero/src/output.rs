@@ -379,22 +379,20 @@ fn footers(label: &str, v: &serde_json::Value) -> Vec<String> {
                 ));
             }
         }
-        "node log" => {
-            // §4.1: a missing log file is exit 0 with "no log yet". In JSON mode the payload is
-            // `lines: []` — the machine form — so the sentence goes to stderr, where it reaches
-            // a human without ever entering the data stream (§4).
-            if v["lines"].as_array().is_some_and(|a| a.is_empty()) {
-                out.push(format!(
-                    "no log yet at {}",
-                    v["path"].as_str().unwrap_or("the configured log file")
-                ));
-            }
+        // §4.1: a missing log file is exit 0 with "no log yet". In JSON mode the payload is
+        // `lines: []` — the machine form — so the sentence goes to stderr, where it reaches a
+        // human without ever entering the data stream (§4).
+        "node log" if v["lines"].as_array().is_some_and(|a| a.is_empty()) => {
+            out.push(format!(
+                "no log yet at {}",
+                v["path"].as_str().unwrap_or("the configured log file")
+            ));
         }
-        "wallet create" => {
-            if let Some(hint) = v["seed_backup_hint"].as_str() {
-                out.push(hint.to_string());
-            }
-        }
+        // **No `wallet create` footer.** `main.rs` notes the `seed_backup_hint` the moment
+        // `create_wallet` returns — before the daemon step, which is the step that can fail
+        // with the wallet already on disk (v5.3, §4.1). A second copy here would print it
+        // twice on the path that succeeds and would still be the only copy on the path that
+        // does not.
         _ => {}
     }
     out

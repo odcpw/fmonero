@@ -1476,6 +1476,46 @@ fn a_rejected_remote_address_fails_the_open_where_a_local_one_does_not() {
     assert!(state::last_open(&w.ctx).unwrap().is_none());
 }
 
+/// §4.2 and §2m.3, v5.3: `set_daemon` runs under `timeouts.refresh_sec`, not under the 5 s
+/// probe deadline.
+///
+/// "`set_daemon` opens no socket" (§1b.9 item 1) is true of the call and false of its latency:
+/// `wallet2::set_daemon` takes `m_daemon_rpc_mutex` first, and in remote mode the auto-refresh
+/// a freshly created wallet starts holds that mutex across internet round trips. The very
+/// first `wallet create` against a real public node therefore exited **5 `killed_at_deadline`**
+/// for a wallet that was already on disk.
+///
+/// The mock's `--delay-ms` is the same latency with none of the internet: the probe deadline is
+/// set **below** it and the refresh deadline above it, so the call succeeds iff it is the
+/// refresh deadline that governs. On the pre-v5.3 `Deadline::Probe` it is exit 5.
+#[test]
+fn set_daemon_is_governed_by_the_refresh_deadline_not_the_probe_deadline() {
+    let w = World::new("set-daemon-slow", &[], &["--delay-ms", "1500"]);
+    let mut ctx = w.ctx.clone();
+    go_remote(&mut ctx, false);
+    // A probe deadline the delayed answer cannot meet, and a refresh deadline it can.
+    ctx.timeouts.wallet = Duration::from_millis(600);
+    ctx.timeouts.refresh = Duration::from_secs(20);
+    let client = crate::rpc::WalletClient::from_ctx(&ctx).expect("wallet client");
+    let target = crate::units::daemon_target(&ctx);
+    client
+        .set_daemon(&target.address, target.trusted, None, target.ssl)
+        .expect("a set_daemon behind the daemon rpc mutex must not be killed at 5 s");
+    let answered = read_log(&w.wallet_log)
+        .iter()
+        .filter(|l| l["method"] == "set_daemon" && l["status"] == 200)
+        .count();
+    assert_eq!(answered, 1, "exactly one set_daemon was answered");
+
+    // And the probe deadline still governs a probe, so this test is not just "every deadline is
+    // long now": `get_height` under the same 600 ms is killed.
+    let e = client
+        .get_height()
+        .expect_err("the probe deadline still bites");
+    assert_eq!(e.exit_code(), 5, "{e}");
+    assert_eq!(e.reason(), Some("killed_at_deadline"));
+}
+
 /// §2m.3's send gate: **one bounded `refresh` before the `transfer`**, and nothing else changes.
 ///
 /// On the pre-v5.2 code the gate was `get_info.synchronized` against a local node, which in

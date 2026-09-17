@@ -1332,7 +1332,13 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                     if !dry_run {
                         require_yes(yes, "fmonero node remote", &own)?;
                     }
-                    let change = node_mode::set_remote(&ctx, &addr, trusted, dry_run, &cancel)?;
+                    // v5.3: `units::install`'s sandbox refusal is raised in core and cannot
+                    // know what the user typed; here it becomes their own command with
+                    // `--dry-run` (§4.2, §4).
+                    let change = node_mode::set_remote(&ctx, &addr, trusted, dry_run, &cancel)
+                        .map_err(|e| {
+                            e.retarget_sandbox_hint(dry_run_form("fmonero node remote", &own))
+                        })?;
                     out.emit("node remote", ok(serde_json::to_value(&change)?));
                     Ok(0)
                 }
@@ -1340,7 +1346,9 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                     if !dry_run {
                         require_yes(yes, "fmonero node local", &[])?;
                     }
-                    let change = node_mode::set_local(&ctx, dry_run, &cancel)?;
+                    let change = node_mode::set_local(&ctx, dry_run, &cancel).map_err(|e| {
+                        e.retarget_sandbox_hint(dry_run_form("fmonero node local", &[]))
+                    })?;
                     // §2m.5: it ends by naming `fmonero node up` when the node unit is inactive —
                     // the switch starts no daemon, because §2i's single-writer precondition is the
                     // only thing allowed to start `monerod`.
@@ -1371,6 +1379,10 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                 password_file,
             } => {
                 check_wallet_name(&name)?;
+                // v5.3: the open sequence runs under `timeouts.refresh_sec`, because every one
+                // of its calls can be waiting behind the wallet's own first refresh against the
+                // daemon — in remote mode, over the internet (§4.2, §2m.3).
+                let ctx = ctx.clone().with_wallet_probe_at_refresh();
                 let w = WalletClient::from_ctx(&ctx)?;
                 let password = prompt::wallet_password(password_file.as_deref(), false)?;
                 let opened = wallet_session::open(&ctx, &w, &name, password, &cancel)?;
@@ -1434,6 +1446,14 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                         "fmonero wallet create {name} --allow-empty-password --yes"
                     )));
                 }
+                // v5.3, and the defect a live rehearsal against a real public node found:
+                // `on_create_wallet` leaves the new wallet open and wallet-rpc immediately
+                // starts refreshing it from the restore height the **node** just handed it
+                // (§2m.3), so every call of the sequence below — `ensure_running`'s own
+                // `get_version` probe, `set_daemon`, `auto_refresh`, `get_address` — is waiting
+                // behind an internet round trip. Under the 5 s probe deadline one create in
+                // three failed AFTER the wallet file existed (§4.2).
+                let ctx = ctx.clone().with_wallet_probe_at_refresh();
                 let w = WalletClient::from_ctx(&ctx)?;
                 let hint = format!(
                     "Back up your seed BEFORE funding this wallet:\n  monero-wallet-cli --wallet-file {}/{name} --offline\n  # then type: seed",
@@ -1447,6 +1467,16 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                     &cancel,
                 )?;
                 w.create_wallet(&name, &password, &language)?;
+                // **The hint is printed here, before the daemon step, and not only in the
+                // payload** (v5.3). From this line on the wallet file exists, and every later
+                // step can still fail — the first `wallet create` against a real public node
+                // exited 5 on `set_daemon` because wallet-rpc held its daemon mutex across the
+                // new wallet's first refresh. Emitting "back up your seed before funding this
+                // wallet" only on the success path made the one output that protects money
+                // conditional on a step that has nothing to do with it; §2a's rule is that a
+                // money-visibility fact is not a footnote. It goes to stderr, so the §4 data
+                // stream is untouched in both modes and the JSON payload still carries the key.
+                out.note(&hint);
                 // `on_create_wallet` leaves the new wallet OPEN, so the last three steps of
                 // `wallet_session::open` must still run on it: without them the wallet has no
                 // daemon credential and no recorded name (§4.1).
@@ -2138,6 +2168,19 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
 /// user passed comes back too, for the reason [`send_hint`] gives: a hint that drops a bound is
 /// a different command. [`tests::every_needs_yes_hint_parses_under_clap`] drives the clap tree
 /// with each hint's own argv.
+/// The user's own command with `--dry-run` appended — the hint a `sandboxed_units` refusal
+/// carries (v5.3, §4.2). Built exactly as [`require_yes`] builds its `--yes` form, so the two
+/// cannot drift.
+fn dry_run_form(what: &str, args: &[String]) -> String {
+    let mut s = String::from(what);
+    for a in args {
+        s.push(' ');
+        s.push_str(&shell_quote(a));
+    }
+    s.push_str(" --dry-run");
+    s
+}
+
 fn require_yes(yes: bool, what: &str, args: &[String]) -> Result<(), Error> {
     if yes {
         return Ok(());
