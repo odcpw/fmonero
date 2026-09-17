@@ -1,0 +1,424 @@
+# fmonero
+
+A Monero node and wallet front end for Omarchy. A Rust CLI and engine, a FrankenTUI app, a
+`doctor`, and a thin Quickshell bar widget (`oliver.monero`). Monero's own daemons stay
+underneath and keep doing the cryptography: `monerod` serves the chain, `monero-wallet-rpc`
+owns the wallet file. fmonero is what you use, and it keeps answering while both of them are
+busy.
+
+It replaces `monero-gui`, which carries 109 QML files and 26 869 lines of QML, runs the
+`wallet2` engine in its own process, and babysits its `monerod` child by shelling out to
+`monerod sync_info` every two seconds. fmonero starts in milliseconds and costs nothing at
+idle.
+
+Read **[Status](#status)** before you believe anything here. Monero is not installed on the
+machine this was built on, so every claim about a live daemon is unverified.
+
+## Why
+
+**The daemons are slow in ways a front end must design around.** `monero-wallet-rpc` serves
+RPC on exactly one thread, and while the wallet is behind the tip it deliberately blasts
+through block chunks, yielding that thread for 200 to 300 ms per refresh period (upstream's own
+comment says that otherwise "other calls to the RPC will hang"). A fresh `monerod` answers
+`status: "BUSY"` with an all-zero response for its entire initial sync, which is days. A front
+end that treats either as an error is unusable for the first week, and one that renders the
+zeros lies about the chain.
+
+So fmonero is built for daemons that are up but not ready:
+
+- `fmonero status` never starts anything and never calls a wallet mutator. It makes three
+  loopback RPCs with the wallet closed and five with it open, plus two
+  `systemctl --user is-active` spawns, which are the expensive part. Its budget with both
+  daemons absent is 60 ms; `DECISIONS.md` carries the measurement.
+- A daemon `status` other than `"OK"` is not a result. `"BUSY"` becomes a `null` field, never
+  the value-initialised zero the daemon sent. Unknown is always `null`: never an absent key,
+  never `{}`, never a zero standing in for unknown.
+- A restricted node poisons part of its own `get_info` (uptime 0, free space `2^64-1`, all four
+  peer counts 0). Those fields are reported as `null` with a warning that says which panes have
+  no data source, instead of a 56-year uptime and a false "no peers" alarm.
+- Every external process runs in its own process group under a deadline (SIGTERM, then SIGKILL
+  two seconds later) with all three stdio pipes closed off. Every HTTP call has a timeout,
+  which is set in the one function that builds the HTTP agent.
+- A call killed at its deadline arms a 60 s breaker, so the next command fails fast with a
+  runnable hint instead of queueing behind another doomed call. A wallet that is more than 100
+  blocks behind is classified as syncing rather than stalled, because a breaker that fires on
+  correct behaviour is a breaker you disable.
+- argv only. No `sh -c` and no shell strings, in Rust or in QML.
+- Loopback plaintext only, as a property of the binary: the HTTP client is built with no TLS
+  backend at all, and both clients reject any URL that is not `http://` to a literal loopback
+  address.
+- MD5 Digest authentication to both daemons. Loopback binding alone does not stop a web page
+  from POSTing `sweep_all` to `127.0.0.1:18083`; it cannot read the reply, but a sweep does not
+  need a readable reply. Digest makes the request fail before the handler runs.
+- No wallet secret ever passes through fmonero's argv, output, state files or logs, and no seed
+  ever enters the process at all.
+
+## Install
+
+```bash
+scripts/install.sh --dry-run          # print the plan
+scripts/install.sh --yes              # build, install to ~/.local/bin, wire up Omarchy
+```
+
+That is `cargo build --release -p fmonero`, an atomic install of `~/.local/bin/fmonero`, and
+`fmonero setup --all --yes`. Run it again after a `git pull`; every step is idempotent.
+`scripts/uninstall.sh` reverses it (`--menu` also strips the menu entries, `--purge` also
+deletes fmonero's own config, state and cache). Neither script uses sudo, writes outside
+`$HOME`, or touches a wallet file; the uninstaller refuses `--purge` while a pending-send
+record exists, and never deletes your wallets or `~/.bitmonero` under any flag.
+
+Monero itself comes from the distribution, and fmonero never installs it:
+
+```bash
+omarchy pkg add monero                # Arch extra/monero 0.18.5.1
+fmonero setup --units --yes           # two systemd USER units + ~/.config/fmonero/monerod.conf
+fmonero node up --wait                # start monerod and wait for it to report itself synced
+```
+
+Those three commands are unverified: no Monero binary is installed on the machine this was
+built on, so nothing in this section has been seen to work against a real daemon. See
+[Status](#status).
+
+`setup --units` writes `fmonero-monerod.service` and `fmonero-wallet-rpc.service` into
+`~/.config/systemd/user/` and leaves both **disabled**: they start on demand, not at login.
+The node's config file carries a generated `rpc-login` credential at mode 0600, is never
+rotated by a second `setup`, and is redacted everywhere `setup` prints a diff. Both units bind
+`127.0.0.1`; neither is given `--restricted-rpc`, which would block `relay_tx`.
+
+If Arch's own system `monerod.service` is enabled, fmonero detects it, uses it read-only, and
+refuses to start a second `monerod` or to mutate one it does not own. Two `monerod` on one LMDB
+data directory corrupt it, so `node up` first checks the POSIX record lock on
+`<data-dir>/lmdb/lock.mdb` and scans `/proc` for a `monerod` already serving that directory.
+
+The Omarchy shell's PATH includes `~/.local/bin` but not `~/.cargo/bin`, so install there.
+
+## Status
+
+The project tracks every (command, scenario) pair in one of three classes, defined in
+`DESIGN.md` §4b. A row counts as verified only once `DECISIONS.md` carries its real command
+output, and `fmonero version --json` carries `build_stage` and `build_note` for the build you
+actually have: this README was written at the API-freeze gate, so that field, not this section,
+is the authority on how much of the list below the binary in your hands has run.
+
+| Class | What it means |
+|---|---|
+| GREEN | Verified end to end on this machine with no Monero installed, by `tests/e2e.sh` and the phase gates. |
+| AMBER | Verified against `crates/fmonero-mock`, a test-only server that replays fixtures derived from the Monero source at tag v0.18.5.1. This proves our wire format, our parsing and our error mapping. It proves nothing about a real daemon. |
+| RED | Never run. Unverified, and not claimed to work anywhere in this README, in `--help` or in `robot-docs`. |
+
+**GREEN.** `status` with both daemons absent (exit 0, `reachable: false`, warnings);
+`wallet list`; `wallet validate` on the structural path; `settings list|get|set`;
+`capabilities`; `robot-docs`; `version`; `setup --dry-run`; `doctor`, which exits 11 with
+`monerod_installed` and `wallet_rpc_installed` failing and every node, wallet and storage check
+skipped with a stated reason; `doctor capabilities` and the `doctor undo latest` round trip;
+`tui` opening, rendering every screen's empty state and quitting cleanly; `node up` with no
+units and `wallet open` with no unit (exit 4); `wallet send` with no wallet daemon (exit 4 at
+the reachability probe, before any build, so a bad address is still exit 15 and an unresolved
+pending send is still exit 3); `node down --dry-run` (exit 2, because `--dry-run` is implemented
+by exactly four commands); `wallet clear-pending`; `node log` with no log file; bare `fmonero`
+on a pipe and on a pty; every `--help`; every usage error; amount and address parsing; and the
+60 ms `status` budget.
+
+**AMBER.** `node info|peers|bans|ban|unban|limit`;
+`wallet open|close|create|balance|address|new-address|history|refresh|book|notes|set-daemon`;
+`wallet send --dry-run`, `wallet send` without `--yes`, and `wallet send --yes` (asserted to
+issue exactly one `transfer` and one `relay_tx` carrying that response's own metadata);
+`wallet sweep` in every form, asserted to carry `subaddr_indices_all: true`; `status` with both
+daemons answering; the restricted-node and `"BUSY"` degradations; Digest authentication
+including the per-nonce counter reset; the wallet-RPC error map, one case per mapped code; the
+deadline, breaker and `--force` paths; and the layout refusals against a synthetic `/proc` and
+`systemctl` fixture.
+
+**RED, and therefore unverified.** A real `node up`, `node down` or `node restart` against
+`monerod`. Real sync progress, a real peer list, a real balance, a real `refresh`. A real send
+or sweep of any amount. A real `open_wallet` against a real wallet file. A real `setup` run.
+The 120 GB disk floor. The warm `status` timing. Every doctor check in the node, wallet and
+storage groups against a live daemon.
+
+`DESIGN.md` §4b lists the exact commands that turn those green, in order, and they run on
+**stagenet** first: stagenet coins are free from a faucet, so the send path is exercised the
+first time with nothing at stake. `fmonero settings set node.network stagenet` and
+`fmonero setup --units --yes` is the whole switch.
+
+## CLI
+
+Every command takes `--json` and prints one JSON object; a non-TTY stdout implies `--json`.
+Failures are
+`{"ok":false,"schema":1,"code":N,"code_name":"…","error":"…","hint":"<runnable command>","reason":"…"}`
+with the same exit code, and every human-mode error ends in a `hint:` line.
+
+```
+fmonero                       TUI on a terminal; `status --json` when stdout is not a TTY
+fmonero status                the whole Status document (schema 1); starts nothing
+fmonero node up [--wait] [--wait-timeout SECONDS]
+fmonero node down · node restart            (both need --yes; user unit only)
+fmonero node info             sync, fork, fees, txpool, limits
+fmonero node log [--lines N] [--grep TEXT]
+fmonero node peers [--white|--gray] [--limit N]
+fmonero node bans · node ban HOST [--seconds N] · node unban HOST
+fmonero node limit [--up KBPS] [--down KBPS] [--out-peers N] [--in-peers N]
+fmonero wallet list · open NAME [--password-file P] · close · create NAME [--language L]
+fmonero wallet balance [--account N] [--subaddresses]
+fmonero wallet address [--account N] [--index N] [--qr] · new-address [--label TEXT]
+fmonero wallet history [--limit N] [--in] [--out] [--pending] [--failed] [--pool]
+                       [--since HEIGHT] [--cached]
+fmonero wallet send TO AMOUNT [--priority 0-4] [--note TEXT] [--max-fee AMOUNT] --yes
+fmonero wallet sweep TO [--below AMOUNT] [--max-fee AMOUNT] --yes
+fmonero wallet clear-pending [--yes] · validate ADDRESS · refresh [--start-height H]
+fmonero wallet book list|add ADDRESS DESC|remove INDEX · notes get TXID|set TXID TEXT
+fmonero wallet set-daemon ADDRESS [--trusted] --yes
+fmonero settings list|get KEY|set KEY VALUE
+fmonero setup [--units] [--plugin] [--menu] [--all]
+fmonero doctor [--fix] [--only GROUP] [--dry-run] [--save] · doctor undo latest
+fmonero tui [--node|--wallet|--send|--log]
+fmonero capabilities · fmonero robot-docs · fmonero version
+```
+
+Global flags: `--json`, `--timeout <SECONDS>` (lowers every deadline, never raises one),
+`-v`, `--no-color`, `--yes`, `--dry-run`, `--force`. `--dry-run` is implemented by exactly four
+commands (`wallet send`, `wallet sweep`, `setup`, `doctor`) and exits 2 on any other, because a
+flag that means "change nothing", accepted everywhere and ignored on a mutating command, is
+worse than one that does not exist. `--force` ignores an armed stall breaker for one
+invocation. It does nothing else: it never implies `--yes` and never bypasses a money check.
+
+Exit codes: 0 ok · 1 failure · 2 usage · 3 safety (needs `--yes`) · 4 backend · 5 upstream
+(a daemon errored or was killed at its deadline) · 6 not found · 7 ambiguous · 8 timeout ·
+9 wallet locked · 10 node syncing · 11 doctor found failures · 12 a fixer failed ·
+13 doctor refused · 14 insufficient funds · 15 invalid address · 16 tx rejected ·
+130 interrupted.
+
+Amounts are a decimal XMR string (`0.5`, `1.234567891234`, at most 12 decimals, no separators
+and no exponent) or raw piconero with a `p` suffix (`250000000000p`). One XMR is exactly
+1 000 000 000 000 piconero. Recipients are an address or `@label` from the wallet's address
+book, matched case-insensitively; a bare word is never guessed at as a label.
+
+### For agents
+
+```
+fmonero robot-docs                        # the handbook, once
+fmonero capabilities --json               # commands, exit codes, reasons, settings, warning ids
+fmonero status --json | jq .node.reachable
+```
+
+Branch on `code_name` plus `reason`, never on prose. `reason` is a stable discriminator within
+an exit code, because exit 3 alone covers eight unrelated conditions and the reflex on exit 3,
+appending `--yes`, is right for one of them and dangerous for the rest: `needs_yes` ·
+`pending_send` · `send_in_progress` · `fee_above_max` · `foreign_node` · `data_dir_in_use` ·
+`wallet_exists` · `full_chain_refused`. `capabilities.reasons` is generated from the table the
+error type carries, so the documented set and the constructible set cannot drift.
+
+With no TTY, `FMONERO_WALLET_PASSWORD` or `--password-file` is how a wallet gets opened;
+`wallet open` exits 9 with that hint rather than waiting on a prompt that cannot appear.
+
+## Money safety
+
+The send path is the reason this project has a design document.
+
+**The fee you are shown is the fee of the transaction that was built.** `send` and `sweep`
+build once with `do_not_relay: true` and read the real `fee` off that response. fmonero never
+estimates a fee, never multiplies the node's `get_fee_estimate` by anything, and never shows a
+number it did not receive from a built transaction. Without `--yes` the built transaction is
+discarded and the command exits 3, which is safe precisely because `do_not_relay` marks no
+output as spent. With `--yes`, the same process relays that same transaction: there is no
+second build anywhere in the path. `--dry-run` always beats `--yes`. `--max-fee AMOUNT` is the
+one bound that survives the discard-and-rebuild, and it is enforced inside the relay step
+rather than by the caller.
+
+**A crash cannot double-send.** The whole record of what is about to be broadcast, every txid
+in relay order, is written to `~/.local/state/fmonero/pending.json` at mode 0600 and fsynced
+before the first `relay_tx`; each entry flips to relayed and is re-fsynced before the next
+call. The transaction metadata is never written to disk, because it carries the transaction
+secret key and crash safety needs only the txid. A later `send` that finds an unrelayed entry
+refuses with exit 3. One that finds a fully relayed record asks the wallet about each txid and
+clears the record when all of them are known, so the happy path leaves nothing behind and
+`wallet clear-pending` stays the manual escape hatch instead of something you learn to type
+after every send.
+
+**Two senders cannot race.** A build reserves nothing: the outputs are marked spent by the
+relay, not by the build, so two fmonero processes would each select from the same unspent set.
+`send` therefore takes a non-blocking `flock` on `state_dir/send.lock` before the record check
+and holds it until the plan is dropped, which makes the entry check, the build, the record
+write, every relay and the resolve step one critical section. The TUI's confirm modal holds it
+for as long as the human takes.
+
+Also, by construction: amounts are `u64` piconero end to end, with no `f64` anywhere in Rust or
+in QML (the widget formats from a pre-rendered string and never divides). Recipients are
+validated twice, structurally and then by the wallet daemon, and a recipient on the wrong
+network is refused by name, with the wallet's own primary address deciding which network that
+is. The request builder has no `unlock_time`, no `payment_id`, no `ring_size` and no
+`subtract_fee_from_outputs` field, so none of them can be sent. `sweep` always sends
+`subaddr_indices_all: true`, because without it the daemon picks one subaddress at random,
+reports success, and leaves the rest. The relayed txid is compared with the one that was shown.
+
+Every guarantee in this section is asserted against the mock server, which puts it in AMBER: it
+proves the request shape, the call count, the record on disk and the refusal codes. A real
+broadcast remains unverified, and `DESIGN.md` §4b has the stagenet rehearsal that changes that.
+
+`wallet create` does not print the seed: a seed in terminal scrollback is a seed in your shell
+history tooling. It prompts twice on a TTY, refuses an empty password unless you ask for one,
+and ends by telling you to run `monero-wallet-cli --offline` and type `seed` before funding the
+wallet. Restoring from a seed is not an fmonero command at all, which is what keeps every seed
+out of this codebase.
+
+## The widget
+
+`plugin/oliver.monero` is a Quickshell bar widget for Omarchy 4. It draws the Monero mark in
+the bar, coloured by node and wallet state, crossed out when the node is down, ringed with a
+sync percentage while it catches up, and badged when something is wrong. Its panel is keyboard
+navigable: node header with a toggle, sync bar, peers, mempool, last block age, net rates, the
+current warning with its hint, balance and unlocked balance with a copy action for the primary
+address, a pending-send row, and a footer that opens the TUI, the Send screen or the doctor.
+
+Everything it knows comes from `fmonero status --json`. The QML holds no business logic and
+does no arithmetic on money. It cannot open a wallet, create one, send or sweep: there is no
+password field and no such argv in it, and the smoke test greps for both. The widget itself is
+verified by `tests/plugin-smoke.sh`; the daemon numbers it displays are unverified, like every
+other real-daemon figure here. See `plugin/oliver.monero/README.md`.
+
+## The TUI
+
+`fmonero tui` is a FrankenTUI app with four screens: Node, Wallet, Send and Log. It calls the
+same Rust library in process, so it never shells out to `fmonero`. Long actions run as
+cancellable subscriptions; `Esc` cancels a build or a wallet open, and the one action that
+ignores cancellation is the relay, because cancelling a transaction already on the wire tells
+you nothing about whether the node got it. `q` refuses while an action is in flight and quits
+on a second press.
+
+The Send screen validates each keystroke locally, then builds once and shows a confirm modal
+with the full destination address (never elided), the amount, the real fee, the total, the
+account, the priority and the weight. That modal wants the word `send` typed, not just Enter:
+it is the TUI's `--yes`. Sweep is not in the TUI in v0.1.
+
+## The doctor
+
+`fmonero doctor` runs detectors over captured input and prints a table (or JSON with `--json`):
+one row per check with a group, a severity, a status of pass, warn, fail or skip, a detail line
+and, where one exists, a `fix_cmd` you can run yourself. Exit 11 means it found failures, so
+`fmonero doctor --json >/dev/null; echo $?` is the health check for scripts. A check whose
+precondition is missing reports `skip:<reason>`, never `pass`.
+
+`--fix` applies only repairs that are reversible, and every mutation goes through one
+chokepoint that appends its inverse to `runs/<id>/actions.jsonl` with a verbatim backup and a
+SHA-256 before and after. `fmonero doctor undo latest` replays that log in reverse and refuses
+with exit 13 if a backup is missing or its hash no longer matches. The doctor never stops a
+daemon it did not start, never touches a wallet file, never deletes anything, and never runs
+sudo. The pending-send record is report-only in every state, a fully relayed one included: it
+is the one check whose fixer could lose money.
+
+## Layout
+
+```
+crates/fmonero-core/     the engine: rpc/{digest,jsonrpc,node,wallet}, send, session, units,
+                         history, status, state, settings, amount, address, proc, agent
+crates/fmonero/          the binary: clap surface, output, setup, prompt, doctor/, tui/
+crates/fmonero-mock/     test-only fixture server; publish = false, never installed
+plugin/oliver.monero/    the Quickshell bar widget
+scripts/install.sh · scripts/uninstall.sh · scripts/check.sh
+tests/e2e.sh · tests/plugin-smoke.sh · tests/fixtures/
+docs/ROBOT.md            generated by `fmonero robot-docs`, never hand-edited
+docs/FEASIBILITY.md      the research statement and the architecture decision
+DESIGN.md                the contract every agent works from
+DECISIONS.md             append-only log of non-obvious choices, with real command output
+```
+
+Core is silent: no function in `fmonero-core` writes to stdout or stderr, and a grep enforces
+it. All output is produced by the binary. Every core function returns a typed error with one
+variant per exit code, and every error carries a runnable hint.
+
+## Config
+
+`~/.config/fmonero/config.toml`, through `fmonero settings`:
+
+```toml
+[node]
+network  = "mainnet"                    # mainnet | stagenet | testnet, one at a time
+url      = "http://127.0.0.1:18081"     # loopback http only
+unit     = "fmonero-monerod.service"
+data_dir = "~/.bitmonero"
+log_file = "~/.bitmonero/bitmonero.log"
+prune    = true                         # a full chain does not fit on this machine
+
+[wallet]
+url      = "http://127.0.0.1:18083"     # 18082 is monerod's ZMQ port
+unit     = "fmonero-wallet-rpc.service"
+dir      = "~/.local/share/fmonero/wallets/mainnet"
+port     = 18083
+account  = 0
+priority = 2                            # normal; 0 is an alias of the cheapest tier
+
+[timeouts]
+node_sec = 3
+wallet_sec = 5
+refresh_sec = 120
+transfer_sec = 120
+open_sec = 300
+systemctl_sec = 10
+
+[tui]
+poll_ms = 1000
+tick_ms = 120
+```
+
+A `~` you type is expanded once when the file loads, and paths are written back absolute.
+An unknown key is redirected rather than merely refused: `settings set` names the nearest real
+key and makes its hint that exact runnable command. Switching `node.network` moves the ports,
+the wallet directory and both units together, so `setup --units` has to run again; the unit
+names never change.
+
+State lives in `~/.local/state/fmonero/` (`state.json` for the stall breakers, the net-rate
+sample pair, the 60 s cold cache and the last error; `pending.json` for the send record;
+`send.lock`; doctor runs and backups), the transfer-history snapshot in
+`~/.cache/fmonero/history.bin`, wallets in `~/.local/share/fmonero/wallets/<network>/`, and
+the chain wherever `node.data_dir` points. Everything fmonero creates is mode 0600, every
+directory 0700, at the target mode rather than by a `chmod` afterwards. The `run/` subdirectory
+of the state directory is the wallet daemon's working directory: `monero-wallet-rpc` generates
+its own RPC credential there on every start and deletes it on exit, and fmonero reads that file
+and never writes it.
+
+## Limitations
+
+v0.1 is deliberately narrow. None of the following exists, not as a stub, a flag or a menu
+entry:
+
+- Seed entry. `wallet restore` is cut, so no seed ever reaches this code.
+  `monero-wallet-cli --restore-deterministic-wallet` does it with word-by-word validation and a
+  restore-height prompt; `wallet list` picks the wallet up the moment it exists.
+- A send that needs more than one transaction. `transfer` refuses outright with `TX_TOO_LARGE`
+  when the wallet would have to split, which is the ordinary outcome on a wallet of many small
+  outputs. fmonero builds exactly one transaction and, on that error, tells you to sweep or to
+  send less.
+- Multisig, hardware wallets, mining, Tor and i2p, proofs, cold signing, key or seed display,
+  rescans, account tags, freeze and thaw. Each is a separate screen and a separate safety story.
+- Several wallets open at once. `monero-wallet-rpc` holds exactly one.
+- Cuprate as a node backend. `sync_info`, `get_connections`, the peer list, bans, txpool stats
+  and net stats all return `not_available`, so it cannot drive this dashboard.
+- Sweep in the TUI, a doctor screen inside the TUI, TUI mouse support, desktop notifications
+  wired on, ZMQ, a CI workflow and a CHANGELOG.
+
+Two honest estimates rather than measurements: a pruned mainnet chain is put at 100 to 150 GB,
+and the doctor checks free space against a 120 GB floor while saying in the detail that the
+floor is an estimate. FCMP++ and Carrot are not activated (the mainnet fork table ends at v16),
+and fmonero is arranged so that adding a Carrot address form is one row in one table plus one
+fixture object, with a test that fails if you add one without the other.
+
+## Credits
+
+The house pattern (workspace shape, CLI envelope, deadline helper, doctor kernel, TUI, bar
+widget, install scripts) comes from this author's `fproton` and `fbittorrent`. The panel's
+chrome follows Omarchy's own Tailscale plugin. Every Monero fact in `DESIGN.md` carries a
+`file:line` into the Monero source at tag v0.18.5.1.
+
+*About Contributions:* Please don't take this the wrong way, but I do not accept outside
+contributions for any of my projects. I simply don't have the mental bandwidth to review
+anything, and it's my name on the thing, so I'm responsible for any problems it causes; thus,
+the risk-reward is highly asymmetric from my perspective. I'd also have to worry about other
+"stakeholders," which seems unwise for tools I mostly make for myself for free. Feel free to
+submit issues, and even PRs if you want to illustrate a proposed fix, but know I won't merge
+them directly. Instead, I'll have Claude or Codex review submissions via `gh` and independently
+decide whether and how to address them. Bug reports in particular are welcome. Sorry if this
+offends, but I want to avoid wasted time and hurt feelings. I understand this isn't in sync with
+the prevailing open-source ethos that seeks community contributions, but it's the only way I can
+move at this velocity and keep my sanity.
+
+MIT. Monero is free software from the Monero Project; this is an unofficial front end for its
+daemons, and it is not affiliated with them.
