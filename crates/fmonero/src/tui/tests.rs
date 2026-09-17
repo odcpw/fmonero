@@ -49,9 +49,13 @@ struct World {
 }
 
 impl World {
-    /// A node mock and a wallet mock, and the matching login file written **before** any
-    /// client is built (§2c).
     fn new(name: &str) -> World {
+        World::with_node(name, &[])
+    }
+
+    /// A node mock and a wallet mock, and the matching login file written **before** any
+    /// client is built (§2c). `node_extra` is the mock argv a scenario needs.
+    fn with_node(name: &str, node_extra: &[&str]) -> World {
         let dir = std::env::temp_dir().join(format!(
             "fmonero-tui-{name}-{}-{:?}",
             std::process::id(),
@@ -61,16 +65,18 @@ impl World {
         let mut ctx = Context::for_test(&dir).expect("test context");
         let fx = fixtures().display().to_string();
         let wallet_log = dir.join("wallet.jsonl");
-        let node_port = spawn(&[
-            "--role",
-            "node",
-            "--port",
-            "0",
-            "--fixtures",
-            &fx,
-            "--log",
-            &dir.join("node.jsonl").display().to_string(),
-        ]);
+        let mut node_args = vec![
+            "--role".to_string(),
+            "node".to_string(),
+            "--port".to_string(),
+            "0".to_string(),
+            "--fixtures".to_string(),
+            fx.clone(),
+            "--log".to_string(),
+            dir.join("node.jsonl").display().to_string(),
+        ];
+        node_args.extend(node_extra.iter().map(|a| (*a).to_string()));
+        let node_port = spawn(&node_args.iter().map(String::as_str).collect::<Vec<_>>());
         let wallet_port = spawn(&[
             "--role",
             "wallet",
@@ -333,6 +339,47 @@ fn every_screen_renders_against_the_mock() {
             Screen::Log => assert!(text.contains("synced"), "{text}"),
         }
     }
+}
+
+/// §7a: on a restricted node every pane that needs a gated method says so **and names the
+/// method** — never a zero, and never a poisoned `get_info` field (§1b.3, §5).
+#[test]
+fn a_restricted_node_names_the_method_each_dark_pane_needs() {
+    let w = World::with_node("restricted", &["--restricted", "--scenario", "restricted"]);
+    let text = sim_text(&sim(model(&w.ctx, Screen::Node)), 120, 40);
+    assert!(
+        text.contains("not available on a restricted node"),
+        "the peers pane must say so:\n{text}"
+    );
+    assert!(
+        text.contains("get_connections"),
+        "…and name the method:\n{text}"
+    );
+    assert!(
+        text.contains("restricted RPC"),
+        "the hero must carry the warning:\n{text}"
+    );
+    // The poisoned fields render as `—`: a restricted node reports 0 peers and 2^64-1 free
+    // bytes by construction, and §5 turns both into null.
+    assert!(
+        text.contains("— out · — in"),
+        "peer counts must be null:\n{text}"
+    );
+}
+
+/// §1b.3: `get_last_block_header` is the one call `CHECK_CORE_READY()` gates, and during the
+/// whole initial sync it answers `status: "BUSY"` with an all-zero header. The hero must show
+/// `—`, not a block mined in 1970.
+#[test]
+fn a_syncing_node_shows_the_gauge_and_no_block_age() {
+    let w = World::with_node("syncing", &["--scenario", "syncing"]);
+    let text = sim_text(&sim(model(&w.ctx, Screen::Node)), 120, 40);
+    assert!(text.contains("Syncing"), "{text}");
+    assert!(
+        text.contains("last block —"),
+        "a BUSY header must render as — (§1b.3):\n{text}"
+    );
+    assert!(!text.contains("56 years"), "{text}");
 }
 
 #[test]
