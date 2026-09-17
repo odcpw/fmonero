@@ -234,7 +234,14 @@ const COMMANDS: &[Command] = &[
     ),
     cmd("wallet clear-pending", "", true, true, false, false, false, "green"),
     cmd("wallet validate", "ADDRESS", false, false, false, false, false, "green"),
-    cmd("wallet book", "list | add ADDRESS DESC | remove INDEX", true, false, true, false, false, "amber"),
+    // §4.1's `wallet book` row reads "on add/remove" in its M column and "on remove" in its Y
+    // column, and one bool per row cannot say either. `capabilities` is the surface robot-docs
+    // tells an agent to branch on, so a flattened `needs_yes: false` buys it an exit 3 on a
+    // mutating command; the row is split per subcommand exactly as `settings list|get|set`
+    // already is, which keeps `needs_yes` the boolean an agent branches on.
+    cmd("wallet book list", "", false, false, true, false, false, "amber"),
+    cmd("wallet book add", "ADDRESS DESC", true, false, true, false, false, "amber"),
+    cmd("wallet book remove", "INDEX", true, true, true, false, false, "amber"),
     cmd("wallet refresh", "[--start-height H]", true, false, true, true, false, "red"),
     cmd("wallet notes", "get TXID | set TXID TEXT", true, false, true, false, false, "amber"),
     cmd("wallet set-daemon", "ADDRESS [--trusted]", true, true, true, false, false, "amber"),
