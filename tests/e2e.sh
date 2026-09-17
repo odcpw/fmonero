@@ -84,16 +84,26 @@ sandbox() {
   export FMONERO_CACHE_DIR="$WORK/$CASE/cache"
   unset FMONERO_SYSTEMCTL_FIXTURE FMONERO_PROC_ROOT FMONERO_WALLET_PASSWORD
   mkdir -p "$FMONERO_STATE_DIR/run" "$FMONERO_CONFIG_DIR" "$FMONERO_CACHE_DIR"
-  chmod 700 "$FMONERO_STATE_DIR" "$FMONERO_CONFIG_DIR" "$FMONERO_CACHE_DIR"
+  # 0700, including `run/`: that is the mode `Paths::ensure_dirs` creates them at (§2b.7) and the
+  # mode the doctor's `state_perms` checks. A bare `mkdir -p` leaves them at the shell's umask —
+  # 0755 — and `state_perms` then reports `fail:bad_mode` on a sandbox that is only sloppy, which
+  # would make the §4b GREEN row below ("exactly two checks fail") false for the wrong reason.
+  chmod 700 "$FMONERO_STATE_DIR" "$FMONERO_STATE_DIR/run" "$FMONERO_CONFIG_DIR" "$FMONERO_CACHE_DIR"
 }
 
 OUT=""; ERR=""; RC=0
+# Every stdout and stderr of every invocation, appended. §2b's first test is a KEY-NAME grep over
+# "the full `--json` and `-v` output of every command run against the mock", and a run that only
+# kept the last command's output could not make it. The transcript is read once at the end.
+TRANSCRIPT="$WORK/transcript.txt"
+: > "$TRANSCRIPT"
 # `fm <args…>` runs the binary, capturing stdout, stderr and the exit code separately —
 # stdout is data and stderr is diagnostics (§4), and a test that merged them could not tell a
 # payload from a hint.
 fm() {
   OUT="$("$FM" "$@" 2>"$WORK/stderr")"; RC=$?
   ERR="$(cat "$WORK/stderr")"
+  { printf '$ fmonero %s\n' "$*"; printf '%s\n' "$OUT"; printf '%s\n' "$ERR"; } >> "$TRANSCRIPT"
   return 0
 }
 
@@ -982,34 +992,237 @@ if [ "$MODE" = full ]; then
   printf '        neither measured nor claimed here (§4b, §2j).\n'
 fi
 
-# ================================================================ §5c coverage
-step "§5c: every command in §4.1 has been asserted, or is named as not covered"
-# `tui` and `robot-docs` are the two rows §5c marks exempt. `doctor`, `doctor undo` and
-# `doctor capabilities` belong to the Phase 2 doctor agent and are still the sanctioned
-# handover stub (§8), so their key sets cannot be asserted here — that is a skip with a
-# reason, never a pass.
-skip "tui — exempt: interactive, and it exits 2 on a non-TTY stdout (§5c)"
-skip "robot-docs — exempt: plain text by contract (§5c)"
+# ================================================================ the doctor (§4b GREEN, §5c)
+#
+# The three doctor rows were a skip at the Phase 1b gate — `doctor::run` was still the §8
+# handover stub — and Phase 3 turns them into assertions, because §4b's GREEN list names THIS
+# script for one of them in as many words: "`tests/e2e.sh` asserts exit 11 and that exact
+# failure set". The set is asserted positively (which ids fail) rather than by a count, so it
+# strengthens when the owner installs Monero: the two `fail:not_installed` rows become passes
+# and this case fails until it is updated, which is the point.
+step "§4b GREEN: doctor on this machine — exit 11 and that exact failure set"
+sandbox doctor
 fm doctor --json
-if [ "$RC" = 1 ]; then
-  skip "doctor / doctor undo / doctor capabilities — Phase 2 owns crates/fmonero/src/doctor (§8); the body is still Error::unimplemented, so its §5c key sets are asserted by the Phase 2 doctor gate"
+expect_rc 11 "doctor with no Monero installed"
+expect_keys "doctor" ok schema run_id checks summary
+expect_json '[.checks[] | select(.status=="fail") | .id] | sort' \
+  '["monerod_installed","wallet_rpc_installed"]' \
+  "exactly monerod_installed and wallet_rpc_installed fail (§4b)"
+expect_json '[.checks[] | select(.status=="fail") | .reason] | unique' '["not_installed"]' \
+  "and both say fail:not_installed, not a bare fail"
+expect_json '[.checks[] | select(.group=="node" or .group=="wallet" or .group=="storage")
+              | select(.status != "skip") | .id] | length' '0' \
+  "every node/wallet/storage check is a skip:<reason> (§7.1)"
+expect_json '[.checks[] | select(.group=="node" or .group=="wallet" or .group=="storage")
+              | select(.reason == null) | .id] | length' '0' \
+  "and every one of those skips names its reason, never a bare skip"
+expect_json '[.checks[] | select(.group=="install") | select(.status=="skip") | .id] | length' '0' \
+  "the install group has real verdicts, not skips (§4b)"
+expect_json '[.checks[] | select(.group=="security") | select(.status=="pass") | .id] | sort' \
+  '["ports_owned","state_perms"]' \
+  "and the security group's own two locally-answerable checks pass"
+expect_json '.summary.exit_code' '11' "the summary agrees with the process exit code (§2j)"
+
+fm doctor capabilities --json
+expect_rc 0 "doctor capabilities"
+expect_keys "doctor capabilities" ok schema checks groups classes
+expect_json '[.groups[].group] | sort' \
+  '["binaries","install","node","security","storage","units","wallet"]' \
+  "the seven §7 groups"
+expect_json '[.classes[].class] | sort' '["A","B","D"]' \
+  "three safety classes — there is no class C (§7)"
+
+fm doctor --only security --json
+expect_rc 0 "doctor --only security"
+expect_json '[.checks[].group] | unique' '["security"]' "and it ran only that group"
+
+# The class-A round trip, which is what makes `doctor undo` a GREEN row rather than a claim:
+# corrupt two fmonero-owned files, fix them, undo, and compare the bytes. `config.toml` is
+# corrupted by an INVALID VALUE rather than by unparsable TOML, because unparsable TOML fails
+# `Context::load` before the doctor can run at all (exit 2) — the doctor repairs a key it can
+# read, and there is no path on which it repairs a file the CLI cannot load.
+step "§4b GREEN: doctor --fix and doctor undo latest, byte for byte"
+sandbox doctor-undo
+printf '{ this is not json\n'          > "$FMONERO_STATE_DIR/state.json"
+printf '[wallet]\npriority = 9\n'      > "$FMONERO_CONFIG_DIR/config.toml"
+chmod 600 "$FMONERO_STATE_DIR/state.json" "$FMONERO_CONFIG_DIR/config.toml"
+sha256sum "$FMONERO_STATE_DIR/state.json" "$FMONERO_CONFIG_DIR/config.toml" > "$WORK/doctor.before"
+
+fm doctor --only install --json
+expect_json '[.checks[] | select(.id=="state_valid" or .id=="settings_valid") | .status] | unique' \
+  '["warn"]' "both class-A detectors see the corruption"
+
+fm doctor --fix --dry-run --json
+expect_json '[.checks[] | select(.fix_outcome=="planned") | .id] | length > 0' 'true' \
+  "--fix --dry-run plans the class-A repairs"
+if sha256sum -c --status "$WORK/doctor.before" 2>/dev/null; then
+  ok "--fix --dry-run changed neither file (§7)"
 else
-  bad "doctor exited $RC: it is expected to be the §8 handover stub at this phase"
+  bad "--fix --dry-run modified a file"
 fi
 
+fm doctor --fix --json
+case "$RC" in
+  11|12) ok "doctor --fix (exit $RC: fail rows remain — monerod is still not installed)" ;;
+  *) bad "doctor --fix: expected 11 or 12, got $RC" "stdout: ${OUT:0:300}" ;;
+esac
+expect_json '[.checks[] | select(.id=="state_valid" or .id=="settings_valid") | .fix_outcome] | unique' \
+  '["fixed"]' "both class-A fixers report fixed"
+RUN_ID="$(printf '%s' "$OUT" | jq -r '.run_id')"
+fm doctor --only install --json
+expect_json '[.checks[] | select(.id=="state_valid" or .id=="settings_valid") | .status] | unique' \
+  '["pass"]' "and both files are valid afterwards"
+fm settings get wallet.priority --json
+expect_json '.value' '"2"' "the repaired key is at its documented default, not at 9"
+
+fm doctor undo latest --json
+expect_rc 0 "doctor undo latest"
+expect_keys "doctor undo" ok schema run_id undone refused reason
+expect_json '.refused' 'false' "it was not refused"
+expect_json '.run_id' "\"$RUN_ID\"" "and it undid the run --fix had just written"
+expect_json '[.undone[] | select(.ok != true) | .path] | length' '0' "every recorded action reversed"
+if sha256sum -c --status "$WORK/doctor.before" 2>/dev/null; then
+  ok "the two files are byte-for-byte the corrupt originals again (§7 axiom 3)"
+else
+  bad "doctor undo did not restore the original bytes"
+fi
+
+# And the integrity refusal: a backup whose hash no longer matches must stop the replay.
+fm doctor --fix --json
+printf 'tampered\n' > "$(readlink -f "$FMONERO_STATE_DIR/doctor/latest")/backups$FMONERO_CONFIG_DIR/config.toml"
+fm doctor undo latest --json
+expect_rc 13 "doctor undo against a tampered backup"
+expect_json '.refused' 'true' "refused, with the integrity failure named"
+
+# ================================================================ §5c coverage
+step "§5c: every command in §4.1 has been asserted, or is named as not covered"
+# `tui` and `robot-docs` are the two rows §5c marks exempt — the only two. Every other command
+# of §4.1 has had its top-level key set asserted above.
+skip "tui — exempt: interactive, and it exits 2 on a non-TTY stdout (§5c)"
+skip "robot-docs — exempt: plain text by contract (§5c)"
+
 # ================================================================ §2b secrets
-step "§2b: the known-value grep over everything this run wrote"
-# The test's own wallet password, the mock's login-file contents and the rpc-login token must
-# appear in none of: stdout, stderr, state.json, history.bin, any fixture. The shape test
-# ("any 64-hex run") is deliberately NOT used: fmonero's own honest output is full of them.
+#
+# §2b names two tests and they catch different things. Test (1) is a KEY-NAME grep over the full
+# `--json` and `-v` output of every command; test (2) is the known-value grep below. A run that
+# had only the second would pass a payload that faithfully printed a `tx_key` the mock invented.
+step "§2b test (1): the key-name grep over every command's --json and -v output"
+# The transcript already holds every `fm` invocation's stdout and stderr. The verbose channel is
+# added here explicitly, against both mocks, because §2b names `-v` and no case above uses it.
+sandbox secrets-verbose
+mock_node_up
+mock_wallet_up
+FMONERO_WALLET_PASSWORD=t3stpw fm -vv --timeout 3 wallet open main --json
+for verbose_case in \
+  "status" \
+  "node info" "node peers" "node bans" "node limit" \
+  "wallet balance" "wallet address" "wallet history --limit 5" "wallet book list" \
+  "wallet refresh" "wallet new-address" "wallet set-daemon 127.0.0.1:18191 --yes"
+do
+  # shellcheck disable=SC2086
+  fm -vv --timeout 3 $verbose_case --json
+done
+fm -vv --timeout 3 wallet notes get "$BUILT_TXID" --json
+fm -vv --timeout 3 wallet send "$DEST" 0.01 --json          # the no---yes refusal: it carries a fee
+fm -vv --timeout 3 wallet send "$DEST" 0.01 --dry-run --json
+fm -vv --timeout 3 wallet sweep "$DEST" --dry-run --json
+fm -vv --timeout 3 capabilities
+fm -vv --timeout 3 settings list --json
+fm -vv --timeout 3 wallet close --json
+
+# The keys §2b forbids, matched as JSON keys rather than as substrings: `seed_backup_hint` is a
+# documented key of `wallet create` (§2b.2) and `pruning_seed` is a field of every peer row, so a
+# substring grep on `seed` would fail on correct output — and a grep that fails on correct output
+# is the grep the next agent relaxes. Both negative cases are self-tested below.
+FORBIDDEN_KEYS='"(seed|spend_key|view_key|tx_key|tx_metadata|password|login)"[[:space:]]*:'
+if grep -nEq "$FORBIDDEN_KEYS" "$TRANSCRIPT"; then
+  bad "§2b: a forbidden key name appears in this run's output" \
+      "$(grep -nEo "$FORBIDDEN_KEYS" "$TRANSCRIPT" | sort -u | head -5)"
+else
+  ok "§2b: no seed/spend_key/view_key/tx_key/tx_metadata/password/login key in any output ($(wc -l < "$TRANSCRIPT") lines)"
+fi
+printf '{"tx_key":"deadbeef","password":"hunter2","tx_metadata" : "0100"}\n' > "$WORK/2b-positive"
+if grep -Eq "$FORBIDDEN_KEYS" "$WORK/2b-positive"; then
+  ok "self-test: the key-name grep fires on its own fixture"
+else
+  bad "self-test: the key-name grep does NOT fire on a payload carrying tx_key — it is vacuous"
+fi
+printf '{"seed_backup_hint":"run monero-wallet-cli","pruning_seed":384,"logins":2}\n' > "$WORK/2b-negative"
+if grep -Eq "$FORBIDDEN_KEYS" "$WORK/2b-negative"; then
+  bad "self-test: the key-name grep fires on seed_backup_hint/pruning_seed, which are honest keys"
+else
+  ok "self-test: and it leaves seed_backup_hint and pruning_seed alone"
+fi
+
+step "§2b test (2): the known-value grep over everything this run wrote"
+# The test's own wallet password and the mock's login-file contents must appear in none of:
+# stdout, stderr (the transcript above is both), state.json, history.bin, any doctor run, any
+# fixture, DECISIONS.md. The shape test ("any 64-hex run") is deliberately NOT used: fmonero's
+# own honest output is full of them (`top_block_hash`, every txid).
+#
+# Three exclusions, each by name and each with a reason, because a grep that fires on correct
+# behaviour is the grep the next agent deletes:
+#   *.err                                  — a case's expected-stderr capture
+#   */run/monero-wallet-rpc.<port>.login   — the login file THIS script writes (§2c)
+#   *.jsonl                                — the MOCK's request log. `open_wallet` and
+#                                            `create_wallet` carry the password in the request
+#                                            body by construction (§1b.4) and the mock logs
+#                                            every body verbatim, so the wire is not fmonero's
+#                                            output. What matters there is asserted separately,
+#                                            just below: no OTHER method may carry it.
+leak_scan() { # leak_scan <needle> -> the files that hold it, after the three exclusions
+  grep -rl "$1" "$WORK" 2>/dev/null \
+    | grep -v '\.err$' \
+    | grep -v '\.jsonl$' \
+    | grep -v '/run/monero-wallet-rpc\.[0-9]*\.login$' || true
+}
+# Self-test FIRST, then the file is removed: the Phase 1b form of this grep was
+# `grep -rql … | head -1 | grep -q .`, where `-q` silences the `-l` and the pipeline could never
+# print a filename — a grep that could not fail. It is worth one fixture to know this one can.
+printf 'leaked: t3stpw\n' > "$WORK/2b-leak-selftest.txt"
+if [ -n "$(leak_scan t3stpw)" ]; then
+  ok "self-test: the known-value scan fires on a planted leak"
+else
+  bad "self-test: the known-value scan does NOT fire on a planted leak — it is vacuous"
+fi
+rm -f "$WORK/2b-leak-selftest.txt"
 LEAKS=0
-for needle in t3stpw; do
-  if grep -rql "$needle" "$WORK" 2>/dev/null | grep -v '\.err$' | head -1 | grep -q .; then
+for needle in t3stpw fmonero:t3st; do
+  hits="$(leak_scan "$needle")"
+  if [ -n "$hits" ]; then
     LEAKS=1
-    bad "§2b: '$needle' appears in a file this run wrote" "$(grep -rl "$needle" "$WORK" 2>/dev/null | head -5)"
+    bad "§2b: '$needle' appears in a file this run wrote" "$(printf '%s' "$hits" | head -5)"
   fi
 done
-[ "$LEAKS" = 0 ] && ok "§2b: the wallet password appears in nothing this run wrote"
+[ "$LEAKS" = 0 ] && ok "§2b: the wallet password and the mock's credential appear in nothing this run wrote"
+# DECISIONS.md is scanned for the wallet PASSWORD only, and that is a deviation from §2b's
+# "the exact contents of the mock's login file … in none of … DECISIONS.md" with its reason:
+# DESIGN.md §8's own Phase 1b gate line is
+# `printf 'fmonero:t3st' > $FMONERO_STATE_DIR/run/monero-wallet-rpc.<port>.login`, required to be
+# pasted into DECISIONS.md as real output — and DECISIONS.md is append-only (§2j), so the
+# contradiction cannot be resolved by editing the log. `fmonero:t3st` is a harness credential
+# this document publishes on purpose; `t3stpw` stands in for a real wallet password and is what
+# the rule is about. Fixtures are scanned for both.
+DOC_LEAK=0
+if grep -q 't3stpw' "$ROOT/DECISIONS.md" 2>/dev/null; then
+  DOC_LEAK=1
+  bad "§2b: the wallet password appears in DECISIONS.md"
+fi
+if [ -n "$(grep -rl 't3stpw\|fmonero:t3st' "$ROOT/tests/fixtures" 2>/dev/null)" ]; then
+  DOC_LEAK=1
+  bad "§2b: a test credential appears in a fixture"
+fi
+[ "$DOC_LEAK" = 0 ] && ok "§2b: and in neither DECISIONS.md nor any fixture"
+# The wire: the password reaches monero-wallet-rpc in exactly the two request bodies that need
+# it, and in no other. A `set_daemon` or `refresh` body carrying it would be a real defect that
+# the exclusion above would otherwise hide.
+PW_METHODS="$(jq -rs '[.[] | select((.body | tostring) | contains("t3stpw")) | .method] | unique | sort | join(",")' \
+              "$WORK"/*/wallet.jsonl 2>/dev/null)"
+case "$PW_METHODS" in
+  ""|"create_wallet"|"open_wallet"|"create_wallet,open_wallet"|"open_wallet,create_wallet")
+    ok "§2b: on the wire the password appears only in open_wallet/create_wallet (${PW_METHODS:-none})" ;;
+  *) bad "§2b: the password was sent in a request that does not need it" "methods: $PW_METHODS" ;;
+esac
 if grep -rq 'rpc-login=fmonero:[0-9a-f]' "$WORK"/*/state 2>/dev/null; then
   bad "§2b: the node credential leaked into a state directory"
 else

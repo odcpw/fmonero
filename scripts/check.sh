@@ -243,6 +243,148 @@ else
   printf '  skip  shellcheck is not installed on this machine (§1.4); bash -n ran instead\n'
 fi
 
+# ---------------------------------------------------------------- §2j nothing RED is claimed
+#
+# "README, `--help`, `robot-docs` and `capabilities.build_note` claim only what §4b marks GREEN or
+# AMBER, and say which. A line describing a RED row as working is a Phase 3 blocker" (§2j), and
+# §4b spells the mechanism out: "Phase 3 greps README, every `--help` string and `robot-docs` for
+# any sentence claiming a successful send, a successful sync or a live peer list, and fails on a
+# hit that is not adjacent to the word 'unverified'".
+#
+# Two deliberate widenings of that sentence, both recorded in DECISIONS.md:
+#  * the honesty marker is `unverified` OR `RED`/`AMBER` OR `never`/`not yet`/`no send`, because
+#    README's own Status section words it "RED, and therefore unverified" and `build_note` words it
+#    "no send has ever been broadcast". Demanding the single word `unverified` would fail on text
+#    that is already honest, and a check that fails on correct output is the check that gets
+#    deleted;
+#  * "adjacent" is the line itself and the two lines around it, since these are wrapped
+#    paragraphs, not one sentence per line.
+# The claim pattern matches ACHIEVED capability ("successfully sent", "a real peer list",
+# "verified against a live daemon") and not mechanism prose ("a normal successful send clears the
+# record"), which describes what happens when one succeeds and claims nothing.
+step "§2j  README, every --help and robot-docs claim nothing §4b marks RED"
+CLAIM='successfully (sent|swept|broadcast|relayed|synced)|(has|have|had|was|were) (been )?(sent|swept|broadcast|relayed) (to|on|by|from)|(a |the )?(real|live) (send|sweep|broadcast|sync|peer list|balance|refresh)|(sends|broadcasts|relays|sweeps) (real|mainnet|stagenet)|(verified|proven|tested) (against|with|on) (a )?(real|live)'
+MARKER_CI='unverified|never|not yet|no send|nothing has been|cannot be verified'
+# Written as an explicit character class rather than with `\<`/`\>`: gawk warns that those
+# escapes are "treated as plain" and the pattern then demands literal angle brackets, which would
+# make this whole marker dead and the check quietly stricter than it reads.
+MARKER_CS='(^|[^A-Za-z])(RED|AMBER)([^A-Za-z]|$)'
+
+honesty_scan() { # honesty_scan <file> -> prints each claim line that has no marker within ±1 line
+  awk -v claim="$CLAIM" -v mci="$MARKER_CI" -v mcs="$MARKER_CS" '
+    { line[NR] = $0 }
+    END {
+      for (i = 1; i <= NR; i++) {
+        if (tolower(line[i]) ~ claim) {
+          marked = 0
+          for (j = i - 1; j <= i + 1; j++) {
+            if (j < 1 || j > NR) continue
+            if (tolower(line[j]) ~ mci) marked = 1
+            if (line[j] ~ mcs) marked = 1
+          }
+          if (!marked) printf "%d: %s\n", i, line[i]
+        }
+      }
+    }' "$1"
+}
+
+# The self-tests first, so a claim pattern that stopped matching anything cannot pass as silence.
+printf 'fmonero has successfully broadcast a real send to mainnet.\nIt also verified against a live daemon.\n' \
+  > "$SELFTEST/claims-positive.txt"
+if [ -n "$(honesty_scan "$SELFTEST/claims-positive.txt")" ]; then
+  pass "self-test: the RED-claim scan fires on its own fixture"
+else
+  fail "self-test: the RED-claim scan does NOT fire on 'successfully broadcast a real send' — it is vacuous"
+fi
+# One negative fixture per marker family, so neither path can rot into a dead pattern: the first
+# is qualified only by `unverified` (the word §4b names), the second only by `RED`.
+printf 'These rows are unverified today.\nA real send or sweep of any amount, and a real peer list.\n' \
+  > "$SELFTEST/claims-negative-word.txt"
+if [ -n "$(honesty_scan "$SELFTEST/claims-negative-word.txt")" ]; then
+  fail "self-test: the RED-claim scan fires on a line an adjacent 'unverified' already qualifies"
+else
+  pass "self-test: and it leaves a line adjacent to 'unverified' alone"
+fi
+printf '**RED.**\nA real send or sweep of any amount, and a real peer list.\n' \
+  > "$SELFTEST/claims-negative-class.txt"
+if [ -n "$(honesty_scan "$SELFTEST/claims-negative-class.txt")" ]; then
+  fail "self-test: the RED-claim scan fires on a line an adjacent 'RED' already qualifies — MARKER_CS is dead"
+else
+  pass "self-test: and it leaves a line adjacent to the class name RED alone"
+fi
+
+FMBIN="$ROOT/target/release/fmonero"
+[ -x "$FMBIN" ] || cargo build --release -p fmonero >/dev/null 2>&1
+if [ ! -x "$FMBIN" ]; then
+  fail "§2j: target/release/fmonero is missing, so --help, robot-docs and build_note cannot be read"
+else
+  CORPUS="$SELFTEST/claims-corpus.txt"
+  : > "$CORPUS"
+  for f in README.md plugin/oliver.monero/README.md; do
+    [ -f "$f" ] && cat "$f" >> "$CORPUS"
+  done
+  "$FMBIN" --help >> "$CORPUS" 2>&1
+  # Every command of §4.1, its subcommands included: a claim in one leaf's after_help is exactly
+  # the kind of line nobody re-reads.
+  while read -r cmd; do
+    [ -n "$cmd" ] || continue
+    # shellcheck disable=SC2086
+    "$FMBIN" $cmd --help >> "$CORPUS" 2>&1
+  done <<'CMDS'
+status
+node
+node up
+node down
+node restart
+node info
+node log
+node peers
+node bans
+node ban
+node unban
+node limit
+wallet
+wallet list
+wallet open
+wallet close
+wallet create
+wallet balance
+wallet address
+wallet new-address
+wallet history
+wallet send
+wallet sweep
+wallet clear-pending
+wallet validate
+wallet book
+wallet refresh
+wallet notes
+wallet set-daemon
+settings
+settings list
+settings get
+settings set
+setup
+doctor
+doctor undo
+doctor capabilities
+tui
+capabilities
+robot-docs
+version
+CMDS
+  "$FMBIN" robot-docs >> "$CORPUS" 2>&1
+  "$FMBIN" version --json >> "$CORPUS" 2>&1          # carries build_stage + build_note
+  "$FMBIN" capabilities --json >> "$CORPUS" 2>&1     # carries build_note and every command's doc
+  OFFENDERS="$(honesty_scan "$CORPUS")"
+  if [ -n "$OFFENDERS" ]; then
+    fail "§2j: a RED row is described as working, with no honesty marker nearby"
+    printf '%s\n' "$OFFENDERS" | head -20 | sed 's/^/        /'
+  else
+    pass "no RED claim in README, $(grep -c '' "$CORPUS") lines of --help/robot-docs/capabilities"
+  fi
+fi
+
 # ---------------------------------------------------------------- --full
 if [ "$FULL" = 1 ]; then
   step "--full: cargo build --release"
