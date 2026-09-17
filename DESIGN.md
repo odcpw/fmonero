@@ -2606,7 +2606,12 @@ nothing.
   reports "the wallet daemon is not running" — the symptom pointing away from the cause again, on
   the very first run.
   It refuses (exit 3) when §2i finds a `system_unit` layout or when
-  free space is under the §1.3 floor without `--full-chain --yes`.
+  free space is under the §1.3 floor without `--full-chain --yes` — **except in remote mode,
+  where the disk floor does not apply at all** (v5.2): it is a floor for a *chain*, and remote
+  mode stores none, so refusing to write the units on a machine that will never download a block
+  is a refusal on a correct machine — the same argument §7.1 makes for `disk_space` reporting
+  `skip:remote_node`. The node unit and `monerod.conf` are still rendered there, because
+  `fmonero node local --yes` must find them and `units_present` compares them in every mode.
   `--rotate-rpc-login` mints a fresh node credential; see below.
 - `--plugin` symlinks `plugin/oliver.monero` → `~/.config/omarchy/plugins/oliver.monero`, then
   `omarchy plugin enable oliver.monero` and `omarchy bar put oliver.monero --before omarchy.tailscale`,

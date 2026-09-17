@@ -150,7 +150,12 @@ fn units_step(ctx: &mut Context, args: &SetupArgs) -> Result<Vec<FileAction>, Er
         }
         ctx.settings.node.prune = false;
     }
-    if !override_disk {
+    // **The floor is a CHAIN floor, and remote mode stores no chain** (v5.2, §2m.3). Refusing
+    // to write the two units on a machine configured for a remote node, because there is no
+    // room for blocks it will never download, is a refusal on a correct machine — the same
+    // argument §7.1 makes for `disk_space` reporting `skip:remote_node`. The node unit and
+    // `monerod.conf` are still rendered, because `fmonero node local --yes` must find them.
+    if !override_disk && !ctx.settings.node.mode.is_remote() {
         let free = fmonero_core::fsinfo::free_bytes(&ctx.settings.node.data_dir)?;
         if free < fmonero_core::status::DISK_FLOOR_BYTES {
             return Err(Error::safety(format!(

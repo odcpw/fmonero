@@ -1658,11 +1658,24 @@ expect_json '[.warnings[].id] | contains(["remote_node_trusted"])' 'true' "  sta
 fm settings set node.remote_trusted false >/dev/null
 
 step "§4.2: the wallet unit renders the remote daemon target"
+# The §1.3 disk floor does NOT apply in remote mode (v5.2, §4.2): it is a floor for a chain, and
+# remote mode stores none. `node.data_dir` is pointed at a path with no room to prove it — in
+# local mode this same setting is what makes `setup --units` exit 3 `full_chain_refused`.
+fm settings set node.data_dir /proc/self/fdinfo --json
+expect_rc 0 "point node.data_dir at a filesystem with no room"
 fm setup --units --dry-run --json
 expect_rc 0 "setup --units --dry-run in remote mode"
 expect_contains "--daemon-address $REMOTE_ADDR" "  --daemon-address is node.remote, verbatim"
 expect_contains "--untrusted-daemon" "  and exactly one trust flag: --untrusted-daemon"
 expect_contains "--daemon-ssl autodetect" "  with --daemon-ssl rendered explicitly (§1b.9 item 2)"
+# And the exemption is not vacuous: the SAME data_dir in LOCAL mode is exit 3 (§1.3, §4.2).
+fm settings set node.mode local --json
+expect_rc 0 "back to local mode, same data_dir"
+fm setup --units --dry-run --json
+expect_rc 3 "§4.2: the disk floor DOES apply in local mode"
+expect_json '.reason' '"full_chain_refused"' "  reason full_chain_refused"
+fm settings set node.mode remote --json
+expect_rc 0 "and back to remote for the rest of this case"
 
 step "§2m.5: node remote --yes end to end, and again (idempotent)"
 sandbox remote-apply
