@@ -268,7 +268,12 @@ fn plugin_step(ctx: &Context, args: &SetupArgs) -> Result<Vec<FileAction>, Error
             diff: None,
         });
     }
-    // argv only, never a shell string (§2f), and each step is skipped when already done.
+    // argv only, never a shell string (§2f), and each step is skipped when already done — read
+    // from Omarchy's own `shell.json`, which is where enabling a bar widget records itself
+    // (§1.5, §4.2). Both commands are themselves idempotent, so what was wrong before v5.1 was
+    // the REPORT: they spawned and said `written` on every run, and §8's idempotence assertion
+    // reads exactly that (finding 2 of the Phase 4 verification).
+    let on_bar = plugin_on_bar(ctx);
     for argv in [
         vec!["omarchy", "plugin", "enable", PLUGIN_ID],
         vec![
@@ -281,6 +286,19 @@ fn plugin_step(ctx: &Context, args: &SetupArgs) -> Result<Vec<FileAction>, Error
         ],
     ] {
         let what = argv.join(" ");
+        // For a bar widget the two questions are one fact: `omarchy plugin enable` puts the id
+        // into a section of `bar.layout` and `omarchy bar put` "leaves a widget that is already
+        // on the bar where it is" (`/usr/share/omarchy/bin/omarchy-bar`), so a widget already in
+        // that document is what both commands would produce.
+        if on_bar == Some(true) {
+            actions.push(FileAction {
+                what: format!("{what} (already: {PLUGIN_ID} is on the bar in shell.json)"),
+                path: ctx.paths.omarchy_shell_json(),
+                status: FileStatus::Unchanged,
+                diff: None,
+            });
+            continue;
+        }
         if args.dry_run {
             actions.push(FileAction {
                 what: format!("RunArgv {what}"),
@@ -325,6 +343,32 @@ fn plugin_step(ctx: &Context, args: &SetupArgs) -> Result<Vec<FileAction>, Error
 
 /// The bar widget's id, which is also its directory name (§6).
 const PLUGIN_ID: &str = "oliver.monero";
+
+/// Is `oliver.monero` already a widget of Omarchy's bar?
+///
+/// Read from `~/.config/omarchy/shell.json`, which is where `omarchy plugin enable` records a
+/// bar widget — §1.5 says so in as many words ("Enabling writes `{\"id\":\"oliver.monero\"}`
+/// into `~/.config/omarchy/shell.json`") and `omarchy-plugin-enable` reaches it through
+/// `omarchy-shell shell enablePlugin`. The file rather than `omarchy plugin list`, for two
+/// reasons: the listing needs a **running** shell (it is an IPC call), and `setup` must answer
+/// this question on a machine whose shell has not started; and reading the state costs no
+/// process spawn, while `plugin list` costs one before the two it exists to avoid.
+///
+/// `None` means "cannot tell" — no file, or a document this code does not recognise — and the
+/// caller then runs the command as it always did. Guessing `true` there would skip a step that
+/// was never taken; guessing `false` is what the old code effectively did.
+fn plugin_on_bar(ctx: &Context) -> Option<bool> {
+    let text = std::fs::read_to_string(ctx.paths.omarchy_shell_json()).ok()?;
+    let doc: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let layout = doc.get("bar")?.get("layout")?.as_object()?;
+    Some(layout.values().any(|section| {
+        section.as_array().is_some_and(|widgets| {
+            widgets
+                .iter()
+                .any(|w| w.get("id") == Some(&PLUGIN_ID.into()))
+        })
+    }))
+}
 
 /// `plugin/oliver.monero` inside **this repo's main checkout**, which is what the doctor's
 /// `plugin_linked` check validates the resolved link against (§7.1).
@@ -613,6 +657,50 @@ mod tests {
             .filter(|(id, _)| !ids.contains(&(*id).to_string()))
             .collect();
         assert!(again.is_empty(), "idempotent (§4.2)");
+    }
+
+    /// Finding 2 of the Phase 4 verification: the two `omarchy` steps reported `written` on
+    /// every run, so §8's idempotence assertion could never hold. The pre-check reads the same
+    /// document Omarchy writes, and the three answers it has to distinguish are "on the bar",
+    /// "not on the bar" and "cannot tell" — the last one running the command as before, because
+    /// skipping a step that was never taken is the one wrong answer here.
+    #[test]
+    fn the_bar_pre_check_reads_omarchys_own_shell_json() {
+        let dir = std::env::temp_dir().join(format!("fmonero-setup-bar-{}", std::process::id()));
+        let mut ctx = Context::for_test(&dir).expect("test context");
+        ctx.paths.omarchy_config_dir = dir.join("omarchy");
+        std::fs::create_dir_all(&ctx.paths.omarchy_config_dir).unwrap();
+        let shell = ctx.paths.omarchy_shell_json();
+
+        // No file at all: "cannot tell".
+        assert_eq!(plugin_on_bar(&ctx), None);
+
+        // A real bar with other widgets and not ours.
+        std::fs::write(
+            &shell,
+            br#"{"version":1,"bar":{"layout":{"left":[{"id":"omarchy.menu"}],
+                 "center":[],"right":[{"id":"omarchy.tray"},{"id":"omarchy.tailscale"}]}},
+                 "plugins":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(plugin_on_bar(&ctx), Some(false), "not on the bar yet");
+
+        // Ours, in the section `--before omarchy.tailscale` puts it in.
+        std::fs::write(
+            &shell,
+            br#"{"version":1,"bar":{"layout":{"left":[{"id":"omarchy.menu"}],
+                 "center":[],"right":[{"id":"omarchy.tray"},{"id":"oliver.monero"},
+                 {"id":"omarchy.tailscale"}]}},"plugins":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(plugin_on_bar(&ctx), Some(true), "already on the bar");
+
+        // A document this code does not recognise is "cannot tell", never a guess.
+        std::fs::write(&shell, b"{\"version\":1}\n").unwrap();
+        assert_eq!(plugin_on_bar(&ctx), None);
+        std::fs::write(&shell, b"not json at all\n").unwrap();
+        assert_eq!(plugin_on_bar(&ctx), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
