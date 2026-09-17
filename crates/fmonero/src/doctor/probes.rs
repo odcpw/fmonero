@@ -321,6 +321,13 @@ pub struct Probes {
     pub layout: String,
     pub layout_error: Option<String>,
     pub node_url: String,
+    /// v5.2, §2m: `"local"` or `"remote"` — the fact a third of §7.1 now branches on.
+    pub node_mode: String,
+    /// `units::daemon_target(ctx)` — the address, the trust flag and the ssl mode the wallet
+    /// unit renders and `set_daemon` sends, from the ONE derivation both read (§2m.3).
+    pub daemon_address: String,
+    pub daemon_trusted: bool,
+    pub daemon_ssl: String,
     pub node_taken: bool,
     pub node_reachable: bool,
     pub node_error: Option<String>,
@@ -382,6 +389,14 @@ pub struct Probes {
     pub unit_wallet_dir: Option<String>,
     /// `--rpc-bind-port`'s argument as the unit actually carries it.
     pub unit_wallet_port: Option<u16>,
+    /// `--daemon-address`, the trust flag and `--daemon-ssl` **as the installed unit carries
+    /// them** — the three `wallet_daemon_matches_unit` compares against `daemon_target` (§7.1,
+    /// v5.2). A `monero-wallet-rpc` started before any `wallet open` auto-refreshes against
+    /// whatever its argv said (§1b.9 item 3), so a unit naming the old node keeps a wallet
+    /// syncing from a node `status` does not name — a skew with a SILENT symptom.
+    pub unit_daemon_address: Option<String>,
+    pub unit_daemon_trusted: Option<bool>,
+    pub unit_daemon_ssl: Option<String>,
 
     // ---- security / storage
     /// Mode only — never the bytes (§2b.8).
@@ -468,8 +483,17 @@ impl Probes {
         p.capture_units(ctx);
 
         // ---- node -----------------------------------------------------------
-        if group_selected(only, DoctorGroup::Node) && p.which_monerod.is_some() {
+        // **Not in remote mode** (§2m.3): there is no local daemon to ask, and
+        // `NodeClient::from_ctx` refuses outright — so probing would spend a `detect_layout`
+        // and a `data_dir_in_use` to learn nothing. Every `node` check but `node_layout` and
+        // `remote_node_untrusted` reports `skip:remote_node` from the mode alone.
+        let remote = ctx.settings.node.mode.is_remote();
+        if group_selected(only, DoctorGroup::Node) && p.which_monerod.is_some() && !remote {
             p.capture_node(ctx);
+        }
+        if remote {
+            // `node_layout` still needs the layout string, and it costs nothing here.
+            p.layout = Layout::Remote.as_str().to_string();
         }
 
         // ---- wallet ---------------------------------------------------------
@@ -504,6 +528,13 @@ impl Probes {
             layout: Layout::None.as_str().to_string(),
             layout_error: None,
             node_url: ctx.settings.node.url.clone(),
+            node_mode: ctx.settings.node.mode.to_string(),
+            // Pure settings — no process, no socket — so they belong to `empty`, which is also
+            // what the §7.1 fixture harness builds from. `node_layout` names all three in
+            // remote mode, where the group's every other source is gone (§2m.3).
+            daemon_address: units::daemon_target(ctx).address,
+            daemon_trusted: units::daemon_target(ctx).trusted,
+            daemon_ssl: units::daemon_target(ctx).ssl.to_string(),
             node_taken: false,
             node_reachable: false,
             node_error: None,
@@ -550,6 +581,9 @@ impl Probes {
             wallet_unit_state: UnitState::missing(&ctx.settings.wallet.unit),
             unit_wallet_dir: None,
             unit_wallet_port: None,
+            unit_daemon_address: None,
+            unit_daemon_trusted: None,
+            unit_daemon_ssl: None,
             monerod_conf: FileProbe::default(),
             monerod_conf_prune: None,
             monerod_conf_has_login: false,
@@ -726,6 +760,19 @@ impl Probes {
             self.unit_wallet_dir = flag_value(&argv, "--wallet-dir");
             self.unit_wallet_port =
                 flag_value(&argv, "--rpc-bind-port").and_then(|v| v.parse().ok());
+            self.unit_daemon_address = flag_value(&argv, "--daemon-address");
+            self.unit_daemon_ssl = flag_value(&argv, "--daemon-ssl");
+            // Exactly one of the two flags is always rendered (§4.2). `None` here means the
+            // unit carries neither, which is NOT "untrusted": `make_basic` falls back to
+            // `is_local_address(daemon_address)` (`wallet2.cpp:451-462`).
+            self.unit_daemon_trusted = match (
+                argv.iter().any(|a| a == "--trusted-daemon"),
+                argv.iter().any(|a| a == "--untrusted-daemon"),
+            ) {
+                (true, false) => Some(true),
+                (false, true) => Some(false),
+                _ => None,
+            };
         }
     }
 

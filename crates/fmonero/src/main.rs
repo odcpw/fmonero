@@ -24,8 +24,8 @@ use fmonero_core::send::{self, Plan, SendRequest, SweepRequest};
 use fmonero_core::state;
 use fmonero_core::status::PendingStatus;
 use fmonero_core::{
-    address, agent, log as corelog, node_session, settings as coresettings, units, wallet_dir,
-    wallet_session, CancelToken, Context, Error, Piconero,
+    address, agent, log as corelog, node_mode, node_session, settings as coresettings, units,
+    wallet_dir, wallet_session, CancelToken, Context, Error, Piconero,
 };
 
 use output::{Out, Paint};
@@ -53,7 +53,8 @@ const AFTER_HELP: &str =
 Amounts: a decimal XMR string (0.5, 1.234567891234, at most 12 decimals) or raw piconero
 with a `p` suffix (250000000000p). Recipients: an address, or @label from the address book.
 
---dry-run is implemented by exactly four commands: wallet send, wallet sweep, setup, doctor.";
+--dry-run is implemented by exactly six commands: node remote, node local, wallet send,
+wallet sweep, setup, doctor.";
 
 #[derive(Parser)]
 #[command(
@@ -196,6 +197,29 @@ Without --wait a still-syncing node is exit 0 plus the node_syncing warning."
         /// A host or IP, e.g. 1.2.3.4
         host: String,
     },
+    /// Point monero-wallet-rpc at a REMOTE node and keep it there (§2m)
+    #[command(
+        after_help = "Writes node.mode, node.remote and node.remote_trusted, re-renders both
+units and restarts monero-wallet-rpc if it was running. fmonero itself never talks to the
+remote node: monero-wallet-rpc does.
+
+A public node sees this machine's IP address and the timing of every request, supplies the
+decoys every transaction is built from, and can lie about the chain tip and the fee — so
+NEVER pass --trusted to one, and bound a send with --max-fee. TLS here is opportunistic and
+unauthenticated, and Tor is not in v0.1.
+
+  fmonero node remote node.example.com:18089 --yes      # a public node
+  fmonero node local --yes                              # the way back"
+    )]
+    Remote {
+        /// [http[s]://]host:port — the port is required, no path, no credential
+        addr: String,
+        /// Send `trusted` — only ever for a node YOU run (§2m.6)
+        #[arg(long)]
+        trusted: bool,
+    },
+    /// Go back to fmonero's own local monerod (§2m)
+    Local,
     /// Read or set the node's rate limits and peer counts
     #[command(
         after_help = "With no arguments this only reads (out_peers/in_peers are queried with
@@ -712,14 +736,44 @@ fn ok(mut value: serde_json::Value) -> serde_json::Value {
     value
 }
 
-/// `--dry-run` is implemented by exactly four commands (§4). Anywhere else it exits 2 rather
+/// `--dry-run` is implemented by exactly six commands since v5.2 (§4). Anywhere else it exits 2 rather
 /// than being silently ignored: a flag that means "change nothing", accepted globally and
 /// ignored on a mutating command, is worse than a flag that does not exist.
 fn dry_run_is_supported(cmd: &Cmd) -> bool {
     match cmd {
         Cmd::Setup(_) | Cmd::Doctor(_) => true,
         Cmd::Wallet { cmd } => matches!(cmd, WalletCmd::Send { .. } | WalletCmd::Sweep { .. }),
+        // v5.2, §2m.5 step 2: on both mode commands `--dry-run` prints the plan and the unit
+        // diff and exits 0 **without** `--yes`, exactly as `setup --dry-run` does. Six commands
+        // accept it, and `capabilities` is generated from this same table (§4).
+        Cmd::Node { cmd } => matches!(cmd, NodeCmd::Remote { .. } | NodeCmd::Local),
         _ => false,
+    }
+}
+
+/// The node client the money path uses, or `None` in remote mode (v5.2, §2m.3).
+///
+/// A failure that is **not** the remote-mode gate keeps its own exit code: a non-loopback
+/// `node.url` is exit 2 and an unreadable `monerod.conf` is exit 1, and reporting either as
+/// exit 4 `unreachable` would point the user at `fmonero node up` — which exits 2 on the same
+/// configuration (§2c).
+fn node_for_send(ctx: &Context) -> Result<Option<NodeClient>, Error> {
+    match NodeClient::from_ctx(ctx) {
+        Ok(n) => Ok(Some(n)),
+        Err(e) if e.reason() == Some("remote_node") => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// Step 7's situation, named by the caller (§2a.1, §2m.3).
+///
+/// `Remote` and `Unreachable` are opposite instructions — proceed by another gate, versus
+/// refuse — which is why §5b made this an enum instead of leaving both behind one `None`.
+fn node_gate<'a>(ctx: &Context, n: Option<&'a NodeClient>) -> send::NodeGate<'a> {
+    match n {
+        Some(n) => send::NodeGate::Local(n),
+        None if ctx.settings.node.mode.is_remote() => send::NodeGate::Remote,
+        None => send::NodeGate::Unreachable,
     }
 }
 
@@ -740,6 +794,8 @@ fn command_path(cmd: &Cmd) -> String {
                 NodeCmd::Ban { .. } => "ban",
                 NodeCmd::Unban { .. } => "unban",
                 NodeCmd::Limit { .. } => "limit",
+                NodeCmd::Remote { .. } => "remote",
+                NodeCmd::Local => "local",
             }
         ),
         Cmd::Wallet { cmd } => format!(
@@ -950,180 +1006,232 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
         }
 
         // ---- node ----------------------------------------------------------
-        Cmd::Node { cmd } => match cmd {
-            NodeCmd::Up { wait, wait_timeout } => {
-                if wait && wait_timeout == 0 && !output::stdout_is_tty() {
-                    return Err(Error::usage(
+        Cmd::Node { cmd } => {
+            // **Every node command that needs the local `monerod` refuses in remote mode, in
+            // one place** (§2m.3, §4.1): exit 4 `backend`, `reason: remote_node`, **before any
+            // RPC is issued and before any `systemctl` spawn**. Core holds the structural gate
+            // — `NodeClient::from_ctx` and `node_session`'s `Layout::Remote` arm both refuse,
+            // which is what a unit test asserts — and this guard exists only to name the verb
+            // the user typed in the message §2m.3 prescribes. `node info` (settings-only in
+            // remote mode), `node remote` and `node local` are the three that go through.
+            if ctx.settings.node.mode.is_remote() {
+                let verb = match &cmd {
+                    NodeCmd::Up { .. } => Some("up"),
+                    NodeCmd::Down => Some("down"),
+                    NodeCmd::Restart => Some("restart"),
+                    NodeCmd::Log { .. } => Some("log"),
+                    NodeCmd::Peers { .. } => Some("peers"),
+                    NodeCmd::Bans => Some("bans"),
+                    NodeCmd::Ban { .. } => Some("ban"),
+                    NodeCmd::Unban { .. } => Some("unban"),
+                    NodeCmd::Limit { .. } => Some("limit"),
+                    NodeCmd::Info | NodeCmd::Remote { .. } | NodeCmd::Local => None,
+                };
+                if let Some(verb) = verb {
+                    return Err(units::remote_node_error(&ctx, Some(verb)));
+                }
+            }
+            match cmd {
+                NodeCmd::Up { wait, wait_timeout } => {
+                    if wait && wait_timeout == 0 && !output::stdout_is_tty() {
+                        return Err(Error::usage(
                         "--wait-timeout 0 polls until interrupted, and nothing can interrupt a non-interactive caller",
                     )
                     .with_reason("bad_args")
                     .with_hint("fmonero node up --wait --wait-timeout 86400"));
+                    }
+                    let wait = wait.then(|| Duration::from_secs(wait_timeout));
+                    let started = node_session::up(&ctx, wait, &cancel)?;
+                    let unit = ctx.settings.node.unit.clone();
+                    let active = units::state(&ctx, &unit)?.active;
+                    out.emit(
+                        "node up",
+                        ok(serde_json::json!({
+                            "unit": unit,
+                            "active": active,
+                            "reachable": started.reachable,
+                            "synchronized": started.synchronized,
+                            "waited_sec": started.waited_sec,
+                            "already_running": started.already_running,
+                        })),
+                    );
+                    Ok(0)
                 }
-                let wait = wait.then(|| Duration::from_secs(wait_timeout));
-                let started = node_session::up(&ctx, wait, &cancel)?;
-                let unit = ctx.settings.node.unit.clone();
-                let active = units::state(&ctx, &unit)?.active;
-                out.emit(
-                    "node up",
-                    ok(serde_json::json!({
-                        "unit": unit,
-                        "active": active,
-                        "reachable": started.reachable,
-                        "synchronized": started.synchronized,
-                        "waited_sec": started.waited_sec,
-                        "already_running": started.already_running,
-                    })),
-                );
-                Ok(0)
-            }
-            NodeCmd::Down => {
-                require_yes(yes, "fmonero node down", &[])?;
-                node_session::down(&ctx, &cancel)?;
-                out.emit(
-                    "node down",
-                    ok(serde_json::json!({
-                        "unit": ctx.settings.node.unit,
-                        "active": false,
-                        "reachable": false,
-                        "synchronized": serde_json::Value::Null,
-                        "waited_sec": 0,
-                        "already_running": false,
-                    })),
-                );
-                Ok(0)
-            }
-            NodeCmd::Restart => {
-                require_yes(yes, "fmonero node restart", &[])?;
-                let started = node_session::restart(&ctx, &cancel)?;
-                let unit = ctx.settings.node.unit.clone();
-                let active = units::state(&ctx, &unit)?.active;
-                out.emit(
-                    "node restart",
-                    ok(serde_json::json!({
-                        "unit": unit,
-                        "active": active,
-                        "reachable": started.reachable,
-                        "synchronized": started.synchronized,
-                        "waited_sec": started.waited_sec,
-                        "already_running": started.already_running,
-                    })),
-                );
-                Ok(0)
-            }
-            NodeCmd::Info => {
-                let s = fmonero_core::status(&ctx)?;
-                let n = NodeClient::from_ctx(&ctx)?;
-                let txpool = n.get_txpool_stats()?;
-                let hf = n.hard_fork_info(0)?;
-                let rpc = n.get_version()?;
-                // `sync_info` is a !m_restricted method: on a restricted node the data has no
-                // source at all, and a zero would be a rendered untruth (§1b.2, §5).
-                let sync = if s.node.restricted == Some(true) {
-                    serde_json::Value::Null
-                } else {
-                    let si = n.sync_info()?;
-                    serde_json::json!({
-                        "height": si.height,
-                        "target_height": si.target_height,
-                        "spans": si.spans,
-                        "peers": si.peers,
-                    })
-                };
-                out.emit(
-                    "node info",
-                    ok(serde_json::json!({
-                        "node": s.node,
-                        "txpool": {
-                            "txs_total": txpool.txs_total,
-                            "bytes_total": txpool.bytes_total,
-                            "fee_total_pico": txpool.fee_total.0,
-                            "fee_total_xmr": txpool.fee_total.to_xmr_string(),
-                            "oldest": txpool.oldest,
-                            "num_10m": txpool.num_10m,
-                            "num_double_spends": txpool.num_double_spends,
-                        },
-                        "sync": sync,
-                        // Two DIFFERENT fork versions, kept apart (§1b.3): `version` is the
-                        // current fork, the voting fields describe the NEXT one.
-                        "hard_fork": {
-                            "current_version": hf.version,
-                            "state": hf.state,
-                            "voting_on": {
-                                "version": hf.voting,
-                                "enabled": hf.enabled,
-                                "earliest_height": hf.earliest_height,
-                                "votes": hf.votes,
-                                "threshold": hf.threshold,
-                                "window": hf.window,
-                                "voting": hf.voting,
+                NodeCmd::Down => {
+                    require_yes(yes, "fmonero node down", &[])?;
+                    node_session::down(&ctx, &cancel)?;
+                    out.emit(
+                        "node down",
+                        ok(serde_json::json!({
+                            "unit": ctx.settings.node.unit,
+                            "active": false,
+                            "reachable": false,
+                            "synchronized": serde_json::Value::Null,
+                            "waited_sec": 0,
+                            "already_running": false,
+                        })),
+                    );
+                    Ok(0)
+                }
+                NodeCmd::Restart => {
+                    require_yes(yes, "fmonero node restart", &[])?;
+                    let started = node_session::restart(&ctx, &cancel)?;
+                    let unit = ctx.settings.node.unit.clone();
+                    let active = units::state(&ctx, &unit)?.active;
+                    out.emit(
+                        "node restart",
+                        ok(serde_json::json!({
+                            "unit": unit,
+                            "active": active,
+                            "reachable": started.reachable,
+                            "synchronized": started.synchronized,
+                            "waited_sec": started.waited_sec,
+                            "already_running": started.already_running,
+                        })),
+                    );
+                    Ok(0)
+                }
+                NodeCmd::Info => {
+                    let s = fmonero_core::status(&ctx)?;
+                    // **The one node command that still exits 0 in remote mode** (§2m.3): it takes
+                    // a settings-only path and never calls `NodeClient::from_ctx` at all, printing
+                    // the address, the trusted flag and the mode with the four measured sub-objects
+                    // `null`. That is a deliberate branch in one command, not a hole in the gate:
+                    // "which node am I using" is the question remote mode makes people ask, and a
+                    // command that answers it by refusing is a command people stop running. **The
+                    // key set is identical to local mode's**, so one parser serves both (§5c).
+                    if ctx.settings.node.mode.is_remote() {
+                        out.emit(
+                            "node info",
+                            ok(serde_json::json!({
+                                "node": s.node,
+                                "txpool": serde_json::Value::Null,
+                                "sync": serde_json::Value::Null,
+                                "hard_fork": serde_json::Value::Null,
+                                "rpc": serde_json::Value::Null,
+                            })),
+                        );
+                        // What cannot be known, said rather than implied (§2j): no wallet-RPC
+                        // method reports a daemon's height, sync state or nettype (§1b.9 item 5).
+                        out.note(format!(
+                            "remote node {} — its own height and sync state are not observable \
+                         through monero-wallet-rpc, and nothing verifies that it is on {}",
+                            s.node.url, ctx.settings.node.network
+                        ));
+                        return Ok(0);
+                    }
+                    let n = NodeClient::from_ctx(&ctx)?;
+                    let txpool = n.get_txpool_stats()?;
+                    let hf = n.hard_fork_info(0)?;
+                    let rpc = n.get_version()?;
+                    // `sync_info` is a !m_restricted method: on a restricted node the data has no
+                    // source at all, and a zero would be a rendered untruth (§1b.2, §5).
+                    let sync = if s.node.restricted == Some(true) {
+                        serde_json::Value::Null
+                    } else {
+                        let si = n.sync_info()?;
+                        serde_json::json!({
+                            "height": si.height,
+                            "target_height": si.target_height,
+                            "spans": si.spans,
+                            "peers": si.peers,
+                        })
+                    };
+                    out.emit(
+                        "node info",
+                        ok(serde_json::json!({
+                            "node": s.node,
+                            "txpool": {
+                                "txs_total": txpool.txs_total,
+                                "bytes_total": txpool.bytes_total,
+                                "fee_total_pico": txpool.fee_total.0,
+                                "fee_total_xmr": txpool.fee_total.to_xmr_string(),
+                                "oldest": txpool.oldest,
+                                "num_10m": txpool.num_10m,
+                                "num_double_spends": txpool.num_double_spends,
+                            },
+                            "sync": sync,
+                            // Two DIFFERENT fork versions, kept apart (§1b.3): `version` is the
+                            // current fork, the voting fields describe the NEXT one.
+                            "hard_fork": {
+                                "current_version": hf.version,
+                                "state": hf.state,
+                                "voting_on": {
+                                    "version": hf.voting,
+                                    "enabled": hf.enabled,
+                                    "earliest_height": hf.earliest_height,
+                                    "votes": hf.votes,
+                                    "threshold": hf.threshold,
+                                    "window": hf.window,
+                                    "voting": hf.voting,
+                                }
+                            },
+                            "rpc": {
+                                "version_major": rpc.version >> 16,
+                                "version_minor": rpc.version & 0xffff,
+                                "release": rpc.release,
+                                "hard_forks": rpc.hard_forks,
                             }
-                        },
-                        "rpc": {
-                            "version_major": rpc.version >> 16,
-                            "version_minor": rpc.version & 0xffff,
-                            "release": rpc.release,
-                            "hard_forks": rpc.hard_forks,
-                        }
-                    })),
-                );
-                Ok(0)
-            }
-            NodeCmd::Log {
-                lines,
-                follow,
-                grep,
-            } => {
-                if follow {
-                    return Err(Error::usage(
+                        })),
+                    );
+                    Ok(0)
+                }
+                NodeCmd::Log {
+                    lines,
+                    follow,
+                    grep,
+                } => {
+                    if follow {
+                        return Err(Error::usage(
                         "--follow is only available in the TUI's Log screen; in the CLI a pipe would hang",
                     )
                     .with_reason("unsupported_flag")
                     .with_hint("fmonero tui --log"));
-                }
-                let tail = corelog::tail(&ctx.settings.node.log_file, lines, grep.as_deref())?;
-                out.emit(
-                    "node log",
-                    ok(serde_json::json!({
-                        "path": tail.path.display().to_string(),
-                        "lines": tail.lines,
-                        "truncated": tail.truncated,
-                    })),
-                );
-                Ok(0)
-            }
-            NodeCmd::Peers { white, gray, limit } => {
-                let n = NodeClient::from_ctx(&ctx)?;
-                let conns = n.get_connections()?;
-                let lists = n.get_peer_list(true)?;
-                let cap = |mut v: Vec<serde_json::Value>| {
-                    if let Some(k) = limit {
-                        v.truncate(k);
                     }
-                    v
-                };
-                let connections = cap(conns
-                    .iter()
-                    .map(|c| {
-                        serde_json::json!({
-                            "address": c.address,
-                            "host": c.host,
-                            // Parsed from the daemon's STRING and rendered as an integer, so
-                            // both arrays of this payload agree (§1b.3, §5c).
-                            "port": c.port.parse::<u64>().ok(),
-                            "state": c.state,
-                            "height": c.height,
-                            "pruning_seed": c.pruning_seed,
-                            "incoming": c.incoming,
-                            "live_time": c.live_time,
-                            "avg_download": c.avg_download,
-                            "avg_upload": c.avg_upload,
+                    let tail = corelog::tail(&ctx.settings.node.log_file, lines, grep.as_deref())?;
+                    out.emit(
+                        "node log",
+                        ok(serde_json::json!({
+                            "path": tail.path.display().to_string(),
+                            "lines": tail.lines,
+                            "truncated": tail.truncated,
+                        })),
+                    );
+                    Ok(0)
+                }
+                NodeCmd::Peers { white, gray, limit } => {
+                    let n = NodeClient::from_ctx(&ctx)?;
+                    let conns = n.get_connections()?;
+                    let lists = n.get_peer_list(true)?;
+                    let cap = |mut v: Vec<serde_json::Value>| {
+                        if let Some(k) = limit {
+                            v.truncate(k);
+                        }
+                        v
+                    };
+                    let connections = cap(conns
+                        .iter()
+                        .map(|c| {
+                            serde_json::json!({
+                                "address": c.address,
+                                "host": c.host,
+                                // Parsed from the daemon's STRING and rendered as an integer, so
+                                // both arrays of this payload agree (§1b.3, §5c).
+                                "port": c.port.parse::<u64>().ok(),
+                                "state": c.state,
+                                "height": c.height,
+                                "pruning_seed": c.pruning_seed,
+                                "incoming": c.incoming,
+                                "live_time": c.live_time,
+                                "avg_download": c.avg_download,
+                                "avg_upload": c.avg_upload,
+                            })
                         })
-                    })
-                    .collect());
-                let row = |p: &fmonero_core::rpc::node::Peer| serde_json::json!({"host": p.host, "port": p.port, "last_seen": p.last_seen});
-                let white_rows = cap(lists.white_list.iter().map(row).collect());
-                let gray_rows = cap(lists.gray_list.iter().map(row).collect());
-                out.emit(
+                        .collect());
+                    let row = |p: &fmonero_core::rpc::node::Peer| serde_json::json!({"host": p.host, "port": p.port, "last_seen": p.last_seen});
+                    let white_rows = cap(lists.white_list.iter().map(row).collect());
+                    let gray_rows = cap(lists.gray_list.iter().map(row).collect());
+                    out.emit(
                     "node peers",
                     ok(serde_json::json!({
                         "connections": connections,
@@ -1131,86 +1239,119 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                         "gray": if white && !gray { serde_json::Value::Null } else { serde_json::json!(gray_rows) },
                     })),
                 );
-                Ok(0)
-            }
-            NodeCmd::Bans => {
-                let n = NodeClient::from_ctx(&ctx)?;
-                let bans = n.get_bans()?;
-                out.emit(
-                    "node bans",
-                    ok(serde_json::json!({
-                        "bans": bans.iter().map(|b| serde_json::json!({
-                            "host": b.host, "ip": b.ip, "seconds": b.seconds
-                        })).collect::<Vec<_>>(),
-                    })),
-                );
-                Ok(0)
-            }
-            NodeCmd::Ban { host, seconds } => {
-                let n = NodeClient::from_ctx(&ctx)?;
-                // The §2i layout gate is the TYPE: `mutators` refuses unless fmonero owns the
-                // node, before any RPC is issued.
-                n.mutators(&ctx)?.set_bans(&[BanRequest {
-                    host: host.clone(),
-                    ip: 0,
-                    ban: true,
-                    seconds,
-                }])?;
-                out.emit(
-                    "node ban",
-                    ok(serde_json::json!({"host": host, "banned": true, "seconds": seconds})),
-                );
-                Ok(0)
-            }
-            NodeCmd::Unban { host } => {
-                let n = NodeClient::from_ctx(&ctx)?;
-                n.mutators(&ctx)?.set_bans(&[BanRequest {
-                    host: host.clone(),
-                    ip: 0,
-                    ban: false,
-                    seconds: 0,
-                }])?;
-                out.emit(
-                    "node unban",
-                    ok(serde_json::json!({"host": host, "banned": false, "seconds": 0})),
-                );
-                Ok(0)
-            }
-            NodeCmd::Limit {
-                up,
-                down,
-                out_peers,
-                in_peers,
-            } => {
-                let n = NodeClient::from_ctx(&ctx)?;
-                let changed =
-                    up.is_some() || down.is_some() || out_peers.is_some() || in_peers.is_some();
-                let (limits, peers) = if changed {
-                    let m = n.mutators(&ctx)?;
-                    // 0 means "unchanged" on both sides of set_limit (§1b.3).
-                    let limits = m.set_limit(down.unwrap_or(0), up.unwrap_or(0))?;
-                    let peers = if out_peers.is_some() || in_peers.is_some() {
-                        m.set_peers_count(out_peers, in_peers)?
+                    Ok(0)
+                }
+                NodeCmd::Bans => {
+                    let n = NodeClient::from_ctx(&ctx)?;
+                    let bans = n.get_bans()?;
+                    out.emit(
+                        "node bans",
+                        ok(serde_json::json!({
+                            "bans": bans.iter().map(|b| serde_json::json!({
+                                "host": b.host, "ip": b.ip, "seconds": b.seconds
+                            })).collect::<Vec<_>>(),
+                        })),
+                    );
+                    Ok(0)
+                }
+                NodeCmd::Ban { host, seconds } => {
+                    let n = NodeClient::from_ctx(&ctx)?;
+                    // The §2i layout gate is the TYPE: `mutators` refuses unless fmonero owns the
+                    // node, before any RPC is issued.
+                    n.mutators(&ctx)?.set_bans(&[BanRequest {
+                        host: host.clone(),
+                        ip: 0,
+                        ban: true,
+                        seconds,
+                    }])?;
+                    out.emit(
+                        "node ban",
+                        ok(serde_json::json!({"host": host, "banned": true, "seconds": seconds})),
+                    );
+                    Ok(0)
+                }
+                NodeCmd::Unban { host } => {
+                    let n = NodeClient::from_ctx(&ctx)?;
+                    n.mutators(&ctx)?.set_bans(&[BanRequest {
+                        host: host.clone(),
+                        ip: 0,
+                        ban: false,
+                        seconds: 0,
+                    }])?;
+                    out.emit(
+                        "node unban",
+                        ok(serde_json::json!({"host": host, "banned": false, "seconds": 0})),
+                    );
+                    Ok(0)
+                }
+                NodeCmd::Limit {
+                    up,
+                    down,
+                    out_peers,
+                    in_peers,
+                } => {
+                    let n = NodeClient::from_ctx(&ctx)?;
+                    let changed =
+                        up.is_some() || down.is_some() || out_peers.is_some() || in_peers.is_some();
+                    let (limits, peers) = if changed {
+                        let m = n.mutators(&ctx)?;
+                        // 0 means "unchanged" on both sides of set_limit (§1b.3).
+                        let limits = m.set_limit(down.unwrap_or(0), up.unwrap_or(0))?;
+                        let peers = if out_peers.is_some() || in_peers.is_some() {
+                            m.set_peers_count(out_peers, in_peers)?
+                        } else {
+                            n.peers_count()?
+                        };
+                        (limits, peers)
                     } else {
-                        n.peers_count()?
+                        (n.get_limit()?, n.peers_count()?)
                     };
-                    (limits, peers)
-                } else {
-                    (n.get_limit()?, n.peers_count()?)
-                };
-                out.emit(
-                    "node limit",
-                    ok(serde_json::json!({
-                        "limit_up_kbps": limits.limit_up,
-                        "limit_down_kbps": limits.limit_down,
-                        "out_peers": peers.0,
-                        "in_peers": peers.1,
-                        "changed": changed,
-                    })),
-                );
-                Ok(0)
+                    out.emit(
+                        "node limit",
+                        ok(serde_json::json!({
+                            "limit_up_kbps": limits.limit_up,
+                            "limit_down_kbps": limits.limit_down,
+                            "out_peers": peers.0,
+                            "in_peers": peers.1,
+                            "changed": changed,
+                        })),
+                    );
+                    Ok(0)
+                }
+                // v5.2, §2m.5: the two mode commands. Both are in core (`node_mode`), because they
+                // write settings, render units and call `systemctl` — and because the money guards
+                // they take belong with the send path's, not in a second copy here (§2a.3).
+                NodeCmd::Remote { addr, trusted } => {
+                    let mut own = vec![addr.clone()];
+                    if trusted {
+                        own.push("--trusted".into());
+                    }
+                    // `--dry-run` comes FIRST and needs no `--yes` (§2m.5 step 2): "show me what
+                    // this would do" is the safe half of the command, and a `--dry-run` that
+                    // exits 3 teaches the user to type `--yes` to see a preview.
+                    if !dry_run {
+                        require_yes(yes, "fmonero node remote", &own)?;
+                    }
+                    let change = node_mode::set_remote(&ctx, &addr, trusted, dry_run, &cancel)?;
+                    out.emit("node remote", ok(serde_json::to_value(&change)?));
+                    Ok(0)
+                }
+                NodeCmd::Local => {
+                    if !dry_run {
+                        require_yes(yes, "fmonero node local", &[])?;
+                    }
+                    let change = node_mode::set_local(&ctx, dry_run, &cancel)?;
+                    // §2m.5: it ends by naming `fmonero node up` when the node unit is inactive —
+                    // the switch starts no daemon, because §2i's single-writer precondition is the
+                    // only thing allowed to start `monerod`.
+                    if !dry_run && !units::state(&ctx, &ctx.settings.node.unit)?.active {
+                        out.note("the local node is not running: fmonero node up");
+                    }
+                    out.emit("node local", ok(serde_json::to_value(&change)?));
+                    Ok(0)
+                }
             }
-        },
+        }
 
         // ---- wallet --------------------------------------------------------
         Cmd::Wallet { cmd } => match cmd {
@@ -1530,13 +1671,13 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                 };
                 let w = WalletClient::from_ctx(&ctx)?;
                 // §2c: `NodeClient::from_ctx` fails only for a non-loopback URL (exit 2
-                // `non_loopback_url`) or an unreadable monerod.conf (exit 1) — never because
-                // the node is down. Discarding that error made both report as exit 4
-                // `unreachable` with `fmonero node up` as the hint, which itself exits 2 on the
-                // same configuration: a diagnosis pointing away from the cause, on the money
-                // path.
-                let n = Some(NodeClient::from_ctx(&ctx)?);
-                let plan = send::build(&ctx, &w, n.as_ref(), &req, &cancel)?;
+                // `non_loopback_url`), an unreadable monerod.conf (exit 1) or remote mode
+                // (exit 4 `remote_node`, v5.2) — never because the node is down. Discarding
+                // that error made the first two report as exit 4 `unreachable` with
+                // `fmonero node up` as the hint, which itself exits 2 on the same
+                // configuration: a diagnosis pointing away from the cause, on the money path.
+                let n = node_for_send(&ctx)?;
+                let plan = send::build(&ctx, &w, node_gate(&ctx, n.as_ref()), &req, &cancel)?;
                 // §2a.1 step 9, and §5c's money exception: the refusal must carry the BUILT
                 // transaction's key set, so it is raised here — with the plan in hand — rather
                 // than inside `build`, whose `Err` would destroy it (§2a.2).
@@ -1610,8 +1751,8 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                 let w = WalletClient::from_ctx(&ctx)?;
                 // As `wallet send` above: a loopback or config failure keeps its own exit code
                 // rather than becoming exit 4 `unreachable` (§2c).
-                let n = Some(NodeClient::from_ctx(&ctx)?);
-                let plan = send::build_sweep(&ctx, &w, n.as_ref(), &req, &cancel)?;
+                let n = node_for_send(&ctx)?;
+                let plan = send::build_sweep(&ctx, &w, node_gate(&ctx, n.as_ref()), &req, &cancel)?;
                 if let Err(e) = send::check_max_fee(&plan) {
                     let payload = plan_payload(&plan, &[], false, false);
                     return Ok(refuse_with_plan(&out, &e, ok(payload)));
@@ -1796,7 +1937,10 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
             }
             WalletCmd::Refresh { start_height } => {
                 let w = WalletClient::from_ctx(&ctx)?;
-                let r = w.refresh(start_height.unwrap_or(0), &cancel)?;
+                // Through `wallet_session::refresh`, never `WalletClient::refresh` directly:
+                // it is the one writer of §5's `wallet.last_refresh_at`, shared with the TUI's
+                // `R` and with `send`'s remote gate (§5b, §2m.3).
+                let r = wallet_session::refresh(&ctx, &w, start_height.unwrap_or(0), &cancel)?;
                 out.emit(
                     "wallet refresh",
                     ok(serde_json::json!({
@@ -1830,6 +1974,10 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                 }
             }
             WalletCmd::SetDaemon { address, trusted } => {
+                // The SAME grammar `node.remote` uses (§2m.2, §5b), so the two commands cannot
+                // accept different strings — and it runs before the `--yes` gate, because an
+                // unparseable address costs nothing to refuse.
+                let address = coresettings::Settings::parse_remote_address(&address)?;
                 let mut own = vec![address.clone()];
                 if trusted {
                     own.push("--trusted".into());
@@ -1850,13 +1998,26 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                     } else {
                         None
                     };
-                w.set_daemon(&address, trusted, login.as_ref())?;
+                // `ssl_support` is chosen from the ADDRESS's own shape, by the same derivation
+                // the unit and `wallet_session::open` use (§2m.3): `disabled` for a loopback
+                // literal, `autodetect` otherwise. Keying it on the mode instead would leave
+                // this command — whose address is in neither settings key — with a rule of its
+                // own.
+                let ssl = units::ssl_for_address(&address);
+                w.set_daemon(&address, trusted, login.as_ref(), ssl)?;
                 out.emit(
                     "wallet set-daemon",
                     ok(serde_json::json!({
                         "address": address,
                         "trusted": trusted,
+                        "ssl_support": ssl,
                         "authenticated": w.authenticated(),
+                        // **A one-off, and the payload says so** (§5c): `wallet_session::open`
+                        // issues its own `set_daemon` after every `open_wallet` (§4.2), so the
+                        // next `wallet open` replaces whatever this set. An agent that set a
+                        // daemon and then opened a wallet would otherwise have no way to learn
+                        // that its change is gone. The persistent form is `node remote`.
+                        "persistent": false,
                     })),
                 );
                 Ok(0)
@@ -2110,6 +2271,15 @@ mod tests {
             &["127.0.0.1:18081", "--trusted"],
             "fmonero wallet set-daemon 127.0.0.1:18081 --trusted --yes",
         ),
+        // v5.2, §2m.5: both mode commands need `--yes` — they decide which node the next send
+        // is built against, they restart a daemon that may be holding an open wallet, and they
+        // change the node an already-relayed send would be resolved against (§4.1).
+        (
+            "fmonero node remote",
+            &["node.example.com:18089", "--trusted"],
+            "fmonero node remote node.example.com:18089 --trusted --yes",
+        ),
+        ("fmonero node local", &[], "fmonero node local --yes"),
     ];
 
     /// Every `needs_yes` hint this binary can print, from the three places that build one:

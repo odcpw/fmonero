@@ -344,7 +344,10 @@ pub fn fixable_plan(def: &CheckDef) -> Option<PlanKind> {
     // The §7.1 "Every fixable row names the Action it emits" table, as code.
     Some(match def.id {
         "units_present" | "unit_loopback" | "unit_no_node_wants" => PlanKind::WriteBothUnits,
-        "wallet_dir_matches_unit" => PlanKind::WriteWalletUnit,
+        // v5.2, §7.1: both rewrite the wallet unit from `units::render_wallet_unit` and then
+        // `systemctl --user daemon-reload` — a unit rewritten without a reload is a fixer that
+        // reports success and changes nothing.
+        "wallet_dir_matches_unit" | "wallet_daemon_matches_unit" => PlanKind::WriteWalletUnit,
         "wallet_port_consistent" => PlanKind::NormaliseWalletPort,
         "wallet_dir_exists" => PlanKind::CreateWalletDir,
         "unit_enabled_state" => PlanKind::DisableUnits,

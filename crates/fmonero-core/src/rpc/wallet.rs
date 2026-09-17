@@ -20,6 +20,7 @@ use crate::proc::CancelToken;
 use crate::rpc::jsonrpc::{self, Deadline, Transport};
 use crate::rpc::Login;
 use crate::send::{BuiltTx, TransferRequest};
+use crate::settings::SslSupport;
 use crate::state::Daemon;
 
 /// `get_balance` (`:60`), with the per-subaddress rows of `:77-99`.
@@ -668,20 +669,52 @@ impl WalletClient {
     /// `-13 NOT_OPEN` with no wallet loaded (`wallet_rpc_server.cpp:4692`), so it is called
     /// immediately *after* `open_wallet`, never before. Called only from
     /// `wallet_session::open` and from `wallet set-daemon`.
+    /// `ssl` is a typed enum rather than a string because epee accepts exactly three spellings
+    /// and answers `-38 "Invalid ssl support mode"` for a fourth (`net_ssl.cpp:654-665`,
+    /// `wallet_rpc_server.cpp:4732-4737`) — a typo would be a runtime failure on the send path's
+    /// own precondition. It is `Disabled` for a loopback address and `Autodetect` otherwise
+    /// (`units::ssl_for_address`), and it is **always sent**: an omitted key means `autodetect`,
+    /// not plaintext (`KV_SERIALIZE_OPT(ssl_support, "autodetect")`, §1b.4).
+    ///
+    /// `login` is `None` in remote mode, **always** (§2m.3): fmonero's `rpc-login` belongs to
+    /// fmonero's own node and means nothing to a stranger's.
+    ///
+    /// Never sends `proxy`, `ssl_private_key_path`, `ssl_certificate_path`, `ssl_ca_file`,
+    /// `ssl_allowed_fingerprints` or `ssl_allow_any_cert` (§0's cut list).
     pub fn set_daemon(
         &self,
         address: &str,
         trusted: bool,
         login: Option<&Login>,
+        ssl: SslSupport,
     ) -> Result<(), Error> {
-        let mut params = serde_json::json!({"address": address, "trusted": trusted});
+        let mut params = serde_json::json!({
+            "address": address,
+            "trusted": trusted,
+            "ssl_support": ssl.as_str(),
+        });
         // The two credential fields are **omitted** when there is none — the §2i
-        // `system_unit` layout has no `rpc-login` at all (§4.2).
+        // `system_unit` layout has no `rpc-login` at all (§4.2), and remote mode never has one.
         if let (Some(l), Some(map)) = (login, params.as_object_mut()) {
             map.insert("username".into(), serde_json::json!(l.user));
             map.insert("password".into(), serde_json::json!(l.pass));
         }
-        self.ack("set_daemon", params, Deadline::Probe)
+        match self.t.rpc("set_daemon", params, Deadline::Probe) {
+            Ok(_) => Ok(()),
+            // **`-38` here does not mean "cannot reach the node"**, and mapping it through the
+            // §1b.4 table's `unreachable` would say so. `set_daemon` opens no socket: it is
+            // `m_http_client->set_server(...)` (`wallet2.cpp:1409`), a URL **parse**
+            // (`abstract_http_client.cpp:134-148`), and `-38 "Unable to set daemon"`
+            // (`wallet_rpc_server.cpp:4758-4763`) is raised when that parse failed — which is
+            // a disagreement between fmonero's §2m.2 grammar and epee's parser, not a network
+            // condition. It gets the reason §4 documents for exactly that (§2m.3); the caller
+            // decides whether it is fatal, and only `wallet_session::open` in **local** mode
+            // swallows it (§4.2).
+            Err(crate::rpc::RpcError::Rpc { code: -38, message }) => Err(Error::backend(message)
+                .with_reason("remote_address_rejected")
+                .with_hint(format!("fmonero node remote {address} --yes"))),
+            Err(e) => Err(jsonrpc::wallet_error("set_daemon", e)),
+        }
     }
 }
 

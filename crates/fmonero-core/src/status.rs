@@ -39,8 +39,23 @@ pub struct NodeStatus {
     /// §2i detection — **configuration, not occupancy**: who holds the data dir is
     /// `node up`'s precondition, not a term here.
     pub layout: units::Layout,
+    /// **The address in force** (v5.2): `settings.node.url` in local mode,
+    /// `settings.node.remote` — verbatim, scheme included — in remote mode, both through
+    /// `units::daemon_target`. It means "where the daemon is", which is what every consumer
+    /// already reads it as; a loopback URL nothing contacts would be the §2j failure in the one
+    /// field people copy.
     pub url: String,
-    pub reachable: bool,
+    /// **v5.2.** `true` in local mode (the unit renders `--trusted-daemon` and `set_daemon`
+    /// sends `trusted: true`); `settings.node.remote_trusted` in remote mode. It is here rather
+    /// than only in settings because it changes what wallet2 puts *in a request* —
+    /// `select_available_outputs_from_histogram` sends the wallet's own unspent amounts when
+    /// trusted (`wallet2.cpp:12281-12282`, §1b.9 item 4) — so it is a privacy fact about the
+    /// running system, not a preference.
+    pub trusted: bool,
+    /// **v5.2: `Option`.** `null` in remote mode: fmonero constructs no node client there and
+    /// no wallet-RPC method reports the daemon's state (§1b.9 item 5), so `false` would be a
+    /// claim and `true` a guess (§5).
+    pub reachable: Option<bool>,
     pub restricted: Option<bool>,
     /// What the wire did, never what `monerod.conf` holds (§2j).
     pub authenticated: Option<bool>,
@@ -119,6 +134,13 @@ pub struct WalletStatus {
     pub subaddress_count: Option<u32>,
     pub accounts: Option<u32>,
     pub rpc_version: Option<String>,
+    /// **v5.2.** RFC 3339 for the last `refresh` **fmonero itself issued** — written by
+    /// `wallet_session::refresh`, read back from `state.json`. The qualifier is the whole
+    /// point: `monero-wallet-rpc`'s own 20 s auto-refresh (§2d) is invisible to fmonero, so a
+    /// field named "last refresh" without it would be a claim about the daemon's behaviour we
+    /// cannot make (§2j). It matters most in remote mode, where `blocks_behind` is `null` and
+    /// this is the only freshness signal left.
+    pub last_refresh_at: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -157,6 +179,9 @@ impl Severity {
 /// **exhaustive**: `plugin_not_linked` belongs to the doctor and never appears here.
 pub const WARNING_IDS: &[&str] = &[
     "monero_not_installed",
+    // v5.2, §2m: the mode itself (info) and a trusted non-private remote node (warn).
+    "remote_node",
+    "remote_node_trusted",
     "node_down",
     "node_restricted",
     "node_syncing",
@@ -272,11 +297,12 @@ impl PendingStatus {
 impl NodeStatus {
     /// The document a machine with no node produces: `reachable: false` and every daemon
     /// field `null` — never a zero standing in for unknown (§5).
-    pub fn unreachable(url: String, layout: units::Layout) -> NodeStatus {
+    pub fn unreachable(url: String, layout: units::Layout, trusted: bool) -> NodeStatus {
         NodeStatus {
             layout,
             url,
-            reachable: false,
+            trusted,
+            reachable: Some(false),
             restricted: None,
             authenticated: None,
             nettype: None,
@@ -329,6 +355,7 @@ impl WalletStatus {
             subaddress_count: None,
             accounts: None,
             rpc_version: None,
+            last_refresh_at: None,
         }
     }
 }
@@ -349,7 +376,20 @@ pub fn status(ctx: &Context) -> Result<Status, Error> {
         .unwrap_or_else(|_| units::UnitState::missing(&ctx.settings.wallet.unit));
 
     // ---- the node's hot path -------------------------------------------------
-    let mut node = NodeStatus::unreachable(ctx.settings.node.url.clone(), layout);
+    // The address in force and the trust flag come from `units::daemon_target`, so `status`,
+    // the wallet unit and `set_daemon` cannot name different nodes (§2m.3, §5).
+    let target = units::daemon_target(ctx);
+    let remote = ctx.settings.node.mode.is_remote();
+    let mut node = NodeStatus::unreachable(target.address.clone(), layout, target.trusted);
+    // **In remote mode every node call — hot and cold — is skipped and no `NodeClient` is
+    // constructed at all** (§2m.3, §2c). `reachable` stays `null` rather than `false`: no
+    // wallet-RPC method reports the daemon's state (§1b.9 item 5), so `false` would be a claim.
+    // Both `systemctl --user is-active` spawns above stay, because `units.node` is a real field
+    // a user switching back needs and one §2l budget that holds in both modes is worth more
+    // than a mode-dependent pair. Remote mode therefore only ever makes FEWER calls.
+    if remote {
+        node.reachable = None;
+    }
     // `for_status`, never `from_ctx`: `status` arms no breaker and is blocked by none (§2d).
     //
     // The `?` is deliberate, and it is the one thing that can make `status` fail: both
@@ -357,7 +397,11 @@ pub fn status(ctx: &Context) -> Result<Status, Error> {
     // `--force` list requires `status --force` with `node.url = http://10.0.0.5:18081` to exit
     // **2**, not to report a document about a node it may not speak to. A daemon that is merely
     // DOWN is still `reachable: false` and exit 0 (§2e) — that is a different condition.
-    let nclient = Some(crate::rpc::NodeClient::for_status(ctx)?);
+    let nclient = if remote {
+        None
+    } else {
+        Some(crate::rpc::NodeClient::for_status(ctx)?)
+    };
     let node_started = std::time::Instant::now();
     let info = nclient.as_ref().and_then(|n| n.get_info().ok());
     let node_probe_ms = node_started.elapsed().as_millis() as u64;
@@ -420,19 +464,28 @@ pub fn status(ctx: &Context) -> Result<Status, Error> {
     }
     if let (Some(nh), Some(wh)) = (node.height, wallet.height) {
         // POSITIVE means the wallet is behind, which is the sign every consumer assumes (§5).
+        // **In remote mode this stays `None`**, because `node.height` is: no wallet-RPC method
+        // reports the daemon's height (§1b.9 item 5). That is why §2d exempts remote-mode
+        // deadline kills from the breaker and why `last_refresh_at` exists (§2m.3).
         wallet.blocks_behind = Some(nh as i64 - wh as i64);
     }
+    // The last refresh **fmonero** issued (§5, v5.2) — written only by
+    // `wallet_session::refresh`, never by `status`, which mutates no wallet (§2e).
+    wallet.last_refresh_at = crate::state::load(ctx)
+        .ok()
+        .and_then(|s| s.last_refresh)
+        .and_then(crate::rfc3339_from_unix);
 
     // ---- the cold path, at most once per 60 s (§5) --------------------------
     let cold = cold_pass(
         ctx,
-        nclient.as_ref().filter(|_| node.reachable),
+        nclient.as_ref().filter(|_| node.reachable == Some(true)),
         wclient.as_ref().filter(|_| wallet.reachable),
         wallet.open,
         now,
     );
     if let Some(c) = cold.as_ref() {
-        if node.reachable {
+        if node.reachable == Some(true) {
             node.hard_fork_version = c.hard_fork_version;
             node.fee = c.fee.clone();
             if node.restricted != Some(true) {
@@ -448,7 +501,7 @@ pub fn status(ctx: &Context) -> Result<Status, Error> {
         }
     }
     // Two samples of `get_net_stats` make a rate; one does not (§5).
-    if node.reachable && node.restricted != Some(true) {
+    if node.reachable == Some(true) && node.restricted != Some(true) {
         if let Some(n) = nclient.as_ref() {
             if let Ok(s) = n.get_net_stats() {
                 if let Ok(Some((rx, tx))) = crate::state::net_sample(ctx, s) {
@@ -522,7 +575,7 @@ pub fn status(ctx: &Context) -> Result<Status, Error> {
 /// into `null` (§1b.3, §5).
 fn fill_node(node: &mut NodeStatus, i: &crate::rpc::node::GetInfo, n: &crate::rpc::NodeClient) {
     let restricted = i.restricted;
-    node.reachable = true;
+    node.reachable = Some(true);
     node.restricted = Some(restricted);
     node.authenticated = n.authenticated();
     node.nettype = Some(i.nettype.clone());
@@ -639,15 +692,62 @@ fn warnings(
             hint: hint.to_string(),
         });
     };
-    if crate::proc::which("monerod").is_none() {
+    // **Which binary is missing depends on the mode** (§2m.3): remote mode needs no `monerod`
+    // at all, and raising an error about a binary the configuration does not use is the alarm a
+    // user learns to ignore. The text names the one it looked for.
+    let needed = if ctx.settings.node.mode.is_remote() {
+        "monero-wallet-rpc"
+    } else {
+        "monerod"
+    };
+    if crate::proc::which(needed).is_none() {
         add(
             "monero_not_installed",
             Severity::Error,
-            "monerod is not installed".into(),
+            format!("{needed} is not installed"),
             "omarchy pkg add monero",
         );
     }
-    if s.node.layout != units::Layout::None && !s.node.reachable {
+    // v5.2, §2m. `remote_node` is INFO: it is a configuration, not a fault. Its text says what
+    // the node learns and what cannot be seen from here, because `status` is where a user looks
+    // when they wonder why the node fields are null.
+    if ctx.settings.node.mode.is_remote() {
+        add(
+            "remote_node",
+            Severity::Info,
+            format!(
+                "monero-wallet-rpc talks to the remote node {}; it learns this machine's IP \
+                 address and the timing of every request, and its own sync state cannot be seen \
+                 from here",
+                s.node.url
+            ),
+            "fmonero node local --yes",
+        );
+        // A trusted daemon receives the wallet's own unspent amounts INSIDE a request
+        // (`wallet2.cpp:12281-12282`, §1b.9 item 4). A private literal is the case the flag
+        // exists for; a DNS name is never treated as private, because classifying one means
+        // resolving it (§2m.6, §7.1).
+        if s.node.trusted
+            && !crate::settings::is_private_host(crate::settings::remote_host(&s.node.url))
+        {
+            add(
+                "remote_node_trusted",
+                Severity::Warn,
+                format!(
+                    "{} is marked trusted, so this wallet sends its own unspent amounts inside \
+                     requests to it",
+                    s.node.url
+                ),
+                "fmonero node remote <addr> --yes   # re-set it without --trusted",
+            );
+        }
+    }
+    // **`null` is not `false`.** In remote mode `node.reachable` is `null` and this warning —
+    // like `node_restricted`, `node_syncing`, `node_offline`, `node_no_peers`, `node_low_disk`,
+    // `node_update_available`, `auth_missing` and `node_stalled` — is never raised, because
+    // every one of them tests a field that has no source there (§2m.3). The others fall out for
+    // free: each compares against `Some(x)` and the field is `None`.
+    if s.node.layout != units::Layout::None && s.node.reachable == Some(false) {
         add(
             "node_down",
             Severity::Warn,
@@ -803,7 +903,7 @@ fn warnings(
             }
         }
     }
-    if s.node.reachable && s.node.authenticated == Some(false) {
+    if s.node.reachable == Some(true) && s.node.authenticated == Some(false) {
         add(
             "auth_missing",
             Severity::Warn,
@@ -981,7 +1081,8 @@ mod tests {
             let back: Severity = serde_json::from_value(serde_json::json!(wire)).unwrap();
             assert_eq!(back, s);
         }
-        assert_eq!(WARNING_IDS.len(), 19);
+        // Nineteen before v5.2; §2m adds `remote_node` (info) and `remote_node_trusted` (warn).
+        assert_eq!(WARNING_IDS.len(), 21);
         assert!(
             !WARNING_IDS.contains(&"plugin_not_linked"),
             "that one is the doctor's (§5)"

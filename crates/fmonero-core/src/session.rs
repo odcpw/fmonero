@@ -102,18 +102,45 @@ pub mod wallet_session {
         w: &WalletClient,
         name: &str,
     ) -> Result<NetType, Error> {
-        let login = crate::rpc::Login::from_monerod_conf(&ctx.paths.monerod_conf())?;
-        let address = crate::units::host_port(&ctx.settings.node.url);
-        if let Err(e) = w.set_daemon(&address, true, login.as_ref()) {
-            // §4.2 exempts exactly ONE failure: `-38 NO_DAEMON_CONNECTION`, raised when
-            // wallet2 cannot reach the address (`wallet_rpc_server.cpp:4757-4761`) — the
-            // wallet is open, it simply has no daemon yet. Exit 4 is a whole class, not that
-            // one code: a 401 (`auth_refused`), `-7 DENIED`, `-48 DISABLED` and `-23
-            // NO_WALLET_DIR` all land there, and swallowing them reports a successful
-            // `wallet open` for a wallet left with NO daemon credential — the step §4.2 calls
-            // the one "whose omission means the wallet can never sync". `-38` and a transport
-            // failure are the two that carry `reason: unreachable` (§1b.4, jsonrpc.rs).
-            if e.reason() != Some("unreachable") {
+        // The four arguments come from `units::daemon_target` — the same accessor
+        // `units::render_wallet_unit` reads, so the unit and the call cannot disagree (§2m.3,
+        // §5b). In **remote** mode the credential is `None`, always: fmonero's `rpc-login`
+        // belongs to fmonero's own node and means nothing to a stranger's.
+        let target = crate::units::daemon_target(ctx);
+        let login = if ctx.settings.node.mode.is_remote() {
+            None
+        } else {
+            crate::rpc::Login::from_monerod_conf(&ctx.paths.monerod_conf())?
+        };
+        if let Err(e) = w.set_daemon(&target.address, target.trusted, login.as_ref(), target.ssl) {
+            // §4.2 exempts exactly TWO failures, and the second one **only in local mode**.
+            //
+            // * a transport failure (`reason: unreachable`) — nothing answered the call; the
+            //   wallet is open either way and `status` reports the truth;
+            // * `-38` (`reason: remote_address_rejected`) — the address did not **parse**.
+            //   `set_daemon` opens no socket: it is `m_http_client->set_server(...)`
+            //   (`wallet2.cpp:1409`), a URL parse, and `-38 "Unable to set daemon"`
+            //   (`wallet_rpc_server.cpp:4758-4763`) is what a failed parse answers (§1b.9
+            //   item 1). v5 attributed it to "wallet2 cannot reach the address", which was
+            //   wrong. **In local mode it stays a warning** — `node.url` is loopback-validated
+            //   so the case is nearly unreachable, the wallet really is open, and `status`
+            //   reports the truth. **In remote mode it is not swallowed** (§2m.3): the address
+            //   passed §2m.2's grammar minutes ago, so fmonero's grammar and epee's parser
+            //   disagree, and a `wallet open` reported successful for a wallet whose daemon was
+            //   rejected is the silence §2j forbids. Exit 4 `backend`,
+            //   `reason: remote_address_rejected`, message verbatim, with the `node remote`
+            //   hint `WalletClient::set_daemon` already attached.
+            //
+            // Exit 4 is a whole class, not those two codes: a 401 (`auth_refused`), `-7
+            // DENIED`, `-48 DISABLED` and `-23 NO_WALLET_DIR` all land there, and swallowing
+            // them would report a successful `wallet open` for a wallet left with NO daemon
+            // credential — the step §4.2 calls the one "whose omission means the wallet can
+            // never sync".
+            let rejected = e.reason() == Some("remote_address_rejected");
+            if rejected && ctx.settings.node.mode.is_remote() {
+                return Err(e);
+            }
+            if !rejected && e.reason() != Some("unreachable") {
                 return Err(e);
             }
             let _ = crate::state::set_last_error(ctx, &e, None);
@@ -135,6 +162,27 @@ pub mod wallet_session {
     pub fn close(ctx: &Context, w: &WalletClient) -> Result<(), Error> {
         w.close_wallet()?;
         crate::state::clear_last_open(ctx)
+    }
+
+    /// `WalletClient::refresh` followed by `state::note_refresh` — the one place the "last
+    /// refresh **fmonero** issued" fact is written (v5.2, §5's `wallet.last_refresh_at`).
+    ///
+    /// Three independently written callers — the CLI's `wallet refresh`, `send`'s §2m.3 remote
+    /// gate and the TUI's `R` — and §2a.3 already settles what happens to a step that lives in
+    /// three. The qualifier is the whole point: `monero-wallet-rpc`'s own 20 s auto-refresh
+    /// (§2d) is invisible to fmonero, so a field named "last refresh" that counted it would be a
+    /// claim about the daemon's behaviour we cannot make (§2j).
+    ///
+    /// A failure to record it is **not** a failure of the refresh: the blocks were fetched.
+    pub fn refresh(
+        ctx: &Context,
+        w: &WalletClient,
+        start_height: u64,
+        cancel: &CancelToken,
+    ) -> Result<crate::rpc::wallet::Refreshed, Error> {
+        let r = w.refresh(start_height, cancel)?;
+        let _ = crate::state::note_refresh(ctx);
+        Ok(r)
     }
 }
 
@@ -168,7 +216,7 @@ pub mod node_session {
         cancel: &CancelToken,
     ) -> Result<Started, Error> {
         let layout = crate::units::detect_layout(ctx)?;
-        require_user_unit(layout)?;
+        require_user_unit(ctx, layout, Some("up"))?;
         let unit = ctx.settings.node.unit.clone();
         // Before any systemctl call (§2i, v5.1): the unit file, then `monerod` on PATH. Without
         // the second, this command waits 30 s for a unit that exits 203/EXEC and is restarted
@@ -266,7 +314,7 @@ pub mod node_session {
     pub fn down(ctx: &Context, cancel: &CancelToken) -> Result<(), Error> {
         // `down` and `restart` require only the layout; they never consult `data_dir_in_use`,
         // because the holder of our own data dir is our own node (§2i).
-        require_user_unit(crate::units::detect_layout(ctx)?)?;
+        require_user_unit(ctx, crate::units::detect_layout(ctx)?, Some("down"))?;
         let n = crate::rpc::NodeClient::from_ctx(ctx)?;
         // The RPC first, so LMDB closes cleanly; a node that is already down simply does not
         // answer, which is not a failure of `node down`.
@@ -282,13 +330,17 @@ pub mod node_session {
     /// refuse a moment later anyway, and a restart that stops the node and then reports
     /// "monerod is not installed" has left the machine worse than it found it (v5.1).
     pub fn restart(ctx: &Context, cancel: &CancelToken) -> Result<Started, Error> {
-        require_user_unit(crate::units::detect_layout(ctx)?)?;
+        require_user_unit(ctx, crate::units::detect_layout(ctx)?, Some("restart"))?;
         crate::units::preflight(ctx, &ctx.settings.node.unit, "monerod")?;
         down(ctx, cancel)?;
         up(ctx, None, cancel)
     }
 
-    fn require_user_unit(layout: crate::units::Layout) -> Result<(), Error> {
+    fn require_user_unit(
+        ctx: &Context,
+        layout: crate::units::Layout,
+        verb: Option<&str>,
+    ) -> Result<(), Error> {
         match layout {
             crate::units::Layout::UserUnit => Ok(()),
             crate::units::Layout::SystemUnit => Err(Error::safety(
@@ -296,20 +348,15 @@ pub mod node_session {
             )
             .with_reason("foreign_node")
             .with_hint("sudo systemctl start monerod   # fmonero does not use sudo")),
-            crate::units::Layout::Remote => Err(Error::usage(
-                "node.url is not loopback, so there is no local unit for fmonero to start",
-            )
-            .with_reason("non_loopback_url")
-            .with_hint(
-                "fmonero wallet set-daemon <addr>   # a remote node is reached by monero-wallet-rpc, not by fmonero",
-            )),
-            crate::units::Layout::None => Err(Error::backend(
-                "no fmonero node unit is installed",
-            )
-            .with_reason("unit_missing")
-            // `--yes`, because the hint is run, not read: `fmonero setup --units` alone exits
-            // 3 `needs_yes`, which is a second round trip for the agent this hint is for.
-            .with_hint("fmonero setup --units --yes")),
+            // v5.2, §2m.3: exit **4**, not 2. The arguments are correct; the backend is
+            // somewhere else, and an agent's reflex on exit 2 (re-read `--help`) leads nowhere.
+            // The message is built where every other remote refusal is (§2a.3).
+            crate::units::Layout::Remote => Err(crate::units::remote_node_error(ctx, verb)),
+            crate::units::Layout::None => Err(Error::backend("no fmonero node unit is installed")
+                .with_reason("unit_missing")
+                // `--yes`, because the hint is run, not read: `fmonero setup --units` alone exits
+                // 3 `needs_yes`, which is a second round trip for the agent this hint is for.
+                .with_hint("fmonero setup --units --yes")),
         }
     }
 
@@ -320,5 +367,173 @@ pub mod node_session {
             return 100;
         }
         info.height * 100 / info.target_height.max(1)
+    }
+}
+
+/// The two convenience commands of §2m.5, in core because they write settings, render units and
+/// call `systemctl` — three core responsibilities — and because `main.rs` is frozen at the 1a
+/// gate (§5b, §2k).
+///
+/// The TUI does **not** call them: it toasts the command (§7a). A modal that restarts a daemon
+/// and closes the wallet the session is holding is a screen this design would have to specify a
+/// recovery for.
+pub mod node_mode {
+    use super::*;
+    use crate::settings::{NodeMode, Settings, SslSupport};
+    use crate::units::{self, FileAction, FileStatus};
+
+    /// What a mode switch did. **IS** §5c's `node remote` / `node local` payload, verbatim —
+    /// the two commands share one key set, as `wallet send` and `wallet sweep` do, so an agent
+    /// parses one shape and reads `mode` to learn which way it went.
+    #[derive(Clone, Debug, serde::Serialize)]
+    pub struct ModeChange {
+        pub mode: NodeMode,
+        /// The address **in force after the change**: `settings.node.url`'s host:port in local
+        /// mode, `settings.node.remote` in remote mode (§5c) — both through
+        /// `units::daemon_target`.
+        pub address: String,
+        pub trusted: bool,
+        pub ssl_support: SslSupport,
+        /// The same `units::FileAction[]` shape and the same renderer `setup` uses (§5b).
+        pub actions: Vec<FileAction>,
+        pub wallet_unit_restarted: bool,
+        /// The wallet that was open and was closed by the restart, and must be reopened
+        /// (§2m.5 step 9). Reporting success while `status` still claimed a wallet was open
+        /// would be a stale fact about money.
+        pub wallet_must_reopen: Option<String>,
+        /// `false` on an idempotent second run.
+        pub changed: bool,
+        pub dry_run: bool,
+    }
+
+    /// §2m.5's steps, for `node remote ADDR [--trusted]`.
+    ///
+    /// `addr` is validated by [`Settings::parse_remote_address`] **first**, so an unparseable
+    /// one costs nothing and touches nothing (§2m.2).
+    pub fn set_remote(
+        ctx: &Context,
+        addr: &str,
+        trusted: bool,
+        dry_run: bool,
+        cancel: &CancelToken,
+    ) -> Result<ModeChange, Error> {
+        let address = Settings::parse_remote_address(addr)?;
+        apply(
+            ctx,
+            NodeMode::Remote,
+            Some((address, trusted)),
+            dry_run,
+            cancel,
+        )
+    }
+
+    /// The same steps with `node.mode = local` and no ADDR.
+    ///
+    /// `node.remote` and `node.remote_trusted` are **left where they are** (§2m.1): they are
+    /// inert in local mode, and discarding an address the user will want back is a discourtesy
+    /// with no benefit.
+    pub fn set_local(
+        ctx: &Context,
+        dry_run: bool,
+        cancel: &CancelToken,
+    ) -> Result<ModeChange, Error> {
+        apply(ctx, NodeMode::Local, None, dry_run, cancel)
+    }
+
+    /// The steps both commands share (§2m.5). Neither starts a daemon and neither runs
+    /// `node up`: §2i's single-writer precondition is the only thing allowed to start
+    /// `monerod`, and folding a start into a mode switch would route around it.
+    fn apply(
+        ctx: &Context,
+        mode: NodeMode,
+        remote: Option<(String, bool)>,
+        dry_run: bool,
+        cancel: &CancelToken,
+    ) -> Result<ModeChange, Error> {
+        // The settings as they would be. Nothing is saved until step 6, and the render below
+        // reads THESE, so `--dry-run` shows the unit the switch would write.
+        let mut next = ctx.settings.clone();
+        if let Some((address, trusted)) = remote {
+            next.node.remote = address;
+            next.node.remote_trusted = trusted;
+        }
+        next.node.mode = mode;
+        let settings_changed = next != ctx.settings;
+        let mut next_ctx = ctx.clone();
+        next_ctx.settings = next.clone();
+        let target = units::daemon_target(&next_ctx);
+        let done = |actions: Vec<FileAction>,
+                    changed: bool,
+                    wallet_unit_restarted: bool,
+                    wallet_must_reopen: Option<String>| ModeChange {
+            mode,
+            address: target.address.clone(),
+            trusted: target.trusted,
+            ssl_support: target.ssl,
+            actions,
+            wallet_unit_restarted,
+            wallet_must_reopen,
+            changed,
+            dry_run,
+        };
+
+        // Step 2: `--dry-run` prints the plan and the unit diff and exits 0, **without needing
+        // `--yes`** and **before the two money guards** — it writes nothing, restarts nothing
+        // and can abort no relay, so blocking a preview on a send in flight would refuse the
+        // safe half of the command for a risk it does not carry (§2m.5).
+        if dry_run {
+            let actions = units::install(&next_ctx, true)?;
+            let changed =
+                settings_changed || actions.iter().any(|a| a.status == FileStatus::Planned);
+            return Ok(done(actions, changed, false, None));
+        }
+
+        // Steps 5 and 6, the money interlock (§2m.5). This is the one command whose purpose is
+        // to change the node a send is **resolved** against: after the switch §2a.4's resolve
+        // step would ask a different node for a transaction it need not hold, get "not found"
+        // for one that really was broadcast, and block every later send until the user typed
+        // `clear-pending` — the habit §2a.4 exists to prevent. The lock is held to the end of
+        // the call, so the save, the render and the restart are one critical section.
+        let _lock = crate::send::take_send_lock(ctx)?;
+        crate::send::refuse_if_send_in_flight(ctx)?;
+
+        // Read **before** the render: a running `monero-wallet-rpc` holds `--daemon-address`
+        // from its argv, so whether it must be restarted is a fact about the old state.
+        let was_active = units::state(ctx, &ctx.settings.wallet.unit)?.active;
+        // Step 7: the three keys in ONE save, so a crash cannot leave `mode == remote` with no
+        // address — §2m.1's invariant is a property of the file, not of three writes.
+        if settings_changed {
+            next.save(ctx)?;
+        }
+        // Step 8: both units and `monerod.conf` are re-rendered in **both** modes. The node
+        // unit and the conf are unused in remote mode, but `node local --yes` must find them
+        // and the doctor's `units_present` compares them byte for byte in every mode.
+        let actions = units::install(&next_ctx, false)?;
+        let wrote = actions.iter().any(|a| a.status == FileStatus::Written);
+
+        // Step 9: restart the wallet unit **iff it was active and its argv changed**. Keying
+        // the restart on "the unit file was written" rather than on "the mode changed" is what
+        // makes a second run idempotent, and it is also exactly right: if the rendered argv is
+        // identical there is nothing for a restart to install.
+        let mut wallet_unit_restarted = false;
+        let mut wallet_must_reopen = None;
+        if was_active && wrote {
+            let open_now = crate::state::last_open(ctx)?.map(|(name, _)| name);
+            units::stop(ctx, &ctx.settings.wallet.unit, cancel)?;
+            units::start(ctx, &ctx.settings.wallet.unit, cancel)?;
+            wallet_unit_restarted = true;
+            // Step 10: the restart closed whatever was open, so say so rather than leave
+            // `status` claiming a wallet that is gone.
+            if let Some(name) = open_now {
+                crate::state::clear_last_open(ctx)?;
+                wallet_must_reopen = Some(name);
+            }
+        }
+        Ok(done(
+            actions,
+            settings_changed || wrote,
+            wallet_unit_restarted,
+            wallet_must_reopen,
+        ))
     }
 }

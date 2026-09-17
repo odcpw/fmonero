@@ -192,8 +192,14 @@ fn the_send_path_builds_once_and_relays_that_exact_transaction() {
     let client = w.wallet();
     let node = w.node();
     let cancel = CancelToken::new();
-    let plan = send::build(&w.ctx, &client, Some(&node), &a_send(DEST), &cancel)
-        .expect("the build must succeed against the fixtures");
+    let plan = send::build(
+        &w.ctx,
+        &client,
+        send::NodeGate::Local(&node),
+        &a_send(DEST),
+        &cancel,
+    )
+    .expect("the build must succeed against the fixtures");
     assert_eq!(plan.txs.len(), 1);
     assert_eq!(plan.txs[0].txid, BUILT_TXID);
     // The fee is the fixture's real, non-zero fee — never an estimate fmonero computed (§2a.2).
@@ -241,7 +247,14 @@ fn the_recorded_bodies_carry_no_forbidden_field_and_every_sweep_is_indices_all()
     let client = w.wallet();
     let node = w.node();
     let cancel = CancelToken::new();
-    let plan = send::build(&w.ctx, &client, Some(&node), &a_send(DEST), &cancel).unwrap();
+    let plan = send::build(
+        &w.ctx,
+        &client,
+        send::NodeGate::Local(&node),
+        &a_send(DEST),
+        &cancel,
+    )
+    .unwrap();
     drop(plan); // discarding a plan releases the §2a.11 lock, so the sweep below can build
     let sweep = SweepRequest {
         dest: DEST.to_string(),
@@ -250,7 +263,14 @@ fn the_recorded_bodies_carry_no_forbidden_field_and_every_sweep_is_indices_all()
         below: None,
         max_fee: None,
     };
-    let plan = send::build_sweep(&w.ctx, &client, Some(&node), &sweep, &cancel).unwrap();
+    let plan = send::build_sweep(
+        &w.ctx,
+        &client,
+        send::NodeGate::Local(&node),
+        &sweep,
+        &cancel,
+    )
+    .unwrap();
     assert_eq!(plan.txs.len(), 2, "sweep_all.json carries two transactions");
     drop(plan);
 
@@ -317,7 +337,7 @@ fn an_unrelayed_record_blocks_the_next_send_with_reason_pending_send() {
     let e = send::build(
         &w.ctx,
         &client,
-        Some(&node),
+        send::NodeGate::Local(&node),
         &a_send(DEST),
         &CancelToken::new(),
     )
@@ -356,7 +376,7 @@ fn a_fully_relayed_record_resolves_itself_and_the_send_proceeds() {
     let plan = send::build(
         &w.ctx,
         &client,
-        Some(&node),
+        send::NodeGate::Local(&node),
         &a_send(DEST),
         &CancelToken::new(),
     )
@@ -403,7 +423,7 @@ fn a_failed_row_counts_as_found_and_the_record_clears() {
     let plan = send::build(
         &w.ctx,
         &client,
-        Some(&w.node()),
+        send::NodeGate::Local(&w.node()),
         &a_send(DEST),
         &CancelToken::new(),
     )
@@ -440,7 +460,7 @@ fn a_not_found_blocks_while_a_failed_resolve_call_does_not() {
     let e = send::build(
         &w.ctx,
         &w.wallet(),
-        Some(&w.node()),
+        send::NodeGate::Local(&w.node()),
         &a_send(DEST),
         &CancelToken::new(),
     )
@@ -457,7 +477,7 @@ fn a_not_found_blocks_while_a_failed_resolve_call_does_not() {
     let plan = send::build(
         &w.ctx,
         &w.wallet(),
-        Some(&w.node()),
+        send::NodeGate::Local(&w.node()),
         &a_send(DEST),
         &CancelToken::new(),
     )
@@ -477,7 +497,14 @@ fn a_txid_mismatch_exits_one_and_leaves_the_entry_unrelayed() {
     let w = World::new("mismatch", &[], &["--scenario", "mismatch"]);
     let client = w.wallet();
     let cancel = CancelToken::new();
-    let plan = send::build(&w.ctx, &client, Some(&w.node()), &a_send(DEST), &cancel).unwrap();
+    let plan = send::build(
+        &w.ctx,
+        &client,
+        send::NodeGate::Local(&w.node()),
+        &a_send(DEST),
+        &cancel,
+    )
+    .unwrap();
     let e = send::relay(&w.ctx, &client, plan, &|_| {}, &cancel).unwrap_err();
     assert_eq!(e.exit_code(), 1);
     assert_eq!(e.reason(), Some("txid_mismatch"));
@@ -511,7 +538,7 @@ fn a_fee_above_max_refuses_and_relays_nothing() {
     let plan = send::build(
         &w.ctx,
         &w.wallet(),
-        Some(&w.node()),
+        send::NodeGate::Local(&w.node()),
         &req,
         &CancelToken::new(),
     )
@@ -529,8 +556,14 @@ fn a_fee_above_max_refuses_and_relays_nothing() {
     let mut req = a_send(DEST);
     req.max_fee = Some(Piconero(30_720_000));
     let client = w.wallet();
-    let plan = send::build(&w.ctx, &client, Some(&w.node()), &req, &CancelToken::new())
-        .expect("a fee exactly at the bound is allowed");
+    let plan = send::build(
+        &w.ctx,
+        &client,
+        send::NodeGate::Local(&w.node()),
+        &req,
+        &CancelToken::new(),
+    )
+    .expect("a fee exactly at the bound is allowed");
     assert_eq!(plan.total_fee, Piconero(30_720_000));
     drop(plan);
 }
@@ -549,7 +582,7 @@ fn an_armed_breaker_never_blocks_a_relay_even_on_a_fresh_client() {
     let plan = send::build(
         &w.ctx,
         &w.wallet(),
-        Some(&w.node()),
+        send::NodeGate::Local(&w.node()),
         &a_send(DEST),
         &CancelToken::new(),
     )
@@ -588,7 +621,7 @@ fn the_send_lock_is_held_by_the_plan_and_released_when_it_drops() {
     let first = send::build(
         &w.ctx,
         &client,
-        Some(&w.node()),
+        send::NodeGate::Local(&w.node()),
         &a_send(DEST),
         &CancelToken::new(),
     )
@@ -599,7 +632,7 @@ fn the_send_lock_is_held_by_the_plan_and_released_when_it_drops() {
     let e = send::build(
         &w.ctx,
         &client,
-        Some(&w.node()),
+        send::NodeGate::Local(&w.node()),
         &a_send(DEST),
         &CancelToken::new(),
     )
@@ -611,7 +644,7 @@ fn the_send_lock_is_held_by_the_plan_and_released_when_it_drops() {
     let again = send::build(
         &w.ctx,
         &client,
-        Some(&w.node()),
+        send::NodeGate::Local(&w.node()),
         &a_send(DEST),
         &CancelToken::new(),
     );
@@ -644,7 +677,7 @@ fn a_sweep_observed_between_two_relays_has_one_relayed_and_one_not() {
             below: None,
             max_fee: None,
         };
-        send::build_sweep(&ctx, &client, Some(&node), &sweep, &cancel)
+        send::build_sweep(&ctx, &client, send::NodeGate::Local(&node), &sweep, &cancel)
             .and_then(|plan| send::relay(&ctx, &client, plan, &|_| {}, &cancel))
     });
     // Poll the RECORD, not the request log: the mock logs a request only after its delay, so by
@@ -695,7 +728,14 @@ fn a_refused_relay_leaves_the_record_and_names_what_was_broadcast() {
     );
     let client = w.wallet();
     let cancel = CancelToken::new();
-    let plan = send::build(&w.ctx, &client, Some(&w.node()), &a_send(DEST), &cancel).unwrap();
+    let plan = send::build(
+        &w.ctx,
+        &client,
+        send::NodeGate::Local(&w.node()),
+        &a_send(DEST),
+        &cancel,
+    )
+    .unwrap();
     let e = send::relay(&w.ctx, &client, plan, &|_| {}, &cancel).unwrap_err();
     assert_eq!(e.exit_code(), 16);
     assert_eq!(e.reason(), Some("relay_refused"));
@@ -719,14 +759,14 @@ fn the_refusal_order_decides_the_exit_code() {
     // 1. A zero amount is exit 2 `bad_amount`, before anything else.
     let mut req = a_send(DEST);
     req.amount = Piconero(0);
-    let e = send::build(&w.ctx, &client, Some(&node), &req, &cancel).unwrap_err();
+    let e = send::build(&w.ctx, &client, send::NodeGate::Local(&node), &req, &cancel).unwrap_err();
     assert_eq!((e.exit_code(), e.reason()), (2, Some("bad_amount")));
 
     // 2. A structurally impossible address is exit 15, before the lock and before any RPC.
     let e = send::build(
         &w.ctx,
         &client,
-        Some(&node),
+        send::NodeGate::Local(&node),
         &a_send("not-an-address"),
         &cancel,
     )
@@ -737,22 +777,50 @@ fn the_refusal_order_decides_the_exit_code() {
     // 6. A wrong-nettype recipient is exit 15, with the nettype named.
     // A real stagenet standard address, from `tests/fixtures/address-forms.json`.
     const STAGENET: &str = "53teqCAESLxeJ1REzGMAat1ZeHvuajvDiXqboEocPaDRRmqWoVPzy46GLo866qRFjbNhfkNckyhST3WEvBviDwpUDd7DSzB";
-    let e = send::build(&w.ctx, &client, Some(&node), &a_send(STAGENET), &cancel).unwrap_err();
+    let e = send::build(
+        &w.ctx,
+        &client,
+        send::NodeGate::Local(&node),
+        &a_send(STAGENET),
+        &cancel,
+    )
+    .unwrap_err();
     assert_eq!(e.exit_code(), 15);
     assert!(e.to_string().contains("stagenet"), "{e}");
     assert_eq!(w.count(&w.wallet_log, "transfer"), 0, "nothing was built");
 
     // 5a. `@label`: zero matches is exit 6, several is exit 7, one resolves to the ADDRESS.
-    let e = send::build(&w.ctx, &client, Some(&node), &a_send("@nothing"), &cancel).unwrap_err();
+    let e = send::build(
+        &w.ctx,
+        &client,
+        send::NodeGate::Local(&node),
+        &a_send("@nothing"),
+        &cancel,
+    )
+    .unwrap_err();
     assert_eq!(e.exit_code(), 6, "reason={:?} msg={e}", e.reason());
     // `get_address_book.json` carries two entries described "Exchange" and "exchange", which
     // is what makes the case-insensitive match ambiguous (§4).
-    let e = send::build(&w.ctx, &client, Some(&node), &a_send("@exchange"), &cancel).unwrap_err();
+    let e = send::build(
+        &w.ctx,
+        &client,
+        send::NodeGate::Local(&node),
+        &a_send("@exchange"),
+        &cancel,
+    )
+    .unwrap_err();
     assert_eq!(e.exit_code(), 7);
     // One match resolves, and **the resolved address — never the label — is what reaches the
     // daemon** (§4). No `validate_address` fixture answers for the address book's entries, so
     // the build then fails at step 6; the recorded request is the evidence that matters here.
-    let e = send::build(&w.ctx, &client, Some(&node), &a_send("@savings"), &cancel).unwrap_err();
+    let e = send::build(
+        &w.ctx,
+        &client,
+        send::NodeGate::Local(&node),
+        &a_send("@savings"),
+        &cancel,
+    )
+    .unwrap_err();
     assert_eq!(e.exit_code(), 15, "{e}");
     let asked = w.bodies(&w.wallet_log, "validate_address");
     let last = asked.last().expect("validate_address was called");
@@ -771,7 +839,7 @@ fn the_refusal_order_decides_the_exit_code() {
     let e = send::build(
         &syncing.ctx,
         &syncing.wallet(),
-        Some(&syncing.node()),
+        send::NodeGate::Local(&syncing.node()),
         &a_send(DEST),
         &cancel,
     )
@@ -796,14 +864,21 @@ fn with_the_wallet_daemon_down_a_valid_address_is_exit_four() {
     // `from_ctx` must SUCCEED with no login file, or the constructor would decide the exit
     // code from outside the refusal order (§2a.1, §2c).
     let client = crate::rpc::WalletClient::from_ctx(&ctx).expect("§2c: an absent login file is Ok");
-    let e = send::build(&ctx, &client, None, &a_send(DEST), &CancelToken::new()).unwrap_err();
+    let e = send::build(
+        &ctx,
+        &client,
+        send::NodeGate::Unreachable,
+        &a_send(DEST),
+        &CancelToken::new(),
+    )
+    .unwrap_err();
     assert_eq!(e.exit_code(), 4, "{e}");
     assert_eq!(e.reason(), Some("unreachable"));
     // And a bad address still loses first.
     let e = send::build(
         &ctx,
         &client,
-        None,
+        send::NodeGate::Unreachable,
         &a_send("not-an-address"),
         &CancelToken::new(),
     )
@@ -905,7 +980,7 @@ fn a_restricted_nodes_poisoned_fields_render_as_null() {
     let w = World::new("poisoned", &["--scenario", "restricted"], &[]);
     let s = crate::status::status(&w.ctx).unwrap();
     assert_eq!(s.node.restricted, Some(true));
-    assert!(s.node.reachable);
+    assert_eq!(s.node.reachable, Some(true));
     for (what, value) in [
         ("uptime_sec", s.node.uptime_sec.is_none()),
         ("free_space", s.node.free_space.is_none()),
@@ -952,7 +1027,7 @@ fn a_busy_block_header_renders_null_and_status_still_succeeds() {
     let w = World::new("busy", &["--scenario", "syncing"], &[]);
     let s = crate::status::status(&w.ctx).expect("status still succeeds");
     assert!(s.ok);
-    assert!(s.node.reachable);
+    assert_eq!(s.node.reachable, Some(true));
     assert_eq!(
         s.node.top_block_age_sec, None,
         "an all-zero BUSY header must not become an age (§1b.3)"

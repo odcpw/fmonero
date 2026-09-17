@@ -367,7 +367,48 @@ fn node_hero(m: &Tui, area: Rect, frame: &mut Frame) {
             Span::styled("● ", th.badge(m.node_badge())),
             Span::styled(m.node_phrase(), th.title()),
         ]));
-        if !n.reachable {
+        // **In remote mode the hero is a different, much smaller one** (v5.2, §2m.3, §7a), and
+        // the 1 s poll makes no node call at all. **No sync `MiniBar`, no percent, no ETA, no
+        // peers, no version**: every one of them is `null` here, and a gauge at 0 % is the
+        // rendered untruth §2j forbids — the same reason §6.4 puts the widget's remote rows
+        // above its node rows.
+        if n.layout == Layout::Remote {
+            lines.push(kv(
+                th,
+                "trust",
+                format!(
+                    "{} · ssl {}",
+                    if n.trusted { "trusted" } else { "untrusted" },
+                    fmonero_core::units::ssl_for_address(&n.url)
+                ),
+            ));
+            if s.wallet.open {
+                lines.push(kv(
+                    th,
+                    "wallet",
+                    format!(
+                        "{} · last refresh {}",
+                        opt(s.wallet.height),
+                        s.wallet
+                            .last_refresh_at
+                            .clone()
+                            .unwrap_or_else(|| "—".into())
+                    ),
+                ));
+            }
+            lines.extend(
+                wrap_words(
+                    "fmonero does not talk to this node — monero-wallet-rpc does. Its own sync \
+                     state cannot be seen from here.",
+                    inner.width as usize,
+                )
+                .into_iter()
+                .map(|l| Line::styled(l, th.dimmed())),
+            );
+            lines_at(lines, inner, false, frame);
+            return;
+        }
+        if n.reachable != Some(true) {
             // Word-wrapped, not clipped: the hero is rendered `WrapMode::None` for its `kv`
             // rows, and at 150 columns this 75-character line came out as
             // `fmonero setup --unit` — a command that looks complete and exits 2.

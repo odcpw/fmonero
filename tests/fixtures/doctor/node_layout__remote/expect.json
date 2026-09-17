@@ -1,20 +1,23 @@
 {
-  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# Expectation for `node_layout` against input/. See tests/fixtures/doctor/node_layout/expect.json for\n# how to read this file, the _env/_settings convention and the ownership note.\n#\n# THIS CASE: Layout::Remote, and THE SETTING IS WHAT DECIDES IT. node.url is 10.0.0.5:18081 -- not\n# loopback -- while input/systemctl.txt deliberately still shows fmonero-monerod.service present and\n# active, so a detector that reads only the unit file answers user_unit and this is the only case that\n# catches it.\n# status `warn` rather than `pass`: DESIGN.md §2c makes a non-loopback node.url an ERROR for every\n# client (`NodeClient::new` and `WalletClient::new` both reject it through rpc::require_loopback, and\n# `settings set node.url` refuses it with exit 2 reason non_loopback_url). So a config.toml holding\n# one is a machine on which nothing that touches the node can work, and the doctor's job is to say so\n# rather than to report the layout neutrally. §2i's own `node up` row for `remote` is exit 2.\n# THE DETAIL MUST NAME THE URL, because the fix is to change that exact value, and the runnable hint\n# §2c gives is `fmonero wallet set-daemon <addr>` -- a REMOTE NODE IS REACHED BY monero-wallet-rpc,\n# NOT BY fmonero, which speaks plaintext HTTP to loopback only and contains no TLS stack at all.\n# `fixable` is false: rewriting a URL the user chose is not the doctor's business, and the settings\n# path already refuses to store one.\n# STATUS IS PHASE 0'S READING of §7.1; the Phase 2 doctor agent owns the final mapping.\n# EDITED BY THE PHASE 2 DOCTOR AGENT (DESIGN.md §8 hands this directory to it): see\n# decisions/phase2-doctor.md for the reason, stated case by case.\n# ADDED `_probe.monerod_installed`: every check in the `node` group reports\n# skip:monerod_not_installed when /usr/bin/monerod is absent, which is §4b's GREEN row for\n# this machine and §7.1's \"every check whose precondition is missing reports skip:<reason>\".\n# No file under input/ can carry that fact, so the harness states it here.",
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# Expectation for `node_layout` against input/. See tests/fixtures/doctor/node_layout/expect.json for\n# how to read this file, the _env/_settings convention and the ownership note.\n#\n# THIS CASE: Layout::Remote, and THE SETTING IS WHAT DECIDES IT (DESIGN.md v5.2, §2m.1). The mode is\n# `node.mode = remote` with a valid `node.remote`, while input/systemctl.txt deliberately still shows\n# fmonero-monerod.service present and ACTIVE -- so a detector that reads only the unit file answers\n# user_unit, and this is the only case that catches it.\n#\n# REWRITTEN FOR v5.2. Until then the case keyed Remote on a NON-LOOPBACK `node.url` and expected\n# `warn:non_loopback_url`, because §2c made such a URL an error for every client. That layout was\n# unreachable through the CLI -- `settings set node.url` refuses every value that would produce it\n# -- so the fixture was asserting a warning about a state the tool could not enter. §2m.1 re-keys\n# the variant on `node.mode`, which is a supported configuration, and §7.1 therefore makes\n# `node_layout` the one `node` check that still runs in remote mode and **passes**: it is the\n# group's only remaining source of truth, so that `doctor --only node` is never an empty table.\n#\n# THE DETAIL MUST NAME THE ADDRESS, the trust flag and the ssl mode, because those three are what\n# `units::daemon_target` put into the wallet unit's argv and into `set_daemon` -- and because a\n# remote node is reached by monero-wallet-rpc, NOT by fmonero, which speaks plaintext HTTP to\n# loopback only and contains no TLS stack at all (§2c, unchanged by v5.2).\n# `fixable` is false: which node to use is the user's decision, and `fmonero node local --yes` is\n# the runnable command the verdict names.\n# `_probe.monerod_installed` stays true so that the case tests the layout arm rather than the\n# `skip:monerod_not_installed` precondition in front of it.",
   "_env": {
     "FMONERO_SYSTEMCTL_FIXTURE": "input/systemctl.txt"
   },
   "_settings": {
-    "node.url": "http://10.0.0.5:18081"
+    "node.mode": "remote",
+    "node.remote": "node.example.com:18089"
   },
   "id": "node_layout",
   "group": "node",
   "severity": "info",
   "class": "D",
-  "status": "warn",
+  "status": "pass",
   "fixable": false,
   "detail_contains": [
     "remote",
-    "10.0.0.5"
+    "node.example.com:18089",
+    "untrusted",
+    "autodetect"
   ],
   "_probe": {
     "monerod_installed": true

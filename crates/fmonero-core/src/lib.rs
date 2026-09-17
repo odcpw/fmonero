@@ -43,8 +43,10 @@ pub use proc::{CancelToken, Output};
 pub use rpc::{Login, NodeClient, NodeMutators, WalletClient};
 pub use send::{BuiltTx, SendRequest, SweepRequest, TransferRequest};
 // `wallet_session::open` and `node_session::up` are spelled without `session::` in §5b.
-pub use session::{node_session, wallet_session};
-pub use settings::{Network, Settings, TimeoutSettings, Timeouts, TuiSettings};
+pub use session::{node_mode, node_session, wallet_session};
+pub use settings::{
+    Network, NodeMode, Settings, SslSupport, TimeoutSettings, Timeouts, TuiSettings,
+};
 pub use state::{Daemon, PendingKind, PendingSend, PendingTx, StateDoc};
 pub use status::{
     LastError, NetStatus, NodeStatus, PendingStatus, PendingTxStatus, Severity, Staleness, Status,

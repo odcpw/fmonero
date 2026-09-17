@@ -179,7 +179,9 @@ pub fn execute(
             }
             Action::WalletRefresh { start_height } => {
                 let w = WalletClient::from_ctx(ctx)?;
-                let r = w.refresh(start_height, cancel)?;
+                // Through `wallet_session::refresh`: the TUI's `R` is one of the three callers
+                // of "refresh, then record that we did" (§5b, §5's `wallet.last_refresh_at`).
+                let r = fmonero_core::wallet_session::refresh(ctx, &w, start_height, cancel)?;
                 Ok(Outcome::Note(format!(
                     "refreshed {} blocks{}",
                     r.blocks_fetched,
@@ -192,8 +194,19 @@ pub fn execute(
             }
             Action::BuildTx(req) => {
                 let w = WalletClient::from_ctx(ctx)?;
-                let n = fmonero_core::NodeClient::from_ctx(ctx)?;
-                let plan = send::build(ctx, &w, Some(&n), &req, cancel)?;
+                // In remote mode there is no node client at all — `from_ctx` refuses (§2c) —
+                // and step 7 is a bounded `refresh` instead (§2m.3). The CLI names the same
+                // three situations; `NodeGate` is what makes the compiler enumerate them.
+                let n = match fmonero_core::NodeClient::from_ctx(ctx) {
+                    Ok(n) => Some(n),
+                    Err(e) if e.reason() == Some("remote_node") => None,
+                    Err(e) => return Err(e),
+                };
+                let gate = match n.as_ref() {
+                    Some(n) => send::NodeGate::Local(n),
+                    None => send::NodeGate::Remote,
+                };
+                let plan = send::build(ctx, &w, gate, &req, cancel)?;
                 Ok(Outcome::Built(Box::new(plan)))
             }
             Action::Relay(plan) => {

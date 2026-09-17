@@ -341,6 +341,17 @@ impl NodeClient {
     /// The client `settings.node.url` and `timeouts.node` describe, with the credential
     /// from `~/.config/fmonero/monerod.conf` when there is one (§2c). A node with no
     /// credentials still works, unauthenticated: Arch's system unit has none.
+    ///
+    /// **This is the remote-mode gate, in one place** (v5.2, §2m.3): with
+    /// `settings.node.mode == remote` it returns `Error::Backend{reason:"remote_node"}` with
+    /// `hint: fmonero node local --yes`, **before constructing anything**. `node info`,
+    /// `node peers`, `node bans`, `node ban`, `node unban` and `node limit` reach the daemon
+    /// only through this constructor, so none of them needs a check of its own
+    /// (`node info` takes a settings-only path in remote mode and never calls it);
+    /// `node up|down|restart` meet the same error in `node_session`'s `Layout::Remote` arm.
+    /// A per-command check would be the arrangement §2a.3 rejects, on nine commands across
+    /// three phases — and it is also what keeps §2c's "fmonero never speaks to a remote node"
+    /// enforceable rather than merely stated.
     pub fn from_ctx(ctx: &Context) -> Result<NodeClient, Error> {
         Self::build(ctx, true)
     }
@@ -352,6 +363,11 @@ impl NodeClient {
     }
 
     fn build(ctx: &Context, breaker: bool) -> Result<NodeClient, Error> {
+        // The §2m.3 gate, before anything is constructed: in remote mode there is no local
+        // daemon and fmonero's own `ureq` agent must never be handed a public address (§2c).
+        if ctx.settings.node.mode.is_remote() {
+            return Err(crate::units::remote_node_error(ctx, None));
+        }
         let url = &ctx.settings.node.url;
         crate::rpc::require_loopback(url)?;
         let auth = Login::from_monerod_conf(&ctx.paths.monerod_conf())?;

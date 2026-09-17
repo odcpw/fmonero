@@ -317,7 +317,7 @@ expect_rc 15 "an unparsable address is exit 15"
 
 fm settings list --json
 expect_rc 0 "settings list"
-expect_json '.settings | length' '20' "the twenty keys of §4"
+expect_json '.settings | length' '23' "the twenty-three keys of §4 (v5.2 added the three node.* remote keys)"
 expect_keys "settings list" "ok schema settings"
 
 fm settings get wallet.priority --json
@@ -352,7 +352,7 @@ expect_json '.exit_codes | length' '18' "18 exit codes (§4a)"
 expect_json '.reasons | length > 0' 'true' "the reason table is generated"
 expect_json '.env | length > 0' 'true' "the environment table"
 expect_json '.commands | length > 0' 'true' "the command table"
-expect_json '[.commands[] | select(.accepts_dry_run)] | length' '4' "exactly four commands accept --dry-run (§4)"
+expect_json '[.commands[] | select(.accepts_dry_run)] | length' '6' "exactly six commands accept --dry-run (§4; v5.2 added the two mode commands)"
 expect_keys "capabilities" "ok tool version schema contract_version build_stage build_note exit_codes reasons settings warnings commands env"
 
 fm version --json
@@ -388,7 +388,7 @@ expect_rc 3 "and without --yes it is exit 3"
 expect_reason needs_yes "needs_yes"
 
 fm node down --dry-run --json
-expect_rc 2 "--dry-run is implemented by exactly four commands (§4)"
+expect_rc 2 "--dry-run is implemented by exactly six commands (§4)"
 expect_reason unsupported_flag "and is never silently ignored"
 
 fm --timeout 0 status --json
@@ -785,12 +785,21 @@ printf 'rpc-login=fmonero:0123456789abcdef0123456789abcdef\n' > "$FMONERO_CONFIG
 chmod 600 "$FMONERO_CONFIG_DIR/monerod.conf"
 fm --timeout 3 wallet set-daemon 127.0.0.1:18081 --trusted --yes --json
 expect_rc 0 "wallet set-daemon"
-expect_keys "wallet set-daemon" "ok schema address trusted authenticated"
+expect_keys "wallet set-daemon" "ok schema address trusted ssl_support authenticated persistent"
+expect_json '.persistent' 'false' \
+  "§5c: the payload says this is a one-off the next wallet open undoes (v5.2)"
+expect_json '.ssl_support' '"disabled"' \
+  "§2m.3: ssl_support is derived from the ADDRESS — loopback means disabled"
 SD="$(jq -s '[.[] | select(.method=="set_daemon")] | last | .body.params' "$WALLET_LOG")"
 if printf '%s' "$SD" | jq -e '.username == "fmonero" and (.password | length) == 32' >/dev/null; then
   ok "§4.2: a loopback set-daemon carries the node credential"
 else
   bad "§4.2: set-daemon sent no credential, which CLEARS the wallet's daemon login" "$SD"
+fi
+if printf '%s' "$SD" | jq -e '.ssl_support == "disabled"' >/dev/null; then
+  ok "§1b.4: ssl_support is ALWAYS sent — an omitted key means autodetect, not plaintext"
+else
+  bad "§1b.4: set_daemon sent no ssl_support, which epee reads as autodetect" "$SD"
 fi
 fm --timeout 3 wallet set-daemon 10.0.0.5:18081 --trusted --yes --json
 SD="$(jq -s '[.[] | select(.method=="set_daemon")] | last | .body.params' "$WALLET_LOG")"
@@ -799,6 +808,16 @@ if printf '%s' "$SD" | jq -e 'has("username") | not' >/dev/null; then
 else
   bad "§2c: the node credential was sent to a remote address" "$SD"
 fi
+if printf '%s' "$SD" | jq -e '.ssl_support == "autodetect"' >/dev/null; then
+  ok "§2m.3: and a non-loopback address gets ssl_support autodetect, from the same derivation"
+else
+  bad "§2m.3: a remote set-daemon did not send autodetect" "$SD"
+fi
+# §2m.2's grammar is the SAME one `node.remote` uses, so the two commands cannot accept
+# different strings (§4.1, §5b `Settings::parse_remote_address`).
+fm --timeout 3 wallet set-daemon node.example.com --yes --json
+expect_rc 2 "wallet set-daemon with no port is exit 2 (§2m.2)"
+expect_json '.reason' '"bad_remote_address"' "and it names the grammar that refused it"
 fm --timeout 3 wallet set-daemon 127.0.0.1:18081 --json
 expect_rc 3 "wallet set-daemon without --yes is exit 3"
 
@@ -1361,26 +1380,29 @@ fi
 #
 # The three doctor rows were a skip at the Phase 1b gate — `doctor::run` was still the §8
 # handover stub — and Phase 3 turns them into assertions, because §4b's GREEN list names THIS
-# script for one of them in as many words: "`tests/e2e.sh` asserts exit 11 and that exact
-# failure set". The set is asserted positively (which ids fail) rather than by a count, so it
-# strengthens when the owner installs Monero: the two `fail:not_installed` rows become passes
-# and this case fails until it is updated, which is the point.
+# script for one of them in as many words. The set is asserted positively (which ids fail)
+# rather than by a count, so it *breaks* when the machine changes instead of drifting silently.
+#
+# It did exactly that. Monero 0.18.5.1 was installed here on 2026-09-17 (§1.1), the two
+# `fail:not_installed` rows became passes, and four of these assertions failed on a tree with no
+# v5.2 code in it. They are **restated, not relaxed**: the shape asserted is still "exit 11, a
+# named failing set, and no bare skips", now for a machine where the package is present and
+# nothing is running.
 step "§4b GREEN: doctor on this machine — exit 11 and that exact failure set"
 sandbox doctor
 fm doctor --json
-expect_rc 11 "doctor with no Monero installed"
+expect_rc 11 "doctor with Monero installed and no daemon running"
 expect_keys "doctor" ok schema run_id checks summary
+expect_json '[.checks[] | select(.group=="binaries") | .status] | unique' '["pass"]' \
+  "the three binaries checks pass — Monero is installed here since 2026-09-17 (§1.1)"
 expect_json '[.checks[] | select(.status=="fail") | .id] | sort' \
-  '["monerod_installed","wallet_rpc_installed"]' \
-  "exactly monerod_installed and wallet_rpc_installed fail (§4b)"
-expect_json '[.checks[] | select(.status=="fail") | .reason] | unique' '["not_installed"]' \
-  "and both say fail:not_installed, not a bare fail"
+  '["node_reachable"]' \
+  "exactly node_reachable fails: installed, and nothing is running (§4b)"
+expect_json '[.checks[] | select(.status=="fail") | .reason] | unique' '["node_unreachable"]' \
+  "and it says fail:node_unreachable, not a bare fail"
 expect_json '[.checks[] | select(.group=="node" or .group=="wallet" or .group=="storage")
-              | select(.status != "skip") | .id] | length' '0' \
-  "every node/wallet/storage check is a skip:<reason> (§7.1)"
-expect_json '[.checks[] | select(.group=="node" or .group=="wallet" or .group=="storage")
-              | select(.reason == null) | .id] | length' '0' \
-  "and every one of those skips names its reason, never a bare skip"
+              | select(.status=="skip") | select(.reason == null) | .id] | length' '0' \
+  "every node/wallet/storage skip names its reason, never a bare skip (§7.1)"
 expect_json '[.checks[] | select(.group=="install") | select(.status=="skip") | .id] | length' '0' \
   "the install group has real verdicts, not skips (§4b)"
 expect_json '[.checks[] | select(.group=="security") | select(.status=="pass") | .id] | sort' \

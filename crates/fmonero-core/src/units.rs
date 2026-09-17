@@ -38,6 +38,7 @@ use crate::context::{Context, Systemctl};
 use crate::error::Error;
 use crate::proc::{self, CancelToken};
 use crate::rpc::Login;
+use crate::settings::SslSupport;
 
 /// Which node fmonero is looking at (§2i). **Configuration, not occupancy.**
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -125,9 +126,14 @@ impl FileStatus {
 /// §2i: user unit / system unit / remote / none. Reads unit files and `systemctl`, and
 /// **never** [`data_dir_in_use`] — occupancy is `node up`'s precondition, not a term here.
 pub fn detect_layout(ctx: &Context) -> Result<Layout, Error> {
-    // `remote` first, because it is a settings fact that makes every other row moot: a
-    // non-loopback node.url means no client can be constructed at all (§2c).
-    if crate::rpc::require_loopback(&ctx.settings.node.url).is_err() {
+    // `remote` is tested first and is keyed on `node.mode` **alone** (v5.2, §2m.1). The v5.1
+    // rule — "`settings.node.url` is not loopback" — was unreachable through the CLI, because
+    // `settings set node.url` validates through `rpc::require_loopback` and refuses every value
+    // that would have produced it; where it *was* reached (a hand-edited file) every node client
+    // failed to construct and every node command exited 2. Reading a settings enum also makes
+    // remote mode's `status` cheaper than local mode's rather than more expensive: this returns
+    // before any unit file is stat'ed or any `systemctl` spawned.
+    if ctx.settings.node.mode.is_remote() {
         return Ok(Layout::Remote);
     }
     if unit_file_exists(ctx, &ctx.settings.node.unit)? {
@@ -137,6 +143,27 @@ pub fn detect_layout(ctx: &Context) -> Result<Layout, Error> {
         return Ok(Layout::SystemUnit);
     }
     Ok(Layout::None)
+}
+
+/// The one construction of §2m.3's remote-mode refusal, so that nine commands and three call
+/// layers cannot word it differently (§2a.3).
+///
+/// `verb` names the subcommand when the caller knows it — `main.rs` does, `NodeClient::from_ctx`
+/// does not — and the message degrades to the plural "node commands" when it does not. Exit
+/// **4 `backend`** rather than 2 `usage`: the arguments are correct, the backend is somewhere
+/// else, and an agent's reflex on exit 2 (re-read `--help`) leads nowhere. `reason` and `hint`
+/// are identical either way, and §4 says an agent branches on those.
+pub fn remote_node_error(ctx: &Context, verb: Option<&str>) -> Error {
+    let subject = match verb {
+        Some(v) => format!("fmonero node {v} needs"),
+        None => "fmonero node commands need".to_string(),
+    };
+    Error::backend(format!(
+        "{subject} the local monerod; node.mode is remote ({})",
+        ctx.settings.node.remote
+    ))
+    .with_reason("remote_node")
+    .with_hint("fmonero node local --yes")
 }
 
 /// True only for [`Layout::UserUnit`]. Read by `NodeClient::mutators` (§2i) and by the
@@ -485,6 +512,7 @@ pub fn render_wallet_unit(ctx: &Context) -> String {
         crate::settings::Network::Stagenet => "  --stagenet \\\n",
         crate::settings::Network::Testnet => "  --testnet \\\n",
     };
+    let target = daemon_target(ctx);
     format!(
         "\
 [Unit]
@@ -504,7 +532,8 @@ ExecStart=/usr/bin/monero-wallet-rpc \\
   --rpc-bind-port {port} \\
   --wallet-dir {dir} \\
   --daemon-address {daemon} \\
-  --trusted-daemon \\
+  {trust_flag} \\
+  --daemon-ssl {ssl} \\
 {extra}  --non-interactive \\
   --log-file %S/fmonero/run/monero-wallet-rpc.log \\
   --log-level 0 \\
@@ -518,8 +547,83 @@ WantedBy=default.target
         node_unit = ctx.settings.node.unit,
         port = ctx.settings.wallet.port,
         dir = ctx.settings.wallet.dir.display(),
-        daemon = host_port(&ctx.settings.node.url),
+        daemon = target.address,
+        trust_flag = target.trust_flag(),
+        ssl = target.ssl,
     )
+}
+
+/// The three daemon facts the wallet unit renders and `set_daemon` sends — derived in **one**
+/// place so the two cannot disagree (v5.2, §2m.3, §5b).
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct DaemonTarget {
+    /// `host_port(settings.node.url)` locally; `settings.node.remote` **verbatim, scheme
+    /// included** remotely.
+    pub address: String,
+    /// `true` locally (the unit renders `--trusted-daemon`); `settings.node.remote_trusted`
+    /// remotely.
+    pub trusted: bool,
+    /// Derived from the **address**, never from the mode: see [`ssl_for_address`].
+    pub ssl: SslSupport,
+}
+
+impl DaemonTarget {
+    /// **Exactly one of the two trust flags is always rendered, in both modes** (§4.2). Giving
+    /// both is a fatal error (`wallet2.cpp:449-450`) and giving *neither* is not "untrusted":
+    /// `make_basic` falls through to `trusted_daemon = tools::is_local_address(daemon_address)`
+    /// (`:451-462`), so the flag's absence means "whatever the address parse decided" — the
+    /// implicit configuration §2j objects to, on the one setting that decides whether the
+    /// wallet's own amounts travel inside a request (§1b.9 item 4).
+    pub fn trust_flag(&self) -> &'static str {
+        if self.trusted {
+            "--trusted-daemon"
+        } else {
+            "--untrusted-daemon"
+        }
+    }
+}
+
+/// The three daemon facts, from `settings.node.{mode,url,remote,remote_trusted}` (§2m.3).
+///
+/// Six callers of one derivation: [`render_wallet_unit`], `wallet_session::open`, `status`,
+/// `node info`, `node_mode::{set_remote,set_local}` and the doctor's
+/// `wallet_daemon_matches_unit`. The unit and `set_daemon` disagreeing is the failure §4.2
+/// spends a paragraph on — a `monero-wallet-rpc` started before any `wallet open` auto-refreshes
+/// against whatever its argv said (§1b.9 item 3).
+pub fn daemon_target(ctx: &Context) -> DaemonTarget {
+    let n = &ctx.settings.node;
+    let (address, trusted) = if n.mode.is_remote() {
+        (n.remote.clone(), n.remote_trusted)
+    } else {
+        (host_port(&n.url), true)
+    };
+    let ssl = ssl_for_address(&address);
+    DaemonTarget {
+        address,
+        trusted,
+        ssl,
+    }
+}
+
+/// `--daemon-ssl` / `set_daemon`'s `ssl_support`, **derived from the address rather than from
+/// the mode** (§2m.3): `Disabled` for a loopback literal host, `Autodetect` otherwise.
+///
+/// In local mode `node.url` is loopback-validated (§2c), so it is always `Disabled` — which is
+/// also a correction: the flag's default is `autodetect` (`wallet2.cpp:253`), so until v5.2 our
+/// own unit asked `monero-wallet-rpc` to attempt a TLS handshake against `127.0.0.1:18081` on
+/// every reconnect and fall back (§1b.9 item 2), a wasted round trip against a daemon we started
+/// ourselves in the clear. Keying it on the mode instead would send `autodetect` to loopback for
+/// anyone testing remote mode locally, and would leave `wallet set-daemon` — whose address is in
+/// neither key — with a rule of its own.
+///
+/// `Enabled` is never returned: it throws at process start without a CA file, a fingerprint list
+/// or `--daemon-ssl-allow-any-cert` (`wallet2.cpp:416-432`), all three of which §0 cuts.
+pub fn ssl_for_address(address: &str) -> SslSupport {
+    if crate::settings::is_loopback_host(crate::settings::remote_host(address)) {
+        SslSupport::Disabled
+    } else {
+        SslSupport::Autodetect
+    }
 }
 
 /// `host:port` from a loopback http URL, for the wallet unit's `--daemon-address` and for
@@ -598,10 +702,21 @@ pub fn install_rotating(ctx: &Context, dry_run: bool) -> Result<Vec<FileAction>,
 }
 
 fn install_with(ctx: &Context, dry_run: bool, rotate: bool) -> Result<Vec<FileAction>, Error> {
-    // §4.2: a test never installs a unit. A dry run writes nothing, so it is allowed to run
-    // anywhere — which is what lets `tests/e2e.sh` assert the diff and the CreateDir action
-    // in its own state dir instead of against $HOME. The deviation is in DECISIONS.md.
-    if !dry_run && crate::paths::under_test_state_dir() {
+    // §4.2: a test never installs a **real** unit. A dry run writes nothing, so it is allowed
+    // to run anywhere — which is what lets `tests/e2e.sh` assert the diff and the CreateDir
+    // action in its own state dir instead of against $HOME. The deviation is in DECISIONS.md.
+    //
+    // v5.2 narrows the refusal by exactly one case, and it needs **both** halves of the seam:
+    // `FMONERO_SYSTEMD_USER_DIR` set, so the unit files land inside the sandbox, **and**
+    // `Systemctl::Fixture`, so the `daemon-reload` and the two `disable`s below cannot reach
+    // the owner's manager. Either alone is not enough — a sandboxed file is harmless, three
+    // real `systemctl --user` calls against the owner's unit names are not, and this repo's own
+    // e2e case asserts that a sandbox WITHOUT the fixture still gets exit 3. §4b's AMBER
+    // `node remote <addr> --yes` row, which asks for both units re-rendered end to end, sets
+    // both halves, and has no other way to exist.
+    let sandboxed_units = crate::paths::systemd_user_dir_is_sandboxed()
+        && matches!(ctx.systemctl, Systemctl::Fixture(_));
+    if !dry_run && crate::paths::under_test_state_dir() && !sandboxed_units {
         return Err(Error::safety(
             "units::install refuses to write a real systemd unit while FMONERO_STATE_DIR is set",
         )
@@ -688,7 +803,9 @@ fn install_with(ctx: &Context, dry_run: bool, rotate: bool) -> Result<Vec<FileAc
             diff: None,
         });
     }
-    if !dry_run && wrote_any {
+    // `Systemctl::Fixture` stands in for the machine's systemd (§2i), so under it these three
+    // calls are the no-ops the seam promises rather than three real spawns.
+    if !dry_run && wrote_any && matches!(ctx.systemctl, Systemctl::Real) {
         let cancel = CancelToken::new();
         // A unit written without a reload is a change that reports success and does nothing.
         let _ = proc::run_with_deadline(
@@ -1454,8 +1571,11 @@ mod tests {
         .unwrap();
         assert_eq!(detect_layout(&ctx).unwrap(), Layout::None);
 
-        // `remote` is decided by the SETTING alone, even with the unit present and active —
-        // the case a detector that reads only the unit file gets wrong (§2i).
+        // `remote` is decided by `node.mode` ALONE (v5.2, §2m.1), even with the unit present
+        // and active — the case a detector that reads only the unit file gets wrong (§2i). The
+        // v5.1 key was "node.url is not loopback", which `settings set` refuses to produce, so
+        // the branch was unreachable through the CLI; this asserts the new key and that the old
+        // one no longer decides anything.
         std::fs::write(
             &fixture,
             "fmonero-monerod.service active disabled yes 41233\n\
@@ -1463,6 +1583,14 @@ mod tests {
         )
         .unwrap();
         ctx.settings.node.url = "http://10.0.0.5:18081".into();
+        assert_eq!(
+            detect_layout(&ctx).unwrap(),
+            Layout::UserUnit,
+            "a non-loopback node.url is no longer a layout (§2m.1)"
+        );
+        ctx.settings.node.url = "http://127.0.0.1:18081".into();
+        ctx.settings.node.remote = "node.example.com:18089".into();
+        ctx.settings.node.mode = crate::settings::NodeMode::Remote;
         assert_eq!(detect_layout(&ctx).unwrap(), Layout::Remote);
         assert!(!may_mutate_node(&ctx).unwrap());
         let _ = std::fs::remove_dir_all(&dir);

@@ -224,7 +224,10 @@ impl std::fmt::Debug for Plan {
 ///    several), after which the resolved **address** — never the label — is what
 ///    `Plan.dest`, every line `relay` announces and the record carry;
 /// 6. `validate_address` and the nettype check (§2a.6) → exit 15;
-/// 7. the `get_info.synchronized` gate → exit 10;
+/// 7. the daemon-currency gate, `require_node_current`, which switches on the `NodeGate` the
+///    caller passed: locally one `get_info.synchronized` → exit 10 `node_not_synchronized`,
+///    remotely one bounded `refresh` that must succeed → exit 4 `unreachable` or exit 10
+///    `wallet_catching_up` (§2m.3);
 /// 8. the build.
 ///
 /// Step 9, `--max-fee` → exit 3 `fee_above_max`, is [`check_max_fee`], which the caller runs on
@@ -233,13 +236,13 @@ impl std::fmt::Debug for Plan {
 /// to be rendered from. [`relay`] re-checks it as the enforcing gate.
 ///
 /// The ONLY state it writes is the §2a.4 resolve step's clear (`state::clear_pending_send`):
-/// it never creates, extends or marks an entry. `n` is `None` only when the caller has
-/// already proved the node is unreachable, in which case this returns `Error::Backend`
-/// before building.
+/// it never creates, extends or marks an entry. `gate` names the situation at step 7 — see
+/// [`NodeGate`], whose three variants replaced an `Option<&NodeClient>` in v5.2 because `None`
+/// already meant the opposite of what remote mode needs (§2m.3).
 pub fn build(
     ctx: &Context,
     w: &WalletClient,
-    n: Option<&NodeClient>,
+    gate: NodeGate<'_>,
     req: &SendRequest,
     cancel: &CancelToken,
 ) -> Result<Plan, Error> {
@@ -255,7 +258,7 @@ pub fn build(
     let dest = resolve_dest(w, &req.dest)?;
     // 6. + 7.
     check_recipient(ctx, w, &dest)?;
-    require_synchronized(n)?;
+    require_node_current(ctx, w, gate, cancel)?;
     // 8. The build, once, with do_not_relay (§2a.2, §2a.3).
     let tx = w.build_transfer(&TransferRequest::for_send(req, &dest), cancel)?;
     let plan = Plan {
@@ -283,14 +286,14 @@ pub fn build(
 pub fn build_sweep(
     ctx: &Context,
     w: &WalletClient,
-    n: Option<&NodeClient>,
+    gate: NodeGate<'_>,
     req: &SweepRequest,
     cancel: &CancelToken,
 ) -> Result<Plan, Error> {
     let lock = preflight(ctx, w, &req.dest, cancel)?;
     let dest = resolve_dest(w, &req.dest)?;
     check_recipient(ctx, w, &dest)?;
-    require_synchronized(n)?;
+    require_node_current(ctx, w, gate, cancel)?;
     let txs = w.build_sweep_all(&TransferRequest::for_sweep(req, &dest), cancel)?;
     let mut total_amount = Piconero(0);
     let mut total_fee = Piconero(0);
@@ -461,25 +464,8 @@ fn preflight(
     //    write, every relay_tx, the store and the resolve step are one critical section.
     let lock = take_send_lock(ctx)?;
     // 4. The §2a.4 entry check and resolve step.
-    if let Some(record) = state::pending_send(ctx)? {
-        let unrelayed = record.txs.iter().filter(|t| !t.relayed).count();
-        if unrelayed > 0 {
-            let first = record
-                .txs
-                .iter()
-                .find(|t| !t.relayed)
-                .map(|t| t.txid.clone())
-                .unwrap_or_default();
-            return Err(Error::safety(format!(
-                "a previous {} may still be in flight: {unrelayed} of {} transaction(s) were built but not confirmed relayed",
-                record.kind.as_str(),
-                record.txs.len()
-            ))
-            .with_reason("pending_send")
-            .with_hint(format!(
-                "fmonero wallet history --limit 5   # confirm whether {first} landed, then: fmonero wallet clear-pending --yes"
-            )));
-        }
+    refuse_if_send_in_flight(ctx)?;
+    if state::pending_send(ctx)?.is_some() {
         // Every entry relayed: resolve. A positive "not found" is the only answer allowed to
         // block; every other failure leaves the record and does NOT block (§2a.4).
         if let Some(missing) = resolve_record(ctx, w)? {
@@ -593,14 +579,78 @@ fn check_recipient(ctx: &Context, w: &WalletClient, dest: &str) -> Result<(), Er
     Ok(())
 }
 
-/// Step 7 (§2a.1): a transaction built against a chain tip we do not have may be rejected.
-fn require_synchronized(n: Option<&NodeClient>) -> Result<(), Error> {
-    let Some(n) = n else {
-        return Err(Error::backend(
-            "the node is not reachable, so a transaction cannot be built safely",
-        )
-        .with_reason("unreachable")
-        .with_hint("fmonero node up"));
+/// Step 7 of §2a.1's refusal order, **as data** (v5.2, §2m.3).
+///
+/// The argument was `Option<&NodeClient>` until v5.2, and it could not stay one: `None` already
+/// means "the caller proved there is no node ⇒ refuse", and remote mode means the opposite —
+/// proceed, by a different gate. Two opposite behaviours behind one `None` is the arrangement
+/// §2a.3 rejects, on the one code path where getting it wrong either refuses every remote send
+/// or accepts every local send against a node that is down. Three variants make the caller name
+/// the situation and the compiler enumerate the cases.
+pub enum NodeGate<'a> {
+    /// Local mode, node answering: one `get_info`; not `synchronized` ⇒ exit 10
+    /// `reason: node_not_synchronized`.
+    Local(&'a NodeClient),
+    /// Local mode, node proved unreachable by the caller ⇒ exit 4 `reason: unreachable`.
+    Unreachable,
+    /// Remote mode: one bounded `refresh` through `wallet_session::refresh` under
+    /// `timeouts.refresh_sec`, which must succeed. It carries no client because fmonero
+    /// constructs none in remote mode (§2c).
+    Remote,
+}
+
+/// The one implementation of step 7, switching on the gate. Called by [`build`] and
+/// [`build_sweep`] and by nothing else.
+fn require_node_current(
+    ctx: &Context,
+    w: &WalletClient,
+    gate: NodeGate<'_>,
+    cancel: &CancelToken,
+) -> Result<(), Error> {
+    let n = match gate {
+        NodeGate::Local(n) => n,
+        NodeGate::Unreachable => {
+            return Err(Error::backend(
+                "the node is not reachable, so a transaction cannot be built safely",
+            )
+            .with_reason("unreachable")
+            .with_hint("fmonero node up"))
+        }
+        // **One bounded `refresh { start_height: 0 }`, which must succeed** (§2m.3). What it
+        // buys: a `refresh` that returns proves the remote daemon answered **and** that the
+        // wallet holds every block that daemon offered (§1b.9 item 6) — strictly more than the
+        // local gate's `get_info.synchronized`, which is the node's opinion of itself.
+        //
+        // What it does not buy, stated because a send is the one place a half-truth costs
+        // money: a remote node's own sync state cannot be observed through `monero-wallet-rpc`
+        // at all (§1b.9 item 5), so a node that is itself hours behind — or lying — answers the
+        // refresh and the gate passes. The transaction is then built against a stale tip and is
+        // **rejected on relay**: `commit_tx` throws and becomes `-4 GENERIC_TRANSFER_ERROR`
+        // (exit 16), with the funds unaffected, because outputs are marked spent only after a
+        // successful relay (§2a.11). A failed command, never a loss.
+        //
+        // It goes through `wallet_session::refresh` so that `state::note_refresh` — the one
+        // writer of §5's `wallet.last_refresh_at` — has one home (§5b).
+        NodeGate::Remote => {
+            return match crate::session::wallet_session::refresh(ctx, w, 0, cancel) {
+                Ok(_) => Ok(()),
+                // Killed at `timeouts.refresh_sec`: the instruction is identical to local
+                // mode's ("wait, then retry"), so it is exit 10 and not exit 5 — and **no §2d
+                // breaker is armed**, because `blocks_behind`, the breaker's only
+                // discriminator, is `null` in remote mode (§2d, §2m.3).
+                Err(e) if e.reason() == Some("killed_at_deadline") => {
+                    Err(Error::node_syncing(format!(
+                        "the wallet did not finish a refresh against {} within {} s, \
+                         so a transaction built now may be rejected",
+                        ctx.settings.node.remote,
+                        ctx.timeouts.refresh.as_secs()
+                    ))
+                    .with_reason("wallet_catching_up")
+                    .with_hint("fmonero wallet refresh"))
+                }
+                Err(e) => Err(e),
+            };
+        }
     };
     let info = n.get_info()?;
     if info.synchronized {
@@ -615,6 +665,7 @@ fn require_synchronized(n: Option<&NodeClient>) -> Result<(), Error> {
         "the node is at {}% and not synchronized, so a transaction built now may be rejected",
         pct
     ))
+    .with_reason("node_not_synchronized")
     .with_hint("fmonero status --json"))
 }
 
@@ -707,6 +758,39 @@ fn announce_line(plan: &Plan) -> String {
             String::new()
         }
     )
+}
+
+/// The **unrelayed** half of §2a.4's entry check: any entry with `relayed == false` means a
+/// send may be in flight, so refuse with exit 3 `pending_send`.
+///
+/// Public because `node_mode::{set_remote, set_local}` need exactly this half and **not** the
+/// resolve step that follows it (§2m.5 step 6): resolving asks the wallet daemon, which those
+/// two commands are about to restart, and a resolve answered by a *different* node than the one
+/// that relayed would say "not found" for a transaction that really was broadcast (§2a.4). One
+/// check, one message, three callers — the arrangement §2a.3 asks for.
+pub fn refuse_if_send_in_flight(ctx: &Context) -> Result<(), Error> {
+    let Some(record) = state::pending_send(ctx)? else {
+        return Ok(());
+    };
+    let unrelayed = record.txs.iter().filter(|t| !t.relayed).count();
+    if unrelayed == 0 {
+        return Ok(());
+    }
+    let first = record
+        .txs
+        .iter()
+        .find(|t| !t.relayed)
+        .map(|t| t.txid.clone())
+        .unwrap_or_default();
+    Err(Error::safety(format!(
+        "a previous {} may still be in flight: {unrelayed} of {} transaction(s) were built but not confirmed relayed",
+        record.kind.as_str(),
+        record.txs.len()
+    ))
+    .with_reason("pending_send")
+    .with_hint(format!(
+        "fmonero wallet history --limit 5   # confirm whether {first} landed, then: fmonero wallet clear-pending --yes"
+    )))
 }
 
 /// §2a.11: an exclusive `flock(LOCK_EX|LOCK_NB)` on `state_dir/send.lock`, owned by the

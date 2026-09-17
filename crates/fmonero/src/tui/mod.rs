@@ -416,11 +416,26 @@ impl Tui {
         if self.status_err.is_some() || s.pending.is_some() || self.has_warning("node_stalled") {
             return "error";
         }
-        match (s.node.reachable, s.node.synchronized) {
-            (false, _) => "down",
-            (true, Some(true)) => "up",
-            (true, _) => "syncing",
+        // **Remote mode answers first** (v5.2, §2m.3): `reachable` and `synchronized` are both
+        // `null` there, and every badge below reads one of them — so left to fall through they
+        // would paint "down" for a wallet that is working perfectly.
+        if self.remote_mode() {
+            return "remote";
         }
+        match (s.node.reachable, s.node.synchronized) {
+            (Some(true), Some(true)) => "up",
+            (Some(true), _) => "syncing",
+            _ => "down",
+        }
+    }
+
+    /// `node.mode == remote` — the one discriminator the whole Node screen branches on (§2m).
+    pub(super) fn remote_mode(&self) -> bool {
+        self.status
+            .as_ref()
+            .map_or(self.ctx.settings.node.mode.is_remote(), |s| {
+                s.node.layout == fmonero_core::units::Layout::Remote
+            })
     }
 
     pub(super) fn wallet_badge(&self) -> &'static str {
@@ -439,7 +454,10 @@ impl Tui {
         let Some(s) = &self.status else {
             return "reading status…".into();
         };
-        if !s.node.reachable {
+        if self.remote_mode() {
+            return format!("Remote node · {}", s.node.url);
+        }
+        if s.node.reachable != Some(true) {
             return "Node is not running".into();
         }
         match (s.node.synchronized, s.node.sync_percent) {

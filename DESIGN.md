@@ -75,14 +75,32 @@ in-process `TcpListener` mock-server tests).
 
 ## 1. Facts about this machine (verified 2026-09-16)
 
-### 1.1 Monero is not installed
+### 1.1 Monero is installed; no node runs, and none is wanted
 
-`monerod`, `monero-wallet-rpc` and `monero-wallet-cli` are **absent**; there is no `~/.bitmonero`.
-`sudo` needs a password, so no agent can install them. The owner installs with
-`omarchy pkg add monero` (Arch `extra/monero` **0.18.5.1-2**). Consequences that shape every phase:
+**Changed on 2026-09-17, and it invalidates assertions this document used to make.**
+`/usr/bin/monerod`, `/usr/bin/monero-wallet-rpc` and `/usr/bin/monero-wallet-cli` are **present**
+(Arch `extra/monero` **0.18.5.1-2**, `monerod --version` reports
+`Monero 'Fluorine Fermi' (v0.18.5.1-release)`). `sudo` still needs a password, so no agent installs
+or removes anything. The owner has **not** started a local node and does not want one: 120–150 GB
+and days of initial sync (§1.3) buy nothing he needs, which is the whole reason §2m exists.
 
-- Everything that needs a live daemon is **RED** in §4b until the owner installs and runs one. No
-  README bullet, `--help` line or `robot-docs` sentence may describe a RED row as working.
+What that changes, and what it does not:
+
+- **`monerod_installed`, `wallet_rpc_installed` and `version_supported` now `pass`** where they
+  used to `fail:not_installed`. §4b's GREEN `doctor` row is restated for the machine as it is, and
+  `tests/e2e.sh` asserts the new truth rather than the old one. Four of its assertions and one unit
+  test failed on this tree **before** any v5.2 code was written, for exactly this reason; the
+  transcript is in DECISIONS.md, because a suite that fails on a machine that got *better* is a
+  suite that gets weakened (§2j).
+- **Nothing that needs a running daemon moved.** No `monerod` is running, there is no
+  `~/.bitmonero` chain, and every §4b RED row that needs a live local node stays RED. The §2i
+  preflight's `not_installed` answer is still a real code path — it is what a machine without the
+  package gets — and it is still tested, now through `units::preflight`'s own unit test rather than
+  through this machine's accident.
+- Everything that needs a live **remote** daemon is what §4b's new LIVE list covers (§2m): the
+  wallet daemon is installed, so `monero-wallet-rpc` against a public node is reachable for the
+  first time.
+- No README bullet, `--help` line or `robot-docs` sentence may describe a RED row as working.
 - Phase 0 fixtures are **derived from the Monero source at v0.18.5.1**, not captured from a run.
   Every derived file starts with
   `# derived from monero v0.18.5.1 source, not captured from a run` followed by `#` provenance
@@ -2971,11 +2989,15 @@ appeared in two or three — and a gate its own document fails is a gate an agen
   `status` (both daemons absent: exit 0, `reachable:false`, warnings), `wallet list` (empty dir),
   `wallet validate` (structural path, wallet daemon unreachable), `settings list|get|set`,
   `capabilities`, `robot-docs`, `version`, `setup --dry-run`,
-  **`doctor`** — which **exits 11**, not 0, with exactly `monerod_installed` and
-  `wallet_rpc_installed` at `fail:not_installed`, every `node`/`wallet`/`storage` check at `skip:*`,
-  and the `install` and `security` groups with real verdicts; `tests/e2e.sh` asserts **exit 11 and
-  that exact failure set**, so the assertion strengthens rather than weakens when Monero is later
-  installed —, `doctor capabilities`,
+  **`doctor`** — which **exits 11**, not 0. Restated on 2026-09-17 for the machine as it now is
+  (§1.1): `monerod_installed`, `wallet_rpc_installed` and `version_supported` **pass** and name
+  `/usr/bin/monerod`'s real version; the one `fail` is **`node_reachable`** (`node_unreachable`),
+  because the package is installed and nothing is running; every other `node`/`wallet`/`storage`
+  check is a `skip:<reason>` or a `warn` that names one, **never a bare `skip`**; and the `install`
+  and `security` groups carry real verdicts. `tests/e2e.sh` asserts that set. The previous wording
+  — "exactly `monerod_installed` and `wallet_rpc_installed` at `fail:not_installed`" — was the
+  assertion the install broke, and it is replaced rather than relaxed: the shape being asserted is
+  still "exit 11 with a named failing set and no bare skips" —, `doctor capabilities`,
   **`doctor undo latest`** (round trip under `FMONERO_STATE_DIR`: corrupt a class-A file, `--fix`,
   `undo latest`, byte-compare) and `doctor undo` against a run whose backup hash mismatches
   (exit 13),

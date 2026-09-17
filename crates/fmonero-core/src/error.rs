@@ -95,6 +95,9 @@ pub const REASONS: &[(i32, &str)] = &[
     (2, "bad_amount"),
     (2, "non_loopback_url"),
     (2, "unsupported_flag"),
+    // v5.2, §2m: the remote-address grammar and the mode/address invariant.
+    (2, "bad_remote_address"),
+    (2, "remote_unset"),
     // 3
     (3, "needs_yes"),
     (3, "pending_send"),
@@ -109,6 +112,10 @@ pub const REASONS: &[(i32, &str)] = &[
     (4, "unit_missing"),
     (4, "unreachable"),
     (4, "auth_refused"),
+    // v5.2, §2m.3: a node command that needs the local monerod while `node.mode` is remote,
+    // and a `set_daemon` whose address epee's own parser refused.
+    (4, "remote_node"),
+    (4, "remote_address_rejected"),
     // 5
     (5, "stalled"),
     (5, "rpc_error"),
@@ -118,6 +125,11 @@ pub const REASONS: &[(i32, &str)] = &[
     (9, "not_open"),
     (9, "bad_password"),
     (9, "background_sync"),
+    // 10 — exit 10 carried no reason before v5.2, and the two situations take different
+    // actions: the first waits for OUR node, the second for a refresh against someone else's
+    // (§2m.3).
+    (10, "node_not_synchronized"),
+    (10, "wallet_catching_up"),
     // 16
     (16, "too_large"),
     (16, "not_possible"),

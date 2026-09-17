@@ -112,6 +112,12 @@ pub struct StateDoc {
     /// `status` already rewrites this file on every invocation. The deviation is recorded in
     /// DECISIONS.md.
     pub wallet_behind: Option<i64>,
+    /// v5.2: unix seconds of the last `refresh` **fmonero** issued (§5's
+    /// `wallet.last_refresh_at`). Written only by [`note_refresh`], read only by `status`.
+    ///
+    /// An absent key deserializes to `None` through `#[derive(Default)]`, so state files
+    /// written by a pre-v5.2 build load unchanged.
+    pub last_refresh: Option<i64>,
 }
 
 impl StateDoc {
@@ -218,6 +224,18 @@ pub fn set_last_error(ctx: &Context, e: &Error, text: Option<String>) -> Result<
         hint: e.hint(),
     };
     with_state(ctx, |s| s.last_error = Some(record))
+}
+
+/// Record "now" as the last refresh **fmonero** issued (v5.2, §5).
+///
+/// Its only caller is `wallet_session::refresh`; `status` reads it and never writes it (§2e).
+/// The qualifier matters: `monero-wallet-rpc`'s own 20 s auto-refresh (§2d) is invisible to
+/// fmonero, so a field that counted it would be a claim about the daemon we cannot make (§2j).
+/// It matters most in remote mode, where `blocks_behind` is `null` and this is the only
+/// freshness signal left (§2m.3).
+pub fn note_refresh(ctx: &Context) -> Result<(), Error> {
+    let now = crate::now_unix();
+    with_state(ctx, |s| s.last_refresh = Some(now))
 }
 
 /// Arm a §2d breaker. **Never called by `status`**, and never by `send::relay` (§2d).

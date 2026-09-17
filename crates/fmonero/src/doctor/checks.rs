@@ -258,6 +258,14 @@ pub const CHECKS: &[CheckDef] = &[
         detect: node_reachable,
     },
     CheckDef {
+        id: "remote_node_untrusted",
+        group: DoctorGroup::Node,
+        class: Class::D,
+        severity: Severity::Warn,
+        title: "a remote node is not marked trusted unless it is private (§2m.6)",
+        detect: remote_node_untrusted,
+    },
+    CheckDef {
         id: "node_unrestricted",
         group: DoctorGroup::Node,
         class: Class::D,
@@ -404,6 +412,14 @@ pub const CHECKS: &[CheckDef] = &[
         detect: wallet_dir_matches_unit,
     },
     CheckDef {
+        id: "wallet_daemon_matches_unit",
+        group: DoctorGroup::Units,
+        class: Class::B,
+        severity: Severity::Error,
+        title: "the unit's --daemon-address, trust flag and --daemon-ssl are the ones in force",
+        detect: wallet_daemon_matches_unit,
+    },
+    CheckDef {
         id: "wallet_port_consistent",
         group: DoctorGroup::Units,
         class: Class::B,
@@ -547,6 +563,29 @@ fn need_wallet_rpc(p: &Probes) -> Option<Verdict> {
 
 /// A units check that reads a unit file has nothing to say when the file is absent;
 /// `units_present` is the check that reports that, once.
+/// **Remote mode is a precondition like any other, and `skip:remote_node` is how it is
+/// reported** (v5.2, §2m.3, §7.1).
+///
+/// The full set that skips behind it: every `node` check except `node_layout` (which passes and
+/// names the address) and `remote_node_untrusted` (which is only meaningful there);
+/// `wallet_daemon_link` and `wallet_daemon_auth`; `node_auth`; `disk_space` and
+/// `prune_configured`. Everything else runs unchanged, because remote mode moves the daemon,
+/// not the machine — in particular `unit_loopback`, which asserts the two units' **own**
+/// `--rpc-bind-ip` and has nothing to do with the address they dial (§2c).
+fn need_local_node(p: &Probes) -> Option<Verdict> {
+    (p.node_mode == "remote").then(|| {
+        Verdict::skip(
+            "remote_node",
+            format!(
+                "node.mode is remote ({}): there is no local monerod to ask, and no wallet-RPC \
+                 method reports a remote daemon's own state (§1b.9 item 5)",
+                p.daemon_address
+            ),
+        )
+        .cmd("fmonero node local --yes")
+    })
+}
+
 fn need_units(p: &Probes) -> Option<Verdict> {
     (!p.node_unit.exists || !p.wallet_unit.exists).then(|| {
         Verdict::skip(
@@ -568,6 +607,17 @@ fn need_units(p: &Probes) -> Option<Verdict> {
 
 fn monerod_installed(p: &Probes) -> Verdict {
     let Some(path) = &p.which_monerod else {
+        // **In remote mode this is a `warn`, not a `fail`** (v5.2, §2m.3): remote mode uses no
+        // local daemon, and a check that fails on a machine configured correctly is the check
+        // an agent relaxes (§7). The detail names what would require it.
+        if p.node_mode == "remote" {
+            return Verdict::warn(
+                "not_needed_in_remote_mode",
+                "monerod is not on PATH, and node.mode is remote, so nothing needs it; \
+                 `fmonero node local --yes` is what would",
+            )
+            .cmd("omarchy pkg add monero");
+        }
         return Verdict::fail("not_installed", "monerod is not on PATH")
             .cmd("omarchy pkg add monero");
     };
@@ -664,19 +714,23 @@ fn node_layout(p: &Probes) -> Verdict {
              never mutates it, and `node up`/`down`/`restart` exit 3 here (§2i)",
         )
         .cmd("sudo systemctl status monerod"),
-        // §2c makes a non-loopback node.url an error for EVERY client: `NodeClient::new`
-        // and `WalletClient::new` both refuse it, and `settings set node.url` refuses to
-        // store one. A config.toml holding one is a machine on which nothing that touches
-        // the node can work, so the doctor says so rather than reporting neutrally.
-        "remote" => Verdict::warn(
-            "non_loopback_url",
-            format!(
-                "remote — node.url is {}, which no fmonero client will accept; a remote node \
-                 is reached by monero-wallet-rpc, not by fmonero (§2c)",
-                p.node_url
-            ),
-        )
-        .cmd("fmonero wallet set-daemon <addr> --trusted --yes"),
+        // v5.2, §2m.3: **the one `node` check that still runs in remote mode, and it passes**
+        // — the group's only remaining source of truth, so that `doctor --only node` is never
+        // an empty table. It was a `warn:non_loopback_url` while the layout was keyed on a
+        // non-loopback `node.url`, which `settings set` refuses to store: a warning about a
+        // state the tool could not enter. Now the mode is a supported configuration and the
+        // detail names what is in force.
+        "remote" => Verdict::pass(format!(
+            "remote — monero-wallet-rpc talks to {} ({}, ssl {}); fmonero itself never does (§2c)",
+            p.daemon_address,
+            if p.daemon_trusted {
+                "trusted"
+            } else {
+                "untrusted"
+            },
+            p.daemon_ssl
+        ))
+        .cmd("fmonero node local --yes"),
         _ => Verdict::warn(
             "no_layout",
             "none — no fmonero unit and no system monerod.service: run `fmonero setup --units`",
@@ -686,6 +740,10 @@ fn node_layout(p: &Probes) -> Verdict {
 }
 
 fn node_reachable(p: &Probes) -> Verdict {
+    // v5.2, §2m.3: no local daemon, no local chain, no local credential.
+    if let Some(v) = need_local_node(p) {
+        return v;
+    }
     if let Some(v) = need_monerod(p) {
         return v;
     }
@@ -708,6 +766,10 @@ fn node_reachable(p: &Probes) -> Verdict {
 }
 
 fn node_unrestricted(p: &Probes) -> Verdict {
+    // v5.2, §2m.3: no local daemon, no local chain, no local credential.
+    if let Some(v) = need_local_node(p) {
+        return v;
+    }
     if let Some(v) = need_monerod(p) {
         return v;
     }
@@ -732,6 +794,10 @@ fn node_unrestricted(p: &Probes) -> Verdict {
 }
 
 fn node_synced(p: &Probes) -> Verdict {
+    // v5.2, §2m.3: no local daemon, no local chain, no local credential.
+    if let Some(v) = need_local_node(p) {
+        return v;
+    }
     if let Some(v) = need_monerod(p) {
         return v;
     }
@@ -757,6 +823,10 @@ fn node_synced(p: &Probes) -> Verdict {
 }
 
 fn node_peers(p: &Probes) -> Verdict {
+    // v5.2, §2m.3: no local daemon, no local chain, no local credential.
+    if let Some(v) = need_local_node(p) {
+        return v;
+    }
     if let Some(v) = need_monerod(p) {
         return v;
     }
@@ -783,6 +853,10 @@ fn node_peers(p: &Probes) -> Verdict {
 }
 
 fn node_clock(p: &Probes) -> Verdict {
+    // v5.2, §2m.3: no local daemon, no local chain, no local credential.
+    if let Some(v) = need_local_node(p) {
+        return v;
+    }
     if let Some(v) = need_monerod(p) {
         return v;
     }
@@ -806,6 +880,10 @@ fn node_clock(p: &Probes) -> Verdict {
 }
 
 fn node_data_dir_single_writer(p: &Probes) -> Verdict {
+    // v5.2, §2m.3: no local daemon, no local chain, no local credential.
+    if let Some(v) = need_local_node(p) {
+        return v;
+    }
     if let Some(v) = need_monerod(p) {
         return v;
     }
@@ -920,6 +998,10 @@ fn wallet_rpc_auth(p: &Probes) -> Verdict {
 }
 
 fn wallet_daemon_link(p: &Probes) -> Verdict {
+    // v5.2, §2m.3: no local daemon, no local chain, no local credential.
+    if let Some(v) = need_local_node(p) {
+        return v;
+    }
     if let Some(v) = need_wallet_rpc(p) {
         return v;
     }
@@ -941,6 +1023,10 @@ fn wallet_daemon_link(p: &Probes) -> Verdict {
 }
 
 fn wallet_daemon_auth(p: &Probes) -> Verdict {
+    // v5.2, §2m.3: no local daemon, no local chain, no local credential.
+    if let Some(v) = need_local_node(p) {
+        return v;
+    }
     if let Some(v) = need_wallet_rpc(p) {
         return v;
     }
@@ -1269,6 +1355,132 @@ fn unit_enabled_state(p: &Probes) -> Verdict {
     .fixable(PlanKind::DisableUnits, "fmonero doctor --fix")
 }
 
+/// **v5.2, §7.1.** The installed wallet unit's `--daemon-address`, trust flag and
+/// `--daemon-ssl` are the ones `units::daemon_target` says are in force, byte for byte.
+///
+/// Its own check rather than a clause of `units_present` because it is the one skew with a
+/// **silent** symptom: a `monero-wallet-rpc` started before any `wallet open` auto-refreshes
+/// against whatever its argv said (§1b.9 item 3), so a unit naming the old node keeps a wallet
+/// syncing from a node `status` does not name — and `units_present`'s byte comparison, which
+/// would also catch it, reports the generic `unit_drift` and buries the reason.
+///
+/// It is also the third argument for this check, and the hardest: in remote mode
+/// `on_create_wallet` reads `/getheight` over the address in the **unit's** argv and sets the
+/// new wallet's restore height from it, before fmonero's own `set_daemon` ever runs
+/// (`wallet_rpc_server.cpp:3596`, `:3606-3609`, §2m.3).
+fn wallet_daemon_matches_unit(p: &Probes) -> Verdict {
+    if let Some(v) = need_units(p) {
+        return v;
+    }
+    let Some(address) = &p.unit_daemon_address else {
+        return Verdict::fail(
+            "no_daemon_address_flag",
+            format!(
+                "{}'s ExecStart carries no --daemon-address",
+                p.wallet_unit_name
+            ),
+        )
+        .fixable(PlanKind::WriteWalletUnit, "fmonero doctor --fix");
+    };
+    if *address != p.daemon_address {
+        return Verdict::fail(
+            "daemon_address_mismatch",
+            format!(
+                "the unit says --daemon-address {address} while the settings say \
+                 {}: a monero-wallet-rpc started before any `wallet open` refreshes against \
+                 its argv, so the wallet would sync from a node `status` does not name (§2m.3)",
+                p.daemon_address
+            ),
+        )
+        .fixable(
+            PlanKind::WriteWalletUnit,
+            "fmonero node remote <addr> --yes",
+        );
+    }
+    // Neither flag is NOT "untrusted": `make_basic` falls back to
+    // `is_local_address(daemon_address)` (`wallet2.cpp:451-462`), so the absence means
+    // "whatever the address parse decided" — the implicit configuration §2j objects to on the
+    // one setting that decides whether the wallet's own amounts travel inside a request.
+    if p.unit_daemon_trusted != Some(p.daemon_trusted) {
+        return Verdict::fail(
+            "daemon_trust_mismatch",
+            format!(
+                "the unit's trust flag is {} while the settings say {}",
+                match p.unit_daemon_trusted {
+                    Some(true) => "--trusted-daemon",
+                    Some(false) => "--untrusted-daemon",
+                    None => "absent, which means neither and is not 'untrusted'",
+                },
+                if p.daemon_trusted {
+                    "--trusted-daemon"
+                } else {
+                    "--untrusted-daemon"
+                }
+            ),
+        )
+        .fixable(PlanKind::WriteWalletUnit, "fmonero doctor --fix");
+    }
+    if p.unit_daemon_ssl.as_deref() != Some(p.daemon_ssl.as_str()) {
+        return Verdict::fail(
+            "daemon_ssl_mismatch",
+            format!(
+                "the unit says --daemon-ssl {} while the address asks for {}: an omitted or \
+                 wrong value means a TLS handshake attempt on every reconnect (§1b.9 item 2)",
+                p.unit_daemon_ssl
+                    .clone()
+                    .unwrap_or_else(|| "nothing".into()),
+                p.daemon_ssl
+            ),
+        )
+        .fixable(PlanKind::WriteWalletUnit, "fmonero doctor --fix");
+    }
+    Verdict::pass(format!(
+        "--daemon-address {address} · {} · --daemon-ssl {}",
+        if p.daemon_trusted {
+            "--trusted-daemon"
+        } else {
+            "--untrusted-daemon"
+        },
+        p.daemon_ssl
+    ))
+}
+
+/// **v5.2, §2m.6, §7.1.** A remote node marked `trusted` that is not a private literal.
+///
+/// The only check in this document that is meaningful **exclusively** in remote mode, which is
+/// why it is the second exception to §2m.3's `skip:remote_node` rule: skipping it with the rest
+/// of its group would disable the trusted-public-node warning in the only mode it can fire.
+fn remote_node_untrusted(p: &Probes) -> Verdict {
+    if p.node_mode != "remote" {
+        return Verdict::skip(
+            "local_mode",
+            "node.mode is local: the trust flag is fmonero's own node's, and it is trusted",
+        );
+    }
+    let host = fmonero_core::settings::remote_host(&p.daemon_address);
+    if !p.daemon_trusted {
+        return Verdict::pass(format!("{} is untrusted, which is the rule (§2m.6)", host));
+    }
+    if fmonero_core::settings::is_private_host(host) {
+        return Verdict::pass(format!(
+            "{host} is a private literal, which is the case --trusted exists for"
+        ));
+    }
+    // A DNS name is never treated as private: classifying one means resolving it, a network
+    // call inside a detector §7 requires to be pure, whose answer a name server can change
+    // between runs. So a private node reached by name warns, and the detail says so.
+    Verdict::warn(
+        "trusted_public_node",
+        format!(
+            "{host} is marked trusted, so `select_available_outputs_from_histogram` puts this \
+             wallet's own unspent amounts INSIDE its requests (`wallet2.cpp:12281-12282`). If \
+             this node is yours, name it by its private address rather than by a DNS name — a \
+             name is never treated as private, because resolving one is a network call"
+        ),
+    )
+    .cmd("fmonero node remote <addr> --yes   # without --trusted")
+}
+
 fn wallet_dir_matches_unit(p: &Probes) -> Verdict {
     if let Some(v) = need_units(p) {
         return v;
@@ -1345,6 +1557,10 @@ fn wallet_port_consistent(p: &Probes) -> Verdict {
 // ------------------------------------------------------------------ storage
 
 fn disk_space(p: &Probes) -> Verdict {
+    // v5.2, §2m.3: no local daemon, no local chain, no local credential.
+    if let Some(v) = need_local_node(p) {
+        return v;
+    }
     if let Some(v) = need_monerod(p) {
         return v;
     }
@@ -1377,6 +1593,10 @@ fn disk_space(p: &Probes) -> Verdict {
 }
 
 fn prune_configured(p: &Probes) -> Verdict {
+    // v5.2, §2m.3: no local daemon, no local chain, no local credential.
+    if let Some(v) = need_local_node(p) {
+        return v;
+    }
     if let Some(v) = need_monerod(p) {
         return v;
     }
@@ -1641,6 +1861,10 @@ fn monerod_conf_mode(p: &Probes) -> Verdict {
 }
 
 fn node_auth(p: &Probes) -> Verdict {
+    // v5.2, §2m.3: no local daemon, no local chain, no local credential.
+    if let Some(v) = need_local_node(p) {
+        return v;
+    }
     if let Some(v) = need_monerod(p) {
         return v;
     }
@@ -1854,11 +2078,29 @@ mod tests {
     fn the_one_line_predicates_answer_as_the_table_says() {
         let mut p = empty_probes();
 
-        // binaries: absent → fail:not_installed, which is §4b's GREEN row for this machine.
+        // binaries: absent → fail:not_installed. The probe fields are cleared **explicitly**
+        // rather than taken from the machine: Monero was installed here on 2026-09-17 (§1.1),
+        // and a test that asserts a predicate by capturing the host asserts the host. This
+        // failed on the pre-change tree for exactly that reason, and the fix is the assertion
+        // this test always meant to make.
+        p.which_monerod = None;
+        p.which_wallet_rpc = None;
         let v = monerod_installed(&p);
         assert_eq!(v.status, CheckStatus::Fail);
         assert_eq!(v.reason, Some("not_installed"));
         assert_eq!(wallet_rpc_installed(&p).reason, Some("not_installed"));
+        // …and present → pass, which is what this machine now answers (§1.1).
+        p.which_monerod = Some("/usr/bin/monerod".into());
+        assert_eq!(
+            monerod_installed(&p).status,
+            if p.monerod_version.success() {
+                CheckStatus::Pass
+            } else {
+                CheckStatus::Fail
+            }
+        );
+        p.which_monerod = None;
+        p.which_wallet_rpc = None;
 
         // …and every node/wallet/storage check skips behind them, never passes.
         for def in CHECKS.iter().filter(|c| {

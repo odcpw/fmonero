@@ -189,6 +189,85 @@ impl std::str::FromStr for Network {
     }
 }
 
+/// Which daemon `monero-wallet-rpc` is pointed at (§2m.1, v5.2).
+///
+/// The **only** input to `units::detect_layout`'s `Remote` branch (§2i). It is a setting and
+/// not a flag because every consumer — the wallet unit, `set_daemon`, `status`, the node
+/// commands, the doctor, the TUI and the bar widget — has to change behaviour together, and a
+/// flag on one command cannot coordinate that (§2m).
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NodeMode {
+    Local,
+    Remote,
+}
+
+impl NodeMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NodeMode::Local => "local",
+            NodeMode::Remote => "remote",
+        }
+    }
+    /// True when no local `monerod` is in play at all (§2m.3).
+    pub fn is_remote(self) -> bool {
+        matches!(self, NodeMode::Remote)
+    }
+}
+
+impl std::fmt::Display for NodeMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for NodeMode {
+    type Err = Error;
+    fn from_str(s: &str) -> Result<NodeMode, Error> {
+        match s {
+            "local" => Ok(NodeMode::Local),
+            "remote" => Ok(NodeMode::Remote),
+            other => Err(Error::usage(format!(
+                "'{other}' is not a node mode; known: local, remote"
+            ))
+            .with_reason("bad_args")
+            .with_hint("fmonero node local --yes")),
+        }
+    }
+}
+
+/// `set_daemon`'s `ssl_support`, and `--daemon-ssl`'s value (§1b.9 item 2, v5.2).
+///
+/// The wire spellings are epee's three and no others (`net_ssl.cpp:654-665`); they are also the
+/// three values of `--daemon-ssl` (`wallet2.cpp:253`), so one type serves the unit render and the
+/// `set_daemon` body. [`SslSupport::Enabled`] is never constructed by fmonero in v0.1: it throws
+/// at process start without a CA file, a fingerprint list or `--daemon-ssl-allow-any-cert`
+/// (`wallet2.cpp:416-432`), all three of which §0 cuts. It is a variant so that adding pinned TLS
+/// in v0.2 is a settings key rather than a new type.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SslSupport {
+    Disabled,
+    Enabled,
+    Autodetect,
+}
+
+impl SslSupport {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SslSupport::Disabled => "disabled",
+            SslSupport::Enabled => "enabled",
+            SslSupport::Autodetect => "autodetect",
+        }
+    }
+}
+
+impl std::fmt::Display for SslSupport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// The unit names, which never change with the network (§4).
 pub const NODE_UNIT: &str = "fmonero-monerod.service";
 pub const WALLET_UNIT: &str = "fmonero-wallet-rpc.service";
@@ -197,7 +276,19 @@ pub const WALLET_UNIT: &str = "fmonero-wallet-rpc.service";
 #[serde(default, deny_unknown_fields)]
 pub struct NodeSettings {
     pub network: Network,
+    /// §2m.1. `local` (the default) or `remote`.
+    pub mode: NodeMode,
     pub url: String,
+    /// The remote daemon address, in §2m.2's grammar; empty iff `mode == Local`.
+    ///
+    /// **NEVER handed to `NodeClient`/`WalletClient`** — it is rendered into the wallet unit's
+    /// `--daemon-address` and sent as `set_daemon`'s `address`, both consumed by
+    /// `monero-wallet-rpc` (§2c). fmonero's own HTTP client stays loopback-plaintext-only.
+    pub remote: String,
+    /// Sent as `set_daemon`'s `trusted` and rendered as `--trusted-daemon`/`--untrusted-daemon`.
+    /// **A public node is never trusted**; this key exists only for a remote node the owner
+    /// runs (§2m.6).
+    pub remote_trusted: bool,
     pub unit: String,
     pub data_dir: PathBuf,
     pub log_file: PathBuf,
@@ -246,6 +337,9 @@ impl Default for NodeSettings {
     fn default() -> Self {
         NodeSettings {
             network: Network::Mainnet,
+            mode: NodeMode::Local,
+            remote: String::new(),
+            remote_trusted: false,
             url: "http://127.0.0.1:18081".to_string(),
             unit: NODE_UNIT.to_string(),
             data_dir: PathBuf::from("~/.bitmonero"),
@@ -302,9 +396,24 @@ const KEY_TABLE: &[(&str, &str, &str)] = &[
         "mainnet | stagenet | testnet — one at a time; changing it needs `setup --units` again",
     ),
     (
+        "node.mode",
+        "local",
+        "local | remote — which daemon monero-wallet-rpc is pointed at (§2m)",
+    ),
+    (
+        "node.remote",
+        "",
+        "the remote daemon address [http[s]://]host:port — no path, no credential (§2m.2)",
+    ),
+    (
+        "node.remote_trusted",
+        "false",
+        "send `trusted` to a remote node; NEVER true for a public one (§2m.6)",
+    ),
+    (
         "node.url",
         "http://127.0.0.1:18081",
-        "the node's JSON-RPC URL; loopback http only (§2c)",
+        "the node's JSON-RPC URL; loopback http only (§2c); unused in remote mode",
     ),
     (
         "node.unit",
@@ -441,6 +550,104 @@ fn parse_unit(key: &str, value: &str) -> Result<String, Error> {
     Ok(value.to_string())
 }
 
+/// Every §2m.2 refusal carries this hint, verbatim.
+const REMOTE_HINT: &str =
+    "fmonero node remote <host>:18089 --yes   # host:port, no path, no credential";
+
+fn bad_remote(msg: &str) -> Error {
+    Error::usage(msg.to_string())
+        .with_reason("bad_remote_address")
+        .with_hint(REMOTE_HINT)
+}
+
+/// One DNS label: 1..63 of `[A-Za-z0-9-]`, not `-`-edged (§2m.2).
+fn is_dns_label(label: &str) -> bool {
+    !label.is_empty()
+        && label.len() <= 63
+        && label
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        && !label.starts_with('-')
+        && !label.ends_with('-')
+}
+
+/// The host half of a §2m.2 address, with its brackets if it had any.
+///
+/// `"http://node:18089"` → `"node"`, `"[::1]:18089"` → `"[::1]"`. Used by
+/// [`crate::units::ssl_for_address`] and the doctor's `remote_node_untrusted`, which both ask a
+/// question about the host and nothing else.
+pub fn remote_host(address: &str) -> &str {
+    let rest = match address.find("://") {
+        Some(i) => &address[i + 3..],
+        None => address,
+    };
+    if rest.starts_with('[') {
+        return match rest.find(']') {
+            Some(close) => &rest[..=close],
+            None => rest,
+        };
+    }
+    match rest.rsplit_once(':') {
+        Some((host, _)) => host,
+        None => rest,
+    }
+}
+
+/// `host:port` of a §2m.2 address — the form `--daemon-address` and `set_daemon` want when the
+/// scheme is dropped. Kept verbatim otherwise.
+pub fn remote_host_port(address: &str) -> &str {
+    match address.find("://") {
+        Some(i) => &address[i + 3..],
+        None => address,
+    }
+}
+
+/// Whether a §2m.2 host is a **literal** loopback address — `127.0.0.0/8` or `::1` (§2c's own
+/// rule, applied to an address fmonero never dials itself). A DNS name is never loopback here:
+/// deciding that means resolving it, and [`crate::units::ssl_for_address`] is called while
+/// rendering a unit file.
+pub fn is_loopback_host(host: &str) -> bool {
+    let host = host.strip_prefix('[').unwrap_or(host);
+    let host = host.strip_suffix(']').unwrap_or(host);
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(v4)) => v4.is_loopback(),
+        Ok(std::net::IpAddr::V6(v6)) => v6.is_loopback(),
+        Err(_) => false,
+    }
+}
+
+/// Whether a §2m.2 host is a **literal** address inside one of the private ranges §2m.6 lists:
+/// `127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10` (CGNAT —
+/// where Tailscale lives), `169.254.0.0/16`, `::1`, `fc00::/7` or `fe80::/10`.
+///
+/// **A DNS name is never treated as private**, because classifying one means resolving it — a
+/// network call inside the doctor's pure `fn detect(&Probes) -> Verdict` (§7's axiom), whose
+/// answer a name server can change between runs. So a private node reached by name warns, and
+/// the warning says to use its address if that is wrong (§7.1's `remote_node_untrusted`).
+pub fn is_private_host(host: &str) -> bool {
+    let host = host.strip_prefix('[').unwrap_or(host);
+    let host = host.strip_suffix(']').unwrap_or(host);
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(v4)) => {
+            let o = v4.octets();
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                // 100.64.0.0/10, CGNAT: `Ipv4Addr::is_shared` is unstable, so it is spelled out.
+                || (o[0] == 100 && (64..128).contains(&o[1]))
+        }
+        Ok(std::net::IpAddr::V6(v6)) => {
+            let seg = v6.segments();
+            v6.is_loopback()
+                // fc00::/7, unique local.
+                || (seg[0] & 0xfe00) == 0xfc00
+                // fe80::/10, link local.
+                || (seg[0] & 0xffc0) == 0xfe80
+        }
+        Err(_) => false,
+    }
+}
+
 fn parse_dir(key: &str, value: &str) -> Result<PathBuf, Error> {
     let p = PathBuf::from(value);
     if value.is_empty() || !(p.is_absolute() || value.starts_with('~')) {
@@ -456,6 +663,92 @@ fn parse_dir(key: &str, value: &str) -> Result<PathBuf, Error> {
 impl Settings {
     /// `(key, default, one-line doc)` — the §4 table (§5b).
     pub const KEYS: &'static [(&'static str, &'static str, &'static str)] = KEY_TABLE;
+
+    /// §2m.2's grammar, in **one** place: `[http[s]://]host:port`, port mandatory, no path and
+    /// no userinfo. Returns the normalised address — scheme lower-cased and kept, host and port
+    /// unchanged — or `Error::Usage{reason:"bad_remote_address"}` with the row's exact message
+    /// and the one hint §2m.2 prescribes.
+    ///
+    /// Called by `Settings::set("node.remote", …)`, by `node_mode::set_remote` and by
+    /// `wallet set-daemon`, so the three cannot accept different strings (§5b).
+    ///
+    /// Why each refusal, from `set_server`'s own behaviour (§1b.9 item 1):
+    /// * **the port is mandatory** — a missing one is filled with 80 or 443, never 18081
+    ///   (`abstract_http_client.cpp:139-144`), so guessing here would make fmonero's rendering
+    ///   disagree with what `monero-wallet-rpc` does with the identical string;
+    /// * **a path is refused** — `parse_url` puts it in `content.uri` and `set_server` never
+    ///   reads that field, so accepting one would silently do nothing (§2j);
+    /// * **userinfo is refused** — §0 cuts a remote-node credential;
+    /// * **a foreign scheme is refused** — with the port mandatory the scheme has no effect at
+    ///   all, so `ftp://` would be silently discarded rather than honoured.
+    pub fn parse_remote_address(s: &str) -> Result<String, Error> {
+        let s = s.trim();
+        if s.is_empty() {
+            return Err(bad_remote("a remote node address is required"));
+        }
+        let (scheme, rest) = match s.find("://") {
+            Some(i) => {
+                let scheme = s[..i].to_ascii_lowercase();
+                if scheme != "http" && scheme != "https" {
+                    return Err(bad_remote("only http:// and https:// are understood"));
+                }
+                (Some(scheme), &s[i + 3..])
+            }
+            None => (None, s),
+        };
+        if rest.contains('@') {
+            return Err(bad_remote(
+                "a remote node address may not carry a username or password",
+            ));
+        }
+        if rest.contains(['/', '?', '#']) {
+            return Err(bad_remote(
+                "a remote node address is host:port with no path — monero-wallet-rpc discards everything after the port",
+            ));
+        }
+        let ipv6 = || bad_remote("an IPv6 address must be bracketed: [2001:db8::1]:18089");
+        let (host, port) = if let Some(open) = rest.strip_prefix('[') {
+            let close = open.find(']').ok_or_else(ipv6)?;
+            let literal = &open[..close];
+            if literal.parse::<std::net::Ipv6Addr>().is_err() {
+                return Err(ipv6());
+            }
+            let after = &open[close + 1..];
+            let port = after.strip_prefix(':').ok_or_else(|| {
+                bad_remote(
+                    "the port is required — monero-wallet-rpc fills a missing port with 80 or 443, never 18081",
+                )
+            })?;
+            (format!("[{literal}]"), port)
+        } else {
+            let (host, port) = rest.rsplit_once(':').ok_or_else(|| {
+                bad_remote(
+                    "the port is required — monero-wallet-rpc fills a missing port with 80 or 443, never 18081",
+                )
+            })?;
+            if host.contains(':') {
+                return Err(ipv6());
+            }
+            if host.is_empty() || !host.split('.').all(is_dns_label) {
+                return Err(bad_remote(
+                    "the host must be an IPv4 literal, a bracketed IPv6 literal or a DNS name",
+                ));
+            }
+            (host.to_string(), port)
+        };
+        let bad_port = || bad_remote("port must be 1..65535");
+        if port.is_empty() || port.len() > 5 || !port.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(bad_port());
+        }
+        let n: u32 = port.parse().map_err(|_| bad_port())?;
+        if n == 0 || n > u32::from(u16::MAX) {
+            return Err(bad_port());
+        }
+        Ok(match scheme {
+            Some(scheme) => format!("{scheme}://{host}:{port}"),
+            None => format!("{host}:{port}"),
+        })
+    }
 
     /// Read `config.toml`, or the defaults when it does not exist, then expand a leading
     /// `~` in every path **once** (§4.2) and derive the network's wallet directory when
@@ -495,6 +788,9 @@ impl Settings {
     pub fn get(&self, key: &str) -> Result<String, Error> {
         Ok(match key {
             "node.network" => self.node.network.to_string(),
+            "node.mode" => self.node.mode.to_string(),
+            "node.remote" => self.node.remote.clone(),
+            "node.remote_trusted" => self.node.remote_trusted.to_string(),
             "node.url" => self.node.url.clone(),
             "node.unit" => self.node.unit.clone(),
             "node.data_dir" => self.node.data_dir.display().to_string(),
@@ -531,6 +827,39 @@ impl Settings {
     pub fn set(&mut self, key: &str, value: &str) -> Result<(), Error> {
         match key {
             "node.network" => self.node.network = value.parse()?,
+            // §2m.1's invariant, enforced in both directions so that no consumer needs an
+            // "empty address in remote mode" branch — and the honest behaviour of that branch
+            // (refuse everything) would be a fourth layout nobody specified.
+            "node.mode" => {
+                let mode: NodeMode = value.parse()?;
+                if mode.is_remote() && self.node.remote.trim().is_empty() {
+                    return Err(Error::usage(
+                        "node.mode = remote needs node.remote to be set first",
+                    )
+                    .with_reason("remote_unset")
+                    .with_hint("fmonero node remote <host>:18089 --yes"));
+                }
+                self.node.mode = mode;
+            }
+            "node.remote" => {
+                if value.trim().is_empty() {
+                    // `&& !is_empty()` so that clearing an ALREADY-empty address is a no-op
+                    // rather than a refusal: on a hand-edited file carrying `mode = "remote"`
+                    // with no address the pair is already broken, `invalid_keys` reports it
+                    // under `node.mode` — whose default is the repair — and a second row for a
+                    // key whose "fix" is the value it already holds would be a fixer that
+                    // cannot succeed (§7.1).
+                    if self.node.mode.is_remote() && !self.node.remote.is_empty() {
+                        return Err(Error::usage("node.remote is in use by node.mode = remote")
+                            .with_reason("remote_unset")
+                            .with_hint("fmonero node local --yes   # then clear node.remote"));
+                    }
+                    self.node.remote = String::new();
+                } else {
+                    self.node.remote = Settings::parse_remote_address(value)?;
+                }
+            }
+            "node.remote_trusted" => self.node.remote_trusted = parse_bool(key, value)?,
             "node.url" => {
                 crate::rpc::require_loopback(value)?;
                 self.node.url = value.to_string();
@@ -595,6 +924,10 @@ impl Settings {
                 bad.push(((*key).to_string(), e.to_string()));
             }
         }
+        // §2m.1's invariant needs no clause of its own here: the loop above re-`set`s every key
+        // it read, so a hand-edited `mode = "remote"` with an empty `node.remote` is refused by
+        // `set` and lands in `bad` under `node.mode` — whose documented default, `local`, is
+        // also the repair.
         if self.wallet.port != 0 {
             let expected = self.node.network.wallet_rpc_port();
             if self.wallet.port != expected {
@@ -656,8 +989,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_key_table_is_the_twenty_keys_of_the_design() {
-        assert_eq!(Settings::KEYS.len(), 20);
+    fn the_key_table_is_the_twenty_three_keys_of_the_design() {
+        // Twenty before v5.2; §2m.1's three remote-mode keys make it twenty-three (§4).
+        assert_eq!(Settings::KEYS.len(), 23);
         let s = Settings::default();
         for (key, _, doc) in Settings::KEYS {
             assert!(s.get(key).is_ok(), "{key} must be readable");
@@ -673,10 +1007,141 @@ mod tests {
         assert_eq!(s2, s);
     }
 
+    /// §2m.2's grammar, one case per row of the refusal table, plus what it accepts.
+    #[test]
+    fn the_remote_address_grammar_is_the_seven_refusals_of_the_design() {
+        for (input, want) in [
+            ("node.example.com:18089", "node.example.com:18089"),
+            (
+                "http://node.example.com:18089",
+                "http://node.example.com:18089",
+            ),
+            // The scheme is stored lower-cased and kept; host and port are untouched (§2m.2).
+            (
+                "HTTPS://Node.Example.COM:18089",
+                "https://Node.Example.COM:18089",
+            ),
+            ("127.0.0.1:18081", "127.0.0.1:18081"),
+            ("[2001:db8::1]:18089", "[2001:db8::1]:18089"),
+            ("[::1]:18081", "[::1]:18081"),
+            ("  node:18089  ", "node:18089"),
+        ] {
+            assert_eq!(
+                Settings::parse_remote_address(input).unwrap(),
+                want,
+                "{input}"
+            );
+        }
+        for (input, needle) in [
+            ("", "required"),
+            ("node.example.com", "the port is required"),
+            ("http://node.example.com:18089/json_rpc", "no path"),
+            ("user:pass@node:18089", "username or password"),
+            ("ftp://node:18089", "only http:// and https://"),
+            ("tcp://node:18089", "only http:// and https://"),
+            ("node.example.com:0", "port must be 1..65535"),
+            ("node.example.com:70000", "port must be 1..65535"),
+            ("[::1:18089", "must be bracketed"),
+            ("::1:18089", "must be bracketed"),
+            ("-bad-.example.com:18089", "the host must be"),
+        ] {
+            let e = Settings::parse_remote_address(input).unwrap_err();
+            assert_eq!(e.exit_code(), 2, "{input}");
+            assert_eq!(e.reason(), Some("bad_remote_address"), "{input}");
+            assert!(e.to_string().contains(needle), "{input}: {e}");
+            assert_eq!(e.hint(), REMOTE_HINT, "{input}");
+        }
+    }
+
+    /// §2m.1's invariant, in both directions. Before v5.2 neither key existed, so the mode was
+    /// unreachable through the CLI at all (§2i).
+    #[test]
+    fn the_mode_and_the_address_hold_each_other_up() {
+        let mut s = Settings::default();
+        let e = s.set("node.mode", "remote").unwrap_err();
+        assert_eq!(e.exit_code(), 2);
+        assert_eq!(e.reason(), Some("remote_unset"));
+        assert!(e.to_string().contains("needs node.remote"), "{e}");
+        assert_eq!(e.hint(), "fmonero node remote <host>:18089 --yes");
+        assert_eq!(s.node.mode, NodeMode::Local, "nothing was written");
+
+        s.set("node.remote", "node.example.com:18089").unwrap();
+        s.set("node.mode", "remote").unwrap();
+        assert_eq!(s.node.mode, NodeMode::Remote);
+
+        let e = s.set("node.remote", "").unwrap_err();
+        assert_eq!(e.exit_code(), 2);
+        assert_eq!(e.reason(), Some("remote_unset"));
+        assert!(e.to_string().contains("in use by node.mode"), "{e}");
+        assert_eq!(
+            e.hint(),
+            "fmonero node local --yes   # then clear node.remote"
+        );
+        assert_eq!(s.node.remote, "node.example.com:18089");
+
+        // Back to local, and only then may the address be cleared.
+        s.set("node.mode", "local").unwrap();
+        s.set("node.remote", "").unwrap();
+        assert_eq!(s.node.remote, "");
+
+        // A hand-edited file that breaks the invariant is what `invalid_keys` is for (§7.1).
+        let mut broken = Settings::default();
+        broken.node.mode = NodeMode::Remote;
+        let bad = broken.invalid_keys();
+        assert_eq!(bad.len(), 1, "{bad:?}");
+        assert_eq!(bad[0].0, "node.mode");
+        assert_eq!(Settings::default_of("node.mode"), Some("local"));
+
+        // `node.remote_trusted` is accepted for any host: a node the owner runs on a LAN is a
+        // legitimate case no local check can tell from a public one (§4, §7.1 warns instead).
+        let mut s = Settings::default();
+        s.set("node.remote", "node.example.com:18089").unwrap();
+        s.set("node.remote_trusted", "true").unwrap();
+        assert!(s.node.remote_trusted);
+        assert_eq!(
+            s.set("node.remote_trusted", "maybe")
+                .unwrap_err()
+                .exit_code(),
+            2
+        );
+    }
+
+    #[test]
+    fn a_remote_address_is_split_into_its_host_and_its_host_port() {
+        for (addr, host, host_port) in [
+            (
+                "node.example.com:18089",
+                "node.example.com",
+                "node.example.com:18089",
+            ),
+            ("http://node:18089", "node", "node:18089"),
+            ("https://1.2.3.4:18089", "1.2.3.4", "1.2.3.4:18089"),
+            (
+                "[2001:db8::1]:18089",
+                "[2001:db8::1]",
+                "[2001:db8::1]:18089",
+            ),
+            ("http://[::1]:18081", "[::1]", "[::1]:18081"),
+        ] {
+            assert_eq!(remote_host(addr), host, "{addr}");
+            assert_eq!(remote_host_port(addr), host_port, "{addr}");
+        }
+        assert!(is_loopback_host("127.0.0.1"));
+        assert!(is_loopback_host("127.9.9.9"));
+        assert!(is_loopback_host("[::1]"));
+        assert!(!is_loopback_host("node.example.com"));
+        assert!(!is_loopback_host("10.0.0.5"));
+        // A DNS name is never loopback here: deciding that means resolving it (§2m.6).
+        assert!(!is_loopback_host("localhost"));
+    }
+
     #[test]
     fn the_defaults_are_the_ones_the_design_names() {
         let s = Settings::default();
         assert_eq!(s.node.network, Network::Mainnet);
+        assert_eq!(s.node.mode, NodeMode::Local, "local by default (§2m.1)");
+        assert_eq!(s.node.remote, "");
+        assert!(!s.node.remote_trusted, "a public node is never trusted");
         assert_eq!(s.node.url, "http://127.0.0.1:18081");
         assert_eq!(s.wallet.url, "http://127.0.0.1:18083");
         assert_eq!(s.wallet.port, 18083);

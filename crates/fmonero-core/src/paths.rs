@@ -65,6 +65,18 @@ pub fn under_test_state_dir() -> bool {
     env_dir("FMONERO_STATE_DIR").is_some()
 }
 
+/// True when the systemd user directory is itself redirected — `FMONERO_SYSTEMD_USER_DIR`, under
+/// the [`under_test_state_dir`] guard (§2i, v5.1).
+///
+/// It is what lets `units::install` write the two unit files **inside the sandbox** instead of
+/// refusing outright: the rule §4.2 states is "a test never installs a REAL unit", and a unit
+/// written into a redirected directory is not one. The `systemctl` calls that follow are
+/// suppressed separately, by `Systemctl::Fixture` (§2i) — a sandboxed *file* is harmless, a
+/// `systemctl --user disable` against the owner's manager is not.
+pub fn systemd_user_dir_is_sandboxed() -> bool {
+    under_test_state_dir() && env_dir("FMONERO_SYSTEMD_USER_DIR").is_some()
+}
+
 impl Paths {
     /// Resolve every path from the environment. Creates nothing.
     pub fn discover() -> Result<Paths, Error> {

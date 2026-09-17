@@ -182,7 +182,7 @@ struct Command {
     needs_node: bool,
     /// `json` everywhere but `robot-docs`, `--help` and `tui` (§4).
     output_format: &'static str,
-    /// True for exactly four commands (§4).
+    /// True for exactly six commands since v5.2 (§4).
     accepts_dry_run: bool,
     /// The §4b class this command's *lowest* scenario reaches (§2j).
     verified: &'static str,
@@ -206,6 +206,15 @@ const COMMANDS: &[Command] = &[
         "[--up KBPS] [--down KBPS] [--out-peers N] [--in-peers N]",
         true, false, false, true, false, "amber",
     ),
+    // v5.2, §2m.5. `needs_node: false` for both: they touch settings, unit files and
+    // `systemctl`, and start no daemon. `accepts_dry_run: true` — two of the six commands
+    // that take it (§4).
+    cmd(
+        "node remote",
+        "ADDR [--trusted] [--yes] [--dry-run]",
+        true, true, false, false, true, "amber",
+    ),
+    cmd("node local", "[--yes] [--dry-run]", true, true, false, false, true, "amber"),
     cmd("wallet list", "", false, false, false, false, false, "green"),
     cmd("wallet open", "NAME [--password-file P]", true, false, false, false, false, "red"),
     cmd("wallet close", "", true, false, true, false, false, "amber"),
@@ -475,7 +484,12 @@ mod tests {
         let ctx = Context::for_test(&dir).expect("context");
         let v = capabilities_json(&ctx);
         assert_eq!(v["exit_codes"].as_array().unwrap().len(), EXIT_CODES.len());
-        assert_eq!(v["settings"].as_array().unwrap().len(), 20);
+        assert_eq!(
+            v["settings"].as_array().unwrap().len(),
+            Settings::KEYS.len()
+        );
+        // Twenty before v5.2; §2m.1 adds node.mode, node.remote and node.remote_trusted.
+        assert_eq!(Settings::KEYS.len(), 23);
         assert!(!v["reasons"].as_array().unwrap().is_empty());
         assert_eq!(v["warnings"].as_array().unwrap().len(), WARNING_IDS.len());
         assert!(!v["env"].as_array().unwrap().is_empty());
@@ -488,15 +502,24 @@ mod tests {
     /// them — so the documented set and `main.rs`'s `dry_run_is_supported` cannot drift
     /// without this failing.
     #[test]
-    fn exactly_four_commands_accept_dry_run() {
+    fn exactly_six_commands_accept_dry_run() {
         let accepting: Vec<&str> = COMMANDS
             .iter()
             .filter(|c| c.accepts_dry_run)
             .map(|c| c.name)
             .collect();
+        // Four before v5.2; §2m.5 step 2 puts `--dry-run` on both mode commands, ahead of
+        // their `--yes` gate, exactly as `setup --dry-run` is (§4).
         assert_eq!(
             accepting,
-            vec!["wallet send", "wallet sweep", "setup", "doctor"]
+            vec![
+                "node remote",
+                "node local",
+                "wallet send",
+                "wallet sweep",
+                "setup",
+                "doctor"
+            ]
         );
     }
 
