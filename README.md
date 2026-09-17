@@ -128,6 +128,11 @@ is the only way back: v0.1 ships no rescan command.
 
 Bound every send with `--max-fee`. The reason is below.
 
+**Do not run `fmonero doctor --fix` while in remote mode** until the defect recorded in
+`DECISIONS.md` is fixed: it rewrites `node.mode` back to `local` and leaves the wallet unit
+pointing at the public node. `fmonero doctor` on its own is safe, and the one `settings_valid`
+warning it prints on a remote-mode machine is that defect rather than a broken config.
+
 **What the node learns.** This machine's IP address and the timing of every request, including
 the burst that accompanies a send. Which blocks the wallet asks for, which bounds the wallet's
 restore height and therefore its age. And, if you mark it trusted, the amounts the wallet holds
@@ -177,7 +182,7 @@ your hands has run.
 |---|---|
 | GREEN | Verified end to end on this machine, with no daemon running, by `tests/e2e.sh` and the phase gates. |
 | AMBER | Verified against `crates/fmonero-mock`, a test-only server that replays fixtures derived from the Monero source at tag v0.18.5.1. This proves our wire format, our parsing and our error mapping. It proves nothing about a real daemon. |
-| LIVE | The class remote node mode **makes possible** — a real `monero-wallet-rpc` against a real public node, on a scratch wallet with no funds — for six read-only wallet commands. **Nothing has been run in it yet**: the rows are listed in `DESIGN.md` §4b with the exact rehearsal, and they stay RED until `DECISIONS.md` carries their real output. |
+| LIVE | A real `monero-wallet-rpc` against a real public node, on a scratch wallet with no funds. **Run for the first time on 2026-09-17**, against `xmr-node.cakewallet.com:18081`, by an independent verifier; the full transcript is in `DECISIONS.md` under "Remote node mode verification". It is the only class in which this project has ever touched a real Monero node. |
 | RED | Never run. Unverified, and not claimed to work anywhere in this README, in `--help` or in `robot-docs`. |
 
 **GREEN.** `status` with both daemons absent (exit 0, `reachable: false`, warnings);
@@ -221,6 +226,30 @@ daemons answering; the restricted-node and `"BUSY"` degradations; Digest authent
 including the per-nonce counter reset; the wallet-RPC error map, one case per mapped code; the
 deadline, breaker and `--force` paths; and the layout refusals against a synthetic `/proc` and
 `systemctl` fixture.
+
+**LIVE — run on 2026-09-17 against `xmr-node.cakewallet.com:18081`, in a scratch sandbox, on a
+wallet with no funds.** `node remote --dry-run` and `node remote --yes` (idempotent on the second
+run, with the installed unit carrying `--daemon-address`, `--untrusted-daemon` and
+`--daemon-ssl autodetect`); `wallet create` (three of four runs; see the defect below);
+`wallet open`; `wallet refresh`, which fetched a real block from that node; `wallet balance`
+(zero, as an empty wallet should be); `wallet address`; `wallet history --limit 5` (empty);
+`wallet close`; `status --json`, reporting `node.layout: "remote"`, `node.reachable: null` and a
+wallet height of 3 764 638; `node info`; the nine node commands that need the local daemon, each
+exiting 4 `remote_node`; the TUI's Node screen on a real pty; and `node local --yes`, back to the
+local render. `wallet send --dry-run` reached **exit 14 `insufficient_funds`** — past the remote
+refresh gate, which is the point of the row: the wallet's `last_refresh_at` advanced before the
+build, nothing was relayed, and no pending record was written. A real send or sweep of any amount
+is still RED, in this mode as in the other.
+
+**Two defects that live run found, both reported and neither fixed yet.** `fmonero doctor --fix`
+**silently rewrites `node.mode` from `remote` back to `local`** on a correctly configured machine —
+a false `settings_valid` warning whose repair drops the key — and leaves the wallet unit still
+pointing at the public node. Until it is fixed, run `fmonero doctor` but not `fmonero doctor --fix`
+while in remote mode. And `wallet create` against a remote node can exit 5 `killed_at_deadline`
+on `set_daemon` **after the wallet file has been created**, which also means its
+"back up your seed" hint is never printed; `wallet open <name>` afterwards works, and the seed is
+read with `monero-wallet-cli --wallet-file <wallet.dir>/<name> --offline`. Both are written up in
+full, with their real output, in `DECISIONS.md`.
 
 **RED, and therefore unverified.** A real `node up`, `node down` or `node restart` against
 `monerod`. Real sync progress, a real peer list, a real balance, a real `refresh`. A real send

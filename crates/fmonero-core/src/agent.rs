@@ -19,8 +19,9 @@ use crate::status::WARNING_IDS;
 pub const BUILD_STAGE: &str = "phase-4-verified-and-fixed";
 
 /// The §4b summary, in prose, and honest about the one thing that matters: **no fmonero build
-/// has ever spoken to a real `monerod` or `monero-wallet-rpc`**, because neither is installed
-/// on the machine this was written on (§1.1).
+/// has ever spoken to a real `monerod`**, and no build has ever broadcast a transaction. Since
+/// 2026-09-17 one build *has* driven a real `monero-wallet-rpc` against a real public node, on a
+/// scratch wallet with no funds — that is §4b's LIVE class and it is named below as such.
 pub const BUILD_NOTE: &str = "\
 Integrated build (DESIGN.md §8, Phases 0 to 3 merged, reviewed and fixed in Phase 4, verified \
 by Phase 4's verifier on 2026-09-17, and the three defects that verification found fixed the \
@@ -29,8 +30,9 @@ same day against design brief v5.1). What has actually been observed working:
 GREEN — verified end to end on a machine with no Monero installed: status with both daemons \
 absent, wallet list, wallet validate's structural path, settings list|get|set, capabilities, \
 robot-docs, version, setup --dry-run, wallet clear-pending, node log with no log file, every \
---help, every usage error, amount and address parsing, doctor (exit 11 with exactly \
-monerod_installed and wallet_rpc_installed failing), doctor capabilities, the doctor undo latest \
+--help, every usage error, amount and address parsing, doctor (exit 11; since Monero was \
+installed here on 2026-09-17 the failing check is node_reachable, and every other node, wallet \
+and storage check skips or warns with a stated reason), doctor capabilities, the doctor undo latest \
 round trip, and tui opening, rendering every screen's empty state and quitting cleanly. Also \
 GREEN since Phase 4's verifier ran it: setup --all --yes for real, through \
 scripts/install.sh --yes, twice — the two systemd user units (written disabled), \
@@ -54,9 +56,22 @@ breaker and --force paths, the TUI's ProgramSimulator send (one transfer, one re
 every TUI screen rendered against the mock. The Quickshell bar widget loads in the live shell \
 and renders from the same status document.
 
+LIVE — run for the first time on 2026-09-17, against the real public node \
+xmr-node.cakewallet.com:18081, with a real monero-wallet-rpc and a scratch wallet holding no \
+funds, in remote node mode (DESIGN.md §2m): node remote --dry-run and --yes (idempotent), \
+wallet create, wallet open, wallet refresh (which fetched a real block), wallet balance, \
+wallet address, wallet history, wallet close, status, node info, the nine node commands that \
+need the local daemon each exiting 4 remote_node, the TUI's Node screen on a real pty, and \
+node local --yes. wallet send --dry-run reached exit 14 insufficient_funds AFTER the remote \
+refresh gate, relaying nothing. Two defects that run found are recorded in DECISIONS.md and \
+not yet fixed: doctor --fix rewrites node.mode from remote back to local on a correct machine, \
+and wallet create can exit 5 killed_at_deadline on set_daemon after the wallet file exists.
+
 RED — never verified, and not claimed anywhere: a real node start, stop or restart, real sync \
-progress, real peers, a real balance, a real refresh, A REAL SEND OR SWEEP OF ANY AMOUNT, a \
-real open_wallet against a real wallet file, setup's system_unit refusal, the \
+progress, real peers, and — against a local monerod, which has never run here — a real balance, \
+a real refresh and a real open_wallet against a real wallet file. A REAL SEND OR SWEEP OF ANY \
+AMOUNT is RED in every mode, remote included: remote mode changes what a send is gated on, never \
+what a broadcast proves. Also RED: setup's system_unit refusal, the \
 120 GB disk floor as a NUMBER (it is an estimate; only the refusal it drives is exercised), \
 the warm timing target, and \
 every doctor check in the node, wallet and storage groups against a live daemon. \

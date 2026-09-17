@@ -7199,3 +7199,363 @@ thread 'rpc::mock_tests::status_in_remote_mode_names_the_address_and_claims_noth
   FAIL    remote_node_untrusted runs HERE and passes on an untrusted node:
           [.checks[] | select(.id=="remote_node_untrusted") | .status] = ["skip"], expected ["pass"]
 ```
+
+---
+
+## Remote node mode verification (real output)
+
+Run on 2026-09-17 in `/home/oliver/Projects/odcpw/fmonero` at `67ad95a`, by an **independent
+verifier** who re-ran every gate rather than reading the entry above. **This is the first time
+any fmonero build has spoken to a real `monero-wallet-rpc`, and the first time a real
+`monero-wallet-rpc` driven by fmonero has spoken to a real Monero node.** Everything below ran
+in a scratch sandbox (`FMONERO_STATE_DIR`, `FMONERO_CONFIG_DIR`, `FMONERO_CACHE_DIR`,
+`XDG_DATA_HOME`, `FMONERO_SYSTEMD_USER_DIR` all under a temporary directory, deleted at the end).
+**No local `monerod` was started, no `sudo` was run, nothing was pushed, and the owner's own
+state was not touched** — the proof is the byte-identical hashes at the end of this entry.
+
+### The gate, re-run from scratch
+
+```
+$ systemctl --user show -p ActiveState,UnitFileState,NRestarts fmonero-{monerod,wallet-rpc}.service
+before everything   ActiveState=inactive  UnitFileState=disabled  NRestarts=0   (both units)
+
+$ cargo fmt --check                                   exit 0
+$ cargo clippy --all-targets -- -D warnings           Finished `dev` profile — no warnings
+$ cargo test                                          241 tests; PASSED 2 runs of 4, FAILED 2 of 4
+                                                      (the pre-existing send.lock flake — diagnosed below)
+$ cargo test -- --test-threads=1                      80 + 158 + 3 = 241 passed, 0 failed (40.6 s)
+$ scripts/check.sh --full                             check.sh: PASS (0 FAIL)
+$ tests/e2e.sh --fast                                 522 passed, 0 failed, 3 skipped   real 0m17.710s
+$ tests/e2e.sh --full                                 546 passed, 2 failed, 3 skipped   real 2m13.395s
+    FAIL  §2l (a) status, both daemons absent: 78ms mean, over the 60 ms budget
+    FAIL  §2l (b) status against the mock: 86ms mean, over the 80 ms budget
+$ tests/plugin-smoke.sh                               37 passed, 0 failed
+$ tests/tui_tmux.sh                                   10 passed, 0 failed
+$ uptime                                              load average: 2.57, 2.59, 2.72
+
+$ systemctl --user show -p ActiveState,UnitFileState,NRestarts,Result fmonero-{monerod,wallet-rpc}.service
+after every gate    ActiveState=inactive  UnitFileState=disabled  NRestarts=0  Result=success
+```
+
+The two `§2l` timing failures reproduce exactly as the entry above reports them, on an idle-ish
+desktop carrying a standing load average near 2.6. They are **confirmed, not re-litigated**: the
+budget stands, the miss is recorded, and it remains an open item.
+
+### The public node
+
+Six candidates were probed with `curl -s -m 8 -d '{"jsonrpc":"2.0","id":"0","method":"get_info"}'`.
+Five did not answer inside 8 s (`node.sethforprivacy.com:18089`, `node.monerodevs.org:18089`,
+`nodes.hashvault.pro:18081`, `node.community.rino.io:18081`, `xmr.stackwallet.com:18081`). One did:
+
+```
+http://xmr-node.cakewallet.com:18081   synchronized=True height=3764637 target=0
+                                       nettype=mainnet restricted=True
+```
+
+**`xmr-node.cakewallet.com:18081` is the node every row below ran against.** It is restricted,
+which is what a public node is, and it was never marked trusted.
+
+### The wallet-rpc that was run, and why by hand
+
+`/usr/bin/monero-wallet-rpc` was started **in the foreground, not through systemd**, with exactly
+the argv the v5.2 wallet unit renders for remote mode (`fmonero node remote … --dry-run` printed
+it first and it was compared line by line), its working directory set to the sandbox's
+`state/run` so that its generated `monero-wallet-rpc.18383.login` landed where fmonero reads it:
+
+```
+/usr/bin/monero-wallet-rpc --rpc-bind-ip 127.0.0.1 --rpc-bind-port 18383 \
+  --wallet-dir <sandbox>/share/fmonero/wallets/mainnet \
+  --daemon-address xmr-node.cakewallet.com:18081 --untrusted-daemon --daemon-ssl autodetect \
+  --non-interactive --log-file <sandbox>/state/run/monero-wallet-rpc.log --log-level 0 \
+  --max-concurrency 4
+```
+
+The three flag names §2m.3 specifies were re-verified in the v0.18.5.1 source rather than trusted:
+`daemon-address` (`wallet2.cpp:244`), `trusted-daemon` (`:247`), `untrusted-daemon` (`:248`) and
+`daemon-ssl` with `"enabled|disabled|autodetect"` and the default `"autodetect"` (`:253`); and
+`set_daemon`'s `KV_SERIALIZE_OPT(ssl_support, "autodetect")` at
+`wallet_rpc_server_commands_defs.h:2632`. **§2m.3 is accurate.**
+
+### The §4b LIVE rows, with their real output
+
+```
+$ fmonero node remote xmr-node.cakewallet.com:18081 --yes --dry-run     exit 0, wrote nothing
+  the wallet-unit hunk:
+      --daemon-address xmr-node.cakewallet.com:18081 \
+      --untrusted-daemon \
+      --daemon-ssl autodetect \
+  payload: mode=remote address=xmr-node.cakewallet.com:18081 trusted=false
+           ssl_support=autodetect dry_run=true changed=true
+
+$ fmonero node remote xmr-node.cakewallet.com:18081 --yes                exit 0
+  actions: wallet.dir ×3, node unit, wallet unit, monerod.conf — all "written"
+$ fmonero node remote xmr-node.cakewallet.com:18081 --yes   (again)      exit 0
+  changed=false  wallet_unit_restarted=false  every action "unchanged"       # idempotent
+
+$ fmonero wallet create verify-remote --yes            exit 5  killed_at_deadline   ← DEFECT 2
+$ fmonero wallet create verify-remote-2 --yes          exit 0  5903ms  + seed_backup_hint
+$ fmonero wallet create verify-remote-3 --yes          exit 0  5200ms  + seed_backup_hint
+$ fmonero wallet create verify-remote-4 --yes          exit 0  2818ms  (cold wallet-rpc, restarted)
+
+$ fmonero wallet open verify-remote                    exit 0  3823ms / 3032ms / 1246ms / (4th) 0
+  {"name":"verify-remote","nettype":"mainnet","ok":true,"open":true,"schema":1,"unit_started":false}
+
+$ fmonero wallet refresh --json                        exit 0  8924ms
+  {"blocks_fetched":0,"ok":true,"received_money":false,"schema":1}
+$ fmonero wallet refresh --json   (later, after reopening)              exit 0
+  {"blocks_fetched":1,"ok":true,"received_money":false,"schema":1}      # a live top-up
+
+$ fmonero wallet balance --json                        exit 0
+  {"account_index":0,"balance_pico":0,"balance_xmr":"0.0000","blocks_to_unlock":0,"ok":true,
+   "schema":1,"subaddresses":null,"time_to_unlock_sec":0,"unlocked_pico":0,"unlocked_xmr":"0.0000"}
+
+$ fmonero wallet address --json                        exit 0
+  primary 427CZv3f5…iV (a scratch mainnet wallet with no funds; deleted afterwards)
+
+$ fmonero wallet history --limit 5 --json              exit 0
+  {"cache_age_sec":0,"cached":false,"high_water":0,"ok":true,"pool_unavailable":false,
+   "schema":1,"transfers":[]}
+
+$ fmonero status --json | jq '.node, .wallet'          exit 0
+  node:   layout "remote"  url "xmr-node.cakewallet.com:18081"  reachable null  trusted false
+          height null  sync_percent null  (every measured field null)
+  wallet: open true  height 3764638  balance_pico 0  reachable true  rpc_version "1.31"
+          last_refresh_at "2026-09-17T20:37:58+02:00"
+  warnings: remote_node (info) — "…it learns this machine's IP address and the timing of every
+            request, and its own sync state cannot be seen from here"
+
+$ fmonero wallet close --json                          exit 0   open=false
+$ fmonero node local --yes                             exit 0
+  "the local node is not running: fmonero node up"; the unit re-renders to
+      --daemon-address 127.0.0.1:18081 / --trusted-daemon / --daemon-ssl disabled
+  and node.remote is KEPT (§2m.1): "xmr-node.cakewallet.com:18081"
+```
+
+**The restore height was the node's, not genesis** — which is the condition §4b puts on the
+`wallet refresh` row. `status` reported `wallet.height 3764638` against a node whose `get_info`
+said `height 3764637` one minute earlier, and the create that produced that wallet took 20 s
+rather than the hours a scan from block 0 over the internet would cost. `blocks_fetched` was 0
+on the first refresh (already at the tip) and **1** on a later one — a real block, fetched from a
+stranger's node, by a wallet this repo created.
+
+### The send gate, which is the row that matters
+
+```
+$ fmonero status --json | jq .wallet.last_refresh_at      "2026-09-17T20:37:58+02:00"
+$ fmonero wallet send 44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGv7SqSsaBYBb98uNbr2VBBEt7f2wfn3RVGQBEP3A \
+      0.001 --dry-run --json                              exit 14   96ms
+  {"code":14,"code_name":"insufficient_funds","error":"not enough money",
+   "hint":"fmonero wallet balance","ok":false,"reason":null,"schema":1}
+$ fmonero status --json | jq .wallet.last_refresh_at      "2026-09-17T20:38:31+02:00"   ← it moved
+$ cat <state>/pending.json                                No such file  — nothing was recorded
+```
+
+The advancing `last_refresh_at` is the evidence that **§2m.3's `NodeGate::Remote` ran its bounded
+refresh before the build**, and the exit 14 is the evidence that the build then proceeded to the
+balance check rather than being refused for want of a local node. Nothing was relayed, no
+`pending` record exists, and the recipient is upstream's own published donation address, which is
+why it is quotable here (§2b.2).
+
+### The node commands, live
+
+```
+$ for v in up down restart peers bans limit log; do fmonero node $v [--yes] --json; done
+  every one:  exit 4   reason "remote_node"   hint "fmonero node local --yes"
+  error text: "fmonero node peers needs the local monerod; node.mode is remote
+               (xmr-node.cakewallet.com:18081)"
+$ fmonero node info --json                             exit 0
+  layout "remote", url "xmr-node.cakewallet.com:18081", trusted false, every measured field null;
+  the text line: "remote node xmr-node.cakewallet.com:18081 — its own height and sync state are
+  not observable through monero-wallet-rpc, and nothing verifies that it is on mainnet"
+```
+
+### The TUI, on a real pty, in remote mode against the real node
+
+```
+╭ Node ──────────────╮╭ Net ───────────────────────────╮
+│ reading status…    ││ not available with a remote node│
+╰────────────────────╯╰────────────────────────────────╯
+╭ Peers  0 · b: bans ─────────────────╮
+│ not available with a remote node    │
+╰─────────────────────────────────────╯
+● node remote ● wallet syncing │ remote node mode — run: fmonero node local --yes      ? help
+```
+
+`u` produced exactly the toast §2m.3 specifies. Note the transient `● node down` on the first
+frame, before the first status document arrives; it is a frame, not a claim, and it clears.
+
+### Secrets
+
+The scratch wallet's password came from `$FMONERO_WALLET_PASSWORD`, generated from
+`/dev/urandom` and never typed into argv:
+
+```
+$ grep -c -F "$PW" <sandbox>/state/run/monero-wallet-rpc.log      0
+$ grep -rlF "$PW" <sandbox>                                       (no hits but the file holding it)
+$ grep -rlF "$PW" ~/.local/state/fmonero ~/.config/fmonero        (no hits)
+```
+
+### DEFECT 1 — `fmonero doctor --fix` silently takes a correctly configured machine OUT of remote mode
+
+**This is the finding of this pass, and it is reproducible in three commands with no daemon of
+any kind.** `Settings::invalid_keys` (core) clones `self` and is correct. The doctor does **not**
+use it: `inspect_settings` in `crates/fmonero/src/doctor/probes.rs` replays the TOML onto a fresh
+`Settings::default()`, and `toml::Value`'s table iterates **alphabetically**, so within `[node]`
+the key `mode` is applied **before** `remote`. §2m.1's invariant — "`node.mode = remote` needs
+`node.remote` first" — therefore fires on a file where the invariant *holds*:
+
+```
+$ fmonero settings set node.remote node.example.com:18089
+$ fmonero settings set node.mode remote
+$ grep -E "^(mode|remote) " config.toml
+mode = "remote"
+remote = "node.example.com:18089"
+$ fmonero doctor --only install --json | jq '.checks[]|select(.id=="settings_valid")'
+ status: warn   reason: invalid_keys
+ detail: node.mode: node.mode = remote needs node.remote to be set first      ← a false statement
+$ fmonero doctor --fix --only install --json >/dev/null
+$ fmonero settings get node.mode
+{"key":"node.mode","value":"local"}                                           ← it was "remote"
+$ fmonero settings get node.remote
+{"key":"node.remote","value":"node.example.com:18089"}
+```
+
+The fixer is not incidental to the warning: `repaired_settings` (`doctor/mutate.rs`) **skips every
+key named in `settings_problems`**, so `node.mode` is dropped and rewritten at its default. And
+because `settings set` never re-renders a unit (§2m.1), what is left behind is precisely the state
+§2m exists to prevent: `node.mode = local` with the installed wallet unit still carrying
+`--daemon-address <public node> --untrusted-daemon`. Observed in the live sandbox, with the unit
+re-read afterwards to confirm it still named the public node. Severity: `doctor --fix` is a
+command README tells users to run, `settings_valid` is class A (backed up, undoable), and the
+result is a machine whose mode and whose unit disagree about which node holds its money's view of
+the chain. No funds are at risk — but the next `wallet open` points a working wallet at a dead
+`127.0.0.1:18081` while the unit, if started, syncs from the stranger.
+
+The shape of the fix is one line — seed the probe from the values already parsed, or apply
+`node.mode` last — but it is **reported, not applied**: this pass is the verifier's, and a
+money-adjacent repair path needs its own design sentence and its own non-vacuous test.
+
+**Why the suite did not catch it.** `tests/e2e.sh`'s remote block runs `fmonero doctor --json` and
+asserts `node_layout`, `node_reachable`, `remote_node_untrusted`, `disk_space` and
+`prune_configured` — and never asserts that `settings_valid` **passes**. The one case that names
+`settings_valid` feeds it a deliberately corrupt `config.toml` and asserts it warns. A check whose
+only assertion is that it fires on garbage cannot notice that it also fires on a correct file.
+
+### DEFECT 2 — `wallet create` in remote mode can exit 5 after the wallet exists, without the seed hint
+
+The very first `wallet create` against the real node:
+
+```
+$ FMONERO_WALLET_PASSWORD=… fmonero wallet create verify-remote --yes --json
+{"code":5,"code_name":"upstream",
+ "error":"monero-wallet-rpc did not answer set_daemon within its deadline",
+ "hint":"fmonero doctor   # or re-run with --force","ok":false,"reason":"killed_at_deadline"}
+exit 5
+$ ls <wallet.dir>
+verify-remote  verify-remote.keys          ← the wallet WAS created
+$ fmonero wallet open verify-remote        exit 0                 ← and it opens fine
+```
+
+`WalletClient::set_daemon` uses `Deadline::Probe`, i.e. `timeouts.wallet_sec` = **5 s**. §1b.9's
+"`set_daemon` opens no socket" is true of the call itself but not of its latency: `wallet2::set_daemon`
+takes `m_daemon_rpc_mutex` (`wallet2.cpp`, first statement), and in remote mode the auto-refresh
+that `create_wallet` kicks off holds that mutex across internet round trips. The wallet-rpc log
+shows the create's own work finishing at `18:36:25`, twenty seconds after the server came up. Three
+later creates took 5.9 s, 5.2 s and 2.8 s — one of them against a freshly restarted (cold)
+wallet-rpc — so this is a **marginal deadline, not a constant failure**: it did not reproduce on
+demand, and it is recorded as observed once, on the first contact, which is the contact the owner
+will have.
+
+Two consequences, and the second is the one that matters: the command reports failure for a wallet
+that now exists (so a retry with the same name will not do what the user expects), and **the
+`seed_backup_hint` — the one output that tells a user to write the seed down before funding the
+wallet — is never printed**. §2a's own rule is that a money-visibility fact is not a footnote.
+
+### DEFECT 3 — the `send.lock` flake is not a mystery any more; here is the mechanism
+
+The entry above reports `cargo test` failing ~3 runs in 12 with a spurious exit-3
+`send_in_progress`, `/proc/locks` showing `holders=[]`, and records it unexplained. It reproduced
+here **2 runs in 4** (and again 1 in 2 while re-running):
+
+```
+thread 'rpc::mock_tests::the_refusal_order_decides_the_exit_code' panicked at …:824
+assertion `left == right` failed: another fmonero send is building or relaying
+  left: 3    right: 15
+```
+
+The mechanism is `flock`'s lifetime rule, not fmonero's locking: **a `flock` is released when the
+last file descriptor referring to that *open file description* closes**, and every `fork()` — by
+*any* thread of the process — copies the descriptor table. A sibling test thread that spawns a
+child (a mock server, a `systemctl` probe) between this thread's `flock` and its `drop` keeps the
+description, and therefore the lock, alive until that child `exec`s. The window is microseconds;
+`O_CLOEXEC` closes it at `exec`, which is why `/proc/locks` is empty by the time anyone looks.
+
+Proven, rather than argued, with a 40-line program that flocks **its own private file**, drops it,
+and immediately re-flocks it, 20 000 times, while four sibling threads do nothing but spawn
+`/bin/true`:
+
+```
+EWOULDBLOCK on our own private lock file: 8122 / 20000  (other errno: 0)
+```
+
+That is the whole flake: distinct state directories, distinct inodes, no other process — and a
+40 % spurious-refusal rate purely from sibling forks. It also means the defect is **not confined
+to tests**: any fmonero process that spawns a child on one thread while another takes
+`send.lock` can refuse a legitimate send with "another fmonero send is building or relaying". The
+CLI is single-threaded on that path today; the TUI is not. A bounded retry (a few tens of
+milliseconds) before declaring `send_in_progress` would close it without weakening the interlock,
+because a genuine holder holds for seconds. **Reported, not fixed**, for the same reason as
+DEFECT 1: it is on the money path and it belongs in §2a.11 before it belongs in the code.
+
+### Minor, recorded rather than fixed
+
+1. `status`'s `history_cache_stale` warning says "the history snapshot stops 3764638 blocks behind
+   the wallet" for a wallet that has **no transfers at all** — the high-water mark is 0 because
+   there is nothing to record, not because the snapshot is 3.7 M blocks stale. The doctor's
+   `history_cache_fresh` says the same thing. True arithmetic, misleading sentence (§2j).
+2. `units::install`'s sandbox refusal — exit 3, "units::install refuses to write a real systemd
+   unit while FMONERO_STATE_DIR is set" — carries `reason: null` and the hint
+   `fmonero setup --units --dry-run`, which is not the command the user typed.
+3. `tests/tui_tmux.sh` has **no remote-mode case**; the Node screen's remote rendering is covered
+   by unit tests and by this entry's pty capture, and by nothing that runs in the gate.
+
+### The owner's machine, before and after
+
+```
+$ systemctl --user show -p ActiveState,UnitFileState,NRestarts,Result fmonero-{monerod,wallet-rpc}.service
+ActiveState=inactive  UnitFileState=disabled  NRestarts=0  Result=success      (both, before and after)
+
+$ sha256sum ~/.config/systemd/user/fmonero-*.service ~/.config/fmonero/monerod.conf
+64580d70a21719503a105b67aa633d31d9c25921ffc0c8956a7fc8d5d333d82f  fmonero-monerod.service
+3915d8a05eba06897625455a6208e32ccff4c73102d3334b4073c76dfb52878d  fmonero-wallet-rpc.service
+bed63c9603dc9f5cbcc2d81fbab42d9c57763479c7f87b2a54a7707a74efd5ba  monerod.conf
+                                        identical before and after everything above
+
+$ ls ~/.local/share/fmonero/wallets/mainnet          empty
+$ cat ~/.local/state/fmonero/state.json              last_open null, last_error null
+$ pgrep -f 'monerod|monero-wallet-rpc'               none
+```
+
+The sandbox, its four wallets and the wallet-rpc process were deleted; the scratch wallets held no
+funds and their addresses are not recorded beyond the one truncated primary above.
+
+### What this entry changes in the repo
+
+`README`'s Status section — whose LIVE row said **"Nothing has been run in it yet"** — and
+`BUILD_NOTE`, whose GREEN sentence still described the doctor of a machine with no Monero
+installed. Both are corrected to what was observed and to nothing more: the LIVE rows are real,
+`wallet send` stays RED in every mode, and the two defects above are named where a reader of
+either document will meet them.
+
+### The three commands the owner runs to switch his real installation to this node
+
+```bash
+fmonero node remote xmr-node.cakewallet.com:18081 --yes   # NOT --trusted (§2m.6)
+fmonero wallet create <name> --yes                        # or: fmonero wallet open <name>
+fmonero wallet refresh
+```
+
+`fmonero node local --yes` is the way back. Until DEFECT 1 is fixed, **do not run
+`fmonero doctor --fix` on a machine in remote mode** — it rewrites `node.mode` to `local` and
+leaves the wallet unit pointing at the public node; `fmonero doctor` without `--fix` is safe, and
+its one false `settings_valid` warning on such a machine is that defect, not a broken config.
