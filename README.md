@@ -11,8 +11,9 @@ It replaces `monero-gui`, which carries 109 QML files and 26 869 lines of QML, r
 `monerod sync_info` every two seconds. fmonero starts in milliseconds and costs nothing at
 idle.
 
-Read **[Status](#status)** before you believe anything here. Monero is not installed on the
-machine this was built on, so every claim about a live daemon is unverified.
+Read **[Status](#status)** before you believe anything here. Monero 0.18.5.1 **is** installed on
+the machine this was built on, and **no daemon has ever been started there** — not a `monerod`,
+not a `monero-wallet-rpc`. Every claim about a live daemon, local or remote, is unverified.
 
 ## Why
 
@@ -82,14 +83,13 @@ fmonero setup --units --yes           # two systemd USER units + ~/.config/fmone
 fmonero node up --wait                # start monerod and wait for it to report itself synced
 ```
 
-The first and third of those are unverified: no Monero binary is installed on the machine this
-was built on, so nothing that needs a daemon has been seen to work. `setup --units` itself has
-run (the middle line is part of `setup --all`). On a machine in exactly this state — set up,
-Monero absent — `fmonero node up`, `fmonero node restart` and `fmonero wallet open` exit **4
-`not_installed`** within milliseconds, with `omarchy pkg add monero` as the hint, and start
-nothing: the unit file and the daemon binary are both checked before any `systemctl` call. A
-unit fmonero did start that never answers is stopped again rather than left retrying.
-See [Status](#status).
+The first two have run; the third has not, because no `monerod` has ever been started on this
+machine. On a machine that is set up but has **no** Monero package, `fmonero node up`,
+`fmonero node restart` and `fmonero wallet open` exit **4 `not_installed`** within milliseconds,
+with `omarchy pkg add monero` as the hint, and start nothing: the unit file and the daemon binary
+are both checked before any `systemctl` call. A unit fmonero did start that never answers is
+stopped again rather than left retrying. If you do not want a local chain at all, skip this
+section and read [Public node](#public-node). See [Status](#status).
 
 `setup --units` writes `fmonero-monerod.service` and `fmonero-wallet-rpc.service` into
 `~/.config/systemd/user/` and leaves both **disabled**: they start on demand, not at login.
@@ -104,6 +104,66 @@ data directory corrupt it, so `node up` first checks the POSIX record lock on
 
 The Omarchy shell's PATH includes `~/.local/bin` but not `~/.cargo/bin`, so install there.
 
+## Public node
+
+You do not need a local chain. `monero-wallet-rpc` will talk to anybody's node, and fmonero can
+point it at one and keep it there — which is the whole of remote node mode. **fmonero itself
+never speaks to that node**: its own HTTP client accepts loopback `http://` only and the binary
+contains no TLS stack at all, so the one process that dials a stranger is the one upstream wrote
+for the purpose.
+
+```bash
+fmonero node remote <host>:18089 --yes    # a public node; never --trusted
+fmonero wallet create <name> --yes        # or: fmonero wallet open <name>
+fmonero wallet refresh                    # the first contact with the node
+fmonero node local --yes                  # the way back
+```
+
+Create the wallet while the node is answering. In remote mode `monero-wallet-rpc` takes the new
+wallet's restore height from that node — over the address in the unit's argv, before fmonero
+gets a word in — so a create against an unreachable node produces a wallet that scans from
+genesis, and one against a node reporting a height above the real tip produces a wallet that
+will never see its funds. `monero-wallet-cli --wallet-file <wallet.dir>/<name>` and `rescan_bc`
+is the only way back: v0.1 ships no rescan command.
+
+Bound every send with `--max-fee`. The reason is below.
+
+**What the node learns.** This machine's IP address and the timing of every request, including
+the burst that accompanies a send. Which blocks the wallet asks for, which bounds the wallet's
+restore height and therefore its age. And, if you mark it trusted, the amounts the wallet holds
+— those travel *inside* the request.
+
+**What the node can do.** Three things, with three different costs:
+
+- **Lie about the chain tip.** A transaction built against a stale tip is **rejected when it is
+  relayed**: exit 16, funds unaffected, because no output is marked spent until a relay
+  succeeds. A failed command, never a loss.
+- **Lie about the fee.** This is the one that costs real money and the one nothing detects: the
+  wallet takes the node's fee-per-byte verbatim, the transaction relays *successfully*, and the
+  excess goes to a miner. `--max-fee AMOUNT` on `wallet send` and `wallet sweep` is the bound
+  that answers it, and it is re-checked immediately before the broadcast.
+- **Choose your decoys.** The output distribution and the ring members every transaction's
+  decoys are drawn from come from the node, so a hostile one can degrade the ring signature's
+  plausible deniability. This is a privacy loss rather than a fund loss, and `--trusted` has
+  nothing to do with it: marking the node untrusted does not reduce it.
+
+**Never mark a public node `--trusted`.** With the flag set, the wallet asks the daemon about
+its own unspent amounts by listing them in the request. `--trusted` exists for a node you run
+yourself, on a LAN or a private overlay; `fmonero doctor` warns whenever it is set for a host
+that is not a private address.
+
+**Two limits, plainly.** TLS here is `--daemon-ssl autodetect`, which is **opportunistic and
+unauthenticated**: it tries TLS, falls back to plaintext if the server does not speak it, and
+does not verify the certificate. Typing `https://` does not change that. And **Tor is not in
+v0.1** — the node sees your IP address, and no flag in this build hides it.
+
+`fmonero status --json` reports `node.layout: "remote"`, the address in force, the trusted flag,
+and `node.reachable: null` — null rather than false, because no wallet-RPC method reports a
+remote daemon's own state and fmonero will not print a number it did not receive. Every node
+command that needs the local daemon (`up`, `down`, `restart`, `peers`, `bans`, `ban`, `unban`,
+`limit`, `log`) exits 4 `remote_node` and names `fmonero node local --yes`; `node info` still
+works and reports the address, the trusted flag and the mode.
+
 ## Status
 
 The project tracks every (command, scenario) pair in one of three classes, defined in
@@ -115,15 +175,16 @@ your hands has run.
 
 | Class | What it means |
 |---|---|
-| GREEN | Verified end to end on this machine with no Monero installed, by `tests/e2e.sh` and the phase gates. |
+| GREEN | Verified end to end on this machine, with no daemon running, by `tests/e2e.sh` and the phase gates. |
 | AMBER | Verified against `crates/fmonero-mock`, a test-only server that replays fixtures derived from the Monero source at tag v0.18.5.1. This proves our wire format, our parsing and our error mapping. It proves nothing about a real daemon. |
+| LIVE | The class remote node mode **makes possible** — a real `monero-wallet-rpc` against a real public node, on a scratch wallet with no funds — for six read-only wallet commands. **Nothing has been run in it yet**: the rows are listed in `DESIGN.md` §4b with the exact rehearsal, and they stay RED until `DECISIONS.md` carries their real output. |
 | RED | Never run. Unverified, and not claimed to work anywhere in this README, in `--help` or in `robot-docs`. |
 
 **GREEN.** `status` with both daemons absent (exit 0, `reachable: false`, warnings);
 `wallet list`; `wallet validate` on the structural path; `settings list|get|set`;
 `capabilities`; `robot-docs`; `version`; `setup --dry-run`; `doctor`, which exits 11 with
-`monerod_installed` and `wallet_rpc_installed` failing and every node, wallet and storage check
-skipped with a stated reason; `doctor capabilities` and the `doctor undo latest` round trip;
+the three binaries checks passing, `node_reachable` the one failure (`node_unreachable`), and
+every other node, wallet and storage check skipped or warned with a stated reason; `doctor capabilities` and the `doctor undo latest` round trip;
 `tui` opening, rendering every screen's empty state and quitting cleanly; `node up` and
 `wallet open` with no unit (exit 4 `unit_missing`); `node up`, `node restart` and `wallet open`
 with the units installed and no Monero binary (exit 4 `not_installed`, in milliseconds, starting
@@ -131,7 +192,7 @@ nothing); `setup --units` below the 120 GB free-space floor (exit 3 `full_chain_
 `--full-chain --yes` overriding it); `wallet send` with no wallet daemon (exit 4 at
 the reachability probe, before any build, so a bad address is still exit 15 and an unresolved
 pending send is still exit 3); `node down --dry-run` (exit 2, because `--dry-run` is implemented
-by exactly four commands); `wallet clear-pending`; `node log` with no log file; bare `fmonero`
+by exactly six commands); `wallet clear-pending`; `node log` with no log file; bare `fmonero`
 on a pipe and on a pty; every `--help`; every usage error; amount and address parsing; and the
 60 ms `status` budget.
 

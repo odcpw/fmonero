@@ -1481,6 +1481,272 @@ fm doctor undo latest --json
 expect_rc 13 "doctor undo against a tampered backup"
 expect_json '.refused' 'true' "refused, with the integrity failure named"
 
+# ================================================================ §2m remote node mode (v5.2)
+#
+# Every case here is GREEN or AMBER (§4b). The GREEN half needs no daemon of any kind: remote
+# mode's local half is settings and rendering. The AMBER half runs against `fmonero-mock --role
+# wallet` plus a `systemctl` fixture, which is also what lets `units::install` write the two unit
+# files INSIDE the sandbox — it refuses unless BOTH halves of the §2i seam are set (§4.2).
+#
+# The address is a name nothing here resolves or dials, deliberately: in remote mode fmonero must
+# never speak to the node itself (§2c), so a case that pointed `node.remote` at a live mock could
+# not tell a correct implementation from one that does.
+REMOTE_ADDR="node.example.com:18089"
+
+step "§2m.1: the mode and the address hold each other up"
+sandbox remote-invariant
+fm settings set node.mode remote --json
+expect_rc 2 "settings set node.mode remote with no address"
+expect_json '.reason' '"remote_unset"' "reason remote_unset (§2m.1)"
+expect_json '.hint' '"fmonero node remote <host>:18089 --yes"' "and the hint is runnable"
+fm settings get node.mode --json
+expect_json '.value' '"local"' "nothing was written"
+fm settings set node.remote "$REMOTE_ADDR" --json
+expect_rc 0 "settings set node.remote"
+fm settings set node.mode remote --json
+expect_rc 0 "and then the mode is accepted"
+fm settings set node.remote "" --json
+expect_rc 2 "clearing the address while the mode uses it"
+expect_json '.reason' '"remote_unset"' "the same reason, the other way round"
+fm settings set node.mode local --json
+expect_rc 0 "back to local"
+fm settings set node.remote "" --json
+expect_rc 0 "and only then may the address be cleared"
+
+step "§2m.2: every refusal row of the address grammar"
+sandbox remote-grammar
+for bad in "node.example.com" "http://n:18089/json_rpc" "user:pass@n:18089" "ftp://n:18089" \
+           "n:70000" "n:0" "[::1:18089"; do
+  fm node remote "$bad" --yes --json
+  expect_rc 2 "node remote '$bad'"
+  expect_json '.reason' '"bad_remote_address"' "  reason bad_remote_address"
+done
+# The same grammar, through the settings key (§5b: one function, three callers).
+fm settings set node.remote "node.example.com" --json
+expect_rc 2 "settings set node.remote with no port"
+expect_json '.reason' '"bad_remote_address"' "  and the same reason"
+
+step "§2m.5: --yes, --dry-run, and that a dry run writes nothing"
+sandbox remote-dryrun
+CFG_BEFORE="$(cat "$FMONERO_CONFIG_DIR/config.toml" 2>/dev/null || true)"
+fm node remote "$REMOTE_ADDR" --json
+expect_rc 3 "node remote without --yes"
+expect_json '.reason' '"needs_yes"' "reason needs_yes"
+expect_json '.hint' "\"fmonero node remote $REMOTE_ADDR --yes\"" "the hint is the user's own command"
+fm node remote "$REMOTE_ADDR" --dry-run --json
+expect_rc 0 "node remote --dry-run exits 0 WITHOUT --yes (§2m.5 step 2)"
+# §5c: the two commands share ONE key set, so an agent parses one shape and reads `mode`.
+expect_keys "node remote" "ok schema mode address trusted ssl_support actions \
+wallet_unit_restarted wallet_must_reopen changed dry_run"
+expect_json '.dry_run' 'true' "  and says so"
+expect_json '.mode' '"remote"' "  naming the mode it would set"
+expect_json '.address' "\"$REMOTE_ADDR\"" "  and the address in force after the change"
+expect_json '.trusted' 'false' "  untrusted by default (§2m.6)"
+expect_json '.ssl_support' '"autodetect"' "  ssl autodetect, derived from the address"
+fm node remote "$REMOTE_ADDR" --dry-run --yes --json
+expect_rc 0 "node remote --dry-run --yes (--dry-run beats --yes, as on the send path)"
+expect_json '.dry_run' 'true' "  still a dry run"
+CFG_AFTER="$(cat "$FMONERO_CONFIG_DIR/config.toml" 2>/dev/null || true)"
+if [ "$CFG_BEFORE" = "$CFG_AFTER" ]; then
+  ok "§2m.5: two dry runs changed config.toml not at all"
+else
+  bad "§2m.5: a --dry-run wrote settings" "$CFG_AFTER"
+fi
+if [ -z "$(ls -A "$FMONERO_SYSTEMD_USER_DIR" 2>/dev/null)" ]; then
+  ok "and wrote no unit file either"
+else
+  bad "§2m.5: a --dry-run wrote a unit" "$(ls -A "$FMONERO_SYSTEMD_USER_DIR")"
+fi
+fm node local --json
+expect_rc 3 "node local without --yes"
+expect_json '.reason' '"needs_yes"' "  reason needs_yes"
+fm node local --dry-run --json
+expect_rc 0 "node local --dry-run"
+expect_keys "node local" "ok schema mode address trusted ssl_support actions \
+wallet_unit_restarted wallet_must_reopen changed dry_run"
+
+step "§2m.5 steps 5-6: the two money guards, which need no daemon"
+sandbox remote-guards
+fm settings set node.remote "$REMOTE_ADDR" >/dev/null
+# An unrelayed record means a send may be in flight (§2a.4). Both mode commands refuse, because
+# after the switch the §2a.4 resolve step would ask a DIFFERENT node about that transaction.
+printf '%s\n' '{"kind":"send","account_index":0,"dest":"4x","built_at":1,"txs":[{"txid":"ab","amount":1,"fee":1,"relayed":false,"relayed_at":null}]}' \
+  > "$FMONERO_STATE_DIR/pending.json"
+chmod 600 "$FMONERO_STATE_DIR/pending.json"
+fm node remote "$REMOTE_ADDR" --yes --json
+expect_rc 3 "node remote --yes with an unrelayed pending send"
+expect_json '.reason' '"pending_send"' "  reason pending_send (§2m.5 step 6)"
+fm node local --yes --json
+expect_rc 3 "node local --yes, the same"
+expect_json '.reason' '"pending_send"' "  reason pending_send"
+fm settings get node.mode --json
+expect_json '.value' '"local"' "  and neither wrote a thing"
+# `--dry-run` is EXEMPT and says so: it writes nothing, restarts nothing and can abort no relay,
+# so blocking a preview would refuse the safe half of the command for a risk it does not carry.
+fm node remote "$REMOTE_ADDR" --dry-run --json
+expect_rc 0 "§2m.5: --dry-run is exempt from the guards, deliberately"
+rm -f "$FMONERO_STATE_DIR/pending.json"
+# And the §2a.11 lock, held by ANOTHER PROCESS: `flock(2)` is per open file description, which is
+# what makes the interlock work across two fmonero invocations.
+: > "$FMONERO_STATE_DIR/send.lock"
+chmod 600 "$FMONERO_STATE_DIR/send.lock"
+flock -x -n "$FMONERO_STATE_DIR/send.lock" -c 'sleep 10' &
+LOCKER=$!
+sleep 0.4
+fm node remote "$REMOTE_ADDR" --yes --json
+expect_rc 3 "node remote --yes while another process holds send.lock"
+expect_json '.reason' '"send_in_progress"' "  reason send_in_progress (§2m.5 step 5)"
+kill "$LOCKER" 2>/dev/null || true
+wait "$LOCKER" 2>/dev/null || true
+
+step "§2m.3: in remote mode nine node commands exit 4 remote_node, with zero requests"
+sandbox remote-refusals
+mock_node_up
+mock_wallet_up
+NODE_BEFORE="$(log_lines "$NODE_LOG")"
+fm settings set node.remote "$REMOTE_ADDR" >/dev/null
+fm settings set node.mode remote >/dev/null
+for verb in "up" "down --yes" "restart --yes" "peers" "bans" "ban 1.2.3.4" "unban 1.2.3.4" \
+            "limit --up 1024" "log"; do
+  # shellcheck disable=SC2086
+  fm node $verb --json
+  expect_rc 4 "node $verb in remote mode"
+  expect_json '.reason' '"remote_node"' "  reason remote_node"
+  expect_json '.hint' '"fmonero node local --yes"' "  hint names the way back"
+done
+if [ "$(log_lines "$NODE_LOG")" = "$NODE_BEFORE" ]; then
+  ok "§2m.3: the node mock recorded ZERO requests — the refusal precedes any RPC"
+else
+  bad "§2m.3: a refused command still spoke to the node" "$(log_lines "$NODE_LOG")"
+fi
+
+step "§2m.3: node info and status in remote mode"
+fm node info --json
+expect_rc 0 "node info is the one node command that still exits 0"
+expect_keys "node info" "ok schema node txpool sync hard_fork rpc"
+expect_json '.txpool' 'null' "  txpool is null"
+expect_json '.sync' 'null' "  sync is null"
+expect_json '.hard_fork' 'null' "  hard_fork is null"
+expect_json '.rpc' 'null' "  rpc is null"
+expect_json '.node.layout' '"remote"' "  and the node object carries the remote shape"
+expect_json '.node.url' "\"$REMOTE_ADDR\"" "  with the address in force"
+fm status --json
+expect_rc 0 "status in remote mode"
+expect_json '.node.layout' '"remote"' "  layout remote"
+expect_json '.node.reachable' 'null' "  reachable NULL, never false (§5)"
+expect_json '.node.trusted' 'false' "  trusted false"
+expect_json '.node.height' 'null' "  and every measured field null"
+expect_json '.node.sync_percent' 'null' "  including the one a gauge would read"
+expect_json '[.warnings[].id] | contains(["remote_node"])' 'true' "  the remote_node info row"
+expect_json '[.warnings[].id] | contains(["node_down"])' 'false' \
+  "  and NOT node_down: null is not false (§5)"
+fm doctor --json
+expect_json '[.checks[] | select(.id=="node_layout") | .status]' '["pass"]' \
+  "doctor: node_layout passes and is the group's one source of truth (§7.1)"
+expect_json '[.checks[] | select(.id=="node_reachable") | .reason]' '["remote_node"]' \
+  "  and every other node check skips with skip:remote_node"
+expect_json '[.checks[] | select(.id=="remote_node_untrusted") | .status]' '["pass"]' \
+  "  remote_node_untrusted runs HERE and passes on an untrusted node"
+expect_json '[.checks[] | select(.id=="disk_space" or .id=="prune_configured") | .reason] | unique' \
+  '["remote_node"]' "  storage skips: remote mode stores no chain"
+fm settings set node.remote_trusted true >/dev/null
+fm doctor --json
+expect_json '[.checks[] | select(.id=="remote_node_untrusted") | .status]' '["warn"]' \
+  "  and warns when a non-private host is marked trusted (§2m.6)"
+fm status --json
+expect_json '[.warnings[].id] | contains(["remote_node_trusted"])' 'true' "  status warns too"
+fm settings set node.remote_trusted false >/dev/null
+
+step "§4.2: the wallet unit renders the remote daemon target"
+fm setup --units --dry-run --json
+expect_rc 0 "setup --units --dry-run in remote mode"
+expect_contains "--daemon-address $REMOTE_ADDR" "  --daemon-address is node.remote, verbatim"
+expect_contains "--untrusted-daemon" "  and exactly one trust flag: --untrusted-daemon"
+expect_contains "--daemon-ssl autodetect" "  with --daemon-ssl rendered explicitly (§1b.9 item 2)"
+
+step "§2m.5: node remote --yes end to end, and again (idempotent)"
+sandbox remote-apply
+systemctl_fixture user_unit
+mock_wallet_up
+fm node remote "$REMOTE_ADDR" --yes --json
+expect_rc 0 "node remote --yes"
+expect_json '.mode' '"remote"' "  mode remote"
+expect_json '.changed' 'true' "  changed"
+expect_json '.wallet_unit_restarted' 'true' "  and the active wallet unit was restarted"
+fm settings get node.mode --json
+expect_json '.value' '"remote"' "  the mode key was written"
+fm settings get node.remote --json
+expect_json '.value' "\"$REMOTE_ADDR\"" "  the address key too"
+if grep -q -- "--daemon-address $REMOTE_ADDR" "$FMONERO_SYSTEMD_USER_DIR/fmonero-wallet-rpc.service"; then
+  ok "  and the INSTALLED unit carries it"
+else
+  bad "  the installed unit was not re-rendered" \
+      "$(head -20 "$FMONERO_SYSTEMD_USER_DIR/fmonero-wallet-rpc.service" 2>/dev/null)"
+fi
+fm node remote "$REMOTE_ADDR" --yes --json
+expect_rc 0 "the same command again"
+expect_json '.changed' 'false' "  reports nothing changed"
+expect_json '.wallet_unit_restarted' 'false' "  and restarts nothing (§2m.5: idempotent)"
+expect_json '[.actions[].status] | unique' '["unchanged"]' "  every action unchanged"
+fm node local --yes --json
+expect_rc 0 "node local --yes"
+expect_json '.mode' '"local"' "  back to local"
+expect_json '.trusted' 'true' "  the local node is fmonero's own, so trusted"
+expect_json '.ssl_support' '"disabled"' "  and ssl disabled, from the loopback address"
+fm settings get node.remote --json
+expect_json '.value' "\"$REMOTE_ADDR\"" "  node.remote is LEFT where it was (§2m.1)"
+
+step "§2m.3: wallet open in remote mode sends no credential"
+sandbox remote-open
+systemctl_fixture user_unit
+mock_wallet_up
+printf 'rpc-login=fmonero:0123456789abcdef0123456789abcdef\n' > "$FMONERO_CONFIG_DIR/monerod.conf"
+chmod 600 "$FMONERO_CONFIG_DIR/monerod.conf"
+fm settings set node.remote "$REMOTE_ADDR" >/dev/null
+fm settings set node.mode remote >/dev/null
+FMONERO_WALLET_PASSWORD=t3stpw fm --timeout 3 wallet open main --json
+expect_rc 0 "wallet open in remote mode"
+SD="$(jq -s '[.[] | select(.method=="set_daemon")] | last | .body.params' "$WALLET_LOG")"
+if printf '%s' "$SD" | jq -e --arg a "$REMOTE_ADDR" \
+     '.address == $a and .trusted == false and .ssl_support == "autodetect"
+      and (has("username") | not) and (has("password") | not)' >/dev/null; then
+  ok "§2m.3: set_daemon carried the remote address, untrusted, autodetect, NO credential"
+else
+  bad "§2m.3: the remote set_daemon body is wrong" "$SD"
+fi
+if grep -q '0123456789abcdef' "$WALLET_LOG"; then
+  bad "§2m.3: the node credential travelled to a remote daemon"
+else
+  ok "  and fmonero's own rpc-login never left this machine"
+fi
+
+step "§2m.3: the send gate is one bounded refresh"
+sandbox remote-send
+mock_wallet_up
+fm settings set node.remote "$REMOTE_ADDR" >/dev/null
+fm settings set node.mode remote >/dev/null
+fm --timeout 5 wallet send "$DEST" 0.1 --dry-run --json
+expect_rc 0 "wallet send --dry-run in remote mode"
+ORDER="$(jq -s -r '[.[] | select(.method=="refresh" or .method=="transfer") | .method] | join(",")' "$WALLET_LOG")"
+if [ "$ORDER" = "refresh,transfer" ]; then
+  ok "§2m.3: exactly one refresh, BEFORE the transfer"
+else
+  bad "§2m.3: the gate did not run before the build" "$ORDER"
+fi
+mocks_down
+sandbox remote-send-38
+mock_wallet_up --fail "refresh=-38:no connection to daemon"
+fm settings set node.remote "$REMOTE_ADDR" >/dev/null
+fm settings set node.mode remote >/dev/null
+fm --timeout 5 wallet send "$DEST" 0.1 --dry-run --json
+expect_rc 4 "a refresh that cannot reach the remote node"
+expect_json '.reason' '"unreachable"' "  reason unreachable"
+if [ "$(logged "$WALLET_LOG" transfer)" = "0" ]; then
+  ok "  and nothing was built"
+else
+  bad "  a transfer was built against a node that did not answer"
+fi
+
 # ================================================================ §5c coverage
 step "§5c: every command in §4.1 has been asserted, or is named as not covered"
 # `tui` and `robot-docs` are the two rows §5c marks exempt — the only two. Every other command of

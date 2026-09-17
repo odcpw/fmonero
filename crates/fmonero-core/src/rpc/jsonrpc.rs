@@ -271,6 +271,19 @@ impl Transport {
     fn arm_breaker(&self) {
         let Some(ctx) = &self.breaker else { return };
         if self.who == Daemon::Wallet {
+            // **In remote mode no wallet call killed at its deadline ever arms the breaker**
+            // (v5.2, §2d, §2m.3). `blocks_behind` — the one discriminator this exemption has
+            // between "catching up" and "stuck" — is `node.height - wallet.height`, and
+            // `node.height` is `null` in remote mode because no wallet-RPC method reports the
+            // daemon's height (§1b.9 item 5). The rule below already chooses "do not arm" for
+            // the other case where `blocks_behind` is unknown (a wallet blocked inside
+            // `open_wallet`), and the alternative here is a breaker that fires on the ordinary
+            // first sync against a public node and then refuses every wallet command for 60 s —
+            // the breaker an agent disables. The §2m.3 send gate's own deadline miss is exit 10
+            // `wallet_catching_up`: the same instruction, with no 60 s penalty attached.
+            if ctx.settings.node.mode.is_remote() {
+                return;
+            }
             let behind = state::load(ctx).ok().and_then(|s| s.wallet_behind);
             if behind.is_some_and(|b| b > crate::WALLET_BEHIND_BLOCKS) {
                 return;

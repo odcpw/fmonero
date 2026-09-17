@@ -816,17 +816,45 @@ pub fn take_send_lock(ctx: &Context) -> Result<std::fs::File, Error> {
         .mode(0o600)
         .open(&path)
         .map_err(|e| Error::failure(format!("cannot open {}: {e}", path.display())))?;
-    // SAFETY: `f` is an open descriptor for the whole call.
-    if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-        return Ok(f);
+    // **`flock` fails for more than one reason, and only one of them means "somebody else has
+    // it".** `EINTR` is the one that bites: `flock` is interruptible, and a signal arriving on
+    // this thread — `SIGCHLD` from any reaped child, which this process produces on every
+    // `proc::run_with_deadline` — makes the call return `-1` with nothing held by anybody.
+    // Treating every non-zero return as `send_in_progress` therefore refuses a legitimate send
+    // at random, on the money path, with a message naming a process that does not exist.
+    //
+    // So: retry on `EINTR`, report `EWOULDBLOCK`/`EAGAIN` as the interlock, and give anything
+    // else its own exit code — a lock fmonero cannot take for an I/O reason is a failure (exit
+    // 1), not a claim that a transaction may be in flight (exit 3), and §4's whole argument for
+    // `reason` is that an agent acts on the difference.
+    loop {
+        // SAFETY: `f` is an open descriptor for the whole call.
+        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(f);
+        }
+        let err = std::io::Error::last_os_error();
+        match err.raw_os_error() {
+            Some(libc::EINTR) => continue,
+            Some(e) if e == libc::EWOULDBLOCK || e == libc::EAGAIN => {
+                // `flock` does not name the holder and the lock file stays empty, so the
+                // message carries no pid; the holder is identified through `status`'s
+                // `pending` record, which is what the hint points at (§2a.11).
+                return Err(
+                    Error::safety("another fmonero send is building or relaying")
+                        .with_reason("send_in_progress")
+                        .with_hint(
+                            "fmonero status --json   # wait for pending to clear, then retry",
+                        ),
+                );
+            }
+            _ => {
+                return Err(
+                    Error::failure(format!("cannot lock {}: {err}", path.display()))
+                        .with_hint("fmonero doctor"),
+                )
+            }
+        }
     }
-    // `flock` does not name the holder and the lock file stays empty, so the message carries
-    // no pid; the holder is identified through `status`'s `pending` record (§2a.11).
-    Err(
-        Error::safety("another fmonero send is building or relaying")
-            .with_reason("send_in_progress")
-            .with_hint("fmonero status --json   # wait for pending to clear, then retry"),
-    )
 }
 
 /// Enough of an address to recognise, for a message that must not wrap a terminal.

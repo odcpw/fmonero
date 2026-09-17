@@ -1318,6 +1318,127 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// **v5.2, §4.2 and §2m.3.** The three daemon flags come from `daemon_target` and differ by
+    /// mode, and **exactly one trust flag is rendered in both** — giving neither is not
+    /// "untrusted" (`wallet2.cpp:451-462`) and giving both is fatal (`:449-450`).
+    ///
+    /// This fails on the pre-v5.2 render in three ways at once: it carried no `--daemon-ssl` at
+    /// all (so the flag's `autodetect` default made `monero-wallet-rpc` attempt a TLS handshake
+    /// against `127.0.0.1` on every reconnect, §1b.9 item 2), it hard-coded `--trusted-daemon`,
+    /// and it read `node.url` rather than the address in force.
+    #[test]
+    fn the_wallet_unit_renders_the_daemon_target_and_one_trust_flag_in_both_modes() {
+        let dir = std::env::temp_dir().join(format!("fmonero-units-mode-{}", std::process::id()));
+        let mut ctx = ctx_in(&dir);
+
+        // ---- local: the address is node.url's host:port, trusted, ssl disabled.
+        let local = render_wallet_unit(&ctx);
+        assert!(
+            local.contains("--daemon-address 127.0.0.1:18081"),
+            "{local}"
+        );
+        assert!(local.contains("--trusted-daemon"), "{local}");
+        assert!(!local.contains("--untrusted-daemon"), "{local}");
+        // The correction v5.2 makes in local mode too: the flag is explicit, and `disabled`,
+        // because our own node is one we started in the clear.
+        assert!(local.contains("--daemon-ssl disabled"), "{local}");
+        let t = daemon_target(&ctx);
+        assert_eq!(t.address, "127.0.0.1:18081");
+        assert!(t.trusted);
+        assert_eq!(t.ssl, SslSupport::Disabled);
+
+        // ---- remote, public: the address verbatim, UNtrusted, ssl autodetect.
+        ctx.settings.node.remote = "http://node.example.com:18089".into();
+        ctx.settings.node.mode = crate::settings::NodeMode::Remote;
+        let remote = render_wallet_unit(&ctx);
+        assert!(
+            remote.contains("--daemon-address http://node.example.com:18089"),
+            "the address is rendered VERBATIM, scheme included (§2m.3):\n{remote}"
+        );
+        assert!(remote.contains("--untrusted-daemon"), "{remote}");
+        assert!(!remote.contains("--trusted-daemon"), "{remote}");
+        assert!(remote.contains("--daemon-ssl autodetect"), "{remote}");
+        // No credential of any kind reaches a stranger's node (§2m.3).
+        for flag in ["--daemon-login", "--rpc-login", "--password"] {
+            assert!(!remote.contains(flag), "{flag} in remote mode:\n{remote}");
+        }
+
+        // ---- remote, the owner's own node on a LAN: --trusted-daemon, still autodetect.
+        ctx.settings.node.remote_trusted = true;
+        let trusted = render_wallet_unit(&ctx);
+        assert!(trusted.contains("--trusted-daemon"), "{trusted}");
+        assert!(!trusted.contains("--untrusted-daemon"), "{trusted}");
+
+        // ---- remote at loopback: ssl is derived from the ADDRESS, not from the mode (§2m.3).
+        ctx.settings.node.remote = "127.0.0.1:18081".into();
+        ctx.settings.node.remote_trusted = false;
+        let loop_back = render_wallet_unit(&ctx);
+        assert!(loop_back.contains("--daemon-ssl disabled"), "{loop_back}");
+        assert_eq!(ssl_for_address("127.0.0.1:18081"), SslSupport::Disabled);
+        assert_eq!(ssl_for_address("http://[::1]:18081"), SslSupport::Disabled);
+        assert_eq!(
+            ssl_for_address("node.example.com:18089"),
+            SslSupport::Autodetect
+        );
+        // A DNS name is never loopback here: deciding that means resolving it (§2m.6).
+        assert_eq!(ssl_for_address("localhost:18081"), SslSupport::Autodetect);
+
+        // The node unit and monerod.conf are rendered in remote mode too: they are unused, but
+        // `node local --yes` must find them and `units_present` compares them in every mode
+        // (§2m.5 step 8).
+        let node = render_node_unit(&ctx);
+        assert!(node.contains("--config-file"), "{node}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// §2m.1: `Layout::Remote` is keyed on `node.mode` and on nothing else, and it is answered
+    /// **before** any unit file is stat'ed — which is what makes remote mode's `status` cheaper
+    /// than local mode's rather than more expensive (§2i).
+    #[test]
+    fn the_remote_layout_needs_no_unit_file_and_no_systemctl() {
+        let dir = std::env::temp_dir().join(format!("fmonero-layout-mode-{}", std::process::id()));
+        let mut ctx = ctx_in(&dir);
+        // No unit file, no fixture, no systemctl seam: local mode has to ask the machine.
+        assert_eq!(detect_layout(&ctx).unwrap(), Layout::None);
+        ctx.settings.node.remote = "node.example.com:18089".into();
+        ctx.settings.node.mode = crate::settings::NodeMode::Remote;
+        assert_eq!(detect_layout(&ctx).unwrap(), Layout::Remote);
+        // And the mutators gate is closed, as it is under `system_unit` (§2i).
+        assert!(!may_mutate_node(&ctx).unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// §2m.3's refusal, in the one construction nine commands and three call layers share.
+    #[test]
+    fn the_remote_refusal_is_exit_four_and_names_the_verb() {
+        let dir = std::env::temp_dir().join(format!("fmonero-remote-err-{}", std::process::id()));
+        let mut ctx = ctx_in(&dir);
+        ctx.settings.node.remote = "node.example.com:18089".into();
+        ctx.settings.node.mode = crate::settings::NodeMode::Remote;
+        let e = remote_node_error(&ctx, Some("peers"));
+        // Exit 4, not 2: the arguments are correct and the backend is somewhere else, so an
+        // agent's reflex on exit 2 (re-read --help) would lead nowhere (§2m.3).
+        assert_eq!(e.exit_code(), 4);
+        assert_eq!(e.reason(), Some("remote_node"));
+        assert_eq!(e.hint(), "fmonero node local --yes");
+        assert!(
+            e.to_string()
+                .contains("fmonero node peers needs the local monerod")
+                && e.to_string().contains("node.example.com:18089"),
+            "{e}"
+        );
+        // Without a verb it degrades to the plural, because `NodeClient::from_ctx` — the
+        // structural gate — does not know which command called it.
+        assert!(
+            remote_node_error(&ctx, None)
+                .to_string()
+                .contains("fmonero node commands need"),
+            "{}",
+            remote_node_error(&ctx, None)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn everything_setup_prints_redacts_the_credential() {
         let text = "data-dir=/x\nrpc-login=fmonero:0123456789abcdef0123456789abcdef\nno-zmq=1\n";

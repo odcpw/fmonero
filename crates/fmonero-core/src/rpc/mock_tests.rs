@@ -1379,6 +1379,286 @@ fn a_daemonless_set_daemon_does_not_fail_the_open() {
     assert_eq!(state::last_open(&w.ctx).unwrap().unwrap().0, "main");
 }
 
+// ---- §2m: remote node mode ---------------------------------------------------
+
+/// Put this world in remote mode. The address is deliberately one **nothing here listens on**:
+/// in remote mode fmonero must never dial the node itself (§2c), so a test that pointed
+/// `node.remote` at the node mock could not tell a correct implementation from one that does.
+fn go_remote(ctx: &mut Context, trusted: bool) {
+    ctx.settings.node.remote = "node.example.com:18089".to_string();
+    ctx.settings.node.remote_trusted = trusted;
+    ctx.settings.node.mode = crate::settings::NodeMode::Remote;
+}
+
+/// §2c's own enforceable form of "fmonero never speaks to a remote node": there is no code path
+/// in which its `ureq` agent is handed a public address, because the constructor refuses.
+#[test]
+fn no_node_client_can_be_constructed_in_remote_mode() {
+    let w = World::new("remote-noclient", &[], &[]);
+    let mut ctx = w.ctx.clone();
+    go_remote(&mut ctx, false);
+    let e = crate::rpc::NodeClient::from_ctx(&ctx)
+        .err()
+        .expect("refused");
+    assert_eq!(e.exit_code(), 4);
+    assert_eq!(e.reason(), Some("remote_node"));
+    assert_eq!(e.hint(), "fmonero node local --yes");
+    // And the node mock heard nothing at all.
+    assert_eq!(read_log(&w.node_log).len(), 0);
+}
+
+/// §2m.3: `wallet open` in remote mode issues exactly one `set_daemon` whose body has the
+/// remote address, `trusted: false`, `ssl_support: "autodetect"` and **no `username` and no
+/// `password` keys at all** — even though `monerod.conf` here carries an `rpc-login`, because
+/// fmonero's own credential means nothing to a stranger's node.
+///
+/// On the pre-v5.2 code this fails three times over: the address was `node.url`'s host:port,
+/// `trusted` was hard-coded `true`, and the credential travelled.
+#[test]
+fn opening_a_wallet_in_remote_mode_sends_the_remote_address_and_no_credential() {
+    let w = World::new("remote-open", &[], &[]);
+    std::fs::write(
+        w.ctx.paths.monerod_conf(),
+        b"data-dir=/x\nrpc-login=fmonero:0123456789abcdef0123456789abcdef\n",
+    )
+    .unwrap();
+    let mut ctx = w.ctx.clone();
+    go_remote(&mut ctx, false);
+    let client = crate::rpc::WalletClient::from_ctx(&ctx).expect("wallet client");
+    crate::wallet_session::open(&ctx, &client, "main", "x".to_string(), &CancelToken::new())
+        .expect("the open sequence");
+    let body = &w.bodies(&w.wallet_log, "set_daemon")[0];
+    assert_eq!(body["address"], "node.example.com:18089");
+    assert_eq!(body["trusted"], false);
+    assert_eq!(body["ssl_support"], "autodetect");
+    assert!(body.get("username").is_none(), "{body}");
+    assert!(body.get("password").is_none(), "{body}");
+    // The credential is not merely absent from the body: it never entered the request log.
+    let log = std::fs::read_to_string(&w.wallet_log).unwrap();
+    assert!(
+        !log.contains("0123456789abcdef"),
+        "the node credential travelled"
+    );
+    // The node mock is still untouched: nothing in the open path speaks to a node.
+    assert_eq!(read_log(&w.node_log).len(), 0);
+}
+
+/// §2m.3: in remote mode a `-38` from `set_daemon` is **not** swallowed. It means the address
+/// did not parse (`set_daemon` opens no socket, §1b.9 item 1), and the address passed §2m.2's
+/// grammar minutes ago — so reporting a successful `wallet open` for a wallet whose daemon was
+/// rejected is the silence §2j forbids.
+///
+/// The local-mode counterpart, `a_daemonless_set_daemon_does_not_fail_the_open`, asserts the
+/// opposite on the same code path: this pair is the whole of §5b.1's amendment #10.
+#[test]
+fn a_rejected_remote_address_fails_the_open_where_a_local_one_does_not() {
+    let w = World::new(
+        "remote-open-38",
+        &[],
+        &["--fail", "set_daemon=-38:Unable to set daemon"],
+    );
+    let mut ctx = w.ctx.clone();
+    go_remote(&mut ctx, false);
+    let client = crate::rpc::WalletClient::from_ctx(&ctx).expect("wallet client");
+    let e =
+        crate::wallet_session::open(&ctx, &client, "main", "x".to_string(), &CancelToken::new())
+            .expect_err("remote mode does not swallow it (§2m.3)");
+    assert_eq!(e.exit_code(), 4);
+    assert_eq!(e.reason(), Some("remote_address_rejected"));
+    assert!(e.to_string().contains("Unable to set daemon"), "{e}");
+    assert_eq!(
+        e.hint(),
+        "fmonero node remote node.example.com:18089 --yes",
+        "the hint is the command that would fix it"
+    );
+    // The wallet IS open on the daemon — the refusal is about the daemon it was given — so the
+    // recorded name is not written, because `install_daemon_and_record` never reached it.
+    assert!(state::last_open(&w.ctx).unwrap().is_none());
+}
+
+/// §2m.3's send gate: **one bounded `refresh` before the `transfer`**, and nothing else changes.
+///
+/// On the pre-v5.2 code the gate was `get_info.synchronized` against a local node, which in
+/// remote mode does not exist: the send refused with exit 4 `unreachable` and no `refresh` was
+/// ever issued.
+#[test]
+fn the_remote_send_gate_is_one_refresh_before_the_build() {
+    let w = World::new("remote-gate", &[], &[]);
+    let mut ctx = w.ctx.clone();
+    go_remote(&mut ctx, false);
+    let client = crate::rpc::WalletClient::from_ctx(&ctx).expect("wallet client");
+    let plan = send::build(
+        &ctx,
+        &client,
+        send::NodeGate::Remote,
+        &a_send(DEST),
+        &CancelToken::new(),
+    )
+    .expect("the build proceeds once the refresh answers");
+    assert_eq!(plan.txs.len(), 1);
+    // The ORDER is the assertion: a refresh after the build would prove nothing about the tip
+    // the transaction was built against.
+    let order: Vec<String> = read_log(&w.wallet_log)
+        .iter()
+        .map(|l| l["method"].as_str().unwrap_or_default().to_string())
+        .filter(|m| m == "refresh" || m == "transfer")
+        .collect();
+    assert_eq!(order, vec!["refresh", "transfer"], "{order:?}");
+    assert_eq!(
+        w.count(&w.wallet_log, "refresh"),
+        1,
+        "ONE refresh, not a poll"
+    );
+    // And it was `start_height: 0` — the whole point is "the wallet is at that node's tip".
+    assert_eq!(w.bodies(&w.wallet_log, "refresh")[0]["start_height"], 0);
+    // `wallet_session::refresh` recorded it, which is what §5's `wallet.last_refresh_at` reads.
+    assert!(state::load(&ctx).unwrap().last_refresh.is_some());
+    // No node call, in either direction.
+    assert_eq!(read_log(&w.node_log).len(), 0);
+}
+
+/// §2m.3: a `-38` (or a transport failure) from that refresh is exit **4 `unreachable`**, with
+/// **zero** `transfer` calls — the remote daemon did not answer, so there is no tip to build on.
+#[test]
+fn a_refresh_that_cannot_reach_the_remote_node_refuses_the_send() {
+    let w = World::new(
+        "remote-gate-38",
+        &[],
+        &["--fail", "refresh=-38:no connection to daemon"],
+    );
+    let mut ctx = w.ctx.clone();
+    go_remote(&mut ctx, false);
+    let client = crate::rpc::WalletClient::from_ctx(&ctx).expect("wallet client");
+    let e = send::build(
+        &ctx,
+        &client,
+        send::NodeGate::Remote,
+        &a_send(DEST),
+        &CancelToken::new(),
+    )
+    .expect_err("the gate must refuse");
+    assert_eq!(e.exit_code(), 4);
+    assert_eq!(e.reason(), Some("unreachable"));
+    assert_eq!(w.count(&w.wallet_log, "transfer"), 0, "nothing was built");
+}
+
+/// §2m.3 and §2d: a refresh killed at `timeouts.refresh_sec` is exit **10
+/// `wallet_catching_up`** — the same instruction as local mode's "wait, then retry", with no
+/// 60 s penalty — and it arms **no breaker**, because `blocks_behind` is unobservable in remote
+/// mode and a breaker that fires on the ordinary first sync against a public node is the
+/// breaker an agent disables.
+#[test]
+fn a_refresh_killed_at_its_deadline_is_exit_ten_and_arms_no_breaker() {
+    let w = World::new("remote-gate-slow", &[], &["--delay-ms", "3000"]);
+    let mut ctx = w.ctx.clone();
+    go_remote(&mut ctx, false);
+    ctx.timeouts.refresh = Duration::from_secs(1);
+    let client = crate::rpc::WalletClient::from_ctx(&ctx).expect("wallet client");
+    let e = send::build(
+        &ctx,
+        &client,
+        send::NodeGate::Remote,
+        &a_send(DEST),
+        &CancelToken::new(),
+    )
+    .expect_err("the deadline must be enforced");
+    assert_eq!(e.exit_code(), 10, "{e}");
+    assert_eq!(e.reason(), Some("wallet_catching_up"));
+    assert_eq!(w.count(&w.wallet_log, "transfer"), 0, "nothing was built");
+    assert!(
+        state::stall_remaining(&ctx, state::Daemon::Wallet)
+            .unwrap()
+            .is_none(),
+        "§2d: no breaker is armed in remote mode"
+    );
+}
+
+/// §2m.3 and §5: `status` in remote mode constructs no node client, makes no node call, names
+/// the address in force, and claims **nothing** about the node — `reachable` is `null`, not
+/// `false`, because `false` would be a claim and `true` a guess (§1b.9 item 5).
+#[test]
+fn status_in_remote_mode_names_the_address_and_claims_nothing_about_the_node() {
+    let w = World::new("remote-status", &[], &[]);
+    let mut ctx = w.ctx.clone();
+    go_remote(&mut ctx, true);
+    let s = crate::status(&ctx).expect("status always answers (§2e)");
+    assert_eq!(s.node.layout, crate::units::Layout::Remote);
+    assert_eq!(
+        s.node.url, "node.example.com:18089",
+        "the address IN FORCE (§5)"
+    );
+    assert!(s.node.trusted, "settings.node.remote_trusted, verbatim");
+    assert_eq!(s.node.reachable, None, "null, never false (§5)");
+    for field in [
+        s.node.height,
+        s.node.target_height,
+        s.node.tx_pool_size,
+        s.node.database_size,
+    ] {
+        assert!(field.is_none(), "every measured node field is null");
+    }
+    assert!(s.node.synchronized.is_none() && s.node.restricted.is_none());
+    assert!(
+        s.node.sync_percent.is_none(),
+        "no gauge to draw (§6.4, §7a)"
+    );
+    // The node mock heard nothing: remote mode makes FEWER calls than local mode, never more.
+    assert_eq!(read_log(&w.node_log).len(), 0);
+    // The two warnings §5 adds: the mode itself (info) and a trusted non-private host (warn).
+    let ids: Vec<&str> = s.warnings.iter().map(|w| w.id.as_str()).collect();
+    assert!(ids.contains(&"remote_node"), "{ids:?}");
+    assert!(ids.contains(&"remote_node_trusted"), "{ids:?}");
+    // And none of the nine node warnings that test a field with no source there.
+    for absent in [
+        "node_down",
+        "node_restricted",
+        "node_syncing",
+        "node_offline",
+        "node_no_peers",
+        "node_low_disk",
+        "node_update_available",
+        "auth_missing",
+        "node_stalled",
+    ] {
+        assert!(!ids.contains(&absent), "{absent} was raised: {ids:?}");
+    }
+    // `blocks_behind` is null, which is why `last_refresh_at` exists (§2m.3).
+    assert!(s.wallet.blocks_behind.is_none());
+
+    // Untrusted — the rule — raises only the info row.
+    let mut ctx = w.ctx.clone();
+    go_remote(&mut ctx, false);
+    let s = crate::status(&ctx).unwrap();
+    let ids: Vec<&str> = s.warnings.iter().map(|w| w.id.as_str()).collect();
+    assert!(
+        ids.contains(&"remote_node") && !ids.contains(&"remote_node_trusted"),
+        "{ids:?}"
+    );
+}
+
+/// §5: `wallet.last_refresh_at` is the last refresh **fmonero** issued, written by the one
+/// wrapper all three callers go through — not the daemon's own 20 s auto-refresh, which fmonero
+/// cannot observe (§2j).
+#[test]
+fn the_last_refresh_is_the_one_fmonero_issued() {
+    let w = World::new("last-refresh", &[], &[]);
+    assert!(
+        crate::status(&w.ctx)
+            .unwrap()
+            .wallet
+            .last_refresh_at
+            .is_none(),
+        "nothing has been issued yet"
+    );
+    crate::wallet_session::refresh(&w.ctx, &w.wallet(), 0, &CancelToken::new()).unwrap();
+    let at = crate::status(&w.ctx)
+        .unwrap()
+        .wallet
+        .last_refresh_at
+        .expect("recorded");
+    assert!(at.starts_with("20"), "RFC 3339 with a local offset: {at}");
+}
+
 // ---- §2i: the mutating-call gate ---------------------------------------------
 
 /// §2i: under a `system_unit` layout the five mutators cannot be obtained at all, and the mock
