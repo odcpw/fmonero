@@ -52,6 +52,24 @@ forbid() {
   pass "$name"
 }
 
+# `forbid_except <name> <pattern> <exclude-regex> <paths…>` is `forbid` over whole DIRECTORIES
+# with the legitimate files filtered out of the hit list by path — which is how DESIGN words
+# these greps (§2c(v), §2d) and the only form that covers a file added later. An enumerated
+# path list is an exception list wearing a different hat: `rpc/mod.rs:130` says so in as many
+# words ("an exception list is a grep that stops protecting anything"), and the old list
+# happened to omit eight core files and the whole of `src/tui/**` and `src/doctor/**`.
+forbid_except() {
+  local name="$1" pattern="$2" exclude="$3"; shift 3
+  local hits
+  hits="$(grep -rnE "$pattern" "$@" 2>/dev/null | grep -vE "$exclude")"
+  if [ -n "$hits" ]; then
+    fail "$name"
+    printf '%s\n' "$hits" | sed 's/^/        /'
+    return 1
+  fi
+  pass "$name"
+}
+
 selftest() {
   local name="$1" pattern="$2" content="$3"
   local dir="$SELFTEST/$RANDOM$RANDOM"
@@ -144,23 +162,37 @@ selftest "query_key" 'query_key' 'let k = w.query_key("spend_key");'
 # ---------------------------------------------------------------- §2a.5 no floats on money
 step "§2a.5  no f64 touches a monetary value"
 FLOAT='as f64'
-# `sync_percent` is an f64 by §5's own schema and is computed in `status.rs`; it is a
-# PERCENTAGE, not a monetary value. It is named here so the exception is visible rather than
-# silent, and the grep still covers every other file.
-forbid "no 'as f64' outside status.rs's sync percentage" "$FLOAT" \
-  "$CORE/amount.rs" "$CORE/send.rs" "$CORE/history.rs" "$CORE/state.rs" \
-  "$CORE/rpc" "$BIN/output.rs" "$BIN/main.rs" "$BIN/setup.rs"
+# §2a.5's rule is "No `f64` touches a **monetary value**" — percentages, byte rates and ETAs are
+# not monetary values, and four files compute one. They are named here so the exception is
+# visible rather than silent, and the grep covers **every other file in both crates**, including
+# ones added later: the old enumerated list left all of `src/tui/**` and `src/doctor/**` out.
+AUDITED_FLOAT='(fmonero-core/src/status\.rs|fmonero/src/tui/mod\.rs|fmonero/src/tui/screens\.rs|fmonero/src/doctor/checks\.rs):'
+forbid_except "no 'as f64' outside the four audited non-money sites" "$FLOAT" "$AUDITED_FLOAT" \
+  "${SHIPPED[@]}"
 selftest "as f64" "$FLOAT" 'let xmr = amount.0 as f64 / 1e12;'
-printf '  note  status.rs is excluded and audited by hand: §5 types sync_percent as f64.\n'
-grep -n 'as f64' "$CORE/status.rs" | sed 's/^/        /'
+# And a money-SHAPED float is forbidden everywhere, the audited files included — which is the
+# half a per-file exclusion cannot give, since those four are where a new screen would put one.
+MONEY_FLOAT='(pico|amount|fee|balance|unlocked|total|xmr)[A-Za-z_0-9.]*[[:space:]]+as f64'
+forbid "no f64 on a value named like money, anywhere" "$MONEY_FLOAT" "${SHIPPED[@]}"
+selftest "money as f64" "$MONEY_FLOAT" 'let x = plan.total_fee.0 as f64 / 1e12;'
+printf '  note  the four audited sites are a sync percentage, a byte rate, a byte formatter and\n'
+printf '        a disk figure — none of them monetary (§2a.5, §5 types sync_percent as f64):\n'
+grep -rn 'as f64' "${SHIPPED[@]}" 2>/dev/null | sed 's/^/        /'
 
 # ---------------------------------------------------------------- §2a.3 one send path
 step "§2a.3  only send.rs may build or relay a transaction"
 # Call syntax, not the bare names: a doc comment that mentions `relay_tx` is documentation,
 # and a grep that fires on it is a grep somebody relaxes. The self-test below is a real call.
 MONEY='(\.(relay_tx|build_transfer|build_sweep_all)\(|state::set_pending_send\()'
-forbid "the binary never builds or relays directly" "$MONEY" \
-  "$BIN/main.rs" "$BIN/setup.rs" "$BIN/output.rs" "$BIN/prompt.rs"
+# The WHOLE binary tree, which is what §2a.2's own test command greps
+# (`grep -rn … crates/fmonero/src`) and what §2a.3's argument is about: "The CLI and the TUI are
+# two independently written callers; an invariant that lives in both of them is an invariant that
+# holds in one", and §7a repeats "the TUI's copy of it would be the one nobody reviews". A
+# four-file list left `src/tui/**` and `src/doctor/**` — the second caller and the read-only
+# probes — outside the guard entirely. Excluded by path, with the reason, as the core-side list
+# below already does: `tui/tests.rs` writes a pending record to set a test up.
+forbid_except "the binary never builds or relays directly" "$MONEY" \
+  '(fmonero/src/tui/tests\.rs):' "$BIN"
 selftest "a direct relay" "$MONEY" 'let h = w.relay_tx(&plan.txs[0].metadata)?;'
 # And inside core, only send.rs may name them (the clients DEFINE them, so wallet.rs is the
 # other legitimate file).
@@ -174,22 +206,23 @@ fi
 # ---------------------------------------------------------------- §2d one deadline
 step "§2d  no code path can call ureq without a deadline"
 UREQ='ureq::'
-forbid "ureq is named only in rpc/mod.rs" "$UREQ" \
-  "$CORE/amount.rs" "$CORE/address.rs" "$CORE/send.rs" "$CORE/history.rs" "$CORE/state.rs" \
-  "$CORE/status.rs" "$CORE/units.rs" "$CORE/session.rs" "$CORE/log.rs" "$CORE/agent.rs" \
-  "$CORE/rpc/jsonrpc.rs" "$CORE/rpc/node.rs" "$CORE/rpc/wallet.rs" "$CORE/rpc/digest.rs" "$BIN"
+# §2d words this as "`grep -rn 'ureq::' crates/*/src` … fails on any hit outside
+# `crates/fmonero-core/src/rpc/mod.rs`", and `rpc/mod.rs:130` explains why it must be that shape:
+# "an exception list is a grep that stops protecting anything". Directories, with the two
+# legitimate files filtered out of the hit list.
+forbid_except "ureq is named only in rpc/mod.rs" "$UREQ" \
+  '(fmonero-core/src/rpc/(mod|mock_tests)\.rs):' "${SHIPPED[@]}"
 selftest "a stray ureq call" "$UREQ" 'let r = ureq::get("http://127.0.0.1:18081").call()?;'
 permit "the agent still sets timeout_global" 'timeout_global' "$CORE/rpc/mod.rs"
 
 # ---------------------------------------------------------------- §2c loopback only
 step "§2c  loopback plaintext only"
 BINDS='(TcpListener|UdpSocket|\.bind\()'
-forbid "fmonero never binds a port" "$BINDS" \
-  "$CORE/amount.rs" "$CORE/address.rs" "$CORE/send.rs" "$CORE/history.rs" "$CORE/state.rs" \
-  "$CORE/status.rs" "$CORE/units.rs" "$CORE/session.rs" "$CORE/log.rs" "$CORE/agent.rs" \
-  "$CORE/context.rs" "$CORE/paths.rs" "$CORE/proc.rs" "$CORE/settings.rs" "$CORE/fsinfo.rs" \
-  "$CORE/wallet_dir.rs" "$CORE/error.rs" "$CORE/lib.rs" "$CORE/rpc/mod.rs" \
-  "$CORE/rpc/jsonrpc.rs" "$CORE/rpc/node.rs" "$CORE/rpc/wallet.rs" "$CORE/rpc/digest.rs" "$BIN"
+# §2c(v) words this as `grep -rn 'TcpListener|UdpSocket|\.bind(' crates/fmonero-core/src
+# crates/fmonero/src` with the mock "excluded by path" — directories, not an enumerated list
+# that a new file silently escapes.
+forbid_except "fmonero never binds a port" "$BINDS" \
+  '(fmonero-core/src/rpc/mock_tests\.rs|fmonero/src/tui/tests\.rs):' "${SHIPPED[@]}"
 selftest "a listener" "$BINDS" 'let l = std::net::TcpListener::bind("0.0.0.0:8080")?;'
 printf '  note  crates/fmonero-mock and rpc/mock_tests.rs are excluded BY PATH: the mock binds\n'
 printf '        a port on purpose (§8 Phase 0) and is never installed.\n'
@@ -252,19 +285,27 @@ fi
 # hit that is not adjacent to the word 'unverified'".
 #
 # Two deliberate widenings of that sentence, both recorded in DECISIONS.md:
-#  * the honesty marker is `unverified` OR `RED`/`AMBER` OR `never`/`not yet`/`no send`, because
-#    README's own Status section words it "RED, and therefore unverified" and `build_note` words it
-#    "no send has ever been broadcast". Demanding the single word `unverified` would fail on text
-#    that is already honest, and a check that fails on correct output is the check that gets
-#    deleted;
+#  * the honesty marker is `unverified` OR `RED`/`AMBER` OR `no send`/`nothing has been`/`cannot be
+#    verified`, because README's own Status section words it "RED, and therefore unverified" and
+#    `build_note` words it "no send has ever been broadcast". Demanding the single word
+#    `unverified` would fail on text that is already honest, and a check that fails on correct
+#    output is the check that gets deleted.
+#    **`never` and `not yet` are deliberately NOT markers.** They are ordinary English this
+#    project uses constantly — "the doctor never deletes anything", "core never prints", "status
+#    never starts anything" — and README alone has 25 such lines out of 424, so with ±1 adjacency
+#    roughly a fifth of the file was pre-excused and an outright false RED claim one line below a
+#    "never" sentence passed in silence. The third self-test below is that exact fixture;
 #  * "adjacent" is the line itself and the two lines around it, since these are wrapped
 #    paragraphs, not one sentence per line.
 # The claim pattern matches ACHIEVED capability ("successfully sent", "a real peer list",
 # "verified against a live daemon") and not mechanism prose ("a normal successful send clears the
-# record"), which describes what happens when one succeeds and claims nothing.
+# record"), which describes what happens when one succeeds and claims nothing. It also matches
+# "every step is idempotent" and "wires up Omarchy", because a real `setup` run is RED (§4b) and
+# README's Install section claimed both flatly — a claim about a RED row that matched none of the
+# alternatives above.
 step "§2j  README, every --help and robot-docs claim nothing §4b marks RED"
-CLAIM='successfully (sent|swept|broadcast|relayed|synced)|(has|have|had|was|were) (been )?(sent|swept|broadcast|relayed) (to|on|by|from)|(a |the )?(real|live) (send|sweep|broadcast|sync|peer list|balance|refresh)|(sends|broadcasts|relays|sweeps) (real|mainnet|stagenet)|(verified|proven|tested) (against|with|on) (a )?(real|live)'
-MARKER_CI='unverified|never|not yet|no send|nothing has been|cannot be verified'
+CLAIM='successfully (sent|swept|broadcast|relayed|synced)|(has|have|had|was|were) (been )?(sent|swept|broadcast|relayed) (to|on|by|from)|(a |the )?(real|live) (send|sweep|broadcast|sync|peer list|balance|refresh)|(sends|broadcasts|relays|sweeps) (real|mainnet|stagenet)|(verified|proven|tested) (against|with|on) (a )?(real|live)|(every|each) step is idempotent|(wires up|sets up) (omarchy|the)'
+MARKER_CI='unverified|no send|nothing has been|cannot be verified'
 # Written as an explicit character class rather than with `\<`/`\>`: gawk warns that those
 # escapes are "treated as plain" and the pattern then demands literal angle brackets, which would
 # make this whole marker dead and the check quietly stricter than it reads.
@@ -312,6 +353,15 @@ if [ -n "$(honesty_scan "$SELFTEST/claims-negative-class.txt")" ]; then
 else
   pass "self-test: and it leaves a line adjacent to the class name RED alone"
 fi
+# The third one pins the NARROWING: an ordinary "never" sentence — the shape this codebase writes
+# on 6% of README's lines — must not excuse the false claim below it.
+printf 'Core is silent: no function in fmonero-core ever writes to stdout, and it never prints.\nfmonero has successfully broadcast a real send to mainnet, and a real peer list is verified against a live daemon.\n' \
+  > "$SELFTEST/claims-never.txt"
+if [ -n "$(honesty_scan "$SELFTEST/claims-never.txt")" ]; then
+  pass "self-test: an adjacent 'never' sentence does NOT excuse a RED claim"
+else
+  fail "self-test: 'never' is excusing RED claims again — MARKER_CI was widened back"
+fi
 
 FMBIN="$ROOT/target/release/fmonero"
 [ -x "$FMBIN" ] || cargo build --release -p fmonero >/dev/null 2>&1
@@ -324,58 +374,60 @@ else
     [ -f "$f" ] && cat "$f" >> "$CORPUS"
   done
   "$FMBIN" --help >> "$CORPUS" 2>&1
-  # Every command of §4.1, its subcommands included: a claim in one leaf's after_help is exactly
-  # the kind of line nobody re-reads.
+  # **The command list is DERIVED, never transcribed.** `agent.rs` says "`scripts/check.sh`
+  # counts it, so a command that exists in `main.rs` and not here is visible rather than
+  # undocumented" — which was not true of any line in this file. A hand-written list also cannot
+  # notice a new command, so its `after_help` would be unreachable by the scan below: the honesty
+  # gate would go quiet on exactly the text nobody re-reads. No `jq`: this script needs only
+  # cargo and coreutils, and the field order of `capabilities` is stable (it is generated).
+  CMDLIST="$SELFTEST/commands.txt"
+  "$FMBIN" capabilities --json 2>/dev/null | tr '{' '\n' \
+    | grep -oE '"mutating":[a-z]+,"name":"[^"]+"' | sed 's/.*"name":"//; s/"$//' \
+    | sort -u > "$CMDLIST"
+  if [ ! -s "$CMDLIST" ]; then
+    fail "§2j: capabilities lists no commands, so the corpus below would be nearly empty"
+  fi
+  # The clap groups are not §4.1 rows, but their own `--help` is prose a claim can hide in.
+  { printf 'node\nwallet\nsettings\ndoctor undo\ndoctor capabilities\n'; cat "$CMDLIST"; } \
+    | sort -u > "$CMDLIST.all"
   while read -r cmd; do
     [ -n "$cmd" ] || continue
     # shellcheck disable=SC2086
     "$FMBIN" $cmd --help >> "$CORPUS" 2>&1
-  done <<'CMDS'
-status
-node
-node up
-node down
-node restart
-node info
-node log
-node peers
-node bans
-node ban
-node unban
-node limit
-wallet
-wallet list
-wallet open
-wallet close
-wallet create
-wallet balance
-wallet address
-wallet new-address
-wallet history
-wallet send
-wallet sweep
-wallet clear-pending
-wallet validate
-wallet book
-wallet refresh
-wallet notes
-wallet set-daemon
-settings
-settings list
-settings get
-settings set
-setup
-doctor
-doctor undo
-doctor capabilities
-tui
-capabilities
-robot-docs
-version
-CMDS
+  done < "$CMDLIST.all"
+
+  # And the two halves have to agree: every documented command must exist in the clap tree, and
+  # every top-level subcommand of the clap tree must be documented. Either direction failing is
+  # the drift `agent.rs`'s own doc comment promises this file catches.
+  MISSING=""
+  while read -r cmd; do
+    [ -n "$cmd" ] || continue
+    # shellcheck disable=SC2086
+    "$FMBIN" $cmd --help >/dev/null 2>&1 || MISSING="$MISSING $cmd"
+  done < "$CMDLIST"
+  if [ -n "$MISSING" ]; then
+    fail "§4.1: capabilities documents a command the binary does not have:$MISSING"
+  else
+    pass "every command capabilities lists exists in the clap tree ($(grep -c '' "$CMDLIST") of them)"
+  fi
+  UNDOC=""
+  for top in $("$FMBIN" --help 2>&1 | sed -n '/^Commands:/,/^Options:/p' \
+                 | grep -oE '^  [a-z][a-z-]+' | tr -d ' '); do
+    grep -qE "^$top( |$)" "$CMDLIST.all" || UNDOC="$UNDOC $top"
+  done
+  if [ -n "$UNDOC" ]; then
+    fail "§4.1: the binary has a subcommand capabilities does not document:$UNDOC"
+  else
+    pass "and every subcommand the binary offers is documented"
+  fi
   "$FMBIN" robot-docs >> "$CORPUS" 2>&1
-  "$FMBIN" version --json >> "$CORPUS" 2>&1          # carries build_stage + build_note
-  "$FMBIN" capabilities --json >> "$CORPUS" 2>&1     # carries build_note and every command's doc
+  # The two JSON payloads are ONE line each, and `build_note`'s paragraph breaks are the literal
+  # two characters `\n` — so "adjacent" (±1 line) means nothing inside them, and a marker one
+  # paragraph away from a claim is not adjacent to anything. Unescape them into real lines first,
+  # which is also what makes the `RED`/`AMBER` word boundary work: in `…\n\nRED —` the character
+  # before `RED` is the letter `n`.
+  "$FMBIN" version --json 2>&1 | sed 's/\\n/\n/g' >> "$CORPUS"       # build_stage + build_note
+  "$FMBIN" capabilities --json 2>&1 | sed 's/\\n/\n/g' >> "$CORPUS"  # build_note + every doc
   OFFENDERS="$(honesty_scan "$CORPUS")"
   if [ -n "$OFFENDERS" ]; then
     fail "§2j: a RED row is described as working, with no honesty marker nearby"
