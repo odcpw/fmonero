@@ -469,12 +469,6 @@ pub fn status(ctx: &Context) -> Result<Status, Error> {
         // deadline kills from the breaker and why `last_refresh_at` exists (§2m.3).
         wallet.blocks_behind = Some(nh as i64 - wh as i64);
     }
-    // The last refresh **fmonero** issued (§5, v5.2) — written only by
-    // `wallet_session::refresh`, never by `status`, which mutates no wallet (§2e).
-    wallet.last_refresh_at = crate::state::load(ctx)
-        .ok()
-        .and_then(|s| s.last_refresh)
-        .and_then(crate::rfc3339_from_unix);
 
     // ---- the cold path, at most once per 60 s (§5) --------------------------
     let cold = cold_pass(
@@ -524,6 +518,12 @@ pub fn status(ctx: &Context) -> Result<Status, Error> {
         .map(|r| PendingStatus::from_record(r, now));
 
     let stale_doc = crate::state::load(ctx).unwrap_or_default();
+    // The last refresh **fmonero** issued (§5, v5.2) — written only by
+    // `wallet_session::refresh`, never by `status`, which mutates no wallet (§2e). It is read
+    // from the document `status` already loads for `last_error`: one more `state::load` here
+    // cost measurable milliseconds against §2l's 60 ms budget, which is the whole point of
+    // that budget being a number rather than an aspiration.
+    wallet.last_refresh_at = stale_doc.last_refresh.and_then(crate::rfc3339_from_unix);
     let staleness = Staleness {
         node_probe_ms,
         wallet_probe_ms,

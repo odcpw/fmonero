@@ -2243,9 +2243,9 @@ crates/fmonero-core/            the engine: silent library, no terminal I/O
   src/amount.rs                 Piconero: parse/format, no floats (§2a.5)
   src/address.rs                Address: structural parse, the PREFIXES table (§1b.8)
   src/send.rs                   the ONLY send orchestrator: send::build + send::relay (§2a.3, §5b)
-  src/session.rs                wallet_session::{open,close} and node_session::{up,down,restart} —
-                                the one implementation of each sequence, shared by the CLI and the
-                                TUI (§5b)
+  src/session.rs                wallet_session::{open,close,refresh}, node_session::{up,down,restart}
+                                and node_mode::{set_remote,set_local} (v5.2, §2m.5) — the one
+                                implementation of each sequence, shared by the CLI and the TUI (§5b)
   src/log.rs                    bounded tail of a daemon log file (§5b log::tail)
   src/history.rs                postcard snapshot of transfer_entry rows, incremental fetch
   src/status.rs                 Status (§5) from node + wallet + units + state
@@ -4496,7 +4496,7 @@ pub fn setup::run(args: SetupArgs, ctx: Context, out: Out) -> anyhow::Result<i32
 
 ### 5b.1 The v5.2 amendments, in full
 
-Ten changes, all for remote node mode (§2m). Each is recorded in `DECISIONS.md` in the commit that
+Twelve changes, all for remote node mode (§2m). Each is recorded in `DECISIONS.md` in the commit that
 makes it, per the rule at the top of §5b. Nothing else in §5b moves.
 
 | # | Change | Why it could not be additive |
@@ -4511,6 +4511,8 @@ makes it, per the rule at the top of §5b. Nothing else in §5b moves.
 | 8 | `node_mode::{set_remote, set_local}` and `node_mode::ModeChange` are new | §2m.5's nine steps compose settings, unit rendering and `systemctl`; `main.rs` is frozen and the doctor's fixer needs the same rendering. |
 | 9 | `Settings::parse_remote_address` is new; `NodeClient::from_ctx` and `units::detect_layout` keep their signatures and change behaviour | One grammar for three callers; one remote-mode gate for nine commands. Behaviour changes are listed here too, because "compile against exactly these signatures" does not warn a Phase 2 agent that `from_ctx` can now fail for a new reason. |
 | 10 | `wallet_session::open` keeps its signature and changes behaviour twice: its `set_daemon` arguments come from `units::daemon_target(ctx)` rather than from `Login::from_monerod_conf`, and **a `-38` is no longer always swallowed** — in remote mode it is exit 4 `backend`, `reason: remote_address_rejected` (§2m.3, §4.2) | Same reason as #9, on the one call every wallet command goes through. Until this row existed §5b's doc comment said a `-38` "is a warning, not a failure" full stop, which is the **opposite** of what §2m.3 and §4.2 require in remote mode — two sections of one document giving opposite instructions for one call, in the module a Phase 1b agent implements from. A signature that does not move is not a contract that did not move. |
+| 11 | `units::remote_node_error(ctx, verb: Option<&str>)` is new, and `send::refuse_if_send_in_flight(ctx)` is the §2a.4 entry check's unrelayed half, extracted from `send::preflight` | §2m.3 prescribes the refusal's wording per verb (`fmonero node <verb> needs the local monerod; node.mode is remote (<addr>)`), and `NodeClient::from_ctx` — the structural gate — does not know which command called it. One constructor, two callers, `None` for the plural. The second is `node_mode`'s money guard: it needs the unrelayed check and **not** the resolve step that follows it, because resolving asks the wallet daemon those commands are about to restart (§2m.5). |
+| 12 | `settings::{remote_host, remote_host_port, is_loopback_host, is_private_host}` and `paths::systemd_user_dir_is_sandboxed` are new | The first four are the address predicates §2m.2, §2m.3 and §2m.6 name, in one place rather than four; `units::ssl_for_address`, `status`'s `remote_node_trusted` and the doctor's `remote_node_untrusted` all read them. The fifth narrows §4.2's "a test never installs a unit" by exactly one case — a unit written into `FMONERO_SYSTEMD_USER_DIR` **while `Systemctl::Fixture` is also set** is not a real unit, and §4b's AMBER `node remote <addr> --yes` row has no other way to exist. Either half alone still refuses. |
 
 ## 5c. Per-command JSON payloads
 

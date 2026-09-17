@@ -6953,3 +6953,212 @@ its source rather than from a run — the honesty edge the verifier recorded and
   Nothing was rejected, so there is no evidence to record against one. Two things the review did
   **not** move and this pass did not move either: §2c is untouched (no TLS crate, no remote call
   from fmonero, `require_loopback` unchanged), and no `Cargo.toml` changes (§2k).
+
+---
+
+## Remote node mode gate (real output)
+
+Run on 2026-09-17 in `/home/oliver/Projects/odcpw/fmonero` on `main`, at the tree this entry
+lands with. **Monero 0.18.5.1 is installed on this machine and no daemon has ever been started
+here** — that is new since the previous entry and it is what §1.1 now says. Nothing below
+started a `monerod` or a `monero-wallet-rpc`, broadcast a transaction, opened or created a wallet
+file, ran `sudo`, or pushed. **`fmonero node remote` was never run for real**: every remote-mode
+row below is settings, rendering, or a mock, and §4b's LIVE list is untouched — those six rows
+stay RED until somebody runs them against a real public node and pastes the output here.
+
+### The five commits
+
+```
+b4bda2d  design: v5.2 remote node mode, with the review's nine revisions integrated
+7f50d16  core: remote node mode — settings, layout, daemon_target, the send gate
+b3d5032  tui, plugin, docs: the remote-mode surfaces
+360282a  tests, docs: the remote-mode cases, the README section, and an flock fix
+```
+
+(`0064093`, a docs/sessions log, landed between them from another session and touches no file
+this work owns.)
+
+### The gate
+
+```
+$ systemctl --user show -p ActiveState,UnitFileState,NRestarts fmonero-{monerod,wallet-rpc}.service
+before everything   ActiveState=inactive  UnitFileState=disabled  NRestarts=0   (both units)
+
+$ cargo fmt --check                                   exit 0
+$ cargo clippy --all-targets -- -D warnings           Finished `dev` profile — no warnings
+$ cargo test
+running 79 tests   test result: ok. 79 passed; 0 failed      # crates/fmonero       (76 before)
+running 158 tests  test result: ok. 158 passed; 0 failed     # crates/fmonero-core  (144 before)
+running 3 tests    test result: ok. 3 passed; 0 failed       # crates/fmonero-mock
+                                                      240 tests, 0 failed   (226 before)
+$ cargo test -- --test-threads=1                      the same 240, 0 failed
+$ scripts/check.sh --full
+  ok    §7a: 4655 lines across src/tui/{mod,theme,screens,send,subs}.rs (budget 4700)
+  ok    §6.1: 1305 lines of manifest + QML + Model.js (budget 1340)
+  ok    every command capabilities lists exists in the clap tree (40 of them)
+  ok    and every subcommand the binary offers is documented
+  ok    no RED claim in README, 1651 lines of --help/robot-docs/capabilities
+check.sh: PASS                                        (0 FAIL)
+$ tests/e2e.sh --fast
+e2e.sh (fast): 517 passed, 0 failed, 3 skipped        real 0m17.482s   (389 before: +128)
+$ tests/e2e.sh --full
+e2e.sh (full): 541 passed, 2 failed, 3 skipped        real 2m13.112s   (415 before: +126)
+$ tests/plugin-smoke.sh
+plugin-smoke: 37 passed, 0 failed                     (32 before: +5)
+$ tests/tui_tmux.sh
+== 10 passed, 0 failed
+
+$ systemctl --user show -p ActiveState,UnitFileState,NRestarts,Result fmonero-{monerod,wallet-rpc}.service
+after e2e --fast    ActiveState=inactive  UnitFileState=disabled  NRestarts=0
+after e2e --full    ActiveState=inactive  UnitFileState=disabled  NRestarts=0  Result=success
+```
+
+`NRestarts` never left 0, neither unit was loaded, started or enabled, and no `setup --units` was
+run for real. The two `e2e --full` failures are §2l timings and they are **not** hidden: see
+below.
+
+### The two failing assertions, and the A/B that says whose they are
+
+```
+  FAIL  §2l (a) status, both daemons absent: 70ms mean, over the 60 ms budget
+  FAIL  §2l (b) status against the mock: 88ms mean, over the 80 ms budget
+```
+
+They fail on the **pre-v5.2 binary too**, on this machine, today. `e54c8bd` — the commit the
+previous gate was run at — was built in a scratch worktree and measured against this tree's
+binary back to back, in the same sandbox, minutes apart:
+
+```
+$ uptime
+ 20:02:05 up 2 days, load average: 3.62, 3.18, 2.90
+e54c8bd (pre-v5.2): 77ms mean
+HEAD    (+v5.2):    74ms mean
+$ two `systemctl --user is-active` spawns: 21-23ms mean      (19ms when §2l was written)
+```
+
+So the change is, if anything, **three milliseconds faster**, and the miss is the machine: the
+owner's own desktop carries a standing load average near 3.5 (ghostty, two Electron apps,
+quickshell), and the two `systemctl` spawns §2l calls "the expensive part" now cost 21–23 ms for
+the pair where they cost 19 ms on 2026-09-16.
+
+**The budget is not relaxed and the assertion is not weakened.** §2l's own paragraph says a GREEN
+budget set below its floor "is a number that gets quietly relaxed on first contact"; relaxing it
+here, in the commit that fails it, is exactly that. It is recorded with the real number, which is
+what §2l asks for, and it is reported as an open item rather than as a pass. One v5.2 change did
+touch this path and was fixed on the way: `status` briefly read `state.json` a second time for
+`wallet.last_refresh_at`, and now takes it from the document it already loads for `last_error`.
+
+### A pre-existing intermittent failure, found and reported rather than papered over
+
+`cargo test -p fmonero-core` fails roughly **3 runs in 12** with a spurious exit-3
+`send_in_progress` out of `send::take_send_lock`, in a different test each time
+(`the_recorded_bodies_…`, `the_refusal_order_…`, `a_fee_above_max_…`). It is **pre-existing**:
+
+```
+$ git stash && for i in $(seq 8); do cargo test -p fmonero-core; done     # at the pre-v5.2 tree
+test rpc::mock_tests::a_fee_above_max_refuses_and_relays_nothing ... FAILED     (1 of 8)
+```
+
+What is now known about it, so the next agent does not start over:
+
+* any of those tests run **alone, 25 times: 25 passes**;
+* the whole suite with `-- --test-threads=1`: **5 runs, 5 passes** (and 33 s instead of 13 s);
+* every test has its own state directory, so no two share a `send.lock` path, and no two
+  `World::new` names are duplicated;
+* instrumenting the failure to dump `/proc/locks` printed `holders=[]` — **no process held a
+  lock on that inode** at the moment `flock` answered `EWOULDBLOCK`.
+
+One real bug fell out of the hunt and is fixed in `360282a`: `take_send_lock` treated **every**
+non-zero `flock` return as "somebody else holds it", **`EINTR` included**. `flock(2)` is
+interruptible and this process reaps children on every `proc::run_with_deadline`, so a signal was
+enough to refuse a legitimate send with a message naming a holder that does not exist — on the
+money path. It now retries on `EINTR`, reports `EWOULDBLOCK`/`EAGAIN` as the interlock, and gives
+any other errno exit 1 rather than exit 3, because §4's whole argument for `reason` is that an
+agent acts on the difference. That fix did not remove the flake, so the flake is not that bug.
+The remainder is filed as a task with the full transcript; the gate runs above are reported as
+they happened, including the one `cargo test` run that hit it.
+
+### The DESIGN.md amendments this pass made beyond the review's nine
+
+Each is in §5b.1 (now **twelve** rows) or in the section it changes:
+
+1. **§5b.1 #11** — `units::remote_node_error(ctx, verb)` and `send::refuse_if_send_in_flight`.
+   §2m.3 prescribes a per-verb message and `NodeClient::from_ctx` does not know the verb, so the
+   constructor builds the plural form and `main.rs` passes the verb it typed; one construction,
+   three call layers. The second is §2a.4's entry check **without** the resolve step, which
+   `node_mode` must not run against a daemon it is about to restart.
+2. **§5b.1 #12** — the four address predicates in `settings` and
+   `paths::systemd_user_dir_is_sandboxed`. The last narrows §4.2's "a test never installs a unit"
+   by exactly one case: a unit written into `FMONERO_SYSTEMD_USER_DIR` **while
+   `Systemctl::Fixture` is also set**. Either half alone still refuses — and this repo's own e2e
+   case asserting that `setup --units --yes` exits 3 under a sandbox still passes, because that
+   case sets no fixture.
+3. **§1.1 and §4b's GREEN `doctor` row, restated for the machine as it is.** Monero was installed
+   here on 2026-09-17, which turned `monerod_installed` and `wallet_rpc_installed` from
+   `fail:not_installed` into passes and **broke four `e2e.sh` assertions and one unit test before
+   a line of v5.2 code existed**:
+
+   ```
+   $ git stash && tests/e2e.sh --fast          # at the pre-v5.2 tree
+     FAIL  exactly monerod_installed and wallet_rpc_installed fail (§4b)
+           [.checks[] | select(.status=="fail") | .id] = ["node_reachable"]
+     FAIL  and both say fail:not_installed, not a bare fail
+     FAIL  every node/wallet/storage check is a skip:<reason> (§7.1)
+     FAIL  and every one of those skips names its reason, never a bare skip
+   e2e.sh (fast): 377 passed, 4 failed, 3 skipped
+   $ cargo test -p fmonero                     # at the same tree
+   test doctor::checks::tests::the_one_line_predicates_answer_as_the_table_says ... FAILED
+   ```
+
+   They are **restated, not relaxed**: the shape asserted is still "exit 11, a named failing set,
+   no bare skips", now for a machine where the package is present and nothing is running
+   (`node_reachable` is the one `fail`). The unit test now clears `which_monerod` explicitly
+   instead of capturing the host — a test that asserts a predicate by probing the machine asserts
+   the machine.
+4. **§7a's line budget 4 600 → 4 700** (measured 4 655) and **§6.1's 1 310 → 1 340** (measured
+   1 305), both stated in DESIGN.md before the code was written, which is the rule §7a's own
+   v5.1 paragraph sets. The 98 TUI lines are §2m's Node screen — the remote hero §7a specifies,
+   the `u`/`d`/`L` toast, the `?` overlay's marks and the `NodeGate` arm in `subs.rs`. Nothing
+   was deleted to fit.
+
+### Deviations recorded under §2k
+
+1. **`node_mode` lives in `src/session.rs`**, beside `wallet_session` and `node_session`, rather
+   than in a file of its own. §3's layout line is updated to say so. It is the third sequence
+   module and it shares their reason for existing: two independently written callers (the CLI
+   and, one day, anything else) must not each compose the nine steps.
+2. **`WalletClient::set_daemon` maps `-38` itself**, to exit 4 `reason: remote_address_rejected`,
+   instead of letting §1b.4's table turn it into `unreachable`. `set_daemon` opens no socket
+   (§1b.9 item 1), so `unreachable` is the one thing that code cannot mean there — and
+   `wallet_session::open` needs to tell a rejected address from a wallet daemon that stopped
+   answering, which it cannot do from a shared reason. `wallet set-daemon` gets the right answer
+   for free.
+3. **`status` reads `units::daemon_target` for `node.url` and `node.trusted` in both modes.** §5
+   says `node.url` is "the address in force"; deriving it anywhere else would be a second
+   statement of the rule §2m.3 puts in one place.
+4. **The plugin's remote rows are asserted structurally, not through a Status fixture.**
+   `tests/plugin-smoke.sh` has no way to feed the widget a document, and a setter that injected
+   one would let anything spoof what the bar displays. The property that matters — the two remote
+   icon cases are matched **before** `!svc.nodeUp`, without which the bar draws a crossed glyph
+   and a 0 % ring for a wallet that is working — is asserted by comparing their positions in the
+   `iconCase` expression, and four `present` checks cover `Model.remoteLabel`, the panel's use of
+   it, the inert toggle and the `cursor` field. **The live half of that script reloaded the shell
+   and the widget answered, but with the PREVIOUS build of the QML**: `omarchy-shell shell
+   rescanPlugins` does not recompile an already-loaded component and this Omarchy exposes no
+   `reload` verb, so the QML edits reach the bar at the owner's next shell restart. That is said
+   here rather than glossed, and it is why the new assertions are static.
+5. **`arm_breaker` returns early in remote mode**, implementing §2d's v5.2 sentence: the wallet
+   exemption's only discriminator, `blocks_behind`, is unobservable there.
+
+### What this entry did not do
+
+It did not run `fmonero node remote` for real, contact any public node, install or remove
+anything, start a daemon, create or open a wallet file, run `sudo`, or push. It did not touch the
+owner's `~/.config/systemd/user`, `~/.config/fmonero`, `~/.local/bin/fmonero` or
+`~/.config/omarchy/shell.json`. No `Cargo.toml` changed and no TLS crate entered the tree — §2c's
+two compile-time greps still pass, and `NodeClient::from_ctx` refusing in remote mode is now the
+enforceable form of "fmonero never speaks to a remote node", asserted by
+`no_node_client_can_be_constructed_in_remote_mode`. **Carried forward, unchanged:** §4b's LIVE
+rows are RED, every §4b RED row that needs a local `monerod` is still RED, `scripts/uninstall.sh`
+is still `bash -n` only, `setup`'s refusal under Arch's `system_unit` layout is still the scenario
+that keeps `setup` a RED command, and the 120 GB floor is still an estimate.
