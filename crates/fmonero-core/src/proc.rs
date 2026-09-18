@@ -223,6 +223,47 @@ fn drain_fd(fd: libc::c_int, buf: &mut Vec<u8>) -> bool {
     }
 }
 
+/// Start `argv` and **do not wait for it**: stdout into `out`, no stdin, stderr discarded,
+/// its own process group so this process's exit cannot take it down (§5's `--check-node`).
+///
+/// This is the one place in fmonero that starts something it does not supervise, and it is
+/// bounded by the child's own `--max-time` rather than by a deadline here — there is no
+/// deadline here, because the caller has already returned by the time the child finishes.
+/// `out` is created at 0600 and truncated, so a stale answer can never be read as a fresh
+/// one, and an empty `out` past the child's own deadline is how the caller learns the check
+/// failed (§2n.4's reason set has `refused` for exactly that).
+pub fn spawn_detached(argv: &[&str], out: &std::path::Path) -> Result<(), Error> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let Some((program, args)) = argv.split_first() else {
+        return Err(Error::failure("spawn_detached called with an empty argv"));
+    };
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(out)
+        .map_err(|e| Error::failure(format!("cannot open {}: {e}", out.display())))?;
+    Command::new(program)
+        .args(args)
+        // §2b.1: the wallet password never reaches a child that has no use for it.
+        .env_remove(WALLET_PASSWORD_ENV)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(file))
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .map(|_child| ())
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                Error::backend(format!("{program} is not installed"))
+                    .with_hint(format!("omarchy pkg add {program}"))
+            } else {
+                Error::backend(format!("cannot run {program}: {e}"))
+            }
+        })
+}
+
 /// Run `argv` with a deadline, in its own process group, with piped stdio.
 ///
 /// * returns `Ok(Output { timed_out: true })` when the deadline killed the child;

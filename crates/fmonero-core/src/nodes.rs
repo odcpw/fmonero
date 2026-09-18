@@ -968,6 +968,110 @@ pub fn configured_address(ctx: &Context) -> Option<String> {
     }
 }
 
+/// Where a detached check (§5's `--check-node`) drops its answer for the **next** invocation
+/// to read. One file, under the state directory, so the `FMONERO_STATE_DIR` seam covers it.
+pub fn check_file(ctx: &Context) -> std::path::PathBuf {
+    ctx.paths.state_dir.join("remote-check.json")
+}
+
+/// v5.6, §5. Read a finished detached check of `address`, record it as that address's cached
+/// check, and clean up. **Reads a file and spawns nothing**, so it is inside §2e.
+///
+/// Four outcomes, and each is a state a poll really meets:
+/// * the file holds an answer ⇒ it becomes the cached check, with the time the check took
+///   measured as the answer file's modification time minus the recorded start;
+/// * the file is empty and the child's own deadline has passed ⇒ the check **failed**, and
+///   `reachable: false` is recorded so the Node screen can say `No answer when checked …`
+///   rather than `Not checked yet.` forever;
+/// * the file is empty and the deadline has not passed ⇒ nothing happens; the check is still
+///   running and this poll serves the cache, which is the whole point of the flag;
+/// * the recorded check is about **another** address ⇒ it is discarded unread. A height for
+///   the node we are no longer using is the §2j untruth `remote_probe`'s stored address
+///   exists to prevent.
+pub fn harvest_check(ctx: &Context, address: &str) -> Result<Option<Probe>, Error> {
+    let Some((started_for, started_ms)) = crate::state::load(ctx)?.remote_check else {
+        return Ok(None);
+    };
+    let path = check_file(ctx);
+    if started_for != address {
+        let _ = std::fs::remove_file(&path);
+        crate::state::clear_remote_check(ctx)?;
+        return Ok(None);
+    }
+    let overdue = crate::now_unix_millis() - started_ms
+        > ((PROBE_MAX_TIME_SEC + DEADLINE_SLACK_SEC) * 1000) as i64;
+    let Ok(bytes) = std::fs::read(&path) else {
+        // No file at all: the spawn itself failed, or something removed it. Only the deadline
+        // can settle that, and until it passes another poll must not spawn a second child.
+        if overdue {
+            crate::state::clear_remote_check(ctx)?;
+        }
+        return Ok(None);
+    };
+    if bytes.is_empty() {
+        if !overdue {
+            return Ok(None);
+        }
+        let probe = Probe::failed("refused", None);
+        crate::state::note_remote_probe(ctx, address, &probe)?;
+        crate::state::clear_remote_check(ctx)?;
+        let _ = std::fs::remove_file(&path);
+        return Ok(Some(probe));
+    }
+    if bytes.len() > PROBE_MAX_BYTES {
+        let probe = Probe::failed("bad_json", None);
+        crate::state::note_remote_probe(ctx, address, &probe)?;
+        crate::state::clear_remote_check(ctx)?;
+        let _ = std::fs::remove_file(&path);
+        return Ok(Some(probe));
+    }
+    let latency = std::fs::metadata(&path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .and_then(|done_ms| u64::try_from(done_ms - started_ms).ok());
+    let probe = interpret_get_info(&bytes, latency);
+    crate::state::note_remote_probe(ctx, address, &probe)?;
+    crate::state::clear_remote_check(ctx)?;
+    let _ = std::fs::remove_file(&path);
+    Ok(Some(probe))
+}
+
+/// v5.6, §5. Start a detached, bounded check of the **configured** node when its cached one
+/// is stale, and return whether anything was started.
+///
+/// This is the only spawn any form of `status` performs, it happens only behind
+/// `--check-node`, and it is bounded by four rules §5 states and a test each: only the
+/// configured node is ever contacted; the attempt is recorded, so polls arriving inside one
+/// check's deadline spawn once; `node.remote_probe_sec` of 0 turns it off; and with your own
+/// node there is nothing to do, because the live `get_info` of the ordinary path is the
+/// better answer.
+pub fn spawn_check(ctx: &Context, address: &str) -> Result<bool, Error> {
+    let every = ctx.settings.node.remote_probe_sec;
+    if every == 0 {
+        return Ok(false);
+    }
+    if crate::state::remote_check(ctx, address)?.is_some() {
+        return Ok(false);
+    }
+    let fresh = crate::state::remote_probe(ctx, address)?
+        .is_some_and(|p| crate::now_unix().saturating_sub(p.probed_at) < i64::from(every));
+    if fresh {
+        return Ok(false);
+    }
+    let target = ProbeTarget::parse(address)?;
+    let url = target.json_rpc_url();
+    let max_time = PROBE_MAX_TIME_SEC.to_string();
+    let argv = probe_argv(&url, &max_time);
+    // The order matters: record first, spawn second. A spawn whose record was lost would be
+    // spawned again by the next poll three seconds later, which is the stampede the record
+    // exists to prevent.
+    crate::state::note_remote_check(ctx, address)?;
+    proc::spawn_detached(&argv, &check_file(ctx))?;
+    Ok(true)
+}
+
 /// Write a batch of probe results into the cache, matched by `address` (§2n.6).
 ///
 /// The TUI's `p` needs this because its probes run in an `ActionSub` and the cache is the only

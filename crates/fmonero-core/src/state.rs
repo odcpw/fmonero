@@ -128,6 +128,15 @@ pub struct StateDoc {
     /// absent key deserializes to `None` through `#[derive(Default)]`, so older state files
     /// load.
     pub remote_probe: Option<(String, crate::nodes::Probe)>,
+    /// v5.6, §5: the detached check `status --json --check-node` last started — the address
+    /// it is about and the unix **milliseconds** it began at.
+    ///
+    /// It is what makes the flag's third bound true: several polls arriving inside one
+    /// check's own deadline spawn **once**, because every one of them sees this entry and
+    /// waits. It is cleared when the answer is harvested, when the deadline passes with no
+    /// answer, and when the configured address changes under it. An absent key deserializes
+    /// to `None`, so older state files load.
+    pub remote_check: Option<(String, i64)>,
 }
 
 impl StateDoc {
@@ -270,6 +279,25 @@ pub fn remote_probe(ctx: &Context, address: &str) -> Result<Option<crate::nodes:
     Ok(load(ctx)?
         .remote_probe
         .and_then(|(stored, p)| (stored == address).then_some(p)))
+}
+
+/// v5.6, §5. Record that a detached check of `address` has just been started.
+pub fn note_remote_check(ctx: &Context, address: &str) -> Result<(), Error> {
+    let entry = (address.to_string(), crate::now_unix_millis());
+    with_state(ctx, |s| s.remote_check = Some(entry))
+}
+
+/// The detached check in flight **for this address only**, as unix milliseconds.
+pub fn remote_check(ctx: &Context, address: &str) -> Result<Option<i64>, Error> {
+    Ok(load(ctx)?
+        .remote_check
+        .and_then(|(stored, at)| (stored == address).then_some(at)))
+}
+
+/// Forget the detached check, whatever it was about — the answer has been harvested, its
+/// deadline has passed, or the configured address changed under it.
+pub fn clear_remote_check(ctx: &Context) -> Result<(), Error> {
+    with_state(ctx, |s| s.remote_check = None)
 }
 
 /// Arm a §2d breaker. **Never called by `status`**, and never by `send::relay` (§2d).

@@ -420,6 +420,29 @@ impl WalletStatus {
 /// honest on this machine, where no Monero binary exists (§1.1): nothing is reachable,
 /// nothing is open, and every unknown is `null`. It issues no RPC, spawns no process and
 /// writes no state, so it cannot claim anything it has not seen (§2j).
+/// §5's `--check-node` (v5.6): **the identical document**, key for key, plus one bounded
+/// side effect — a detached check of the configured public node, started only when the cached
+/// one is stale, and never waited on.
+///
+/// It exists because §2e left a public node's height and sync flag with no refresher at all:
+/// the bar widget polls `status`, `status` spawns nothing, and the TUI is the only thing that
+/// ever checked, so `checked 4h ago` was the normal state of the bar. This call does not make
+/// *itself* fresh — it makes the **next** one fresh, and returns at once with what is cached.
+///
+/// A check that cannot be started is not an error: this is a read-only document that answers
+/// while everything else is down (§2e), and a bar widget whose poll failed because `curl` is
+/// missing would be worse than one showing a height with its age.
+pub fn status_checking_node(ctx: &Context) -> Result<Status, Error> {
+    if let Some(address) = crate::nodes::configured_address(ctx) {
+        // Harvest first. An answer that landed since the last poll is what makes this one
+        // fresh, and testing staleness before harvesting would start a second check for an
+        // answer already on disk.
+        let _ = crate::nodes::harvest_check(ctx, &address);
+        let _ = crate::nodes::spawn_check(ctx, &address);
+    }
+    status(ctx)
+}
+
 pub fn status(ctx: &Context) -> Result<Status, Error> {
     let now = crate::now_unix();
     let layout = units::detect_layout(ctx).unwrap_or(units::Layout::None);
@@ -1223,6 +1246,180 @@ mod tests {
         assert!(
             !WARNING_IDS.contains(&"plugin_not_linked"),
             "that one is the doctor's (§5)"
+        );
+    }
+
+    // ---- §5's `--check-node`: four bounds, a test each (v5.6) --------------------
+
+    /// A sandbox in remote mode against an address nothing answers on, which is what makes
+    /// the spawn test cheap: `127.0.0.1:1` refuses instantly and leaves this machine.
+    fn remote_ctx(tag: &str) -> Context {
+        let dir = std::env::temp_dir().join(format!("fmonero-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut ctx = Context::for_test(&dir).expect("context");
+        ctx.settings.node.mode = crate::settings::NodeMode::Remote;
+        ctx.settings.node.remote = "127.0.0.1:1".into();
+        ctx.settings.node.remote_probe_sec = 60;
+        ctx
+    }
+
+    /// A cached check that failed, which is all these tests need of one: what is being
+    /// bounded is when a new check starts, never what an old one said.
+    fn stale_probe() -> crate::nodes::Probe {
+        crate::nodes::Probe {
+            reachable: false,
+            height: None,
+            synchronized: None,
+            restricted: None,
+            nettype: None,
+            version: None,
+            latency_ms: Some(3),
+            reason: Some("refused"),
+            probed_at: crate::now_unix(),
+        }
+    }
+
+    fn answered(height: u64) -> Vec<u8> {
+        format!(
+            r#"{{"result":{{"status":"OK","height":{height},"synchronized":true,"restricted":false,"nettype":"mainnet","version":"0.18.5.1"}}}}"#
+        )
+        .into_bytes()
+    }
+
+    /// Bound 1: **with a fresh cache the flag starts nothing.** Nothing is spawned and no
+    /// attempt is recorded, so the 3 s poll of an open panel costs what plain `status` costs.
+    #[test]
+    fn the_check_flag_starts_nothing_when_the_last_check_is_fresh() {
+        let ctx = remote_ctx("checkfresh");
+        let address = crate::nodes::configured_address(&ctx).expect("remote mode");
+        let mut p = stale_probe();
+        p.probed_at = crate::now_unix();
+        crate::state::note_remote_probe(&ctx, &address, &p).unwrap();
+        assert!(!crate::nodes::spawn_check(&ctx, &address).unwrap());
+        assert!(!crate::nodes::check_file(&ctx).exists());
+        assert!(crate::state::remote_check(&ctx, &address)
+            .unwrap()
+            .is_none());
+    }
+
+    /// Bound 2 and bound 3: **a stale cache starts exactly one check, and three polls inside
+    /// its deadline start one.** Without the recorded attempt a 3 s poll against a 60 s
+    /// staleness window would fire twenty `curl`s per refresh cycle.
+    #[test]
+    fn a_stale_check_starts_one_and_three_polls_still_start_one() {
+        if crate::proc::which("curl").is_none() {
+            return; // §2n.4's refusal covers this machine; nothing to bound.
+        }
+        let ctx = remote_ctx("checkstale");
+        let address = crate::nodes::configured_address(&ctx).expect("remote mode");
+        let mut p = stale_probe();
+        p.probed_at = crate::now_unix() - 3_600;
+        crate::state::note_remote_probe(&ctx, &address, &p).unwrap();
+        assert!(crate::nodes::spawn_check(&ctx, &address).unwrap(), "one");
+        let started = crate::state::remote_check(&ctx, &address)
+            .unwrap()
+            .expect("the attempt is recorded beside the cached result");
+        assert!(!crate::nodes::spawn_check(&ctx, &address).unwrap(), "two");
+        assert!(!crate::nodes::spawn_check(&ctx, &address).unwrap(), "three");
+        assert_eq!(
+            crate::state::remote_check(&ctx, &address).unwrap(),
+            Some(started),
+            "the second and third polls did not re-record the attempt"
+        );
+    }
+
+    /// Bound 4a: **with your own node the flag is a no-op**, where the live `get_info` of the
+    /// ordinary hot path is the better answer and the cache is `null` by design.
+    #[test]
+    fn with_your_own_node_the_check_flag_does_nothing() {
+        let dir = std::env::temp_dir().join(format!("fmonero-checklocal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let ctx = Context::for_test(&dir).expect("context");
+        assert!(crate::nodes::configured_address(&ctx).is_none());
+        let s = status_checking_node(&ctx).expect("a read-only document");
+        assert!(s.node.remote_probe.is_none());
+        assert!(!crate::nodes::check_file(&ctx).exists());
+    }
+
+    /// Bound 4b: **plain `status` is unchanged and still spawns nothing**, which is what every
+    /// §2l measurement and every agent contract rests on — even with a cache stale enough that
+    /// the flag would have started a check.
+    #[test]
+    fn plain_status_starts_nothing_even_with_a_stale_check() {
+        let ctx = remote_ctx("checkplain");
+        let address = crate::nodes::configured_address(&ctx).expect("remote mode");
+        let mut p = stale_probe();
+        p.probed_at = crate::now_unix() - 3_600;
+        crate::state::note_remote_probe(&ctx, &address, &p).unwrap();
+        let _ = status(&ctx).expect("status never fails on a machine with no daemons");
+        assert!(!crate::nodes::check_file(&ctx).exists());
+        assert!(crate::state::remote_check(&ctx, &address)
+            .unwrap()
+            .is_none());
+    }
+
+    /// The harvest, which is the half that makes the **next** poll fresh: an answer becomes
+    /// the cached check with the time it took, an empty file past the child's own deadline
+    /// becomes a recorded failure rather than `Not checked yet.` forever, and an answer about
+    /// another address is discarded unread.
+    #[test]
+    fn a_harvested_answer_becomes_the_cached_check_and_a_silence_becomes_a_failure() {
+        let ctx = remote_ctx("checkharvest");
+        let address = crate::nodes::configured_address(&ctx).expect("remote mode");
+        let file = crate::nodes::check_file(&ctx);
+
+        std::fs::write(&file, answered(3_765_346)).unwrap();
+        crate::state::with_state(&ctx, |s| {
+            s.remote_check = Some((address.clone(), crate::now_unix_millis() - 240))
+        })
+        .unwrap();
+        let p = crate::nodes::harvest_check(&ctx, &address)
+            .unwrap()
+            .expect("an answer");
+        assert!(p.reachable);
+        assert_eq!(p.height, Some(3_765_346));
+        assert_eq!(p.synchronized, Some(true));
+        assert!(p.latency_ms.is_some(), "the check's own duration");
+        assert!(!file.exists(), "the answer file is cleaned up");
+        assert!(crate::state::remote_check(&ctx, &address)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            crate::state::remote_probe(&ctx, &address)
+                .unwrap()
+                .and_then(|c| c.height),
+            Some(3_765_346),
+            "it is now THIS address's cached check"
+        );
+
+        // A silence past the deadline is a failure, and it is recorded as one.
+        std::fs::write(&file, b"").unwrap();
+        crate::state::with_state(&ctx, |s| {
+            s.remote_check = Some((address.clone(), crate::now_unix_millis() - 60_000))
+        })
+        .unwrap();
+        let p = crate::nodes::harvest_check(&ctx, &address)
+            .unwrap()
+            .expect("a failure is an answer too");
+        assert!(!p.reachable);
+        assert_eq!(p.reason, Some("refused"));
+
+        // An answer about a node we are no longer using is never read.
+        std::fs::write(&file, answered(1)).unwrap();
+        crate::state::with_state(&ctx, |s| {
+            s.remote_check = Some(("other.example:18081".into(), crate::now_unix_millis()))
+        })
+        .unwrap();
+        assert!(crate::nodes::harvest_check(&ctx, &address)
+            .unwrap()
+            .is_none());
+        assert!(!file.exists());
+        assert_eq!(
+            crate::state::remote_probe(&ctx, &address)
+                .unwrap()
+                .map(|c| c.reachable),
+            Some(false),
+            "the earlier failure is still the cached check, not the stranger's height"
         );
     }
 }

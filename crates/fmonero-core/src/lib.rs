@@ -80,6 +80,12 @@ pub fn status(ctx: &Context) -> Result<Status, Error> {
     status::status(ctx)
 }
 
+/// §5's `--check-node` (v5.6): the same document, plus a detached check of the configured
+/// public node when the cached one is stale (see [`status::status_checking_node`]).
+pub fn status_checking_node(ctx: &Context) -> Result<Status, Error> {
+    status::status_checking_node(ctx)
+}
+
 /// Now, as RFC 3339 with the **local** offset and second precision (§5).
 pub fn now_rfc3339() -> String {
     let zoned = jiff::Zoned::now();
@@ -98,6 +104,13 @@ pub fn rfc3339_from_unix(seconds: i64) -> Option<String> {
 /// Now, as a Unix epoch second.
 pub fn now_unix() -> i64 {
     jiff::Timestamp::now().as_second()
+}
+
+/// Now, as a Unix epoch **millisecond**. Used by exactly one thing (§5's `--check-node`),
+/// which measures how long a detached check took by subtracting this from the answer file's
+/// modification time; a second's resolution there would render every check as `0 ms`.
+pub fn now_unix_millis() -> i64 {
+    jiff::Timestamp::now().as_millisecond()
 }
 
 /// Write `bytes` to `path` **at mode 0600**, through `.tmp.<pid>` + `rename(2)` (§2b.7).

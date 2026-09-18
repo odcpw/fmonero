@@ -96,13 +96,21 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// The whole Status document (schema 1). Starts nothing, calls no wallet mutator
+    /// The whole Status document (schema 1). Starts nothing and changes nothing
     #[command(
-        after_help = "Three RPCs with the wallet closed, five with it open, plus two
-`systemctl --user is-active` spawns. A daemon that is down is `reachable: false`, not an
-error: `status` exits 0 with warnings."
+        after_help = "Three questions to the wallet and the node with no wallet open, five
+with one, plus two checks on the background services. A node that is not answering is
+`reachable: false`, not an error: `status` exits 0 with warnings.
+
+--check-node prints exactly the same document and, when a public node is configured and the
+last check of it is older than node.remote_probe_sec, starts one in the background and returns
+at once. This call is not made fresher by it; the next one is."
     )]
-    Status,
+    Status {
+        /// Start a background check of the configured public node when the last one is stale
+        #[arg(long)]
+        check_node: bool,
+    },
     /// The local monerod: start, stop, inspect, peers, bans, limits
     Node {
         #[command(subcommand)]
@@ -811,7 +819,7 @@ fn node_gate<'a>(ctx: &Context, n: Option<&'a NodeClient>) -> send::NodeGate<'a>
 /// The name of the command the user typed, for the `--dry-run` refusal's hint.
 fn command_path(cmd: &Cmd) -> String {
     match cmd {
-        Cmd::Status => "status".into(),
+        Cmd::Status { .. } => "status".into(),
         Cmd::Node { cmd } => format!(
             "node {}",
             match cmd {
@@ -1008,7 +1016,7 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
     let cmd = match cli.cmd {
         Some(c) => c,
         None if output::stdout_is_tty() => Cmd::Tui(tui::TuiArgs::default()),
-        None => Cmd::Status,
+        None => Cmd::Status { check_node: false },
     };
     if dry_run && !dry_run_is_supported(&cmd) {
         let path = command_path(&cmd);
@@ -1031,8 +1039,16 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
     let default_account = |given: Option<u32>| given.unwrap_or(ctx.settings.wallet.account);
 
     match cmd {
-        Cmd::Status => {
-            let s = fmonero_core::status(&ctx)?;
+        Cmd::Status { check_node } => {
+            // §5, v5.6: the identical document either way. The flag decides whether a
+            // detached check of the configured public node is started on the way out — the one
+            // spawn any form of `status` performs, and the reason the bar widget can show a
+            // public node's height with an age a person would call current.
+            let s = if check_node {
+                fmonero_core::status_checking_node(&ctx)?
+            } else {
+                fmonero_core::status(&ctx)?
+            };
             out.emit("status", serde_json::to_value(&s)?);
             Ok(0)
         }
