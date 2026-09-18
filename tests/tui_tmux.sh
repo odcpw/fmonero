@@ -112,7 +112,7 @@ printf '\n== the TUI on a pty (%s)\n' "$SCENARIO"
 # this shell's — so every `export FMONERO_*` above was invisible to the TUI whenever the owner
 # (or another agent) had a tmux server up. The TUI then ran against `~/.config/fmonero`,
 # 127.0.0.1:18081/18083 and the owner's real wallet: the gate passed vacuously in non-capture
-# mode (the words "Node", "Balance", "Priority", "Log", "Keys" all render in the empty state),
+# mode (the words "Node", "Balance", "cheapest", "Log", "Keys" all render in the empty state),
 # and in `--capture` mode it typed a mainnet address and `0.01` into the Send form and pressed
 # Enter, which is `send::build` taking the owner's real `send.lock` and issuing a real
 # `transfer`. Worse, the "nothing was relayed" assertion counts `relay_tx` in the MOCK's log,
@@ -154,7 +154,7 @@ visit() { # visit <key> <label> <needle> [capture-file]
 
 visit 1 "Node screen"   "Node"     "node.txt"
 visit 2 "Wallet screen" "Balance"  "wallet.txt"
-visit 3 "Send screen"   "Priority" "send.txt"
+visit 3 "Send screen"   "cheapest" "send.txt"
 # The Send form owns printable keys while it is focused (otherwise an address typed into the
 # To field would switch screens), so `Esc` leaves it first — which is what its own hint line
 # and the help overlay say. This sequence is the documented rule, asserted.
@@ -254,11 +254,11 @@ tmux send-keys -t "$SESSION" 1 2>/dev/null || true; sleep 1.2
 PTEXT="$(pane)"
 [ -n "$CAPTURE" ] && printf '%s\n' "$PTEXT" > "$CAPTURE/picker-empty.txt"
 case "$PTEXT" in
-  *"No public-node list yet."*) ok "§7a.4: the no-cache panel renders" ;;
+  *"No list of public nodes yet."*) ok "§7a.4: the no-cache panel renders" ;;
   *) bad "the picker's no-cache panel is missing" "$(printf '%s' "$PTEXT" | tail -14)" ;;
 esac
 case "$PTEXT" in
-  *"[f] Fetch the list"*) ok "with the chip that fetches it" ;;
+  *"[f] Get the list"*) ok "with the chip that fetches it" ;;
   *) bad "the [f] chip is missing" "$(printf '%s' "$PTEXT" | tail -14)" ;;
 esac
 case "$PTEXT" in
@@ -297,7 +297,7 @@ case "$CTEXT" in
   *) bad "the ratio must carry its sample size" "$(printf '%s' "$CTEXT" | tail -14)" ;;
 esac
 case "$CTEXT" in
-  *"37 skipped (no port)"*) ok "and the footer surfaces skipped_no_port" ;;
+  *"37 skipped"*) ok "and the footer surfaces the skip count" ;;
   *) bad "the footer does not surface the skip count" "$(printf '%s' "$CTEXT" | tail -4)" ;;
 esac
 
@@ -305,7 +305,7 @@ esac
 tmux send-keys -t "$SESSION" 2 2>/dev/null || true; sleep 1.2
 WTEXT="$(pane)"
 [ -n "$CAPTURE" ] && printf '%s\n' "$WTEXT" > "$CAPTURE/wallet-empty.txt"
-for needle in "[o] Open wallet" "[c] Create wallet" "[W] Start the wallet daemon" "wallet daemon:"; do
+for needle in "[o] Open wallet" "[c] Create wallet" "[W] Start the wallet service" "wallet service:"; do
   case "$WTEXT" in
     *"$needle"*) ok "§7a.5: the empty state carries '$needle'" ;;
     *) bad "the empty state is missing '$needle'" "$(printf '%s' "$WTEXT" | sed -n '5,12p')" ;;
@@ -403,29 +403,57 @@ tmux send-keys -t "$REMOTE_SESSION" 1 2>/dev/null || true
 sleep 1.5
 RTEXT="$(tmux capture-pane -p -t "$REMOTE_SESSION" 2>/dev/null || true)"
 [ -n "$CAPTURE" ] && printf '%s\n' "$RTEXT" > "$CAPTURE/node-remote.txt"
+# **v5.6 (§7a.3): the screen shows what IS known instead of two panes of what is not.** The two
+# panes that read `not available with a remote node` are gone, and one ` This node ` pane carries
+# the cached check — here in its honest empty state, because nothing has checked this address yet.
 case "$RTEXT" in
-  *"not available with a remote node"*)
-    ok "the Node screen says what a remote node cannot answer (§2m.3)" ;;
-  *) bad "the Node screen did not render the remote explanation" \
+  *"This node"*) ok "the Node screen renders the public-node facts pane (§7a.3)" ;;
+  *) bad "the Node screen did not render ' This node '" \
          "$(printf '%s' "$RTEXT" | sed -n '1,8p')" ;;
 esac
 case "$RTEXT" in
-  *"node remote"*) ok "the status bar carries the remote marker" ;;
-  *) bad "the status bar does not say 'node remote'" \
+  *"not available"*) bad "a pane still says 'not available'" \
+         "$(printf '%s' "$RTEXT" | sed -n '1,12p')" ;;
+  *) ok "no pane says 'not available' any more (§2o)" ;;
+esac
+case "$RTEXT" in
+  *"public node"*) ok "the status bar names the public node" ;;
+  *) bad "the status bar does not say 'public node'" \
          "$(printf '%s' "$RTEXT" | tail -3)" ;;
 esac
 case "$RTEXT" in
   *"$REMOTE_ADDR"*) ok "and the address in force is on screen ($REMOTE_ADDR)" ;;
   *) bad "the remote address is not shown anywhere" "$(printf '%s' "$RTEXT" | sed -n '1,8p')" ;;
 esac
-# `u` toasts the command that would restore the local node; it must never run systemctl (§2m.3).
+# `u` says so and names the two keys that do something about it; it must never run systemctl
+# (§2m.3) and — from v5.6 — **must never print a shell command** (§2o.1). That refusal was the
+# single worst instance of the rule the owner asked for: *"I don't want to manage the CLI."*
 tmux send-keys -t "$REMOTE_SESSION" u 2>/dev/null || true
 sleep 1
 RTEXT2="$(tmux capture-pane -p -t "$REMOTE_SESSION" 2>/dev/null || true)"
 case "$RTEXT2" in
-  *"fmonero node local --yes"*) ok "u toasts the command that would bring the local node back" ;;
-  *) bad "u did not toast 'fmonero node local --yes'" "$(printf '%s' "$RTEXT2" | tail -3)" ;;
+  # The status line is trimmed to the pane's width, so the assertion is on the half that fits —
+  # which still has to be the part naming a key, not a command.
+  *"You are using a public node. Press f"*)
+    ok "u names the in-app way out (§2o.1)" ;;
+  *) bad "u did not name the in-app way out" "$(printf '%s' "$RTEXT2" | tail -3)" ;;
 esac
+case "$RTEXT2" in
+  *"fmonero node local"*) bad "u printed a shell command at a user who cannot type it (§2o.1)" \
+         "$(printf '%s' "$RTEXT2" | tail -3)" ;;
+  *) ok "and prints no shell command" ;;
+esac
+# v5.6, §7a.4: `l` is the in-app way back, and it asks first.
+tmux send-keys -t "$REMOTE_SESSION" l 2>/dev/null || true
+sleep 1
+RTEXT3="$(tmux capture-pane -p -t "$REMOTE_SESSION" 2>/dev/null || true)"
+[ -n "$CAPTURE" ] && printf '%s\n' "$RTEXT3" > "$CAPTURE/node-remote-local.txt"
+case "$RTEXT3" in
+  *"Use your own node"*) ok "l opens the confirm that switches back (§7a.4)" ;;
+  *) bad "l did not open the 'Use your own node' confirm" "$(printf '%s' "$RTEXT3" | sed -n '1,12p')" ;;
+esac
+tmux send-keys -t "$REMOTE_SESSION" Escape 2>/dev/null || true
+sleep 0.5
 tmux send-keys -t "$REMOTE_SESSION" q 2>/dev/null || true
 for _ in $(seq 50); do [ -f "$WORK/rc-remote" ] && break; sleep 0.1; done
 if [ -f "$WORK/rc-remote" ]; then

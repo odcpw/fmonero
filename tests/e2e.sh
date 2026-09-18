@@ -740,7 +740,8 @@ expect_rc 0 "wallet history --cached"
 expect_json '.cached' 'true' "it says it is cached"
 expect_json '[.transfers[] | select(.confirmations != null)] | length' '0' "confirmations is null with --cached (§4.1)"
 expect_json '[.transfers[] | select(.locked != null)] | length' '0' "and so is locked — never 0 standing in for unknown"
-expect_contains "cached: confirmations unknown" "and the footer says which one --cached gives up (§4.1)"
+expect_contains "confirmation counts are not known" \
+  "and the footer says which one --cached gives up (§4.1)"
 
 fm --timeout 3 wallet book list --json
 expect_rc 0 "wallet book list"
@@ -1163,7 +1164,7 @@ mock_wallet_up --fail "get_transfers=0:"
 fm --timeout 3 wallet history --pool --json
 expect_rc 5 "epee's code:0 catch-all is exit 5"
 expect_reason rpc_error "rpc_error"
-expect_contains "cannot reach the daemon" "with a SYNTHESISED message, never an empty one (§2j)"
+expect_contains "cannot reach the node" "with a SYNTHESISED message, never an empty one (§2j)"
 
 # §4.2 exempts exactly ONE `set_daemon` failure from `wallet open`: `-38 NO_DAEMON_CONNECTION`,
 # where the wallet is open and simply has no daemon yet. Exit 4 is a whole CLASS, and the rest of

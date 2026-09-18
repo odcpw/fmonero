@@ -218,7 +218,7 @@ every other node, wallet and storage check skipped or warned with a stated reaso
 `wallet open` with no unit (exit 4 `unit_missing`); `node up`, `node restart` and `wallet open`
 with the units installed and no Monero binary (exit 4 `not_installed`, in milliseconds, starting
 nothing); `setup --units` below the 120 GB free-space floor (exit 3 `full_chain_refused`, with
-`--full-chain --yes` overriding it); `wallet send` with no wallet daemon (exit 4 at
+`--full-chain --yes` overriding it); `wallet send` with no wallet service (exit 4 at
 the reachability probe, before any build, so a bad address is still exit 15 and an unresolved
 pending send is still exit 3); `node down --dry-run` (exit 2, because `--dry-run` is implemented
 by exactly six commands); `wallet clear-pending`; `node log` with no log file; bare `fmonero`
@@ -315,7 +315,8 @@ first time with nothing at stake. `fmonero settings set node.network stagenet` a
 Every command takes `--json` and prints one JSON object; a non-TTY stdout implies `--json`.
 Failures are
 `{"ok":false,"schema":1,"code":N,"code_name":"…","error":"…","hint":"<runnable command>","reason":"…"}`
-with the same exit code, and every human-mode error ends in a `hint:` line.
+with the same exit code, and every human-mode error ends in a `Try:` line naming a runnable
+command.
 
 ```
 fmonero                       TUI on a terminal; `status --json` when stdout is not a TTY
@@ -415,7 +416,7 @@ Also, by construction: amounts are `u64` piconero end to end, and no `f64` touch
 value anywhere, in Rust or in QML — the widget formats money from a pre-rendered string, and the
 only `f64`s in the tree are a sync percentage, a byte rate, a byte-size formatter and a disk
 figure, each named in `scripts/check.sh`. Recipients are
-validated twice, structurally and then by the wallet daemon, and a recipient on the wrong
+validated twice, structurally and then by the wallet service, and a recipient on the wrong
 network is refused by name, with the wallet's own primary address deciding which network that
 is. The request builder has no `unlock_time`, no `payment_id`, no `ring_size` and no
 `subtract_fee_from_outputs` field, so none of them can be sent. `sweep` always sends
@@ -435,23 +436,31 @@ out of this codebase.
 ## The widget
 
 `plugin/oliver.monero` is a Quickshell bar widget for Omarchy 4. It draws the Monero mark in
-the bar, coloured by node and wallet state, crossed out when the node is down, ringed with a
-sync percentage while it catches up, and badged when something is wrong. Its panel is keyboard
-navigable: node header with a toggle, sync bar, peers, mempool, last block age, net rates, the
-current warning with its hint, balance and unlocked balance with a copy action for the primary
-address, a pending-send row, and a footer that opens the TUI, the Send screen, the Wallet screen
-(`Open wallet…`), the Node screen (`Choose node…`) or the doctor.
+the bar, coloured by node and wallet state, crossed out when your node is not answering, ringed
+with a percentage while something is catching up, and badged when something is wrong.
 
-In remote mode the sync gauge and the node toggle are **not drawn** — every field they would read
-is null there, and a control that can never be enabled from this panel teaches you the app is
-broken. In their place: the address in force, `node <height> · synced · probed <age> ago` from the
-last probe the TUI cached, and one line saying that fmonero does not talk to this node,
-`monero-wallet-rpc` does. The probe row always carries its age beside the height, because the
-measurement came from an earlier invocation and the panel never probes: it polls `status --json`,
-which spawns nothing. There is no "start the wallet daemon" button, and that is deliberate —
-fmonero has no `wallet up`, so the button would have to be `systemctl --user start …`, which would
-skip the preflight that turns a missing unit into a readable error. `Open wallet…` opens the screen
-where the daemon starts with a progress indicator instead.
+Its panel answers one question and then gets out of the way. **One header line of at most five
+words** — `Public node · synced · wallet closed`, `Wallet syncing 63%`, `Wallet open · 1.23 XMR` —
+with at most one supporting fact under it, and then **only the rows that carry information for
+the state you are in**: which node, whether it is synced and when it was last checked; the balance
+and the address with a copy action when a wallet is open, or one row reading `Wallet closed` when
+it is not; a payment on its way if there is one; and anything actually wrong, each with something
+you can do about it. Two or three buttons: `Open wallet…` or `Check for payments`, `Choose node…`,
+and `Start your node` / `Stop your node` when the node is yours.
+
+A closed wallet is a **state and never a warning** — on a correctly set-up machine using a public
+node the wallet service is meant to be down until you open one. The check's age always travels with
+its block number, because the measurement came from an earlier invocation; while the panel is open
+its poll asks fmonero to refresh that check in the background, so it stops going stale on the bar.
+There is no "start the wallet service" button, and that is deliberate: fmonero has no `wallet up`,
+so the button would have to be `systemctl --user start …`, which would skip the preflight that
+turns a missing service into a readable error. `Open wallet…` opens the screen where it starts with
+a progress indicator instead.
+
+**While a wallet is catching up the widget says so and says it keeps going.** The header reads
+`Wallet syncing 63%`, the icon's ring draws that progress, and the panel adds `This keeps going in
+the background.` Closing the TUI's window does not stop it — the scanning happens inside the wallet
+service — which is the same thing fbittorrent does with a transfer.
 
 Everything it knows comes from `fmonero status --json`. The QML holds no business logic and
 does no arithmetic on money. It cannot open a wallet, create one, send or sweep: there is no
@@ -486,16 +495,30 @@ nothing clickable can broadcast a transaction or discard a built one — the con
 safety surface and the mouse gets no shortcut through them. `fmonero settings set tui.mouse false`
 gives the terminal its own selection and scrollback back.
 
-**Node** carries the public-node picker (above), in both modes. **Wallet** with nothing open is a
-panel with three buttons rather than an empty table: `[o] Open wallet…` (which tells you how many
-wallets it will find, so you can see *why* it will not help on a fresh machine), `[c] Create
-wallet…` and `[W] Start the wallet daemon`, over one line saying which of `idle · starts when you
-open a wallet` / `not running` / `starting…` / `up` the daemon is, and one saying which node is in
-force. `c` is create and `x` closes. Creating a wallet asks for a name, a password twice and a
+**Node** carries the public-node picker (above), in both modes. With a public node it also
+carries one ` This node ` pane built from the last check — `block 3 765 346`, `synced`, `answered
+in 240 ms`, `checked 2m ago` — with `Not checked yet.` and `No answer when checked 2m ago.` as its
+other two honest states, and `[f] Choose another node` beside them. **Wallet** with nothing open
+is a panel with three buttons rather than an empty table: `[o] Open wallet…` (which tells you how
+many wallets it will find, so you can see *why* it will not help on a fresh machine), `[c] Create
+wallet…` and `[W] Start the wallet service`, over one line saying which of `not running yet. It
+starts when you open or create a wallet.` / `not running` / `starting…` / `running` the service is,
+and one saying which node is in force. `c` is create and `x` closes. Creating a wallet asks for a name, a password twice and a
 seed language, then shows the backup command — and **fmonero never displays a seed**, anywhere:
 a terminal scrollback is not a safe place for one. `fmonero settings set wallet.autostart true`
-starts the wallet daemon when the TUI launches; it is off by default, because a tool that starts a
-daemon on launch has done something you did not ask for.
+starts the wallet service when the TUI launches; it is off by default, because a tool that starts
+something on launch has done something you did not ask for.
+
+**Closing the TUI's window does not stop anything.** A wallet that is behind keeps scanning inside
+the wallet service, and the Wallet screen says so while it happens: `Syncing 63% · 240 000 blocks
+left.` over `Syncing in the background. You can close this window.` The bar widget carries the same
+progress, so the window is somewhere to look rather than somewhere to wait.
+
+**No screen in the TUI tells you to run a command.** Every hint names a key or a chip — `Press o to
+open a wallet`, `[Choose node…]` — and anything you do more than once has one. Four places still
+print a command, each because fmonero has no code that could do the job from inside the app
+(installing a package, reading a seed, restoring from one, and `wallet sweep`, which v0.1 keeps out
+of the TUI); each is phrased `In a terminal: …`, and `docs/COPY.md` §2 lists them with the reason.
 
 The Send screen validates each keystroke locally, then builds once and shows a confirm modal
 with the full destination address (never elided), the amount, the real fee, the total, the
@@ -587,7 +610,7 @@ sample pair, the 60 s cold cache and the last error; `pending.json` for the send
 `~/.cache/fmonero/history.bin`, wallets in `~/.local/share/fmonero/wallets/<network>/`, and
 the chain wherever `node.data_dir` points. Everything fmonero creates is mode 0600, every
 directory 0700, at the target mode rather than by a `chmod` afterwards. The `run/` subdirectory
-of the state directory is the wallet daemon's working directory: `monero-wallet-rpc` generates
+of the state directory is the wallet service's working directory: `monero-wallet-rpc` generates
 its own RPC credential there on every start and deletes it on exit, and fmonero reads that file
 and never writes it.
 

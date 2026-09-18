@@ -201,18 +201,20 @@ fires  "Number()"   "$FLOATS" 'var x = Number(status.wallet.balance_xmr) + 1'
 fires  "pico / 1e12" "$FLOATS" 'var xmr = status.wallet.balance_pico / 1e12'
 
 
-# --- 7c. the v5.5 rows, against a REAL remote-mode Status fixture (§6.7) ------
+# --- 7c. the rendered rows, against REAL Status fixtures (§6.7) ---------------
 #
 # `Model.js` is `.pragma library` plus plain JavaScript — no QML imports, no I/O — so `node` can
-# load it with that one line stripped and the three formatters v5.5 added can be driven against a
-# fixture document. That is the half the structural greps above cannot give: it proves what the
-# panel will actually RENDER for the state the owner met, rather than which branch comes first.
+# load it with that one line stripped and its formatters can be driven against a fixture document.
+# That is the half the structural greps above cannot give: it proves what the panel will actually
+# RENDER for a state the owner met, rather than which branch comes first.
 if command -v node >/dev/null 2>&1; then
   MODEL_TMP="$(mktemp -d)"
   sed '/^\.pragma library/d' "$PLUGIN/Model.js" > "$MODEL_TMP/model.js"
-  printf 'module.exports = { probeLabel, walletStateLabel, remoteLabel, worstSeverity, age };\n' \
+  printf 'module.exports = { headerLine, walletSyncLabel, checkedLabel, walletStateLabel, nodeLabel, worstSeverity, age, blocksLeft, walletSyncPct, grouped, pendingLabel };\n' \
     >> "$MODEL_TMP/model.js"
-  cat > "$MODEL_TMP/fixture.json" <<'JSON'
+  # Fixture 1: the owner's machine as of 2026-09-18 — a public node, no wallet open, `wallet_idle`,
+  # and a populated `node.remote_probe`.
+  cat > "$MODEL_TMP/closed.json" <<'JSON'
 { "ok": true, "schema": 1,
   "node": { "layout": "remote", "url": "xmr-node.cakewallet.com:18081", "trusted": false,
             "reachable": null, "synchronized": null, "sync_percent": null, "height": null,
@@ -220,57 +222,128 @@ if command -v node >/dev/null 2>&1; then
                               "restricted": true, "nettype": "mainnet", "version": null,
                               "latency_ms": 100, "reason": null,
                               "probed_at": 1789716001, "age_sec": 42 } },
-  "wallet": { "unit_active": false, "open": false, "reachable": false, "name": null },
-  "warnings": [ { "id": "remote_node", "severity": "info", "text": "remote", "hint": "" },
+  "wallet": { "unit_active": false, "open": false, "reachable": false, "name": null,
+              "height": null, "balance_xmr": null },
+  "pending": null,
+  "warnings": [ { "id": "remote_node", "severity": "info", "text": "public node", "hint": "",
+                  "action": "Press f on the Node screen to choose another." },
                 { "id": "wallet_idle", "severity": "info",
-                  "text": "the wallet daemon is not running; it starts when you open or create a wallet",
-                  "hint": "fmonero wallet open <name>" } ] }
+                  "text": "No wallet is open. The wallet service starts when you open or create one.",
+                  "hint": "fmonero wallet open <name>",
+                  "action": "Press o to open a wallet, or c to create one." } ] }
+JSON
+  # Fixture 2 (v5.6, §6.7): **a public node with a wallet open and 240 000 blocks to go.** The two
+  # heights are chosen so the percentage and the remainder are both exact — 408 648 of 648 648 is
+  # 63 % with exactly 240 000 left — because a fixture whose own arithmetic nobody can check is a fixture
+  # that proves the formatter agrees with itself.
+  cat > "$MODEL_TMP/behind.json" <<'JSON'
+{ "ok": true, "schema": 1,
+  "node": { "layout": "remote", "url": "xmr-node.cakewallet.com:18081", "trusted": false,
+            "reachable": null, "synchronized": null, "sync_percent": null, "height": null,
+            "remote_probe": { "reachable": true, "height": 650000, "synchronized": true,
+                              "restricted": false, "nettype": "mainnet", "version": null,
+                              "latency_ms": 240, "reason": null,
+                              "probed_at": 1789716001, "age_sec": 120 } },
+  "wallet": { "unit_active": true, "open": true, "reachable": true, "name": "moneroli",
+              "height": 410000, "blocks_behind": 240000,
+              "balance_xmr": "1.234567", "unlocked_xmr": "1.204567",
+              "last_refresh_at": null },
+  "pending": null,
+  "warnings": [ { "id": "wallet_behind", "severity": "warn",
+                  "text": "This wallet has 240000 blocks to go.",
+                  "hint": "fmonero wallet refresh",
+                  "action": "It keeps going in the background, even after you close this window." },
+                { "id": "wallet_stalled", "severity": "error",
+                  "text": "The wallet service took too long to answer. fmonero will try again in 30s.",
+                  "hint": "fmonero doctor   # or re-run the command with --force",
+                  "action": null } ] }
 JSON
   cat > "$MODEL_TMP/run.js" <<'JS'
 const M = require('./model.js');
 const s = JSON.parse(require('fs').readFileSync(process.argv[2], 'utf8'));
-const out = {
-  probe: M.probeLabel(s.node),
-  daemon: M.walletStateLabel(s.wallet, s.warnings),
+console.log(JSON.stringify({
+  header: M.headerLine(s, true, false),
+  headerHidden: M.headerLine(s, false, false),
+  node: M.nodeLabel(s.node),
+  checked: M.checkedLabel(s.node),
+  checkedNoData: M.checkedLabel({}),
+  wallet: M.walletStateLabel(s.wallet, s.warnings),
+  sync: M.walletSyncLabel(s),
+  left: M.blocksLeft(s),
+  pct: M.walletSyncPct(s),
   worst: M.worstSeverity(s.warnings),
-  probeNoData: M.probeLabel({}),
-};
-console.log(JSON.stringify(out));
+}));
 JS
-  MODEL_OUT="$(cd "$MODEL_TMP" && node run.js fixture.json 2>&1)" || MODEL_OUT="node failed: $MODEL_OUT"
+  CLOSED_OUT="$(cd "$MODEL_TMP" && node run.js closed.json 2>&1)" || CLOSED_OUT="node failed: $CLOSED_OUT"
+  BEHIND_OUT="$(cd "$MODEL_TMP" && node run.js behind.json 2>&1)" || BEHIND_OUT="node failed: $BEHIND_OUT"
+  expect() {
+    if printf '%s' "$2" | grep -qF "$3"; then ok "$1"; else bad "$1 — got: $2"; fi
+  }
+  refuse() {
+    if printf '%s' "$2" | grep -qF "$3"; then bad "$1 — it rendered '$3': $2"; else ok "$1"; fi
+  }
   # 1. the bar icon is NOT urgent: `wallet_idle` is an *info*, and §6.4's warning row matches
   #    `error` only. That was the owner's experience and it is the whole bug — the bar was
-  #    shouting about a daemon that is supposed to be down until a wallet is opened.
-  if printf '%s' "$MODEL_OUT" | grep -q '"worst":"info"'; then
-    ok "wallet_idle keeps the bar out of the alarm channel (§6.4)"
-  else
-    bad "a remote-mode fixture with wallet_idle must be severity info: $MODEL_OUT"
-  fi
-  # 2. the daemon row says which of the two situations this is.
-  if printf '%s' "$MODEL_OUT" | grep -q '"daemon":"idle — starts when you open a wallet"'; then
-    ok "the daemon row reads 'idle — starts when you open a wallet' (§6.5)"
-  else
-    bad "the daemon row is wrong: $MODEL_OUT"
-  fi
-  # 3. the probe row carries a height AND an age. **A height with no age fails this**, because
-  #    that is the one untruth §6.4 is guarding against: the measurement came from an earlier
-  #    invocation and a four-hour-old `synchronized: true` says nothing about now.
-  # `grouped` separates with a narrow space, not a comma (it is the same function the height rows
-  # use), so the expected string is matched piece by piece: a height, the sync word, and an AGE.
-  if printf '%s' "$MODEL_OUT" | grep -q '"probe":"node 3 765 172 · synced · probed 42s ago"'; then
-    ok "the probe row carries both a height and its age (§6.4)"
-  else
-    bad "the probe row must be 'node <height> · synced · probed <age> ago': $MODEL_OUT"
-  fi
-  # 4. and with nothing probed it is the honest empty state, not a bare height.
-  if printf '%s' "$MODEL_OUT" | grep -q '"probeNoData":"not probed yet"'; then
-    ok "an unprobed remote node reads 'not probed yet'"
-  else
-    bad "the unprobed state is wrong: $MODEL_OUT"
-  fi
+  #    shouting about a service that is supposed to be down until a wallet is opened.
+  expect "wallet_idle keeps the bar out of the alarm channel (§6.4)" "$CLOSED_OUT" '"worst":"info"'
+  # 2. §6.4's header, which is the one string the hero renders.
+  expect "a public node with nothing open reads 'Public node · synced · wallet closed'" \
+    "$CLOSED_OUT" '"header":"Public node · synced · wallet closed"'
+  expect "the node row names the node and nothing else" "$CLOSED_OUT" \
+    '"node":"public node xmr-node'
+  # 3. **v5.6 retires v5.5's `idle — starts when you open a wallet`**, which is one of the strings
+  #    §2o deletes, and asserts its replacement instead.
+  expect "the wallet row reads 'starts when you open a wallet' (§6.5)" "$CLOSED_OUT" \
+    '"wallet":"starts when you open a wallet"'
+  refuse "no 'idle' anywhere in the rendered rows" "$CLOSED_OUT" 'idle —'
+  # 4. the checked row carries a block number AND an age. **A height with no age fails this**,
+  #    because that is the one untruth §6.4 guards against: the measurement came from an earlier
+  #    invocation, and a four-hour-old `synced` says nothing about now.
+  expect "the checked row carries both a block number and its age (§6.4)" "$CLOSED_OUT" \
+    '"checked":"block 3 765 172 · synced · checked 42s ago"'
+  expect "an unchecked public node reads 'not checked yet'" "$CLOSED_OUT" \
+    '"checkedNoData":"not checked yet"'
+  # 5. **v5.6's wallet-sync fixture** (§6.7): the header is the wallet's, and the supporting line
+  #    carries the percentage and the remainder.
+  expect "a wallet 240 000 blocks behind reads 'Wallet syncing 63%'" "$BEHIND_OUT" \
+    '"header":"Wallet syncing 63%"'
+  expect "its supporting line is 'Syncing 63% · 240 000 blocks left'" "$BEHIND_OUT" \
+    '"sync":"Syncing 63% · 240 000 blocks left"'
+  expect "the remainder is exact" "$BEHIND_OUT" '"left":240000'
+  # 6. §2o rule 7 over the RENDERED rows, which is the half a source grep cannot prove.
+  for word in daemon unit probe restricted trusted ssl "not available"; do
+    refuse "no '$word' in any rendered row (§2o)" "$CLOSED_OUT$BEHIND_OUT" "$word"
+  done
+  # 7. showBalance off keeps the amount off the bar, header included (§6.2).
+  refuse "showBalance off keeps the balance out of the header" "$BEHIND_OUT" \
+    '"headerHidden":"Wallet open · 1.234567 XMR"'
   rm -rf "$MODEL_TMP"
 else
   printf '  skip  Model.js fixture test: node is not installed\n'
+fi
+
+# --- 7d. the problems section is not the warnings list (§6.5, v5.6) ----------
+#
+# The gate lives in `Panel.qml`'s `problems` property, which `node` cannot evaluate, so it is
+# asserted on the source — and on the one binding that carries the whole of §2o.1: the row renders
+# the warning's **action**, never its `hint`, which is where `fmonero node local --yes` reached the
+# bar. A `wallet_closed` or `wallet_idle` (`info`) therefore produces no row at all, while a
+# `wallet_stalled` (`error`) produces one.
+if grep -q 'sev !== "warn" && sev !== "error"' "$PLUGIN/Panel.qml"; then
+  ok "the problems section keeps only warn and error (§6.5)"
+else
+  bad "the problems section must exclude info warnings (§6.5)"
+fi
+if grep -q 'String(modelData.action || "")' "$PLUGIN/Panel.qml" &&
+   ! grep -q 'modelData.hint' "$PLUGIN/Panel.qml"; then
+  ok "a problem row renders the warning's action and never its hint (§2o.1)"
+else
+  bad "a problem row must render \`action\`, not \`hint\` (§2o.1)"
+fi
+if grep -q 'send_may_be_in_flight' "$PLUGIN/Panel.qml"; then
+  ok "send_may_be_in_flight is excluded while the pending row renders it (§6.5)"
+else
+  bad "the pending row's own warning must be excluded from the problems list (§6.5)"
 fi
 
 # --- 7b. remote node mode (DESIGN.md §2m, §6.4, §6.5; v5.2) -------------------
@@ -289,8 +362,13 @@ if [[ -n $REMOTE_AT && -n $NODEUP_AT && $REMOTE_AT -lt $NODEUP_AT ]]; then
 else
   bad "§6.4: the remote rows must be matched BEFORE !svc.nodeUp" "$ICON_EXPR"
 fi
-present "Model.remoteLabel exists" Model.js 'function remoteLabel'
-present "and Panel.qml uses it instead of a sync gauge" Panel.qml 'Model.remoteLabel'
+# v5.6 renamed both, and §2o.2 deletes the word the old names carried.
+present "Model.nodeLabel exists" Model.js 'function nodeLabel'
+present "Model.checkedLabel exists" Model.js 'function checkedLabel'
+present "Panel.qml renders the node row from it" Panel.qml 'Model.nodeLabel'
+present "Panel.qml renders the check with its age" Panel.qml 'Model.checkedLabel'
+present "Model.headerLine is the hero's one string (§6.4)" Panel.qml 'Model.headerLine'
+present "Model.walletSyncLabel carries decision 7's line" Panel.qml 'Model.walletSyncLabel'
 present "the node toggle is inert in remote mode" Service.qml 'if (remote) { localError'
 present "cursor reports the mode" Panel.qml 'remote: svc.remote'
 

@@ -6,7 +6,7 @@
 // **No arithmetic on money happens in this file, or anywhere else in this plugin.** Status JSON
 // carries every monetary value twice — an integer `*_pico` and a pre-rendered `*_xmr` string
 // (DESIGN.md §5) — and the widget only ever displays the string: the QML half of §2a.5, which
-// tests/plugin-smoke.sh enforces by refusing float parsing and `/ 1e` in every file here. Byte
+// tests/plugin-smoke.sh enforces by refusing float parsing and scientific division here. Byte
 // rates and block numbers are not money; `int()` is the only numeric coercion and it is integer.
 
 function parseJson(raw) {
