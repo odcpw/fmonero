@@ -77,6 +77,25 @@ pub fn systemd_user_dir_is_sandboxed() -> bool {
     under_test_state_dir() && env_dir("FMONERO_SYSTEMD_USER_DIR").is_some()
 }
 
+/// Create one fmonero-owned directory, and its parents, at mode **0700** (§2b.7).
+///
+/// The mode is set at creation and never `chmod`ed, and an existing directory is left alone.
+/// Every on-demand directory under the state, config and cache roots goes through here:
+/// `std::fs::create_dir_all` uses `0777 & ~umask`, so `setup --menu`'s `backups/` landed **0755**
+/// whenever the caller's umask was the ordinary 022 — `install.sh` sets `umask 077` and hid it,
+/// a hand-run `fmonero setup --menu` does not (DECISIONS: DEFECT F).
+pub fn ensure_private_dir(dir: &std::path::Path) -> Result<(), Error> {
+    use std::os::unix::fs::DirBuilderExt;
+    if dir.is_dir() {
+        return Ok(());
+    }
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+        .map_err(|e| Error::failure(format!("cannot create {}: {e}", dir.display())))
+}
+
 impl Paths {
     /// Resolve every path from the environment. Creates nothing.
     pub fn discover() -> Result<Paths, Error> {
@@ -123,24 +142,17 @@ impl Paths {
         })
     }
 
-    /// Create every fmonero-owned directory at mode **0700**, and be the only place they
-    /// are created (§2b.7). Idempotent; never `chmod`s an existing directory.
+    /// Create the four standing fmonero-owned directories at mode **0700** (§2b.7).
+    /// Idempotent; never `chmod`s an existing directory. A directory created on demand goes
+    /// through [`ensure_private_dir`], which is the same guarantee for one path.
     pub fn ensure_dirs(&self) -> Result<(), Error> {
-        use std::os::unix::fs::DirBuilderExt;
         for d in [
             &self.state_dir,
             &self.config_dir,
             &self.cache_dir,
             &self.run_dir,
         ] {
-            if d.is_dir() {
-                continue;
-            }
-            std::fs::DirBuilder::new()
-                .recursive(true)
-                .mode(0o700)
-                .create(d)
-                .map_err(|e| Error::failure(format!("cannot create {}: {e}", d.display())))?;
+            ensure_private_dir(d)?;
         }
         Ok(())
     }

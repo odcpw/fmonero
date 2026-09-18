@@ -481,12 +481,21 @@ fn menu_step(ctx: &Context, args: &SetupArgs) -> Result<Vec<FileAction>, Error> 
         .strftime("%Y%m%dT%H%M%SZ")
         .to_string();
     let backups = ctx.paths.backups_dir();
-    std::fs::create_dir_all(&backups)
-        .map_err(|e| Error::failure(format!("cannot create {}: {e}", backups.display())))?;
+    // 0700, not `create_dir_all`'s `0777 & ~umask` — the directory half of DEFECT F, which only
+    // `install.sh`'s `umask 077` was hiding.
+    fmonero_core::paths::ensure_private_dir(&backups)?;
     let backup = backups.join(format!("omarchy-menu.jsonc.{stamp}"));
     if path.exists() {
-        std::fs::copy(&path, &backup)
-            .map_err(|e| Error::failure(format!("cannot back up {}: {e}", path.display())))?;
+        // **Read and `write_private`, never `fs::copy`** (DECISIONS: DEFECT F). `fs::copy`
+        // carries the SOURCE's mode to the destination, and the source is Omarchy's own file at
+        // 0644 — so the backup landed 0644 inside fmonero's state directory, where §2b.7 says
+        // everything fmonero writes under `$HOME` is 0600 and where the doctor's `state_perms`
+        // check says the same thing at `error` severity. `install.sh`'s `umask 077` cannot help:
+        // `fs::copy` calls `set_permissions` from the source metadata after creating the file.
+        // `write_private` sets 0600 at `O_EXCL` creation time and never chmods.
+        let bytes = std::fs::read(&path)
+            .map_err(|e| Error::failure(format!("cannot read {}: {e}", path.display())))?;
+        fmonero_core::write_private(&backup, &bytes)?;
     }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -755,5 +764,107 @@ mod tests {
         let merged = insert_before_last_brace("{\n}\n", &menu_entries()).unwrap();
         let ids = existing_ids(&merged);
         assert_eq!(ids.len(), 6, "{merged}");
+    }
+
+    /// One sandbox with a 0644 Omarchy menu file — the ordinary state of that file on any
+    /// machine Omarchy has written it — run through the real `menu_step`.
+    fn menu_sandbox(name: &str, mode: u32) -> (Context, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "fmonero-setup-{name}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut ctx = Context::for_test(&dir).expect("test context");
+        ctx.paths.omarchy_config_dir = dir.join("omarchy");
+        let menu = ctx.paths.omarchy_menu();
+        std::fs::create_dir_all(menu.parent().expect("parent")).expect("extensions dir");
+        std::fs::write(&menu, b"{\n  \"user.thing\": {\"label\":\"Thing\"}\n}\n").expect("menu");
+        std::fs::set_permissions(&menu, std::fs::Permissions::from_mode(mode)).expect("chmod");
+        (ctx, dir)
+    }
+
+    /// **DEFECT F.** `setup --menu` backed the Omarchy menu file up with `std::fs::copy`, which
+    /// carries the SOURCE's mode to the destination: a 0644 source — Omarchy's file, not
+    /// fmonero's — produced a 0644 backup inside fmonero's own state directory, where §2b.7 says
+    /// everything fmonero writes is 0600 and where the doctor's `state_perms` check fails at
+    /// `error` severity. The directory half is the same fault: `create_dir_all` uses
+    /// `0777 & ~umask`, so `backups/` landed 0755 under the ordinary 022 and only
+    /// `install.sh`'s own `umask 077` was hiding it.
+    #[test]
+    fn the_menu_backup_is_0600_whatever_mode_the_source_file_has() {
+        use std::os::unix::fs::PermissionsExt;
+        let (ctx, dir) = menu_sandbox("backup-mode", 0o644);
+        let source_mode = std::fs::metadata(ctx.paths.omarchy_menu())
+            .expect("stat")
+            .permissions()
+            .mode()
+            & 0o7777;
+        assert_eq!(source_mode, 0o644, "the source must really be 0644");
+        let args = SetupArgs {
+            menu: true,
+            yes: true,
+            ..SetupArgs::default()
+        };
+        let actions = menu_step(&ctx, &args).expect("the merge");
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].status, FileStatus::Written);
+        let backups: Vec<std::path::PathBuf> = std::fs::read_dir(ctx.paths.backups_dir())
+            .expect("the backups directory")
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        assert_eq!(backups.len(), 1, "one backup, named by the UTC stamp");
+        let mode = std::fs::metadata(&backups[0])
+            .expect("stat")
+            .permissions()
+            .mode()
+            & 0o7777;
+        assert_eq!(mode, 0o600, "§2b.7: {} is {mode:04o}", backups[0].display());
+        let dir_mode = std::fs::metadata(ctx.paths.backups_dir())
+            .expect("stat")
+            .permissions()
+            .mode()
+            & 0o7777;
+        assert_eq!(dir_mode, 0o700, "§2b.7: the directory too, {dir_mode:04o}");
+        // Verbatim: the backup is the bytes the merge was computed from.
+        assert_eq!(
+            std::fs::read(&backups[0]).expect("read the backup"),
+            b"{\n  \"user.thing\": {\"label\":\"Thing\"}\n}\n".to_vec()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **FINDING E, recorded as a test rather than closed as a defect** (DECISIONS: the fix-up
+    /// round). §4.2's merge leaves an existing id byte-for-byte alone, deliberately, so a
+    /// *label* change — `Node` → `Nodes` — reaches a machine that already has the entry only if
+    /// the line is removed first. This pins that behaviour, on the line the owner actually has,
+    /// so the choice is a property of the code and not an accident of it.
+    #[test]
+    fn an_existing_entry_keeps_its_own_label_even_when_the_asset_renames_it() {
+        let (ctx, dir) = menu_sandbox("label-kept", 0o600);
+        let menu = ctx.paths.omarchy_menu();
+        // The exact line the previous fmonero version wrote, `Node` and all.
+        let old = "  \"monero.node\": {\"icon\":\"\u{f048b}\",\"label\":\"Node\",\"action\":\"omarchy-launch-or-focus-tui --app-id=fmonero fmonero tui --node\"},";
+        std::fs::write(&menu, format!("{{\n{old}\n}}\n")).expect("menu");
+        let args = SetupArgs {
+            menu: true,
+            yes: true,
+            ..SetupArgs::default()
+        };
+        menu_step(&ctx, &args).expect("the merge");
+        let after = std::fs::read_to_string(&menu).expect("read back");
+        assert!(
+            after.contains(old),
+            "the existing line must be byte-for-byte unchanged:\n{after}"
+        );
+        assert!(
+            !after.contains("\"label\":\"Nodes\""),
+            "the asset's new label must NOT be merged over an existing id (§4.2):\n{after}"
+        );
+        // The five ids that were absent are added, so the merge did run.
+        assert_eq!(existing_ids(&after).len(), 6, "{after}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
