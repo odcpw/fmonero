@@ -480,7 +480,8 @@ pub(super) fn view(m: &Tui, area: Rect, frame: &mut ftui::Frame, tier: Tier) {
         // `get_fee_estimate.fees[]` actually returns (§1b.4) and the only form that fits: five
         // chips of `0.00000002` need 70 columns, so at the Wide tier's 67-column form the FIFTH
         // chip fell off the row entirely and priority 4 was unclickable, which §7a.2 forbids.
-        // An `as f64`-free integer beside a level is also easier to compare than eight zeroes.
+        // An integer beside a level is also easier to compare than eight leading zeroes, and it
+        // needs no float at all (§2a.5).
         let label = match (level, fee) {
             (0, _) => " 0=1 ".to_string(),
             (l, Some(f)) => format!(" {l} {}p ", f.0),
