@@ -113,11 +113,40 @@ contains no TLS stack at all, so the one process that dials a stranger is the on
 for the purpose.
 
 ```bash
-fmonero node remote <host>:18089 --yes    # a public node; never --trusted
+fmonero node list --probe                 # public nodes from monero.fail, then probe the top 20
+fmonero node remote <host:port> --yes     # a public node; never --trusted
 fmonero wallet create <name> --yes        # or: fmonero wallet open <name>
 fmonero wallet refresh                    # the first contact with the node
 fmonero node local --yes                  # the way back
 ```
+
+The first line exists because the second one needs an address, and until v0.5 this README wrote
+that address as `<host>:18089` — a placeholder, not a node. `node list` serves a cached list of
+clear-net public nodes from **monero.fail** and, with `--probe`, asks the top twenty for
+`get_info` from *this* machine; `--refresh` refetches, `--limit N` bounds both what is printed
+and what is probed, `--all` prints every usable candidate. The TUI has the same list on its Node
+screen (`f` refresh · `p` probe · `Enter` use · `a` add your own · `/` filter), which is the way
+to do this without typing an address at all.
+
+**What asking for the list costs, in four sentences.** Fetching it tells **monero.fail** this
+machine's IP address and the time. Probing tells **each probed node** the same. **Nothing is
+contacted automatically except the node you already use**, and that only while the TUI's Node
+screen is showing (`node.remote_probe_sec`, default 60, `0` to turn it off) — `status`, the bar
+widget and the doctor spawn nothing, ever. And monero.fail's `available` / `checks` /
+`last_height` are **monero.fail's measurements from monero.fail's vantage point**: not a
+recommendation, and not this machine's — a node rated healthy there may be unreachable from here,
+which is why `--probe` exists and why its numbers are printed in their own columns under their
+own heading. If monero.fail is down or changes shape, `node list` says so and nothing else in
+fmonero is affected: the cache is served stale with its age, and every other command works with
+no list at all.
+
+The list and the probes are **`curl` child processes**, argv-only and deadline-bounded. fmonero's
+own HTTP client is unchanged: loopback `http://` only, no TLS stack in the binary, no port bound.
+`scripts/check.sh` asserts that no file but `crates/fmonero-core/src/nodes.rs` names curl as a
+process, with a planted argv proving the check fires. One honest discrepancy: curl verifies TLS
+certificates and `--daemon-ssl autodetect` does not, so an `https://` node with a bad certificate
+probes `reachable: false, reason: tls` while the wallet would have reached it anyway by falling
+back to plaintext. Neither figure is adjusted to match the other.
 
 Create the wallet while the node is answering. In remote mode `monero-wallet-rpc` takes the new
 wallet's restore height from that node — over the address in the unit's argv, before fmonero
@@ -394,7 +423,19 @@ the bar, coloured by node and wallet state, crossed out when the node is down, r
 sync percentage while it catches up, and badged when something is wrong. Its panel is keyboard
 navigable: node header with a toggle, sync bar, peers, mempool, last block age, net rates, the
 current warning with its hint, balance and unlocked balance with a copy action for the primary
-address, a pending-send row, and a footer that opens the TUI, the Send screen or the doctor.
+address, a pending-send row, and a footer that opens the TUI, the Send screen, the Wallet screen
+(`Open wallet…`), the Node screen (`Choose node…`) or the doctor.
+
+In remote mode the sync gauge and the node toggle are **not drawn** — every field they would read
+is null there, and a control that can never be enabled from this panel teaches you the app is
+broken. In their place: the address in force, `node <height> · synced · probed <age> ago` from the
+last probe the TUI cached, and one line saying that fmonero does not talk to this node,
+`monero-wallet-rpc` does. The probe row always carries its age beside the height, because the
+measurement came from an earlier invocation and the panel never probes: it polls `status --json`,
+which spawns nothing. There is no "start the wallet daemon" button, and that is deliberate —
+fmonero has no `wallet up`, so the button would have to be `systemctl --user start …`, which would
+skip the preflight that turns a missing unit into a readable error. `Open wallet…` opens the screen
+where the daemon starts with a progress indicator instead.
 
 Everything it knows comes from `fmonero status --json`. The QML holds no business logic and
 does no arithmetic on money. It cannot open a wallet, create one, send or sweep: there is no
@@ -410,6 +451,35 @@ cancellable subscriptions; `Esc` cancels a build or a wallet open, and the one a
 ignores cancellation is the relay, because cancelling a transaction already on the wire tells
 you nothing about whether the node got it. `q` refuses while an action is in flight and quits
 on a second press.
+
+**`Tab` and `Shift+Tab` always switch screens** — on every screen, in every focus state,
+including while a field has focus, while a modal is open and while an action is in flight. There
+are exactly two exceptions and both hold something that must not be silently dropped: the send
+confirm modal (a built transaction) and the create-wallet modal (a typed password). Those two
+consume the key and say `Esc to discard first` on their own last line. Inside the Send form the
+fields move with `↑↓`, and inside a modal `↑↓` moves between its controls while `Enter` advances
+from every one but the last, where it submits. `1 2 3 4` are the direct route; `⇥ screens` is
+written on the status bar of every screen, so the rule can be read from wherever you are.
+
+**The mouse is a peer, not an afterthought.** Click a tab, a table or list row (click selects,
+click again opens — there is no double-click interval to get wrong), a Send form field, a
+priority chip, either arrow of a `◂ value ▸` selector, any modal button, and every `[key]` chip:
+if a screen tells you to press a key, that text *is* the button. The wheel scrolls the list under
+the cursor. Right-click is `Esc` for whatever has focus. Nothing is reachable by hover alone, and
+nothing clickable can broadcast a transaction or discard a built one — the confirm modals are the
+safety surface and the mouse gets no shortcut through them. `fmonero settings set tui.mouse false`
+gives the terminal its own selection and scrollback back.
+
+**Node** carries the public-node picker (above), in both modes. **Wallet** with nothing open is a
+panel with three buttons rather than an empty table: `[o] Open wallet…` (which tells you how many
+wallets it will find, so you can see *why* it will not help on a fresh machine), `[c] Create
+wallet…` and `[W] Start the wallet daemon`, over one line saying which of `idle · starts when you
+open a wallet` / `not running` / `starting…` / `up` the daemon is, and one saying which node is in
+force. `c` is create and `x` closes. Creating a wallet asks for a name, a password twice and a
+seed language, then shows the backup command — and **fmonero never displays a seed**, anywhere:
+a terminal scrollback is not a safe place for one. `fmonero settings set wallet.autostart true`
+starts the wallet daemon when the TUI launches; it is off by default, because a tool that starts a
+daemon on launch has done something you did not ask for.
 
 The Send screen validates each keystroke locally, then builds once and shows a confirm modal
 with the full destination address (never elided), the amount, the real fee, the total, the

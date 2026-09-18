@@ -424,6 +424,12 @@ pub struct Probes {
     pub settings_problems: Vec<(String, String)>,
     pub cache: Option<CacheFacts>,
     pub cache_present: bool,
+    /// v5.5, §7.1 `public_node_cache`: the age of `cache_dir/public-nodes.json`, and how many
+    /// candidates it holds. **`nodes::cached` reads the file and spawns nothing** — §7's axiom 1
+    /// allows a probe to read a file; it does not allow a detector to fetch, and a doctor that
+    /// phoned monero.fail would make `fmonero doctor` a network command, which is the one thing
+    /// every scripted health check must not become.
+    pub public_nodes: Option<(u64, usize)>,
     pub plugin_link: LinkProbe,
     pub omarchy_plugin_list: CmdProbe,
     pub menu_file: FileProbe,
@@ -609,6 +615,7 @@ impl Probes {
             settings_problems: Vec::new(),
             cache: None,
             cache_present: false,
+            public_nodes: None,
             plugin_link: LinkProbe::default(),
             omarchy_plugin_list: CmdProbe::default(),
             menu_file: FileProbe::default(),
@@ -912,6 +919,9 @@ impl Probes {
             self.settings_problems = problems;
         }
 
+        if let Ok(Some(list)) = fmonero_core::nodes::cached(ctx) {
+            self.public_nodes = Some((list.cache_age_sec.unwrap_or(0), list.nodes.len()));
+        }
         self.cache_present = ctx.paths.history_cache().exists();
         if let Ok(Some(h)) = history::header(ctx) {
             let fp = self

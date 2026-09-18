@@ -188,10 +188,18 @@ REMOTE NODE (§2m)
     node.mode            local | remote (default local)
     node.remote          [http[s]://]host:port — the port is REQUIRED, no path, no credential
     node.remote_trusted  false by default. NEVER true for a public node
+  Two more keys, both TUI-only readers:
+    node.remote_probe_sec  how often the TUI probes THE CONFIGURED NODE while its Node screen
+                           is showing. 60 by default; 0 = off; 1..9 refused. Nothing else
+                           reads it: status, the widget and the doctor spawn nothing, ever.
+    wallet.autostart       start the wallet daemon when `fmonero tui` launches. false.
   Two commands, both --yes, both --dry-run capable, both idempotent:
-    fmonero node remote <host>:18089 --yes    # writes the keys, re-renders the units,
+    fmonero node remote <host:port> --yes     # writes the keys, re-renders the units,
                                               # restarts monero-wallet-rpc if it was running
+                                              # AND the rendered unit changed
     fmonero node local --yes                  # the way back
+  And, since v5.5, the command that finds the address the first one needs:
+    fmonero node list [--refresh] [--probe] [--limit N] [--all] [--json]
   In remote mode: `node up|down|restart|peers|bans|ban|unban|limit|log` exit 4 `remote_node`
   before any RPC or systemctl spawn; `node info` still exits 0 and reports the address, the
   trusted flag and the mode with its four measured sub-objects null; `status` reports
@@ -212,6 +220,33 @@ REMOTE NODE (§2m)
   that node, before fmonero\'s own set_daemon runs: create while it is answering.
   TLS here is --daemon-ssl autodetect: OPPORTUNISTIC AND UNAUTHENTICATED. It tries TLS, falls
   back to plaintext, and does not verify the certificate. Tor is not in v0.1.
+
+PUBLIC NODE DISCOVERY (§2n, v5.5)
+  `fmonero node list` serves cache_dir/public-nodes.json and fetches monero.fail's nodes.json
+  and health.json only when --refresh is given or the cache is absent or older than 24 h;
+  --probe then asks the top --limit candidates (20 by default) for get_info from THIS machine,
+  with at most 8 probes in flight and a 5 s deadline each, cancellable. Payload keys: nodes[], source, fetched_at,
+  cache_age_sec, skipped_no_port, skipped_invalid, probed, total, refreshed.
+  WHAT IT COSTS, and it is the same four sentences README carries:
+    * fetching the list tells MONERO.FAIL this machine's IP address and the time;
+    * probing tells EACH PROBED NODE the same;
+    * NOTHING is contacted automatically except the node already configured, and that only
+      while the TUI's Node screen is showing (node.remote_probe_sec);
+    * monero.fail's available/checks/last_height are MONERO.FAIL'S MEASUREMENTS FROM ITS OWN
+      VANTAGE POINT — not a recommendation and not this machine's. A node rated healthy there
+      may be unreachable from here, which is why --probe exists and why its numbers are printed
+      in their own columns and never averaged into a score.
+  In human mode `node list` prints that disclosure on stderr whenever the invocation actually
+  fetches or probes. --json is silent: the envelope carries `refreshed` and `probed`.
+  The fetch and the probes are `curl` CHILD PROCESSES through the one deadline helper — argv
+  only, three shapes, carrying no credential, password, wallet name, address, amount or txid,
+  because /proc/<pid>/cmdline is world-readable. fmonero's own client is unchanged: loopback
+  http only, no TLS stack, no port bound. No curl on PATH is exit 4 curl_missing, raised before
+  any network call. If monero.fail is down or changes shape, `node list` reports it and nothing
+  else in fmonero is affected: the cache is served stale with its age.
+  One honest discrepancy: curl verifies TLS certificates and --daemon-ssl autodetect does not,
+  so an https node with a bad certificate probes reachable:false reason:tls while the wallet
+  would have reached it by falling back to plaintext. Neither figure is adjusted to match.
 
 TIMEOUTS AND HANGS
   --timeout SECONDS lowers every deadline and never raises one. `node up --wait` is bounded by
@@ -272,6 +307,13 @@ const COMMANDS: &[Command] = &[
         true, true, false, false, true, "amber",
     ),
     cmd("node local", "[--yes] [--dry-run]", true, true, false, false, true, "amber"),
+    // v5.5, §2n. `mutating: true` because it WRITES THE CACHE, not because it needs `--yes`;
+    // `needs_node: false` in both modes — it never touches a local `monerod` (§4.1).
+    cmd(
+        "node list",
+        "[--refresh] [--probe] [--limit N] [--all]",
+        true, false, false, false, false, "amber",
+    ),
     cmd("wallet list", "", false, false, false, false, false, "green"),
     cmd("wallet open", "NAME [--password-file P]", true, false, false, false, false, "red"),
     cmd("wallet close", "", true, false, true, false, false, "amber"),

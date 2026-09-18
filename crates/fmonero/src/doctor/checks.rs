@@ -478,6 +478,14 @@ pub const CHECKS: &[CheckDef] = &[
         detect: history_cache_fresh,
     },
     CheckDef {
+        id: "public_node_cache",
+        group: DoctorGroup::Install,
+        class: Class::D,
+        severity: Severity::Info,
+        title: "the public-node list is present and not a day old",
+        detect: public_node_cache,
+    },
+    CheckDef {
         id: "plugin_linked",
         group: DoctorGroup::Install,
         class: Class::B,
@@ -1682,6 +1690,32 @@ fn settings_valid(p: &Probes) -> Verdict {
     }
     Verdict::warn("invalid_keys", problems.join("; "))
         .fixable(PlanKind::RepairSettings, "fmonero doctor --fix")
+}
+
+/// §7.1, v5.5. **Never a `fail` in any state, and never fixable.** A stale list is served with
+/// its age (§2n.6), a corrupt one is treated as STALE and refetched, so the code already recovers
+/// from every condition a fixer would fix — the identical argument §7 gives for
+/// `history_cache_fresh` being class D. And `skip:no_cache` rather than `warn` when the file is
+/// absent: a machine that has never run `node list` is not faulty, and a warning here would fire
+/// on every fresh install, which is the alarm §7 keeps saying people learn to ignore.
+fn public_node_cache(p: &Probes) -> Verdict {
+    let Some((age, count)) = p.public_nodes else {
+        return Verdict::skip(
+            "no_cache",
+            "no public-node list has been fetched; nothing needs one",
+        )
+        .cmd(
+            "fmonero node list --refresh   # rebuilds the cache (this contacts monero.fail, §2n.5)",
+        );
+    };
+    if age > fmonero_core::nodes::CACHE_MAX_AGE_SEC {
+        return Verdict::pass(format!(
+            "{count} nodes, {}h old — served with its age, and `node list` refetches on its own              past 24 h (§2n.6)",
+            age / 3600
+        ))
+        .cmd("fmonero node list --refresh   # rebuilds the cache (this contacts monero.fail, §2n.5)");
+    }
+    Verdict::pass(format!("{count} nodes, {} min old", age / 60))
 }
 
 fn history_cache_fresh(p: &Probes) -> Verdict {
