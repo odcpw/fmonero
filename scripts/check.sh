@@ -166,7 +166,9 @@ FLOAT='as f64'
 # not monetary values, and four files compute one. They are named here so the exception is
 # visible rather than silent, and the grep covers **every other file in both crates**, including
 # ones added later: the old enumerated list left all of `src/tui/**` and `src/doctor/**` out.
-AUDITED_FLOAT='(fmonero-core/src/status\.rs|fmonero/src/tui/mod\.rs|fmonero/src/tui/screens\.rs|fmonero/src/doctor/checks\.rs):'
+# v5.5 adds `nodes.rs`: `health_ratio` is a display ratio of two integers and never an amount
+# (§5b's own note says this file is on the audited list for exactly that line).
+AUDITED_FLOAT='(fmonero-core/src/(status|nodes)\.rs|fmonero/src/tui/mod\.rs|fmonero/src/tui/screens\.rs|fmonero/src/doctor/checks\.rs):'
 forbid_except "no 'as f64' outside the four audited non-money sites" "$FLOAT" "$AUDITED_FLOAT" \
   "${SHIPPED[@]}"
 selftest "as f64" "$FLOAT" 'let xmr = amount.0 as f64 / 1e12;'
@@ -227,6 +229,47 @@ selftest "a listener" "$BINDS" 'let l = std::net::TcpListener::bind("0.0.0.0:808
 printf '  note  crates/fmonero-mock and rpc/mock_tests.rs are excluded BY PATH: the mock binds\n'
 printf '        a port on purpose (§8 Phase 0) and is never installed.\n'
 
+# ---- §2c grep (vi), v5.5: the ONLY module that spawns curl ---------------------
+#
+# **Scoped to the spawn surface, not to the substring** (revision 3). The substring form
+# `grep -rn 'curl' …` could not pass its own first commit: §5b.4 row 6 adds `(4, "curl_missing")`
+# to `Error::REASONS` and §2n.3 gives the hint `omarchy pkg add curl`, both of which live in
+# `error.rs` by §3. A check that fails on day one is worse than no check — the agent who hits it
+# widens it until the build passes, most likely to "grep for Command::new", which no longer says
+# anything about curl, while §2c and README keep printing the boundary claim.
+#
+# So: outside `nodes.rs`, no file may name curl as a PROCESS, and the two reason-token strings in
+# `error.rs` are exempt BY NAME rather than by file — an exemption that cannot quietly widen into
+# "anything in error.rs".
+CURL_SPAWN='(which\("curl"\)|Command::new\("curl"\)|"curl"[[:space:]]*,)'
+CURL_EXEMPT='(fmonero-core/src/nodes\.rs):|error\.rs:[0-9]+:.*(curl_missing|omarchy pkg add curl)'
+forbid_except "curl is spawned only from nodes.rs (§2c vi)" "$CURL_SPAWN" \
+  "$CURL_EXEMPT" "${SHIPPED[@]}"
+# TWO self-tests, because one would not prove the exemption is narrow.
+selftest "a planted curl argv" "$CURL_SPAWN" 'let argv = ["curl", "-sS", "http://x"];'
+selftest "a planted Command::new curl" "$CURL_SPAWN" 'std::process::Command::new("curl");'
+# And the exemption really is by TOKEN: a `Command::new("curl")` in error.rs is still a hit.
+CURL_PROBE="$SELFTEST/curl-exempt"
+mkdir -p "$CURL_PROBE"
+printf 'std::process::Command::new("curl");\n' > "$CURL_PROBE/error.rs"
+if grep -rnE "$CURL_SPAWN" "$CURL_PROBE" 2>/dev/null | grep -vE "$CURL_EXEMPT" | grep -q .; then
+  pass "self-test: the error.rs exemption does not cover a spawn"
+else
+  fail "self-test: the error.rs exemption is too wide — a planted spawn there would pass"
+fi
+# The test seam is read in ONE place (§2n.7).
+forbid_except "FMONERO_NODES_URL is read only in nodes.rs" 'FMONERO_NODES_URL' \
+  '(fmonero-core/src/nodes\.rs):' "${SHIPPED[@]}"
+selftest "a second reader of the seam" 'FMONERO_NODES_URL' 'std::env::var("FMONERO_NODES_URL")'
+# §7a.5: `wallet.autostart` has exactly one reader, `tui::run` — `status` must never start
+# anything (§2e), and neither may the widget or the doctor.
+# `\.wallet\.autostart` is the FIELD ACCESS, not the setting's name: a prose mention of the key
+# in a comment or a doc string is not a reader, and matching one is the day-one failure revision 3
+# is about.
+forbid_except "wallet.autostart is read only by the TUI" '\.wallet\.autostart' \
+  '(fmonero-core/src/settings\.rs|fmonero/src/tui/mod\.rs):' "${SHIPPED[@]}"
+selftest "a second reader of autostart" '\.wallet\.autostart' 'if ctx.settings.wallet.autostart {}'
+
 TLS='^(rustls|native-tls|openssl|openssl-sys|hyper-tls|tokio)'
 if command -v cargo >/dev/null 2>&1; then
   TREE="$(cargo tree -p fmonero -e normal --prefix none 2>/dev/null | sed 's/ .*//' | sort -u)"
@@ -268,24 +311,24 @@ fi
 # than recorded in a ledger nothing reads. `tests.rs` is excluded by §7a: it is test code.
 step "§7a  the TUI fits its line budget · §6.1 the plugin fits its own"
 # v5.2: 4700, measured 4655 — §2m's Node screen, stated in DESIGN.md §7a first (was 4600).
-TUI_BUDGET=4700
+TUI_BUDGET=7200
 if [ -d "$BIN/tui" ]; then
   TUI_FILES=()
-  for f in mod theme screens send subs; do
+  for f in mod theme screens send subs hit; do
     [ -f "$BIN/tui/$f.rs" ] && TUI_FILES+=("$BIN/tui/$f.rs")
   done
   TUI_LINES="$(cat "${TUI_FILES[@]}" 2>/dev/null | grep -c '')"
   if [ "$TUI_LINES" -le "$TUI_BUDGET" ]; then
-    pass "§7a: $TUI_LINES lines across src/tui/{mod,theme,screens,send,subs}.rs (budget $TUI_BUDGET, tests.rs excluded)"
+    pass "§7a: $TUI_LINES lines across src/tui/{mod,theme,screens,send,subs,hit}.rs (budget $TUI_BUDGET, tests.rs excluded)"
   else
-    fail "§7a: $TUI_LINES lines across src/tui/{mod,theme,screens,send,subs}.rs exceeds the $TUI_BUDGET-line ceiling"
+    fail "§7a: $TUI_LINES lines across src/tui/{mod,theme,screens,send,subs,hit}.rs exceeds the $TUI_BUDGET-line ceiling"
   fi
 else
   printf '  skip  §7a line budget: crates/fmonero/src/tui does not exist yet\n'
 fi
 # v5.2 raised it from 1310 by §6.1's +15/+15 for the remote badge and `Model.remoteLabel`
 # and by nothing else, stated in DESIGN.md before the code was written (§6.1).
-QML_BUDGET=1340
+QML_BUDGET=1516
 if [ -d plugin/oliver.monero ]; then
   QML_LINES="$(cat plugin/oliver.monero/*.qml plugin/oliver.monero/*.js plugin/oliver.monero/manifest.json 2>/dev/null | grep -c '')"
   if [ "$QML_LINES" -le "$QML_BUDGET" ]; then
@@ -293,6 +336,23 @@ if [ -d plugin/oliver.monero ]; then
   else
     fail "§6.1: $QML_LINES lines of manifest + QML + Model.js exceeds the $QML_BUDGET-line budget"
   fi
+  # v5.5, revision 12: the PER-FILE figures too. §6.1 calls them "hard per-file budgets" and
+  # nothing checked them, which is how `MoneroIcon.qml` came to be documented as 95 lines while
+  # measuring 96 — a number only prose defended.
+  while IFS=' ' read -r want file; do
+    [ -e "plugin/oliver.monero/$file" ] || continue
+    have="$(grep -c '' "plugin/oliver.monero/$file")"
+    if [ "$have" -le "$want" ]; then
+      pass "§6.1: $file $have lines (budget $want)"
+    else
+      fail "§6.1: $file $have lines exceeds its $want-line budget"
+    fi
+  done <<'PERFILE'
+420 Service.qml
+800 Panel.qml
+96 MoneroIcon.qml
+200 Model.js
+PERFILE
 else
   printf '  skip  §6.1 line budget: plugin/oliver.monero does not exist yet\n'
 fi

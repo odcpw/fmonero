@@ -6047,7 +6047,7 @@ places to update when monero.fail changes one field.
 
 ---
 
-## 7a. TUI (`fmonero tui`) — one agent, one pass, ≤ 6 400 lines across `src/tui/{mod,theme,screens,send,subs,hit}.rs` (`tests.rs` excluded)
+## 7a. TUI (`fmonero tui`) — one agent, one pass, ≤ 7 200 lines across `src/tui/{mod,theme,screens,send,subs,hit}.rs` (`tests.rs` excluded)
 
 **The budget is the measured figure, and it is a ceiling against growth rather than a target**
 (v5.1). v5 asked for 1 800 — fproton's 1 200 plus a fourth screen, a send state machine, two modals
@@ -6080,14 +6080,33 @@ progress row, the `a` add-address modal, the use-this-node confirm) ≈ 380; **t
 create and daemon flows** (§7a.5 — the empty-state panel, the create modal with two password fields
 and a language field, the seed-backup modal, the daemon row and its toast) ≈ 330; **the KEYS table,
 the `?` overlay and the status bar's new line** ≈ 50. That is 1 300 over 4 683 = 5 983 — and the
-ceiling is **6 400, not 6 000** (v5.5, revision 12). 6 000 would have left 17 lines of headroom
-against an estimate that is itself approximate ("mouse ≈ 420, picker ≈ 380"), i.e. an estimate
-consuming 99.7 % of its own ceiling — which is precisely the arithmetic the paragraph above says
-forces the dishonest trade, arrived at by rounding instead of by thinking. 6 400 is 5 983 plus a
-sixth of the new work as slack. The procedure if even that is exceeded is unchanged and is the only
-one this document permits: **amend this number here, in the same commit**, rather than delete a
-specified feature to fit. `scripts/check.sh`'s `TUI_BUDGET` becomes 6400 and its file list gains
-`hit`; an agent who comes in **under** it does not get to spend the difference.
+ceiling was set at **6 400, not 6 000** (v5.5, revision 12), because 6 000 would have left 17 lines
+of headroom against an estimate that is itself approximate ("mouse ≈ 420, picker ≈ 380"), i.e. an
+estimate consuming 99.7 % of its own ceiling — precisely the arithmetic the paragraph above says
+forces the dishonest trade, arrived at by rounding instead of by thinking.
+
+**The implementation came in at 7 103, and the ceiling is therefore 7 200 — amended here, in the
+commit that exceeded it, which is the only procedure this section permits.** The estimate was wrong
+by 1 120 lines and it is worth saying where, because the pattern is the same one v5.1 recorded about
+the first TUI and the honest lever is again the number and not the feature set (every screen, key,
+chip and modal §7a.1–§7a.6 specifies is implemented):
+
+| item | estimate | measured | where the difference went |
+|---|---|---|---|
+| `hit.rs` | 220 | **434** | the priority chain is 6 cases over 5 target kinds, and its own eight unit tests are in-file (`tests.rs` is excluded by name, `hit.rs`'s are not) |
+| `mod.rs` | +~500 | **+1 025** (1 697 → 2 722) | five new `Modal` variants with their key handlers (the create form alone is 4 controls × `↑↓`/`Enter`/`←→`), the mouse router's six `Target` arms, seven picker helpers, and the reasons written next to each |
+| `screens.rs` | +~450 | **+754** (1 667 → 2 421) | five modal renderers, the picker's two column groups with per-tier column dropping, the wallet empty state, and three chip/selector helpers |
+| `subs.rs` | +~80 | **+167** (316 → 483) | six `Action` variants × four `impl` arms each (`Debug`, `label`, `deadline_sec`, `execute`) |
+| `send.rs` | +~30 | **+40** | the field/priority/arrow hit rects |
+
+Two of those are not overrun at all but relocation: `wallet_session::create` moved **into core**
+(§4.1's sequence now has two callers, so §2a.3 requires one implementation), and `hit.rs`'s tests
+are TUI lines by the gate's own file list while every other module's tests are not. The rest is that
+a modal with four controls and a documented field key is not 80 lines, and that this document asks
+for the reason beside each decision — which is a cost it should own rather than discover.
+
+`scripts/check.sh`'s `TUI_BUDGET` becomes 7200 and its file list gains `hit`; an agent who comes in
+**under** it does not get to spend the difference, and the next one to need more says so here first.
 
 **Runtime.** The ftui 0.7 Elm loop: one `struct Tui` implementing `ftui::Model`;
 **`App::fullscreen(tui).with_mouse().run()`** when `settings.tui.mouse` (v5.5, §7a.2), else the same

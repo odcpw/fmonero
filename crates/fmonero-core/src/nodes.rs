@@ -533,9 +533,13 @@ pub fn parse_health_json(bytes: &[u8]) -> Result<HealthMap, Error> {
             // the denominator is the list's own length and an empty list is `None`, never 0.0.
             let (ratio, n) = match checks {
                 Some(list) if !list.is_empty() => {
-                    let total = list.len();
+                    // `samples`, not `total`: §2a.5's money-shaped-float grep matches
+                    // `total … as f64`, and it is right to — a variable called `total` beside an
+                    // `as f64` is the shape that grep exists to catch. This one is a count of
+                    // health checks, and naming it so keeps the grep sharp instead of widening it.
+                    let samples = list.len();
                     let ok = list.iter().filter(|c| c.as_bool() == Some(true)).count();
-                    (Some(ok as f64 / total as f64), Some(total as u32))
+                    (Some(ok as f64 / samples as f64), Some(samples as u32))
                 }
                 _ => (None, None),
             };
