@@ -8666,3 +8666,385 @@ moved, so §2k's manifest freeze holds.
   `status` will not) and warnings `["remote_node", "wallet_idle"]`, both **info**: the bar icon is
   calm and the TUI's status line reads `wallet idle`, which is the pair of changes §5 and §6.4 exist
   for.
+
+- 2026-09-18 · independent verifier · **## TUI UX round verification (real output)** — every gate
+  re-run from scratch at `1f9fb60`, then the v5.5 claims driven on a real pty with a real mouse, a
+  real `monero-wallet-rpc` and the real monero.fail. **Three of the owner's four complaints are
+  fixed and proved. The second one — "the buttons need to be mouseable" — is fixed everywhere
+  except the tab strip, where clicking the word `Send` lands on `Log` and clicking `4 Log` does
+  nothing at all.** That is the headline of this entry; it is a four-character fix and the reason
+  no test saw it is written down below.
+
+  **The gates, re-run here.** `clippy` was forced to re-lint (every `.rs` touched first) rather
+  than read back a cached PASS.
+
+  ```
+  $ cargo fmt --all --check                       # no output, exit 0
+  $ find crates -name '*.rs' -exec touch {} + && cargo clippy --all-targets -- -D warnings
+      Checking fmonero-core v0.1.0 / fmonero-mock v0.1.0 / fmonero v0.1.0
+      Finished `dev` profile in 1.64s              # no warning, exit 0
+  $ cargo test
+  test result: ok. 109 passed; 0 failed    (fmonero)
+  test result: ok. 177 passed; 0 failed    (fmonero-core)
+  test result: ok. 3 passed; 0 failed      (fmonero-mock)
+  test result: ok. 0 passed; 0 failed      (integration)
+  $ bash scripts/check.sh --full                  # 1m21.6s
+  check.sh: PASS (/home/oliver/Projects/odcpw/fmonero)
+  $ bash tests/e2e.sh --fast                      # 23.5s
+  e2e.sh (fast): 566 passed, 0 failed, 3 skipped
+  $ bash tests/e2e.sh --full                      # 2m28.5s
+  e2e.sh (full): 600 passed, 0 failed, 3 skipped
+  $ bash tests/plugin-smoke.sh
+  plugin-smoke: 45 passed, 0 failed
+  $ bash tests/tui_tmux.sh
+  == 35 passed, 0 failed
+  ```
+
+  Every number matches the implementer's re-run gate exactly. `check.sh` was run again after this
+  entry's one README edit and still PASSes (1 825 lines of `--help`/robot-docs scanned, up from
+  1 822).
+
+  ### DEFECT A — the tab strip's hit rects are two columns per tab too far left (Wide/Medium)
+
+  The owner's complaint (2) named the tab strip first, and §7a.2 calls itself "the fix for *the tabs
+  look clickable and are not*". On a real 150×40 pty, with real SGR-1006 mouse reports written to
+  the pane, it is still not. One click per column, each from the same starting frame, 0.9 s settle:
+
+  ```
+  strip:  [ 1 Node ]  2 Wallet    3 Send    4 Log
+          123456789012345678901234567890123456789
+
+  col  5  renders 'N' (Node)    -> Node      ok
+  col 10  renders ']'           -> Wallet    WRONG
+  col 13  renders '2'           -> Wallet    ok
+  col 16  renders 'a' (Wallet)  -> Wallet    ok
+  col 20  renders 't' (Wallet)  -> Send      WRONG
+  col 25  renders '3'           -> Send      ok
+  col 27  renders 'S' (Send)    -> Log       WRONG
+  col 28  renders 'e' (Send)    -> Log       WRONG
+  col 30  renders 'd' (Send)    -> Log       WRONG
+  col 35  renders '4' (Log)     -> nothing   WRONG
+  col 37  renders 'L' (Log)     -> nothing   WRONG
+  col 39  renders 'g' (Log)     -> nothing   WRONG
+  ```
+
+  **The mechanism, from both sides of the boundary.** `ftui_widgets::Tabs::tab_label`
+  (`ftui-widgets-0.7.0/src/tabs.rs:239-256`) wraps **every** tab in one leading and one trailing
+  cell — `[`/`]` when it is active, a space on each side when it is not — so a tab occupies
+  `title.width() + 2` columns. `tab_strip`'s hit loop
+  (`crates/fmonero/src/tui/screens.rs:198-208`) advances `x` by `label.width()`:
+
+  ```rust
+  let w = label.width() as u16;          // 8 for " 1 Node ", 10 for " 2 Wallet "
+  m.hits.tab(i, Rect::new(x, cols[0].y, w, 1));
+  x += w;                                // the 2 decoration columns are never counted
+  ```
+
+  so every rect is 2 columns narrow and starts `2 × index` columns left of its label:
+
+  | tab | drawn at | registered at |
+  |---|---|---|
+  | Node | 1–10 | 1–8 |
+  | Wallet | 11–22 | 9–18 |
+  | Send | 23–32 | 19–26 |
+  | Log | 33–41 | 27–33 |
+
+  which is the measured table above, cell for cell. The comment above that loop — *"the labels'
+  widths are the literals above, so the rects are computed from the same source as the text"* — is
+  the bug stated as a reassurance: the literals are the source of the **title**, not of the drawn
+  width. The fix is `label.width() as u16 + 2`, and the honest version of it also stops asserting
+  that the two agree, because `Tabs` owns that number and this module cannot see it.
+
+  **The Narrow tier is correct**, which locates the fault precisely: there `tab_strip` draws its own
+  `1·2·3·4` spans and registers its own 1×1 rects, and on a 56×24 pty clicks at columns 1, 3, 5, 7
+  select Node, Wallet, Send, Log in order. Only the tier that delegates drawing to `Tabs` is wrong.
+
+  **Why the suite is green.** `tui::tests::a_click_on_each_tab_switches_to_it` passes, and so does
+  every other mouse case, because `find()` (`crates/fmonero/src/tui/tests.rs:928-936`) obtains the
+  coordinate by scanning **`m.hits.at(x, y, None)`** — the same map the test then clicks. A map that
+  disagrees with the rendered frame is perfectly self-consistent, so the suite proves routing and
+  can never prove alignment. §7a.2 already worried about the wrong half of this: it spends four
+  paragraphs establishing that `register_hit` does nothing under `App::fullscreen` and that the
+  layout cache must therefore be hand-built — and then tests the hand-built cache against itself.
+  The assertion that was missing is the one this session made by hand: **find the label in the
+  rendered frame, click the label, and check where you land.** That is the same lesson as the
+  previous round's finding 2 (assert the rendered sentence, not the side effect), in the one place
+  where §7a.2's whole premise — that the two input methods are peers — is decided.
+
+  ### DEFECT B — the picker elides the address it is required never to elide
+
+  §7a.4: **address** "never elided, for the reason the send confirm never elides an address", and
+  the implementer's own gate says "*columns now drop from the right until the address has 26, and
+  'the address is never elided at any tier' is a behaviour rather than a sentence*". At the exact
+  geometry this brief asked for, it is a sentence. Address cell as rendered, one TUI resized across
+  widths, the configured node being the owner's own:
+
+  ```
+  width  90   [ ● xmr-node.cakewallet]            ELIDED
+  width 100   [ ● xmr-node.cakewallet.com:18081 ] ok
+  width 120   [ ● xmr-node.cakewallet.com:18081]  ok
+  width 150   [ ● xmr-node.cakewallet.co]         ELIDED   <- the brief's own 150x40
+  width 180   [ ● xmr-node.cakewallet.com:1808]   ELIDED
+  width 200   [ ● xmr-node.cakewallet.com:18081 ] ok
+  width 240   [ ● xmr-node.cakewallet.com:18081 ] ok
+  ```
+
+  Two independent causes, in `screens.rs:589-591`:
+
+  ```rust
+  const ADDRESS_MIN: u16 = 26;
+  const COL: u16 = 12;
+  while header.len() > 1 && rows[0].width < ADDRESS_MIN + COL * (header.len() as u16 - 1) { header.pop(); }
+  ```
+
+  · the budget counts the columns but not the `header.len() - 1` single-cell separators `Table`
+    draws between them, so a loop that stops "with 26 left for the address" actually leaves
+    `26 - (n-1)`; at six columns that is 21, and the address pane is ~91 wide at 150×40, which is
+    how a 150-column terminal produces a worse address column than a 100-column one. · and 26 is
+    itself too small: `● xmr-node.cakewallet.com:18081` is **31** columns, so even a loop whose
+    arithmetic were right would elide the address this machine is configured with. The measured
+    figure for the address the owner actually has is the one to budget against, exactly as §7a's own
+    budget rule says about line counts.
+
+  ### DEFECT C — the help overlay's first row is false for half of its own key list
+
+  `KEYS[0]` (`crates/fmonero/src/tui/mod.rs:131-137`) is rendered verbatim in the `?` overlay:
+
+  ```
+  Tab  ⇧Tab  1 2 3 4    screens — always, even inside a field or a modal
+  ```
+
+  and carries the comment *"it is the one row whose text has to be true everywhere"*. For `Tab` and
+  `⇧Tab` it is true, everywhere, and this session proved it in 26 cells of a real-pty matrix. For
+  `1 2 3 4` it is false the moment a field has focus, on the money screen, with real digits:
+
+  ```
+  # Send screen, Amount field focused, "0.01" typed, then the keys 2 and 4:
+  amount before        : │ Amount  0.01
+  after pressing 2, 4  : │ Amount  0.0124        (and the screen did not change)
+  after pressing q     : │ Amount  0.0124q       (and the TUI did not quit)
+  ```
+
+  `send.rs:94`'s own comment states the behaviour — *"`Esc` leaves it so that `1 2 3 4`, `q` and `?`
+  work"* — and the Send screen's status line tells the truth when unfocused (`form unfocused —
+  1..4 switch screens, Enter returns`). So the code is coherent and the **overlay** is the thing
+  that lies, in the one row §7a.1 wrote to be believed. This is not a reopening of complaint (1):
+  `Tab` is resolved above every branch and always works, which is what makes the trap gone. It is
+  §2j about the sentence next to it. Either the row says `Tab ⇧Tab` always and `1 2 3 4` when no
+  field has focus, or the Send screen stops focusing a field on entry — the first is a text change
+  and the second is a behaviour change, and the row and the behaviour currently disagree whichever
+  is chosen.
+
+  ### FINDING D — the status badge says `down` for a daemon it is itself starting
+
+  `wallet_badge` (`mod.rs:582-597`) reads `idle` only when the `wallet_idle` warning is up, which
+  §5 raises when the **unit is inactive**. The moment the unit goes active and the RPC has not yet
+  answered a poll, the badge falls through to `down` — including while the TUI's own action is the
+  reason. Both states caught live on one screen:
+
+  ```
+  status 1.2s after W : ● node remote ● wallet down │ ⠙ starting the wallet daemon 1s / 30s · Esc cancels
+  the panel two lines up:                             wallet daemon: starting…
+
+  during a TUI create : ● node remote ● wallet down │ ⠙ creating scratchver 25s / 300s · Esc cancels
+  the panel two lines up:                             wallet daemon: up
+  ```
+
+  Same family as the previous round's finding 1 (`wallet down` where §5 said `wallet_idle`), one
+  state further along: the badge has no term for "up and busy", and `syncing` — which it does use
+  for reachable-and-nothing-open — would be closer than `down` for a poll that timed out while the
+  daemon was working.
+
+  ### FINDING E — the `Node` → `Nodes` menu label can never reach a machine that already installed
+
+  `crates/fmonero/assets/menu.jsonc` renames `monero.node`'s label to `Nodes`, and §4.2's merge
+  "never rewrites what is already there" — deliberately, to protect a user's own edits. So on the
+  owner's machine `scripts/install.sh --yes` added exactly one entry and reported so itself
+  (`1 Omarchy menu entries`): `monero.wallet` → `Wallet` → `fmonero tui --wallet`. `monero.node` is
+  still labelled **`Node`**, and no `setup` invocation will ever change it. "The menu entries gain
+  Wallet and Nodes" is therefore half deliverable; the other half needs either a one-line hand edit
+  or a merge that may update a label it previously wrote.
+
+  ### What was proved to work, on a real pty, with real input
+
+  **Navigation (complaint 1) — fixed.** A hand-written matrix on `tmux new-session -d -x 150 -y 40`,
+  driving a real pty and reading `capture-pane` back, with a wallet open against `fmonero-mock` so
+  the Wallet screen's own filter exists: `Tab` advances one screen and `BTab` goes back one from
+  **each of the four screens with nothing focused** (8 cells), from **Wallet with the history filter
+  open and `42ey` typed into it**, from **Send with the To field holding a 95-character address**,
+  from **Send with Amount focused**, from **Send with the third field focused**, from **Log with the
+  search open**, from **Node with the picker filter open**, with **the `?` overlay up**, and with
+  **the §2n.5 privacy notice in flight**. 26 cells, 0 failures. A filter left behind survives the
+  round trip — `42ey` was still in the box after `Tab` out and `⇧Tab` back, which is §7a.1's "commit,
+  do not discard". And the **create-wallet modal consumes `Tab`** and renders, in the modal, the two
+  lines it is required to render: `↑↓ fields · Enter next, then create · Esc discards` and
+  `Tab is held here — Esc to discard first`. (Note for the next driver: tmux's name for Shift+Tab is
+  `BTab`; `S-Tab` is delivered as a plain `Tab` and makes every backward case pass forwards.)
+
+  **The mouse (complaint 2) — works, except DEFECT A.** Driven by writing real SGR-1006 reports to
+  the pane (`ESC [ < 0 ; x ; y M` then `m`), which is byte-for-byte what a terminal sends, so this
+  answers the implementer's own open question — *"the mouse has never been tried on the owner's own
+  terminal … nothing here should be read as knowing it"*. It is now known: **this emulator's mouse
+  reports reach the app and are routed.** Proved: a click on a picker row selects it and a **second
+  click on the selected row activates it** and opened the confirm modal (`MouseResult::Activated`,
+  no double-click interval); a click on the `[f]` chip fired the fetch path and brought up the
+  privacy notice; a click on the Amount row focused Amount and a click on the Note row focused Note
+  **without clobbering** what Amount held; a click on a priority chip changed the selection; the
+  **wheel** scrolled the picker list and did **nothing** over the tab strip; a click anywhere closed
+  the `?` overlay; **right-click closed it too**, as `Esc`. At the Narrow tier all four tab digits
+  are clickable. Only the Wide/Medium tab strip is misaligned.
+
+  **The picker (complaint 3) — works.** Entry renders the table from `nodes::cached` with no fetch:
+  153 rows, the configured node first with `●`, the two column groups, and the footer
+  `153 nodes · list 14m 53s ago · 37 skipped (no port) · 0 bad · source monero.fail`. Revision 4's
+  two guards both hold on a real pty: `Enter` on entry refuses with `select a node first (↑↓ or
+  click), then Enter`, and `Enter` on the configured row refuses with **`this is the node you are
+  using`** and opens no modal. `Enter` on another row opened the confirm modal with the full address,
+  `untrusted — a public node is never trusted (it would receive this wallet's own unspent amounts
+  inside a request)`, the two applicable consequences (the third is conditional on an open wallet,
+  and none was open), and `y to confirm · Esc cancels`. **On `y` the switch really ran**, through the
+  same core sequence the CLI uses, inside the sandbox:
+
+  ```
+  before:  --daemon-address xmr-node.cakewallet.com:18081     node.remote = xmr-node.cakewallet.com:18081
+  after:   --daemon-address 109.192.204.136:18081             node.remote = 109.192.204.136:18081
+  wallet unit sha256(16): 5120e5861a1a37f2 -> 926c58c3f9dd5b78
+  ```
+
+  which closes the implementer's "the picker's confirm modal has never been run against a real
+  daemon" — it has now been run for real against sandboxed units and it re-rendered them.
+
+  **The wallet flow (complaint 4) — works, against a real `monero-wallet-rpc`.** `/usr/bin/monero-wallet-rpc`
+  0.18.5.1 run by hand on scratch port 18583, cwd the sandbox's `state/run` so its own
+  `monero-wallet-rpc.18583.login` lands where fmonero reads it, `--wallet-dir` in the sandbox,
+  `--daemon-address xmr-node.cakewallet.com:18081 --untrusted-daemon`. With it answering,
+  `status --json` reported `node.reachable: null` in remote mode (§2j — never a number it was not
+  given) and warnings `remote_node` + `wallet_closed`, both **info**. The empty state rendered
+  exactly §7a.5's panel — `No wallet is open.`, `[o] Open wallet… pick one of the 0 wallets in …`,
+  `[c] Create wallet…`, `[W] Start the wallet daemon (not needed first — …)`, `wallet daemon: up`,
+  `node: remote · xmr-node.cakewallet.com:18081 · untrusted` — with the count real (it read
+  `3 wallets` later in the same session). Then, from the keyboard alone:
+
+  ```
+  c -> name "reftiming" (a name that exists) -> refused INLINE in the modal:
+       "reftiming already exists in wallet.dir"          nothing sent
+  c -> name "tuimade", password, again, ↑↓ between all four controls, both password
+       fields masked with ••, Enter on the last control
+    -> the seed-backup modal, carrying core's own seed_backup_hint verbatim:
+         "Back up your seed BEFORE funding this wallet:"
+         "  # close it first — the wallet daemon has it open:  fmonero wallet close"
+         "  monero-wallet-cli --wallet-file <path> --offline"
+         "  # then type: seed"
+         "fmonero never displays a seed — a scrollback is not a safe place for one."
+         "remote mode: the node decided this wallet's restore height — keep it answering
+          until the first refresh finishes."          <- §2m.3, in the only place it fits
+    -> Enter -> the wallet is OPEN: "0.0000 XMR   unlocked 0.0000 XMR   tuimade",
+       status "● node remote ● wallet up 0.0000 XMR │ tuimade created and open"
+    -> x -> back to the empty state, "wallet closed"
+  ```
+
+  So **a wallet has now been created through the TUI, against a real wallet daemon and a real public
+  node** — which the implementer listed as never done. The seed was never displayed and never
+  reached this log. The throwaway password appears in no file the run wrote (grepped). All three
+  scratch wallets (`scratchver`, `reftiming`, `tuimade`) and the hand-run daemon are gone; the
+  owner's own `wallet.dir` is still empty.
+
+  **`[W]`, all three states.** Unit active and nothing open → `the wallet daemon is stopped`, the
+  systemctl fixture flipped to `inactive`, the panel line became `idle · starts when you open a
+  wallet`. Unit inactive → `⠙ starting the wallet daemon 1s / 30s · Esc cancels`, panel line
+  `starting…`, fixture flipped to `active`. **A wallet open → refused**: `a wallet is open — press x
+  to close it first`, fixture untouched. Exactly §7a.5.
+
+  **One live run against monero.fail, from the sandbox, as sanctioned** (13.3 s wall):
+
+  ```
+  $ fmonero node list --refresh --probe --limit 8 --json    # exit 0
+  {"cache_age_sec":0,"fetched_at":1789750719,"ok":true,"probed":8,"refreshed":true,"schema":1,
+   "skipped_invalid":0,"skipped_no_port":37,"source":"https://monero.fail","total":153}
+
+  xmr-node.cakewallet.com:18081  http  95% of 19   reachable height 3765282  synced  3344 ms
+  109.199.98.74:18081            http  100% of 18  reachable height 3765282  synced    43 ms
+  152.53.150.12:18081            http  100% of 18  reachable height 3765282  synced    43 ms
+  152.53.95.190:18089            http  100% of 18  reachable height 3765282  synced    56 ms
+  109.192.204.136:18081          http  100% of 18  reachable height 3765282  synced    79 ms
+  109.196.118.68:18081           http  100% of 18  reachable height 3765282  synced    94 ms
+  154.12.229.22:18081            http  100% of 18  reachable height 3765282  synced   251 ms
+  139.59.89.227:18089            http  100% of 18  reachable height 3765282  synced   897 ms
+  ```
+
+  Eight probed, eight answered, one height between them — and the figure no third party could have
+  supplied: **the node the owner is configured on was the slowest of the eight, at 3 344 ms against
+  43 ms for the fastest**, and monero.fail rates it 95 % where it rates the others 100 %. That is
+  §2n.2's argument arriving as data rather than as prose, and it is worth the owner's attention
+  independently of any defect here. `total` moved 152 → 153 within a day, which §2n.1 predicts.
+  `--json` printed no disclosure on stderr, as §2n.5 rule 2 requires.
+
+  ### The machine, and the installer
+
+  `scripts/install.sh --yes` ran twice. The first run reported six of seven actions `unchanged` and
+  wrote one: `1 Omarchy menu entries` (with a timestamped backup under
+  `~/.local/state/fmonero/backups/`). The **second run reported 7 of 7 `unchanged`** — idempotent.
+  The owner's installed binary was stale and is now `d1944b5c…`, byte-identical to
+  `target/release/fmonero` at this tree.
+
+  ```
+  === units, before and after the whole session (identical) ===
+  fmonero-monerod.service: active=inactive enabled=disabled NRestarts=0
+  fmonero-wallet-rpc.service: active=inactive enabled=disabled NRestarts=0
+  === sha256, before and after the whole session (identical) ===
+  64580d70a21719503a105b67aa633d31d9c25921ffc0c8956a7fc8d5d333d82f  ~/.config/systemd/user/fmonero-monerod.service
+  51ab51b9c26863bece7521f51a5e4d9904230bf1f2963abe6e54b3da80fd0a7f  ~/.config/systemd/user/fmonero-wallet-rpc.service
+  bed63c9603dc9f5cbcc2d81fbab42d9c57763479c7f87b2a54a7707a74efd5ba  ~/.config/fmonero/monerod.conf
+  d546e5951645c64f0d670c320471f1ed8c0d299fdd0f5c286be5dcf51f4948e9  ~/.config/fmonero/config.toml
+  ```
+
+  `node.mode = remote` and `node.remote = xmr-node.cakewallet.com:18081` untouched, both units still
+  inactive and disabled with `NRestarts=0`, `wallet.dir` still empty. The one file this session
+  changed on his machine is the Omarchy menu extension, by the installer, with a backup:
+  `d375efcb…` → `230cb88c…`, one line added.
+
+  `omarchy restart shell` then `tests/plugin-smoke.sh`: **45 passed, 0 failed**, and the live
+  widget's cursor read back from the running shell —
+
+  ```
+  $ omarchy-shell oliver.monero cursor
+  {"section":"header","index":0,"active":false,"opened":false,
+   "sections":["header","warnings","footer"],"alive":true,"binaryMissing":false,
+   "nodeUp":false,"synced":false,"walletOpen":false,"remote":true,
+   "iconCase":7,"iconColor":"#ffffff"}
+  ```
+
+  — agrees with what `status --json` gives it on the real configuration: `node.layout: "remote"`,
+  `node.remote_probe: null` (nothing has probed his configured node; `status` will not, §2e), and
+  warnings `["remote_node", "wallet_idle"]`, both **info**. `remote: true` is the mode-aware field
+  the cursor exposes and `iconColor: #ffffff` is the bar staying out of the alarm channel, which is
+  what §6.4 was changed for. The probe height and its age are rendered in the panel but are not in
+  the cursor hook, so they are asserted statically by the smoke and not observed live here.
+
+  ### Documentation
+
+  One false claim found and fixed, in `README.md`: the "not in v0.1" list still carried **"TUI mouse
+  support"** while §0 un-cut it in v5.5 and README's own line 464 documents the mouse as a peer —
+  the same document asserting both. The cut list now names what is actually cut (**drag** and
+  hover-only affordances) and points at the paragraph that describes what is in. `BUILD_NOTE` was
+  read and **not** changed: it is stale — it stops at the v5.1/v5.2 round, and nothing in this
+  round's LIVE column (a TUI-created wallet, `node list --refresh --probe` against monero.fail, the
+  picker's switch) appears in it — but every sentence it does make is true, and it under-claims
+  rather than over-claims, which is the safe direction and not a §2j violation. `build_stage` still
+  reads `phase-4-verified-and-fixed`.
+
+  ### What this verification does not claim
+
+  - **A real send or sweep of any amount is still RED**, in every mode. Nothing was relayed; the
+    Send form was filled on a pty and a mock, and no confirm modal was ever completed.
+  - The `node list` cache on the owner's own machine was **not** refreshed and his configured node
+    was **not** probed from his own configuration: the one sanctioned live run was made from a
+    throwaway sandbox, so `node.remote_probe` is still `null` there and the picker's `probed here`
+    columns will be empty until he presses `p`.
+  - `H` (previous node) opened no modal in a fresh session, which is correct — the previous address
+    is session-only state — but the one-key undo **after** a switch was not exercised.
+  - DEFECT A was measured on one emulator (this tmux, SGR-1006). The misalignment is arithmetic and
+    will be identical anywhere, but "the mouse works" is now known for this terminal specifically.
+  - The three defects and two findings were **reported, not fixed**: this pass's mandate was
+    verification plus false documentation claims, and a four-character change to a hit rect belongs
+    with a test that would have caught it.

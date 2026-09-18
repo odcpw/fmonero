@@ -592,8 +592,11 @@ entry:
 - Several wallets open at once. `monero-wallet-rpc` holds exactly one.
 - Cuprate as a node backend. `sync_info`, `get_connections`, the peer list, bans, txpool stats
   and net stats all return `not_available`, so it cannot drive this dashboard.
-- Sweep in the TUI, a doctor screen inside the TUI, TUI mouse support, desktop notifications
+- Sweep in the TUI, a doctor screen inside the TUI, desktop notifications
   wired on, ZMQ, a CI workflow and a CHANGELOG.
+- Mouse **drag** and any hover-only affordance. Clicking is in (see "The mouse is a peer"
+  above); dragging a splitter, reordering a list and a highlight a keyboard cannot produce are
+  not, because an affordance only a pointer can reach is one a keyboard user does not have.
 
 Two honest estimates rather than measurements: a pruned mainnet chain is put at 100 to 150 GB,
 and the doctor checks free space against a 120 GB floor while saying in the detail that the
