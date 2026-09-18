@@ -9551,3 +9551,140 @@ moved, so §2k's manifest freeze holds.
   - The picker's cap means a **49-column** address can still be elided in a narrow pane; the
     configured row cannot, at any width the picker renders in. §7a.4 now says which of those two
     "never elided" means.
+
+## Plain-language audit and the v5.6 design (real output)
+
+- 2026-09-18 · audit + design · **## Plain-language audit and the v5.6 design (real output)** — the
+  owner's three complaints, read against the program as it actually renders, turned into a contract
+  (`DESIGN.md` §2o), a widget redesign (§6), a remote-mode Node screen built from what is known
+  (§7a.3), a specification for the stale-node defect he reported (§7a.7) and a rewrite table with one
+  row per string (`docs/COPY.md`). Baseline `52746ba`. **This round wrote no code.** Nothing in
+  `crates/`, `plugin/` or `scripts/` was touched; DESIGN.md went from v5.5 to **v5.6**, DECISIONS.md
+  gained this entry, and `docs/COPY.md` is new.
+
+  ### The complaints, verbatim in substance
+
+  - *"The text in the widget isn't clear or useful."*
+  - *"Most of the text in the TUI is slop too. The explanations need to be in plain English."*
+  - *"When I change nodes it says I'm still on Cake Wallet."*
+  - *"I don't want to manage the CLI; that's what the TUI is for."*
+  - *"Like fbittorrent, the window is closed, the widget continues. Same thing here please."*
+
+  All five are accurate about `52746ba`. The first two are one defect with 450 instances, the third is
+  a cached `Context`, the fourth is a rule the program did not have, and the fifth is behaviour the
+  program already had and never mentioned.
+
+  ### What was captured, on this machine, in a sandbox
+
+  Every string below was read off a real run of the installed-equivalent binaries
+  (`target/release/fmonero`, `target/release/fmonero-mock`, both built at `52746ba`), under
+  `FMONERO_STATE_DIR` / `FMONERO_CONFIG_DIR` / `FMONERO_CACHE_DIR` / `FMONERO_SYSTEMD_USER_DIR`
+  pointing into a scratch directory. **The owner's `~/.config/fmonero`, his wallet, his units and his
+  `~/.local/state/fmonero` were not read or written**, no `sudo` ran, and nothing was pushed.
+
+  - `fmonero status`, `doctor`, `node info`, `node peers`, `node list`, `settings list`, `wallet list`,
+    `wallet balance`, `version`, `--help` and three `--help` subcommands, each in **both** human mode
+    (through `script -qc`, so stdout is a pty) and `--json` (non-TTY, which §4 makes imply `--json`).
+  - Eleven refusals, triggered rather than imagined: a 1-character address (exit 15), `all` as an
+    amount (exit 2 `bad_amount`), `0.1.2` (exit 2), no wallet open (exit 4 `unreachable`), no node unit
+    (exit 4 `unit_missing`), `node up` while a public node is configured (exit 4 `remote_node`),
+    `node down --dry-run` (exit 2 `unsupported_flag`), an unknown settings key (exit 2 `unknown_key`),
+    `wallet open` with no password on a non-TTY (exit 9 `bad_password`).
+  - The TUI on a 120×40 tmux pty against `fmonero-mock`: all four screens, the public-node picker with
+    and without a cache, the create-wallet modal with all four fields filled, the receive QR, the help
+    overlay, and the Node screen in **public-node mode**.
+
+  Two figures from those captures, because they size the problem: one `fmonero doctor` run printed
+  `40 checks: 16 pass, 2 warn, 1 fail, 21 skip`, and **twelve of those twenty-one skips printed the
+  same 28-word sentence** — *"node.mode is remote (…): there is no local monerod to ask, and no
+  wallet-RPC method reports a remote daemon's own state (§1b.9 item 5)"*. The Node screen in
+  public-node mode devoted two of its four panes to the words `not available with a remote node` and a
+  third to *"fmonero does not talk to this node — monero-wallet-rpc does."*
+
+  ### The count
+
+  450 strings inventoried across 13 surfaces; **392 rows rewritten** (432 counted by literal, since
+  nine rows bundle a set such as the seven picker column headers); 58 confirmed already plain and left
+  alone; 4 deleted outright; 7 new. `docs/COPY.md` carries every one with its `file:line`, the current
+  text, the new text and which rule the old text broke.
+
+  ### The decisions, and what each one costs
+
+  1. **§2o is a contract, not a style guide.** Twelve rules, a vocabulary table with one name per
+     thing, and a `scripts/check.sh` step with an allow-list for command lines and a self-test that the
+     banned words fire. The rule that does the most work is rule 5: an id, a reason or a `code_name` is
+     `--json` only. `status --json`'s ids, reasons and keys do **not** change, so no agent contract
+     moves.
+  2. **§2o.1 — no command line in the TUI or the widget.** This is the owner's fourth complaint as a
+     rule, and it forced two design changes rather than two rewrites. `node local` **enters the TUI**
+     on `l` (§7a.4), because its only route was a printed command and deleting the route strands the
+     user who switched to a public node from that very screen; and the `a` modal's footer stops
+     advertising `--trusted`. Four shell commands survive in the TUI, each because fmonero has no code
+     that could do the job: installing Monero, reading a seed (§2b forbids displaying one), restoring
+     from a seed (§0 cuts it), and `wallet sweep` — the only one caused by a scope decision rather than
+     an impossibility, and `docs/COPY.md` §2 says so and says the line goes when sweep arrives.
+  3. **The widget's header line is at most five words and the panel shows only rows that carry
+     information.** Five detail rows and two footer buttons go; a first-match table decides the header,
+     ordered by what the user is waiting for rather than by what came first in the JSON. §6.5 carries a
+     text mock of all six states. `Service.qml`'s budget **falls** from 420 to 340, because 420 was set
+     for work that came in at 315 and unspent headroom is an invitation.
+  4. **The Node screen shows what is known instead of what is not.** The cached check of §2n.4 already
+     held a height, a sync flag, a latency and an age; the screen said five things were unavailable and
+     never showed it. One pane, four facts, three states, and the height and its age always render
+     together — a four-hour-old `synced` says nothing about now.
+  5. **The stale-node defect is specified as three parts, not one** (§7a.7): reload the `Context` after
+     any action that writes settings, notice a change made from another terminal by `stat`-ing
+     `config.toml` on the 1 s poll, and drop the address-matched cached check so the new node does not
+     read `Not checked yet.` for a minute after the user picked it from a row that had just been
+     measured. The test is a `ProgramSimulator` case asserting **all four** of the surfaces that were
+     wrong — hero, status bar, picker marker, facts pane — within one poll, because the defect lived in
+     the gap between two functions that are each correct.
+  6. **Closing the window was already safe and v5.6 says so.** Nothing in the runtime changes: `quit`
+     never closes the wallet and the 20 s auto-refresh runs inside the wallet service. What changes is
+     that the Wallet screen states `This keeps going in the background. You can close this window.`
+     while a wallet is behind, and the widget's headline becomes `Wallet syncing 63% · 240 000 blocks
+     left` with the icon ring drawing that progress. The widget's poll gains
+     **`status --json --check-node`** (§4, §5) so a public node's height stops going stale with nobody
+     to refresh it: identical output, spawns the bounded `curl` **detached** only when the configured
+     node's cached check is older than `node.remote_probe_sec`, records the attempt so several polls
+     spawn once, and is a no-op with your own node. Bare `status` still spawns nothing, which is what
+     every §2l measurement rests on.
+  7. **`Warning` gains one field, `action: Option<String>`** (§5, §5b.5). `hint` stays the CLI's
+     runnable command; `action` is the in-app sentence the TUI and the widget render instead. `None`
+     means nothing can be done from inside the app, and both surfaces then print the text alone rather
+     than inventing a key. This is the mechanism §2o.1 needs: before it, those two surfaces had only
+     `hint` to show, which is literally how `fmonero node local --yes` came to be printed on a bar.
+  8. **The budgets moved before the code, which is §7a's own procedure.** `TUI_BUDGET` 7 200 → **7 600**
+     against a measured 7 197 (three lines of headroom), itemised in §7a as six line items totalling
+     ≈ 320, with the ceiling set at 7 600 rather than 7 550 because an estimate consuming 99.7 % of its
+     own ceiling is what v5.5 revision 12 identified as the arithmetic that forces a dishonest trade.
+     `QML_BUDGET` 1 516 → **1 529**, and this time the figure's derivation is written out: the four
+     per-file budgets (340 + 820 + 112 + 225 = 1 497) plus `manifest.json`'s 32 real lines, which the
+     gate counts.
+
+  ### One observation for the implementer, found while capturing
+
+  `fmonero node remote <addr> --yes` under an `FMONERO_STATE_DIR` sandbox exits **3
+  `sandboxed_units`** — and it has already written `node.mode = "remote"` and `node.remote` to
+  `config.toml` by then, because §2m.5 puts the single `Settings::save` before `units::install`. The
+  sandbox's `FMONERO_SYSTEMD_USER_DIR` was set and still nothing was written to it: the guard is on
+  `FMONERO_STATE_DIR`, by v5.3's deliberate decision. On a real machine this path cannot be reached, so
+  it is not a defect — but **a test that asserts "a refused `node remote` changed nothing" would be
+  asserting something false**, and the next round's own captures depend on knowing it (this session's
+  public-node CLI captures were produced exactly that way, deliberately).
+
+  ### What this round does not claim
+
+  - **No code changed, so nothing here is verified by a test.** Every string in `docs/COPY.md`'s
+    "becomes" column is a specification, not an observation. The implementer's gate is the one that
+    proves them.
+  - **A real send or sweep of any amount is still RED**, in every mode. Nothing was built and nothing
+    was relayed; the Send screen was read, not driven.
+  - The stale-node defect is **confirmed in code and in the captures' shape**, not reproduced live on
+    the owner's own configuration: doing that would mean switching his node.
+  - The `--check-node` flag is specified and unimplemented. Its four bounds each name a test in §5, and
+    none of those tests exists yet.
+  - `scripts/check.sh` still carries `TUI_BUDGET=7200` and `QML_BUDGET=1516`. §2o's grep, §6.7's three
+    new assertions and both new budgets are specified here and land with the code.
+  - The five-word header budget was measured against `Style.space(380)` and the bar's own font on this
+    machine's config, not on an arbitrary bar width.
