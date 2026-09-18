@@ -1040,9 +1040,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_key_table_is_the_twenty_three_keys_of_the_design() {
-        // Twenty before v5.2; §2m.1's three remote-mode keys make it twenty-three (§4).
-        assert_eq!(Settings::KEYS.len(), 23);
+    fn the_key_table_is_the_twenty_six_keys_of_the_design() {
+        // Twenty before v5.2; §2m.1's three remote-mode keys made it twenty-three; v5.5 adds
+        // node.remote_probe_sec, wallet.autostart and tui.mouse (§4, §5b.4 row 5).
+        assert_eq!(Settings::KEYS.len(), 26);
         let s = Settings::default();
         for (key, _, doc) in Settings::KEYS {
             assert!(s.get(key).is_ok(), "{key} must be readable");

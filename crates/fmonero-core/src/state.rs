@@ -267,9 +267,9 @@ pub fn note_remote_probe(
 /// The cached probe **for this address only**. A probe recorded against a different address is
 /// `None`, not a number about the wrong node.
 pub fn remote_probe(ctx: &Context, address: &str) -> Result<Option<crate::nodes::Probe>, Error> {
-    Ok(load(ctx)?.remote_probe.and_then(|(stored, p)| {
-        (stored == address).then_some(p)
-    }))
+    Ok(load(ctx)?
+        .remote_probe
+        .and_then(|(stored, p)| (stored == address).then_some(p)))
 }
 
 /// Arm a §2d breaker. **Never called by `status`**, and never by `send::relay` (§2d).

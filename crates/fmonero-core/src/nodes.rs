@@ -571,9 +571,11 @@ fn parse_http_date(s: &str) -> Option<i64> {
 }
 
 fn bad_doc(e: serde_json::Error) -> Error {
-    Error::upstream(format!("monero.fail returned something that is not JSON: {e}"))
-        .with_reason("rpc_error")
-        .with_hint("fmonero node list   # the cached list still works")
+    Error::upstream(format!(
+        "monero.fail returned something that is not JSON: {e}"
+    ))
+    .with_reason("rpc_error")
+    .with_hint("fmonero node list   # the cached list still works")
 }
 
 /// Join the candidate set to the health lookup. Separated so the fixtures can drive it.
@@ -1067,7 +1069,10 @@ mod tests {
         );
         assert_eq!(parsed.nodes[0].address, "good.example:18081");
         assert_eq!(parsed.skipped_no_port, 1, "the portless row");
-        assert_eq!(parsed.skipped_invalid, 7, "everything else the grammar refuses");
+        assert_eq!(
+            parsed.skipped_invalid, 7,
+            "everything else the grammar refuses"
+        );
         let target = ProbeTarget::from_node(&parsed.nodes[0]);
         assert_eq!(
             target.json_rpc_url(),
@@ -1101,7 +1106,11 @@ mod tests {
         let doc = br#"{"monero":{"clear":["https://w.example:18089","http://p.example:18081"],
                                   "web_compatible":["https://w.example:18089"]}}"#;
         let parsed = parse_nodes_json(doc).expect("parses");
-        assert_eq!(parsed.nodes.len(), 2, "no duplicate row for the flagged one");
+        assert_eq!(
+            parsed.nodes.len(),
+            2,
+            "no duplicate row for the flagged one"
+        );
         let w = parsed
             .nodes
             .iter()

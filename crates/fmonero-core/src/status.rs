@@ -88,6 +88,48 @@ pub struct NodeStatus {
     pub uptime_sec: Option<i64>,
     pub net: NetStatus,
     pub fee: FeeStatus,
+    /// **v5.5, §2n.4.** The **cached** result of the last `get_info` probe of the configured
+    /// remote node, read from `state.json` and **never measured here** — `status` spawns nothing
+    /// (§2e). It is the only field in this document whose source is a measurement taken by an
+    /// earlier invocation, so its `age_sec` is not decoration: a four-hour-old
+    /// `synchronized: true` says nothing about now, and §6.5's row shows the age for that
+    /// reason. `null` in local mode, and `null` in remote mode until something probed.
+    pub remote_probe: Option<RemoteProbeStatus>,
+}
+
+/// [`crate::nodes::Probe`] as §5 renders it: the stored form plus the age, which the stored
+/// form cannot carry because it is computed at render time. The same relationship
+/// [`PendingStatus`] already has to the `pending.json` record.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RemoteProbeStatus {
+    pub reachable: bool,
+    pub height: Option<u64>,
+    pub synchronized: Option<bool>,
+    pub restricted: Option<bool>,
+    pub nettype: Option<String>,
+    pub version: Option<String>,
+    pub latency_ms: Option<u64>,
+    pub reason: Option<String>,
+    pub probed_at: i64,
+    pub age_sec: i64,
+}
+
+impl RemoteProbeStatus {
+    /// `now` is passed rather than read so the whole document shares one clock (§5).
+    pub fn from_probe(p: &crate::nodes::Probe, now: i64) -> RemoteProbeStatus {
+        RemoteProbeStatus {
+            reachable: p.reachable,
+            height: p.height,
+            synchronized: p.synchronized,
+            restricted: p.restricted,
+            nettype: p.nettype.clone(),
+            version: p.version.clone(),
+            latency_ms: p.latency_ms,
+            reason: p.reason.map(str::to_string),
+            probed_at: p.probed_at,
+            age_sec: now.saturating_sub(p.probed_at).max(0),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -191,6 +233,10 @@ pub const WARNING_IDS: &[&str] = &[
     "node_update_available",
     "foreign_node_running",
     "wallet_down",
+    // v5.5, §5: remote mode with no wallet open — the same fact as `wallet_down`, out of the
+    // alarm channel, because the units are written disabled and start on demand (§4.2), so a
+    // warning here fires on every correct fresh install.
+    "wallet_idle",
     "wallet_closed",
     "wallet_behind",
     "wallet_locked_funds",
@@ -328,6 +374,7 @@ impl NodeStatus {
             uptime_sec: None,
             net: NetStatus::default(),
             fee: FeeStatus::default(),
+            remote_probe: None,
         }
     }
 }
@@ -389,6 +436,14 @@ pub fn status(ctx: &Context) -> Result<Status, Error> {
     // than a mode-dependent pair. Remote mode therefore only ever makes FEWER calls.
     if remote {
         node.reachable = None;
+        // The cached probe, **read only** — `status` never measures and never writes it (§2e,
+        // §2n.4). `state::remote_probe` returns `None` unless the stored address still matches
+        // the one in force, so switching nodes cannot leave the old node's height rendered as
+        // the new node's (§2j on the one field a user checks to see whether their node works).
+        node.remote_probe = crate::state::remote_probe(ctx, &target.address)
+            .ok()
+            .flatten()
+            .map(|p| RemoteProbeStatus::from_probe(&p, now));
     }
     // `for_status`, never `from_ctx`: `status` arms no breaker and is blocked by none (§2d).
     //
@@ -826,12 +881,30 @@ fn warnings(
         );
     }
     if !s.wallet.unit_active && !s.wallet.reachable {
-        add(
-            "wallet_down",
-            Severity::Warn,
-            "monero-wallet-rpc is not running".into(),
-            "fmonero wallet open <name>",
-        );
+        // **Narrowed in v5.5.** In remote mode with no wallet recorded open this is
+        // `wallet_idle`, severity **info**: the wallet daemon is *designed* to be down until a
+        // wallet is opened, and a warning that fires on every correct fresh install is the
+        // warning a user learns to ignore — which is precisely what the owner met (the bar icon
+        // was urgent about a daemon that was behaving correctly). In local mode, and in remote
+        // mode with a wallet recorded open, the warning is unchanged: an inactive unit under an
+        // open wallet is a real fault, the wallet went away behind us.
+        let idle = s.node.layout == units::Layout::Remote && s.wallet.name.is_none();
+        if idle {
+            add(
+                "wallet_idle",
+                Severity::Info,
+                "the wallet daemon is not running; it starts when you open or create a wallet"
+                    .into(),
+                "fmonero wallet open <name>   # or: fmonero wallet create <name> --yes",
+            );
+        } else {
+            add(
+                "wallet_down",
+                Severity::Warn,
+                "monero-wallet-rpc is not running".into(),
+                "fmonero wallet open <name>",
+            );
+        }
     }
     if s.wallet.reachable && !s.wallet.open {
         add(
@@ -1097,7 +1170,7 @@ mod tests {
             assert_eq!(back, s);
         }
         // Nineteen before v5.2; §2m adds `remote_node` (info) and `remote_node_trusted` (warn).
-        assert_eq!(WARNING_IDS.len(), 21);
+        assert_eq!(WARNING_IDS.len(), 22);
         assert!(
             !WARNING_IDS.contains(&"plugin_not_linked"),
             "that one is the doctor's (§5)"

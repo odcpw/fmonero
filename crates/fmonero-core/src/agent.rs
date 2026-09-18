@@ -545,8 +545,9 @@ mod tests {
             v["settings"].as_array().unwrap().len(),
             Settings::KEYS.len()
         );
-        // Twenty before v5.2; §2m.1 adds node.mode, node.remote and node.remote_trusted.
-        assert_eq!(Settings::KEYS.len(), 23);
+        // Twenty before v5.2; §2m.1 added node.mode/node.remote/node.remote_trusted; v5.5 adds
+        // node.remote_probe_sec, wallet.autostart and tui.mouse.
+        assert_eq!(Settings::KEYS.len(), 26);
         assert!(!v["reasons"].as_array().unwrap().is_empty());
         assert_eq!(v["warnings"].as_array().unwrap().len(), WARNING_IDS.len());
         assert!(!v["env"].as_array().unwrap().is_empty());

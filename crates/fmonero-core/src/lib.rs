@@ -51,8 +51,8 @@ pub use settings::{
 };
 pub use state::{Daemon, PendingKind, PendingSend, PendingTx, StateDoc};
 pub use status::{
-    LastError, NetStatus, NodeStatus, PendingStatus, PendingTxStatus, Severity, Staleness, Status,
-    UnitsStatus, WalletStatus, Warning, WALLET_BEHIND_BLOCKS, WARNING_IDS,
+    LastError, NetStatus, NodeStatus, PendingStatus, PendingTxStatus, RemoteProbeStatus, Severity,
+    Staleness, Status, UnitsStatus, WalletStatus, Warning, WALLET_BEHIND_BLOCKS, WARNING_IDS,
 };
 
 /// The tool's name, as it appears in argv, hints and the plugin.
