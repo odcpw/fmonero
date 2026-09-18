@@ -2263,15 +2263,20 @@ reports every action `unchanged`, restarts nothing and exits 0.
    byte. The node unit and `monerod.conf` are rendered in remote mode too: they are unused, but
    `node local --yes` must find them and the doctor's `units_present` compares them byte for byte
    in every mode;
-8. **restart the wallet unit iff it was `active` before step 7 *and* the rendered wallet unit
+8. **restart the wallet unit iff it was `active` before step 7 *and* the rendered **wallet** unit
    actually changed** (`units::state` is read *before* the render; the change is step 7's own byte
-   comparison), because the only reason to restart is that a running `monero-wallet-rpc` holds
-   `--daemon-address` from its argv — if that argv is byte-identical there is nothing to reload.
+   comparison, filtered to that one file), because the only reason to restart is that a running
+   `monero-wallet-rpc` holds `--daemon-address` from its argv — if that argv is byte-identical there
+   is nothing to reload, and `monerod.conf` and the node unit are re-rendered in both modes without
+   a running wallet daemon ever having read either.
    **The second condition is v5.5, revision 4**, and it is what makes the idempotence sentence at
    the top of this subsection true: with the condition on the unit's *state* alone, a second
    `node remote <the same address>` would restart the daemon and (step 9) close an open wallet for a
    change of nothing, which is exactly what §7a.4's `Enter` on the already-configured row made
-   reachable with one click. Payload `wallet_unit_restarted`;
+   reachable with one click. *And the implementation was already ahead of the document here*: the
+   v5.4 code keyed the restart on `was_active && wrote`, so only this sentence was wrong — v5.5
+   narrows `wrote` from "any rendered file changed" to "the wallet unit changed", which is the half
+   the reason above actually justifies. Payload `wallet_unit_restarted`;
 9. **if a wallet was open, say so.** The restart closes it, so `state::clear_last_open` runs and the
    payload carries `wallet_must_reopen: "<name>"` with `hint: fmonero wallet open <name>`. Reporting
    success while `status` still claimed a wallet was open would be a stale fact about money.
@@ -3112,7 +3117,7 @@ wallet.
 | `settings list` · `get K` · `set K V` | | `~/.config/fmonero/config.toml` | on set | no | no | no |
 | `setup` | `[--units] [--plugin] [--menu] [--all] [--yes] [--dry-run]` | §4.2 | yes | **yes** | no | no |
 | `doctor` | `[--fix] [--only GROUP] [--dry-run] [--yes] [--save]`, `doctor undo RUN\|latest`, `doctor capabilities` | §7. `--fix` alone performs every fixer in v0.1 (classes A and B); `--yes` is accepted and ignored. | with `--fix` | – | no | no |
-| `tui` | `[--node\|--wallet\|--send\|--log]` | §7a. The four flags select the screen the TUI opens on, and are how the bar widget's buttons land the user where they asked to be (§6.3): **`--node` opens the Node screen with the public-node picker focused** and **`--wallet` opens the Wallet screen — on its empty-state panel with `[o] Open wallet…` selected when no wallet is open** (§7a.5). Mutually exclusive; two of them is exit 2. They select a screen and nothing more: neither flag fetches, probes, starts a daemon or opens anything by itself, because a command-line flag that performs a mutation at startup is a mutation with no confirm step | – | – | – | – |
+| `tui` | `[--node\|--wallet\|--send\|--log]` | §7a. The four flags select the screen the TUI opens on, and are how the bar widget's buttons land the user where they asked to be (§6.3): **`--node` opens the Node screen with the public-node picker focused** — "focused" meaning the pane whose keys are live (`p`, `f`, `Enter`, `a`, `H`, `/`, `↑↓`), **not** a selected row: revision 4 selects nothing on entry, so a first click or a first `Enter` cannot activate anything — and **`--wallet` opens the Wallet screen — on its empty-state panel with `[o] Open wallet…` selected when no wallet is open** (§7a.5). Mutually exclusive; two of them is exit 2. They select a screen and nothing more: neither flag fetches, probes, starts a daemon or opens anything by itself, because a command-line flag that performs a mutation at startup is a mutation with no confirm step | – | – | – | – |
 | `capabilities` | — | `agent::capabilities_json` | no | – | no | no |
 | `robot-docs` | `[SECTION]` | `agent::ROBOT_GUIDE` | no | – | no | no |
 | `version` | — | | no | – | no | no |

@@ -591,14 +591,26 @@ pub mod node_mode {
         // and the doctor's `units_present` compares them byte for byte in every mode.
         let actions = units::install(&next_ctx, false)?;
         let wrote = actions.iter().any(|a| a.status == FileStatus::Written);
+        // **The WALLET unit specifically** (v5.5, revision 4). The reason a restart is needed at
+        // all is that a running `monero-wallet-rpc` holds `--daemon-address` in its argv, so the
+        // only file whose change can justify one is the file that carries that argv — not
+        // `monerod.conf` and not the node unit, both of which are re-rendered in both modes and
+        // neither of which a running wallet daemon has read. Keyed on `wrote` alone, a switch
+        // that changed only the node unit would stop and start the wallet daemon and (step 10)
+        // close an open wallet for a change it could not see.
+        let wallet_unit_changed = actions.iter().any(|a| {
+            a.status == FileStatus::Written
+                && a.path.file_name().and_then(|n| n.to_str())
+                    == Some(ctx.settings.wallet.unit.as_str())
+        });
 
-        // Step 9: restart the wallet unit **iff it was active and its argv changed**. Keying
-        // the restart on "the unit file was written" rather than on "the mode changed" is what
-        // makes a second run idempotent, and it is also exactly right: if the rendered argv is
-        // identical there is nothing for a restart to install.
+        // Step 9: restart the wallet unit **iff it was active and its own rendered argv changed**.
+        // Keying the restart on that rather than on "the mode changed" is what makes a second run
+        // idempotent — and it is exactly right: if the rendered argv is identical there is nothing
+        // for a restart to install.
         let mut wallet_unit_restarted = false;
         let mut wallet_must_reopen = None;
-        if was_active && wrote {
+        if was_active && wallet_unit_changed {
             let open_now = crate::state::last_open(ctx)?.map(|(name, _)| name);
             units::stop(ctx, &ctx.settings.wallet.unit, cancel)?;
             units::start(ctx, &ctx.settings.wallet.unit, cancel)?;
