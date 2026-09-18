@@ -8430,3 +8430,149 @@ moved, so §2k's manifest freeze holds.
   total is **1 516**, the earlier figure in the uncommitted entry above is corrected in place (it had
   not been committed, so nothing append-only was rewritten), and `scripts/check.sh` will check the
   four per-file figures as well as the sum, so the table stops being numbers only prose defends.
+- 2026-09-18 · implementer · **## TUI UX round gate (real output)** — v5.5 implemented in
+  full: §2n (public node discovery), §7a.1 (navigation), §7a.2 (mouse), §7a.4 (the picker),
+  §7a.5 (the wallet empty state, create and the daemon), the §4/§5/§5b/§5c/§6/§7.1 rows that
+  follow, and the eleven review revisions integrated into DESIGN.md first. `Cargo.toml` is
+  unchanged: `curl` is a child process and `serde_json` + `jiff` were already in core.
+
+  ```
+  $ cargo fmt --all --check                     # no output, exit 0
+  $ cargo clippy --all-targets -- -D warnings
+      Finished `dev` profile [unoptimized + debuginfo] target(s)
+  $ cargo test
+  test result: ok. 108 passed; 0 failed   (fmonero: +20 TUI cases, +8 hit.rs cases)
+  test result: ok. 177 passed; 0 failed   (fmonero-core: +15 nodes.rs cases)
+  test result: ok. 3 passed; 0 failed     (fmonero-mock)
+  $ bash scripts/check.sh --full
+  check.sh: PASS (/home/oliver/Projects/odcpw/fmonero)
+  $ bash tests/e2e.sh --fast
+  e2e.sh (fast): 566 passed, 0 failed, 3 skipped
+  $ bash tests/e2e.sh --full
+  e2e.sh (full): 600 passed, 0 failed, 3 skipped
+  $ bash tests/plugin-smoke.sh
+  plugin-smoke: 45 passed, 0 failed
+  $ bash tests/tui_tmux.sh
+  == 35 passed, 0 failed
+  ```
+
+  **The machine was left exactly as it was found**, before and after the whole run:
+
+  ```
+  === units, before ===
+  fmonero-monerod.service: active=inactive enabled=disabled NRestarts=0
+  fmonero-wallet-rpc.service: active=inactive enabled=disabled NRestarts=0
+  === sha256, before ===
+  64580d70a21719503a105b67aa633d31d9c25921ffc0c8956a7fc8d5d333d82f  /home/oliver/.config/systemd/user/fmonero-monerod.service
+  51ab51b9c26863bece7521f51a5e4d9904230bf1f2963abe6e54b3da80fd0a7f  /home/oliver/.config/systemd/user/fmonero-wallet-rpc.service
+  bed63c9603dc9f5cbcc2d81fbab42d9c57763479c7f87b2a54a7707a74efd5ba  /home/oliver/.config/fmonero/monerod.conf
+  d546e5951645c64f0d670c320471f1ed8c0d299fdd0f5c286be5dcf51f4948e9  /home/oliver/.config/fmonero/config.toml
+
+  === units, after ===
+  fmonero-monerod.service: active=inactive enabled=disabled NRestarts=0
+  fmonero-wallet-rpc.service: active=inactive enabled=disabled NRestarts=0
+  === sha256, after ===
+  64580d70a21719503a105b67aa633d31d9c25921ffc0c8956a7fc8d5d333d82f  /home/oliver/.config/systemd/user/fmonero-monerod.service
+  51ab51b9c26863bece7521f51a5e4d9904230bf1f2963abe6e54b3da80fd0a7f  /home/oliver/.config/systemd/user/fmonero-wallet-rpc.service
+  bed63c9603dc9f5cbcc2d81fbab42d9c57763479c7f87b2a54a7707a74efd5ba  /home/oliver/.config/fmonero/monerod.conf
+  d546e5951645c64f0d670c320471f1ed8c0d299fdd0f5c286be5dcf51f4948e9  /home/oliver/.config/fmonero/config.toml
+  ```
+
+  Both units inactive, disabled and `NRestarts=0` on both sides, and all four sha256 sums
+  byte-identical — the owner's `config.toml` included, so `node.mode = remote` and
+  `node.remote = xmr-node.cakewallet.com:18081` are untouched. Everything that writes ran
+  under `FMONERO_STATE_DIR` / `FMONERO_CONFIG_DIR` / `FMONERO_CACHE_DIR` sandboxes.
+
+  **The one live run the owner asked for, proving the parsers against the real monero.fail**
+  (from a throwaway sandbox; this is the only non-loopback traffic this session initiated
+  besides the two fixture captures):
+
+  ```
+  $ fmonero node list --refresh --probe --limit 8 --json      # exit 0
+  {"cache_age_sec": 0, "fetched_at": 1789747435, "ok": true, "probed": 8, "refreshed": true, "schema": 1, "skipped_invalid": 0, "skipped_no_port": 37, "source": "https://monero.fail", "total": 152}
+  152.53.150.12:18081        http   health 100% of 18  · probed: reachable True · height 3765257 · synced True · 36 ms
+  152.53.95.190:18089        http   health 100% of 18  · probed: reachable True · height 3765257 · synced True · 54 ms
+  109.199.98.74:18081        http   health 100% of 18  · probed: reachable True · height 3765257 · synced True · 56 ms
+  109.192.204.136:18081      http   health 100% of 18  · probed: reachable True · height 3765257 · synced True · 72 ms
+  109.196.118.68:18081       http   health 100% of 18  · probed: reachable True · height 3765257 · synced True · 92 ms
+  154.12.229.22:18081        http   health 100% of 18  · probed: reachable True · height 3765257 · synced True · 252 ms
+  162.251.5.90:18089         http   health 100% of 18  · probed: reachable True · height 3765257 · synced True · 352 ms
+  139.59.89.227:18089        http   health 100% of 18  · probed: reachable True · height 3765257 · synced True · 877 ms
+  ```
+
+  All eight probed nodes answered and every one reported the same height, which is the outcome
+  §2n.2 says the list is a **shortlist** for rather than a ranking: monero.fail rated all eight
+  100 % of 18, and the only figure this machine measured is the latency spread — **36 ms to
+  877 ms, a factor of 24**, which is precisely the number no third party could have told us. The
+  live run also moved two counts recorded in §2n.1 and amended them there: `monero.clear` was
+  **196** entries rather than 195, and 159 usable strings reduce to **152 rows** because seven
+  `host:port` values are published twice, once under `http://` and once under `https://`
+  (`xmr-node.cakewallet.com:18081`, `xmr.nadeko.net:18081`, `corny.cc:443`, …). `address` is the
+  identity — it is what §2m.2 accepts, what the picker marks `●`, what the confirm modal renders
+  and what `node remote` writes — so the second spelling is **merged, not counted as a skip**:
+  nothing was dropped, one row covers both. That the figures moved within one day is the reason
+  §2n.1 states that "the shape" is only ever "the shape it had when someone looked".
+
+  **The two blockers, as code rather than as prose.** Revision 2 is enforced by the types, not by
+  a comment: `parse_nodes_json` drops any candidate `Settings::parse_remote_address` refuses
+  (portless under `skipped_no_port`, everything else under `skipped_invalid`), the probe URL is
+  `format!("{scheme}://{address}/json_rpc")` from the two validated fields, and
+  `probe_one`/`probe_many` take a `ProbeTarget` so monero.fail's own bytes **cannot** be handed to
+  a probe by accident. curl gets `--url <u>` rather than a bare trailing argument, so a value
+  beginning with `-` could never be read as an option, and `nodes.rs` caps the bytes it accepts
+  from the child itself (8 MiB / 64 KiB) because `--max-filesize` does nothing against a chunked
+  response before curl 8.4.0. The unit test drives a hostile document — a leading dash, a
+  `--config`, userinfo, `host:port@host:port`, a path, a query, a fragment, a portless entry and
+  one clean row — and asserts eight drops, the two counters, and that the surviving row's argv
+  equals §2n.3's table byte for byte. Revision 1 is `↑↓` between a modal's controls with `Enter`
+  advancing from all but the last, and `tests/tui_tmux.sh` fills all four create-wallet controls
+  from the keyboard alone on a real pty.
+
+  **Six tests were proved to fail on the pre-change behaviour**, by re-introducing the defect and
+  running them, then reverting:
+  · `Tab` moved from `on_key`'s first arm down below the filter branch (v5.4's arrangement) →
+    `tab_switches_screens_from_every_screen_and_every_focus_state` fails at
+    `Tab must advance one screen from Send with nothing focused`;
+  · `m.hits.tab(...)` removed from the tab strip (v5.4 drew one that was not clickable) →
+    `a_click_on_each_tab_switches_to_it` fails at `tab 0 must be a hit target at 120x40`;
+  · row 0 selected on entry and the configured-row refusal deleted (the shape revision 4 forbids)
+    → `the_picker_selects_nothing_on_entry_and_refuses_the_configured_node` fails;
+  · `hit.rs`'s own `begin_forgets_the_previous_frame`, `a_zero_area_rect_never_swallows_a_click`
+    and `the_overlay_swallows_every_click_before_anything_else` are each written against a
+    specific way the map could be wrong rather than against its happy path.
+  · **And one proof came out the other way, which is the stronger result**: re-adding
+    `KeyCode::Tab | KeyCode::Down` to `tui/send.rs` — the exact line that was the owner's first
+    complaint — no longer breaks anything, because §7a.1's arm resolves `Tab` above the Send
+    branch. The trap is now unreachable even if a later agent re-adds the binding, which is what
+    "one `match` arm, checked first" buys over fixing three branches.
+
+  **Four defects the new tests found in the new code, fixed in the same pass.** The picker handed
+  its address column `Constraint::Fill` over whatever 72 columns of fixed widths left — i.e.
+  **zero** — and rendered a table of health figures for nodes it did not name; columns now drop
+  from the right until the address has 26, and "the address is never elided at any tier" is a
+  behaviour rather than a sentence. The footer read `list 0s ago old`, because `age()` already
+  says "ago". The seed-backup modal sized itself from an unwrapped line count and pushed its last
+  two lines — including "fmonero never displays a seed" — off the bottom as soon as the wallet
+  path wrapped. And the Send screen's **fifth priority chip fell off a 67-column form**, so
+  priority 4 was unclickable: the per-byte fee is now rendered in piconero, the unit
+  `get_fee_estimate.fees[]` actually returns, which is both shorter and easier to compare than
+  eight leading zeroes.
+
+  **Three numbers were amended in DESIGN.md rather than met by deleting a feature**, which is the
+  only procedure §7a permits: the TUI ceiling 6 400 → **7 200** against a measured **7 103**, with
+  the 1 120-line overrun itemised per file (two of the five items are relocation — the create
+  sequence moved into core because §2a.3 requires one implementation for two callers, and
+  `hit.rs`'s own tests count as TUI lines while every other module's do not); `MoneroIcon.qml`'s
+  per-file budget 95 → **96**, its measured size; and `scripts/check.sh` now checks the four
+  per-file QML figures as well as their sum, so §6.1's "hard per-file budgets" stop being numbers
+  only prose defends. Measured after: QML **1 403** of 1 516.
+
+  **What v5.5 still does not claim.** The picker's confirm modal has never been run against a real
+  daemon: no `node_mode::set_remote` was executed from the TUI, on this machine or any other. No
+  wallet has been created through the TUI — `create_wallet` reaches the mock in `cargo test` and
+  the pty flow stops at the modal's own refusal, deliberately, because the sandbox has no daemon.
+  `W` has never started a real `monero-wallet-rpc`. And **the mouse has never been tried on the
+  owner's own terminal**: `ProgramSimulator` proves the routing from a real rendered frame and
+  `tests/tui_tmux.sh` proves a pty delivers keys, but neither proves this emulator sends SGR mouse
+  reports — that is one click away from being known and nothing here should be read as knowing it.
+  A real send or sweep of any amount remains RED in every mode.

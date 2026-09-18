@@ -2478,7 +2478,16 @@ URL strings**.
   AAAA records, and 3 of them are already in `clear`; reading that bucket would add rows whose only
   distinguishing property fmonero cannot observe.)
 - **37 of the 195 carry no port at all** (`kowalski.fiatfaucet.com`, `node.sethforprivacy.com`,
-  `xmr.marritt.ca`, …), leaving **158 usable**. A portless entry is **dropped at parse time and
+  `xmr.marritt.ca`, …), leaving **158 usable strings — and 152 rows**, because seven `host:port`
+  values are published twice, once under `http://` and once under `https://`
+  (`xmr-node.cakewallet.com:18081`, `xmr.nadeko.net:18081`, `corny.cc:443`, …). **`address` is the
+  identity**: it is what §2m.2 accepts, what the picker marks `●`, what the confirm modal renders
+  and what `node remote` writes, and two rows for one node would be two ways to choose the same
+  thing. The second spelling is dropped silently rather than counted, because it is a *merge* and
+  not a refusal — nothing was skipped, one row covers both. (The measured figures moved between
+  the 2026-09-18 design fetch and the same day's implementation fetch — 195/37/158 became
+  196/37/159/152 — which is the point of §2n.1 stating that "the shape" is only ever "the shape it
+  had when someone looked".) A portless entry is **dropped at parse time and
   counted**, never repaired: §2m.2 refuses a missing port because `set_server` fills it with 80 or
   443 and never 18081 (`abstract_http_client.cpp:139-144`), so inventing `:18081` here would hand
   the user an address whose behaviour disagrees with the string fmonero rendered into the unit — the
