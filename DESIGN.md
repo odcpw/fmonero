@@ -3784,8 +3784,11 @@ appeared in two or three — and a gate its own document fails is a gate an agen
   recorded with real output in DECISIONS.md, and both already exercised once by this design pass on
   2026-09-18, which is where §2n.1's counts and §2n.4's transcript come from:
   `fmonero node list --refresh --json` (the two documents fetched over HTTPS by the machine's own
-  `curl 8.22.0`; assert `total` ≈ 158 usable of 195 with `skipped_no_port` ≈ 37 — **ranges, not
-  equalities, because the list is a third party's and it moves**) and
+  `curl 8.22.0`; assert `total` ≈ 150 rows of ≈ 195 candidates with `skipped_no_port` ≈ 37 —
+  **ranges, not equalities, because the list is a third party's and it moves**, and `total` is
+  **rows** rather than usable strings: seven `host:port` values are published under both schemes and
+  collapse to one row each, §2n.1. The 2026-09-18 implementation run measured 196 / 37 / 159
+  usable / **152 rows**, against the design fetch's 195 / 37 / 158 the same day) and
   `fmonero node list --probe --limit 5 --json` (five real public nodes probed; assert at least one
   `reachable: true` with a `height` within a few blocks of the others, and that every
   `reachable: false` row carries one of the five documented reasons). The rehearsal ends with

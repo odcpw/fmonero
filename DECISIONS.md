@@ -8576,3 +8576,93 @@ moved, so §2k's manifest freeze holds.
   `tests/tui_tmux.sh` proves a pty delivers keys, but neither proves this emulator sends SGR mouse
   reports — that is one click away from being known and nothing here should be read as knowing it.
   A real send or sweep of any amount remains RED in every mode.
+
+- 2026-09-18 · implementer · **the gate re-run after five follow-up commits, and the four things
+  the first live capture of the owner's own configuration found.** The gate section above was
+  recorded before these; this is the same list re-run at `HEAD`, because a gate transcript that
+  predates five commits is a transcript of something else.
+
+  ```
+  88e64b8 core, design: the mode switch restarts the wallet unit only when THAT unit changed
+  fmt: clean
+      Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.18s
+  test result: ok. 109 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.32s
+  test result: ok. 177 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.18s
+  test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+  test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+  check.sh: PASS (/home/oliver/Projects/odcpw/fmonero)
+  e2e.sh (fast): 566 passed, 0 failed, 3 skipped
+  e2e.sh (full): 600 passed, 0 failed, 3 skipped
+  plugin-smoke: 45 passed, 0 failed
+  == 35 passed, 0 failed
+  fmonero-monerod.service: active=inactive enabled=disabled NRestarts=0
+  fmonero-wallet-rpc.service: active=inactive enabled=disabled NRestarts=0
+  64580d70a21719503a105b67aa633d31d9c25921ffc0c8956a7fc8d5d333d82f  /home/oliver/.config/systemd/user/fmonero-monerod.service
+  51ab51b9c26863bece7521f51a5e4d9904230bf1f2963abe6e54b3da80fd0a7f  /home/oliver/.config/systemd/user/fmonero-wallet-rpc.service
+  bed63c9603dc9f5cbcc2d81fbab42d9c57763479c7f87b2a54a7707a74efd5ba  /home/oliver/.config/fmonero/monerod.conf
+  d546e5951645c64f0d670c320471f1ed8c0d299fdd0f5c286be5dcf51f4948e9  /home/oliver/.config/fmonero/config.toml
+  ```
+
+  Both units inactive, disabled, `NRestarts=0`; all four sha256 sums unchanged from the
+  `before` block above. Measured after the follow-ups: TUI **7 144** of 7 200, QML **1 405** of
+  1 516.
+
+  **What the capture found, which no test had.** The screens were rendered in a sandbox configured
+  exactly like the owner's machine — `node.mode = remote`, `xmr-node.cakewallet.com:18081`, no
+  wallet — with the cache from the live run above, and four things were wrong that every green
+  assertion had missed:
+
+  1. **the status bar said `wallet down`.** §5 had made the state `wallet_idle` (an *info*) and
+     §6.4 had taken the bar icon out of the alarm channel, but the TUI's own status line — the one
+     line present on **every** screen — still read `down`. That is §2j's drift in the most-read
+     place on the screen, and it was invisible to the suite because no test asserted the badge in
+     that state. It now says `idle`, with a test that first asserts the fixture really reaches
+     `wallet_idle` so it cannot pass vacuously.
+  2. **the create-wallet modal clipped the line it is required to render.** §7a.1 says the `Tab`
+     exception is documented *in the modal*, on the line under its controls; the footer had one row
+     and the second line fell off, so the rule was true only in DESIGN.md. The `ProgramSimulator`
+     case now asserts the **rendered sentence** rather than the status-bar flash — which is the
+     assertion that would have caught it, and the difference between testing a behaviour and
+     testing a side effect of it.
+  3. **`FMONERO_NODES_URL` was implemented and undocumented.** §2n.7 puts it in `capabilities.env`
+     with `test_only: true`; it was not there, so an agent reading `capabilities` could not have
+     discovered the one seam that makes §2n testable offline. Adding it then tripped the new grep
+     that says the name is read in one place — the revision-3 failure mode, in a check written
+     *by* revision 3 — so that grep is now scoped by **site**: `nodes.rs`'s `URL_ENV` const and
+     `agent.rs`'s env row are exempt individually, and a planted `env::var` inside `agent.rs` still
+     fires. Two checks in this pass have now had to learn the same lesson, which is itself the
+     argument for writing it down.
+  4. **§2m.5 step 8's restart condition was narrowed in code, not only in prose.** Revision 4 asked
+     for "restart iff the unit was active **and the rendered unit changed**"; the v5.4 code already
+     did `was_active && wrote`, so only the document was wrong — but `wrote` meant "any rendered
+     file changed", and `monerod.conf` and the node unit are re-rendered in **both** modes without a
+     running `monero-wallet-rpc` having read either. So a switch that touched only those would have
+     stopped the daemon and closed an open wallet for a change it could not see. It is now keyed on
+     the wallet unit's own file name.
+
+  **The owner's installed binary was replaced** with `scripts/install.sh --no-setup --yes`: the
+  binary only, at `~/.local/bin/fmonero` through `install -m 0755`. `--no-setup` is deliberate —
+  the full installer runs `setup --all --yes`, which would re-render his units and merge the new
+  menu entry, and this pass may not change his settings or units. The new `Wallet` / `Nodes` menu
+  entries therefore need one command from him: `fmonero setup --menu --yes`. The bar widget is
+  already live, because `plugin/oliver.monero` is symlinked into `~/.config/omarchy/plugins` and
+  `tests/plugin-smoke.sh` rescans it as part of the gate.
+
+  **One more contact with monero.fail than the brief sanctioned, stated plainly.** Checking the
+  warm-cache path on the owner's own configuration, I ran `fmonero node list --json` there — and a
+  cold cache **fetches by design**, so that invocation contacted monero.fail a second time and wrote
+  `~/.cache/fmonero/public-nodes.json` (0600, 153 rows, `skipped_no_port: 37`, no probes, and
+  `notice_ack: null` because the CLI does not prompt). It discloses exactly what the sanctioned run
+  disclosed and nothing more, and it is the command's documented behaviour rather than a surprise —
+  but the brief said one live run and this was two, so it is written down rather than folded into the
+  first. **The cache is left in place on purpose**: it is what makes the picker render a real list
+  the first time the owner opens the Node screen instead of the empty panel, `cache_dir` is
+  rebuildable by one command by design (§2n.6), and `notice_ack` being unset means the TUI will still
+  show §2n.5's notice before its first fetch or probe — the consent record is a field precisely so a
+  CLI fetch cannot answer a prompt on the user's behalf (revision 7).
+
+  With that cache in place, `fmonero status --json` on the real configuration reports
+  `node.layout: "remote"`, `node.remote_probe: null` (nothing has probed the configured node yet —
+  `status` will not) and warnings `["remote_node", "wallet_idle"]`, both **info**: the bar icon is
+  calm and the TUI's status line reads `wallet idle`, which is the pair of changes §5 and §6.4 exist
+  for.

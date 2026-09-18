@@ -736,6 +736,10 @@ pub fn probe_one(ctx: &Context, target: &ProbeTarget, cancel: &CancelToken) -> P
     if cancel.is_cancelled() {
         return Probe::failed("cancelled", None);
     }
+    // `curl_missing` is an exit-4 refusal raised **before** any network call by `list`, so by the
+    // time a probe runs curl is known to exist. This is the belt for a caller that reached
+    // `probe_one` directly (the TUI's configured-node probe does), and it answers with a reason
+    // rather than an error because `probe_many` must return one result per input.
     if require_curl().is_err() {
         return Probe::failed("refused", None);
     }
