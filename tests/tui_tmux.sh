@@ -175,7 +175,11 @@ if [ -n "$CAPTURE" ]; then
   tmux send-keys -t "$SESSION" Escape 2>/dev/null || true; sleep 0.4
   tmux send-keys -t "$SESSION" 3 2>/dev/null || true; sleep 0.6
   tmux send-keys -t "$SESSION" -l "$DEST" 2>/dev/null || true
-  tmux send-keys -t "$SESSION" Tab 2>/dev/null || true
+  # **`Down`, not `Tab`.** v5.5 made `Tab` switch SCREENS in every focus state (§7a.1) and the
+  # fields move with `↑↓` — this line still sent `Tab`, so the amount was typed into the Log
+  # screen and the build never happened. The same script asserts the new rule forty lines below,
+  # which is how a capture run came to contradict its own suite.
+  tmux send-keys -t "$SESSION" Down 2>/dev/null || true
   tmux send-keys -t "$SESSION" -l "0.01" 2>/dev/null || true
   sleep 0.4
   tmux send-keys -t "$SESSION" Enter 2>/dev/null || true   # validate, then build
@@ -301,16 +305,33 @@ case "$CTEXT" in
   *) bad "the footer does not surface the skip count" "$(printf '%s' "$CTEXT" | tail -4)" ;;
 esac
 
-# 4. §7a.5's wallet empty state: three chips and a daemon line, on a machine with no wallet.
+# 4. §7a.5's wallet empty state: three chips and a service line, with no wallet open.
+#
+# **Under `--capture` this screen is not reachable, and the block says so instead of failing.** The
+# mock serves an open wallet and is *stateless by design* (see its own header): `x` really issues
+# `close_wallet` and the fixture really answers, but `get_address` and `get_balance` keep answering
+# too, so `status` goes on reporting a wallet that is open and the empty state never renders. The
+# close is asserted on what IS observable — the toast — and the four empty-state needles are
+# skipped with the reason, because a test that fails on a correct program is a test that gets
+# deleted.
 tmux send-keys -t "$SESSION" 2 2>/dev/null || true; sleep 1.2
-WTEXT="$(pane)"
-[ -n "$CAPTURE" ] && printf '%s\n' "$WTEXT" > "$CAPTURE/wallet-empty.txt"
-for needle in "[o] Open wallet" "[c] Create wallet" "[W] Start the wallet service" "wallet service:"; do
-  case "$WTEXT" in
-    *"$needle"*) ok "§7a.5: the empty state carries '$needle'" ;;
-    *) bad "the empty state is missing '$needle'" "$(printf '%s' "$WTEXT" | sed -n '5,12p')" ;;
+if [ -n "$CAPTURE" ]; then
+  tmux send-keys -t "$SESSION" x 2>/dev/null || true; sleep 1.5
+  case "$(pane)" in
+    *"wallet closed"*) ok "§7a.5: x closes the open wallet on a real pty (the toast says so)" ;;
+    *) bad "x did not report closing the wallet" "$(printf '%s' "$(pane)" | tail -3)" ;;
   esac
-done
+  printf '%s\n' "$(pane)" > "$CAPTURE/wallet-empty.txt"
+  printf '  skip  §7a.5 the empty state: the mock is stateless, so a closed wallet still answers\n'
+else
+  WTEXT="$(pane)"
+  for needle in "[o] Open wallet" "[c] Create wallet" "[W] Start the wallet service" "wallet service:"; do
+    case "$WTEXT" in
+      *"$needle"*) ok "§7a.5: the empty state carries '$needle'" ;;
+      *) bad "the empty state is missing '$needle'" "$(printf '%s' "$WTEXT" | sed -n '5,12p')" ;;
+    esac
+  done
+fi
 
 # 5. §7a.1 revision 1, the blocker's own flow: fill ALL FOUR create-wallet controls from the
 #    keyboard alone and reach the seed-backup modal. It is refused before anything is sent — the
