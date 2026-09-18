@@ -268,7 +268,51 @@ pub fn stop(ctx: &Context, unit: &str, cancel: &CancelToken) -> Result<(), Error
     run_unit_verb(ctx, "stop", unit, cancel)
 }
 
+/// **A sandbox may not start, stop or reload one of this machine's real services** (v5.6).
+///
+/// [`install`] has refused to *write* a real unit under `FMONERO_STATE_DIR` since v4, and
+/// nothing refused to *start* one. The gap is not theoretical: the 2026-09-19 verification of
+/// the plain-language round set `FMONERO_STATE_DIR` without `FMONERO_SYSTEMCTL_FIXTURE`, ran
+/// `fmonero node up` in it, and started the **owner's** `fmonero-monerod.service`, which then
+/// synced 40 000 blocks into a `~/.bitmonero` he had deliberately never created (DECISIONS,
+/// finding V18). A test, an agent or a sandbox that redirects the state directory has said "do
+/// not touch this machine", and every `systemctl` verb that *changes* something is therefore
+/// refused there unless the §2i fixture seam — `FMONERO_SYSTEMCTL_FIXTURE`, which stands in for
+/// the manager and writes a text file instead — is also set.
+///
+/// Same refusal as [`install`]'s, for the same reason and with the same shape: exit **3**,
+/// `reason: sandboxed_units`. The read-only verbs (`is-active`, `is-enabled`, `show`) are
+/// untouched: they are what `status` is built on (§2e) and they change nothing.
+///
+/// `pure_refusal` carries the decision so the unit test can drive all four combinations
+/// without mutating the process environment, which would race every other test in this binary.
+fn refuse_sandboxed_systemctl(ctx: &Context, verb: &str) -> Result<(), Error> {
+    match pure_refusal(crate::paths::under_test_state_dir(), &ctx.systemctl, verb) {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+fn pure_refusal(sandboxed: bool, systemctl: &Systemctl, verb: &str) -> Option<Error> {
+    if !sandboxed || matches!(systemctl, Systemctl::Fixture(_)) {
+        return None;
+    }
+    Some(
+        Error::safety(format!(
+            "Refusing to {verb} one of this machine's services while FMONERO_STATE_DIR is set."
+        ))
+        .with_reason("sandboxed_units")
+        // A runnable command (§4), and the one a sandboxed caller actually wants: read the
+        // state instead of changing it. The comment names the seam, because the agent reading
+        // this refusal is the one who has to set it.
+        .with_hint(
+            "fmonero status --json   # set FMONERO_SYSTEMCTL_FIXTURE to act on a sandboxed unit",
+        ),
+    )
+}
+
 fn run_unit_verb(ctx: &Context, verb: &str, unit: &str, cancel: &CancelToken) -> Result<(), Error> {
+    refuse_sandboxed_systemctl(ctx, verb)?;
     // The only argv fmonero builds from data, and the unit name is one of two constants (§2f).
     let out = proc::run_with_deadline(
         &["systemctl", "--user", verb, unit],
@@ -409,7 +453,8 @@ pub fn stop_after_failed_start(ctx: &Context, unit: &str, cancel: &CancelToken) 
     if stop(ctx, unit, cancel).is_err() {
         return String::new();
     }
-    if matches!(ctx.systemctl, Systemctl::Real) {
+    if matches!(ctx.systemctl, Systemctl::Real) && refuse_sandboxed_systemctl(ctx, "clear").is_ok()
+    {
         let _ = proc::run_with_deadline(
             &["systemctl", "--user", "reset-failed", unit],
             ctx.timeouts.systemctl,
@@ -829,7 +874,14 @@ fn install_with(ctx: &Context, dry_run: bool, rotate: bool) -> Result<Vec<FileAc
     }
     // `Systemctl::Fixture` stands in for the machine's systemd (§2i), so under it these three
     // calls are the no-ops the seam promises rather than three real spawns.
-    if !dry_run && wrote_any && matches!(ctx.systemctl, Systemctl::Real) {
+    // ... and the second guard, belt to the first's braces: `install` has already refused
+    // outright unless the sandbox carries the fixture, so this can only fire if that guard is
+    // ever loosened (v5.6, V18).
+    if !dry_run
+        && wrote_any
+        && matches!(ctx.systemctl, Systemctl::Real)
+        && refuse_sandboxed_systemctl(ctx, "reload").is_ok()
+    {
         let cancel = CancelToken::new();
         // A unit written without a reload is a change that reports success and does nothing.
         let _ = proc::run_with_deadline(
@@ -1759,6 +1811,41 @@ mod tests {
         assert!(text.contains("CreateDir wallet.dir"), "{text}");
         assert!(!text.contains("rpc-login=fmonero:"), "{text}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **V18, as a test.** `install` refuses to write a real unit under `FMONERO_STATE_DIR`;
+    /// until v5.6 nothing refused to *start* one, and a sandbox without the fixture started the
+    /// owner's node. All four combinations, on the predicate every mutating verb now goes
+    /// through — the environment itself is not touched, because mutating it from a test would
+    /// race every other test in this binary (which is the same reason `install`'s refusal is
+    /// asserted in `tests/e2e.sh`, and the end-to-end half of this one is there too, with a
+    /// `systemctl` shim on `PATH` proving no spawn happens).
+    #[test]
+    fn a_sandbox_without_the_fixture_may_not_start_or_stop_a_real_unit() {
+        let fixture = Systemctl::Fixture(std::path::PathBuf::from("/nonexistent/systemctl.txt"));
+        for verb in ["start", "stop", "restart", "reload"] {
+            let e = pure_refusal(true, &Systemctl::Real, verb)
+                .unwrap_or_else(|| panic!("{verb} under a sandbox with no fixture must refuse"));
+            assert_eq!(e.exit_code(), 3, "{e}");
+            assert_eq!(e.reason(), Some("sandboxed_units"), "{e}");
+            assert!(e.to_string().contains(verb), "{e}");
+            assert!(e.to_string().contains("FMONERO_STATE_DIR"), "{e}");
+            // The fixture seam is the documented way to act on a unit inside a sandbox, and the
+            // hint names the variable that turns it on.
+            assert!(
+                e.hint().contains("FMONERO_SYSTEMCTL_FIXTURE"),
+                "{}",
+                e.hint()
+            );
+            assert!(
+                pure_refusal(true, &fixture, verb).is_none(),
+                "{verb} under a sandbox WITH the fixture is the §2i seam and must be allowed"
+            );
+            assert!(
+                pure_refusal(false, &Systemctl::Real, verb).is_none(),
+                "{verb} on the owner's own machine is what the command is for"
+            );
+        }
     }
 
     /// **Finding 1 of the Phase 4 verification, as a test.** Before v5.1 neither question was

@@ -123,6 +123,12 @@ sandbox() {
   # reason none of them names. It is pinned to a directory on the filesystem this repo is on, and
   # nothing here creates it; the floor refusal itself gets its own case below, on purpose.
   "$FM" settings set node.data_dir "$ROOT/target/e2e-data/$CASE/bitmonero" >/dev/null
+  # `node.log_file` is the second path that decides an OUTCOME from the machine, and it defaults to
+  # `~/.bitmonero/bitmonero.log` (§4) — a file this repo's own verification accidentally created
+  # (DECISIONS, V18), after which "node log with no log file" read the OWNER's log and asserted 0
+  # lines against 200 of somebody else's monerod. A case named "with no log file" must own the path
+  # it claims is empty.
+  "$FM" settings set node.log_file "$ROOT/target/e2e-data/$CASE/bitmonero/bitmonero.log" >/dev/null
 }
 
 OUT=""; ERR=""; RC=0
@@ -657,6 +663,55 @@ else
 fi
 fm setup --json
 expect_rc 2 "setup with no target is exit 2"
+
+# V18 (2026-09-19), the finding inside the verifier's own mistake: `units::install` refused to
+# WRITE a real unit under `FMONERO_STATE_DIR` and nothing refused to START one, so a sweep that set
+# the state dir without `FMONERO_SYSTEMCTL_FIXTURE` ran `systemctl --user start
+# fmonero-monerod.service` against the **owner's** unit and synced 40 000 blocks into a
+# `~/.bitmonero` he had never created.
+#
+# The proof is a `systemctl` **shim** at the front of `PATH` that logs every argv it is handed:
+#   * the case is safe whatever the code does — even a regression reaches the shim, never systemd;
+#   * and "the guard fired" is not asserted from the exit code alone, which a dozen other
+#     refusals also produce, but from the shim's log carrying no mutating verb.
+# The unit name is the real default on purpose: a bogus name would prove the guard works for units
+# that do not exist, which is not the case that cost the owner 147 MB.
+step "V18: a sandbox with no systemctl fixture may not start or stop a real service"
+sandbox sandboxstart
+SHIM="$WORK/$CASE/shim"
+mkdir -p "$SHIM"
+export SHIM_LOG="$WORK/$CASE/systemctl.log"
+: > "$SHIM_LOG"
+cat > "$SHIM/systemctl" <<'SHIM_SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$SHIM_LOG"
+exit 1
+SHIM_SH
+chmod +x "$SHIM/systemctl"
+fm settings get node.unit --json
+NODE_UNIT="$(printf '%s' "$OUT" | jq -r .value)"
+printf '[Unit]\n' > "$FMONERO_SYSTEMD_USER_DIR/$NODE_UNIT"
+if [ "$NODE_UNIT" = "fmonero-monerod.service" ]; then
+  ok "the case runs against the owner's own unit name ($NODE_UNIT), behind the shim"
+else
+  bad "the sandbox's node.unit is not the default" "$NODE_UNIT"
+fi
+PATH="$SHIM:$PATH" fm node down --yes --json
+expect_rc 3 "node down in a sandbox with no fixture"
+expect_reason sandboxed_units "  and it is the same refusal units::install raises"
+expect_contains "FMONERO_SYSTEMCTL_FIXTURE" "  whose hint names the seam that makes it work"
+PATH="$SHIM:$PATH" fm node up --json
+if [ "$RC" = 3 ] || [ "$RC" = 4 ]; then
+  ok "node up is refused too (exit $RC: 3 sandboxed_units, or 4 before the start is reached)"
+else
+  bad "node up in a sandbox reached a start" "exit $RC" "stdout: ${OUT:0:200}"
+fi
+if grep -qE '(^| )(start|stop|restart|reload|daemon-reload|reset-failed|enable|disable)( |$)' "$SHIM_LOG"; then
+  bad "V18: a sandboxed command reached a mutating systemctl call" "$(cat "$SHIM_LOG")"
+else
+  ok "V18: no mutating systemctl verb was spawned at all ($(wc -l < "$SHIM_LOG" | tr -d ' ') read-only calls)"
+fi
+unset SHIM_LOG
 
 # §1.3's free-space floor, which §4b listed as RED with "nothing exercises it" — and which is a
 # purely local `statvfs` measurement, so nothing about it needs a daemon. It is measured on the
