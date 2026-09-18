@@ -8154,3 +8154,279 @@ moved, so §2k's manifest freeze holds.
   zero-budget loop is the reproducible statement of the mechanism.
 - `tests/plugin-smoke.sh` and `tests/tui_tmux.sh` were not in this brief's gate list and were not
   run; neither touches `for_test` or `send.lock`.
+- 2026-09-18 · design · DESIGN.md v5.5: **the owner's four TUI complaints, specified.** He reported,
+  after using `fmonero tui`: (1) *"Tab puts me into a tabby mode and then I can't Tab between Node,
+  Wallet, Send and Log"*; (2) *"I don't have a mouse I can use, so the buttons need to be
+  mouseable"*; (3) *"on Node I'd like you to fetch a list of public nodes so I can choose one to
+  connect to, in the TUI"*; (4) *"it needs a button to run the daemon… here I can't start the node
+  because there's no daemon, I don't understand it"*. All four are real defects in the v5.4 tree, not
+  preferences, and three of them were designed in. The amendment is **§7a.1** (navigation), **§7a.2**
+  (mouse, reversing §0's cut), a new **§2n** (public node discovery) with **§2c**'s one narrow
+  relaxation, and **§7a.4/§7a.5** (the picker, the wallet empty state, create, and the wallet
+  daemon), plus §4/§4.1 (`node list`, three settings, `tui --wallet/--node`), §5 (`node.remote_probe`,
+  the `wallet_idle` warning), §5b + §5b.4 (the `nodes` module and ten amendments), §5c, §6, §7.1
+  (`public_node_cache`), §8 (two lanes) and §4b (GREEN/AMBER/LIVE/RED rows). No code was touched and
+  `Cargo.toml` is unchanged: `curl` is a child process and `serde_json` + `jiff` are already in core.
+
+  **Diagnosis of (1), from the code rather than the report.** `Tab` was dispatched per screen —
+  `crates/fmonero/src/tui/mod.rs:896` handles `BackTab` in the global `match` while `Tab` is left to
+  `on_node_key`/`on_wallet_key`/`on_log_key` (`:927`, `:936`, `:963`, `:1032`) — and two branches
+  ahead of those ate it: the filter/search branch (`:861`) feeds every key to a `TextInput` until
+  `Esc`/`Enter`/`Up`/`Down`, and `tui/send.rs:232` binds `Tab | Down` to "next field". So `/` on the
+  Wallet screen or a cursor in a Send field silently removed the only advertised way to change
+  screens. §7a.1's rule is therefore structural, not a fix to three branches: `Tab`/`Shift+Tab`
+  resolve in the **one** global `match` above the modal, filter and per-screen branches, with exactly
+  two documented exceptions (the send confirm and the create-wallet modal, which hold a built
+  transaction and a typed password), and the Send form's fields move with `↑↓`. That takes a binding
+  away from a user who had learned it, which §5b.4 row 10 records deliberately.
+
+  **The v5.4 dead end behind (4), stated because it is four separate things.** On a fresh remote-mode
+  machine the Node screen said five panes were unavailable and `u`/`d` refused; the Wallet screen said
+  *"Wallet daemon is not running (press o to start it and open a wallet)"* while `o` lists an empty
+  `wallet.dir`; `c` was **close**, not create, and there was no create flow in the TUI at all; and
+  `status` raised `wallet_down` as a **warning**, so the bar icon was urgent about a daemon §4.2
+  deliberately leaves down until a wallet is opened. §5 makes that last one `wallet_idle`, severity
+  **info** — the same argument §7 already makes for `monerod_installed` becoming a `warn` in remote
+  mode: a warning that fires on every correct fresh install is the warning a user learns to ignore.
+  §7a.5 replaces the rest with a panel of three chips (`[o]`, `[c]`, `[W]`), a daemon status line
+  with four possible strings, and `c` re-bound to Create with `x` closing.
+
+  **Five findings from the real monero.fail documents that changed the design.** Both were fetched
+  and inspected today with the machine's own `curl 8.22.0` before §2n was written, and each of these
+  contradicts the natural reading of the brief:
+  · **`monero.web_compatible` is a strict subset of `monero.clear`**, not a second list — all 42 of
+    its entries are among `clear`'s 195 and their union is exactly 195 — so merging the two, which
+    "use `monero.clear` and `monero.web_compatible`" would mean, produces 42 duplicate rows. It is a
+    **flag on a row** (CORS-reachable https) and §2n.1 says so.
+  · **`clear` means "not onion and not i2p", not "plaintext"**: 120 `http://` and **75 `https://`**.
+    A picker that assumed the label would have shown none of the https nodes.
+  · **37 of the 195 carry no port** (`node.sethforprivacy.com`, `xmr.marritt.ca`, …), leaving **158
+    usable**. §2m.2 refuses a portless address because `set_server` fills it with 80 or 443 and never
+    18081, so these are **dropped and counted** (`skipped_no_port`), never repaired — inventing
+    `:18081` would hand the user an address whose behaviour disagrees with what fmonero renders into
+    the unit, the exact failure §2m.2 exists for.
+  · **`health.json`'s `checks` array has no fixed length.** Across `monero.clear` it ranges **3 to
+    94** (commonest 18, 129 rows; then clusters at 58–63). A hard-coded 32 — the length the first row
+    we looked at happened to have — would divide a 94-entry history by 32 and report 210 %. The
+    health figure is `true_count / checks.len()`, `null` for an empty list, **rendered with its
+    sample size** (`72% of 18`) because 100 % of 3 and 72 % of 94 are not comparable.
+  · **`health.json`'s buckets are a dirty superset.** `monero.clear` there holds **1 116** keys of
+    which **890 are onion or i2p hosts**, and the document has no `ipv6` or `i2p` bucket at all — the
+    two files do not even share a shape. So the candidate set comes from `nodes.json` and
+    `health.json` is used **only** as an exact-URL lookup; a candidate with no entry renders six
+    `null`s, which is a real outcome and not an error.
+  Also: `datetime_*` are HTTP-dates (`"Fri, 18 Sep 2026 05:12:02 GMT"`), read by
+  `jiff::fmt::rfc2822::DateTimeParser::parse_timestamp` — `b"ut" | b"gmt" | b"z" => Offset::UTC` at
+  `jiff-0.2.37/src/fmt/rfc2822.rs:757` — so no dependency and no hand-rolled month table; the string
+  is stored verbatim and a parse failure leaves the age `null` rather than failing the fetch.
+
+  **The §2c relaxation is narrower than "fmonero can now make HTTPS calls", and the wording matters.**
+  Every claim §2c makes survives literally: `require_loopback` is still the first statement of both
+  constructors, `settings set node.url`/`wallet.url` still refuse a non-loopback value, the binary
+  still contains **no TLS stack** (grep (iv) untouched — the TLS is in curl's address space), and
+  nothing binds a port (grep (v) untouched). The only new traffic is `curl` **child processes** through
+  `proc::run_with_deadline`, in three argv shapes, carrying no credential, password, address, amount
+  or txid, and confined to one module by a **new grep (vi)** with its own self-test fixture. The probe
+  argv was verified live against the node the owner already uses (the one probe §2n.5 permits without
+  asking): `curl -sS -m 5 --proto '=http,https' -H 'Content-Type: application/json' -d
+  '{"jsonrpc":"2.0","id":"0","method":"get_info"}' http://xmr-node.cakewallet.com:18081/json_rpc`
+  answered in **0.100 s** with `{"height":3765172,"synchronized":true,"restricted":true,"version":"",
+  "target_height":0,"nettype":"mainnet","status":"OK"}` — which is also why §2n.4 nulls `version` when
+  it is `""` (§1b.3's poison rule) and stores `synchronized` rather than computing a percentage.
+  One honest discrepancy is written down rather than smoothed over: **curl verifies certificates and
+  `--daemon-ssl autodetect` does not**, so an https node with a bad certificate probes
+  `reachable: false, reason: tls` while the wallet would still reach it; neither figure is adjusted to
+  match the other and the detail line says so.
+
+  **The ftui mouse finding that would otherwise have cost an agent a day.** ftui 0.7 has a hit-grid
+  API — `Frame::register_hit` (`ftui-render-0.7.0/src/frame.rs:751-769`), `Frame::hit_test`
+  (`:898-901`), `HitRegion` (`:73-92`), `Table::hit_id` (`ftui-widgets-0.7.0/src/table.rs:189`,
+  registering one region per row at `:1066-1070`), `TableState::handle_mouse` (`:578`) — and **it does
+  nothing under `App::fullscreen`**: the runtime renders through `Frame::from_buffer`
+  (`ftui-runtime-0.7.0/src/program.rs:7192`) and measures through `Frame::new` (`:7418`), never
+  `Frame::with_hit_grid` (`frame.rs:567-580`), so `hit_grid` is `None`, `register_hit` returns `false`
+  having registered nothing, and the frame is dropped after `view()` (`program.rs:7215`) before
+  `update()` could query it. `ProgramSimulator::capture_frame` is the same (`simulator.rs:348`). Code
+  written against that API compiles, runs and silently does nothing — found by a user clicking, not by
+  a test. §7a.2 therefore uses the `Cell<Rect>` layout cache the FrankenTUI skill names
+  (`SKILL.md` "Layout Caching for Hit-Testing"; `references/ARCHITECTURE.md` §9, and §8 for the
+  priority chain), with `Model::view(&self)` (`program.rs:378`) being why it must be `Cell` and not a
+  `&mut` field, and **synthesizes** the `hit` tuple for the widget helpers worth reusing — chiefly
+  `TableState`'s "a second click on the already-selected row is an activation" (`table.rs:587-600`),
+  which removes every double-click timer. Capture itself is
+  `ProgramConfig::with_mouse()` (`program.rs:3376-3379`), and the recorded surprise is that
+  `MouseCapturePolicy::Auto` (`:833-853`) **already resolves to on** in `AltScreen` — a fullscreen ftui
+  app has had capture all along and was discarding the events; `.with_mouse()` is written explicitly
+  so the behaviour is a decision, and `tui.mouse = false` →
+  `with_mouse_enabled(false)` is the escape hatch, because mouse capture takes the terminal's own
+  selection away and which modifier returns it is per-terminal.
+
+  **Budgets were raised in this document before any code, which is the §7a v5.1 rule honoured rather
+  than quoted.** The TUI ceiling goes 4 700 → **6 400** across six files (`hit.rs` is new), itemised:
+  navigation ≈ 120, mouse ≈ 420 (of which `hit.rs` ≈ 220), picker ≈ 380, wallet/daemon ≈ 330,
+  KEYS/overlay/status ≈ 50 — 1 300 over the measured 4 683, landing at 5 983 under a 6 400
+  ceiling (6 000 would have left 17 lines of headroom — the arithmetic §7a itself calls the one that
+  forces a dishonest trade). QML goes 1 340 →
+  **1 516**, itemised the same way, with `MoneroIcon.qml` **unchanged at its measured 96** because `wallet_idle` is
+  an *info* and §6.4's first-match table already renders it as the ordinary remote row. Had the
+  ceiling stayed at 4 700 the headroom would have been 17 lines and every one of the owner's four
+  requests would have had to be traded against another — the trade §7a says is the dishonest one.
+
+  **Five judgement calls worth naming.** (a) The TUI now offers `node remote` through the picker,
+  reversing half of v5.4's "the TUI does not offer the mode commands" — v5.4's objection was to an
+  *unspecified* screen, §7a.4 is that specification (the confirm names all three consequences, the
+  reopen is offered by name, and it calls `node_mode::set_remote`, the CLI's own sequence, with the
+  same `send.lock` and `pending_send` guards), and what made the objection decisive was that the
+  feature had no user until §2n gave it one. `node local` stays out and `H` — re-apply the previous
+  address — is the one-key recovery the objection asked for. (b) There is deliberately **no
+  daemon-start button on the bar widget**: fmonero has no `wallet up`, so the button would have to be
+  `systemctl --user start …`, the widget reaching around fmonero to systemd, skipping §2i's preflight
+  and reporting success for a unit that failed. `Open wallet…` opens the screen where it starts with a
+  progress indicator and a readable error. (c) `wallet.autostart` defaults **false**: the owner's
+  problem was finding the switch, not that a program had failed to guess, and a tool that starts a
+  daemon on launch has done something unasked. (d) `node.remote_probe_sec` refuses 1–9: a
+  five-second probe of a stranger's node is a request pattern the stranger can see, and §2n.5's rule
+  is that fmonero contacts a node when the user is doing something, not on a heartbeat. (e) The probe
+  result is cached in `state.json` **with the address beside it**, so `status --json` and the widget
+  can render a remote height without spawning anything (§2e intact) and a stale probe for a
+  *different* node can never be rendered as the current one's.
+
+  **What v5.5 does not claim.** The picker's confirm has never been run against a real daemon, no
+  wallet has been created through the TUI, `W` has never started a real `monero-wallet-rpc`, and the
+  mouse has never been tried on the owner's own terminal — `ProgramSimulator` proves the routing and
+  `tests/tui_tmux.sh` proves a pty delivers keys, but neither proves this emulator sends SGR mouse
+  reports. All five are named RED in §4b. The two things that **were** done live today are the
+  monero.fail fetch (whose counts §2n.1 records) and the one `get_info` probe transcribed above; the
+  owner's `config.toml`, both units and `wallet.dir` were not read for writing and not touched.
+- 2026-09-18 · implementer · **the v5.5 review, integrated into DESIGN.md before any code.** Eleven
+  revisions were raised against the v5.5 amendment (§§0/2c/2m/2n/4/4.1/5/5b/5b.4/5c/6/6.1/6.5/7.1/7a).
+  **All eleven were applied**; one was applied in the narrower of the two forms the review offered,
+  and nothing was rejected. Each is now written at the paragraph it changes, marked
+  `v5.5, revision <n>`, so the argument is findable rather than re-derivable, and §5b.4 gains row 11
+  naming the signature consequences. What changed, and why each mattered:
+
+  **The two blockers were both real, and both were the same failure mode — two locally reasonable
+  rules combining into a dead end.** (1) The create-wallet modal has four controls and §7a.1 made it
+  one of the exactly two modals that **consume** `Tab`, while `Up`/`Down` were specified only for the
+  Send form — so a keyboard-only user types a wallet name and is trapped, which breaks the precise
+  flow the owner's complaint (4) asked for, in the same shape as the `Tab` trap of complaint (1). Fix:
+  §7a.1 now states in-modal field navigation once, as a rule the whole program inherits — `Up`/`Down`
+  move, `Enter` advances from every control but the last where it submits, `Esc` unfocuses then
+  discards — the Send form's rule reused rather than a third convention; the `a` modal and the
+  open-wallet modal inherit it; the §7a.1 focus matrix gains both new modals as focus states and
+  `tests/tui_tmux.sh` gains a flow that fills all four create fields from the keyboard alone.
+  (2) §2n.3 asserted that "the URL is built from a string this module parsed itself" while argv shape
+  2 was `<url>/json_rpc` and `PublicNode.url` was documented as "monero.fail's own string, kept
+  verbatim" — so an untrusted publisher's bytes reached a `curl` argv unvalidated, and §2c's whole
+  relaxation rests on that one property being a fact. Three concrete consequences, none hypothetical:
+  a value beginning with `-` is read by curl as an **option** (`-o`, `-K`, `--config` write files or
+  read a config), a userinfo or `host:port@host:port` form makes the rendered `address` and the host
+  curl contacts two different hosts — so the picker prints `12 ms · synced` for a node it never
+  measured, on the one screen whose purpose is choosing which stranger to trust — and a trailing `#`
+  or `?` turns the probe into a request for `/`, giving anyone who can edit one monero.fail entry a
+  permanent `bad_json` for every fmonero user. Fix, in three parts because one alone is a promise:
+  every candidate must pass `Settings::parse_remote_address` at parse time or be **dropped and
+  counted** (§2n.1, the new `skipped_invalid` beside the existing `skipped_no_port`); the probe URL is
+  **reconstructed** as `format!("{scheme}://{address}/json_rpc")` from the two validated fields, with
+  `url` demoted in its own doc comment to a display-and-diff field; and `probe_one`/`probe_many` take
+  a new **`ProbeTarget { scheme, address }`** rather than a `&str`, so the raw string *cannot* be
+  passed by accident — a signature that refuses the bad input is the enforceable form of the
+  assertion, and "remember to validate first" is not (§2a.3 applied to a byte string). `curl` is also
+  given `--url <u>` instead of a bare trailing argument, so even a value beginning with `-` is
+  consumed as that option's value. `Action::NodeProbe` carries `Vec<ProbeTarget>` for the same reason.
+
+  **Grep (vi) could not have passed its own first commit** (revision 3). It was specified as
+  `grep -rn 'curl' …` matching only `nodes.rs`, while §5b.4 row 6 adds `(4, "curl_missing")` to
+  `Error::REASONS` and §2n.3 gives the hint `omarchy pkg add curl` — both in `error.rs` by §3. A check
+  that fails on day one is worse than no check: the agent who hits it widens it until the build
+  passes, most likely to "grep for `Command::new`", which no longer says anything about curl, while
+  §2c and README keep printing the boundary claim. It is now scoped to the **spawn surface** —
+  `proc::which("curl")`, `Command::new("curl")`, `"curl"` first in an argv array — with the two
+  reason-token strings exempt **by name** so the exemption cannot widen into "anything in error.rs",
+  and it carries **two** self-test fixtures: a planted curl argv in `status.rs` must fire it, and a
+  planted `Command::new("curl")` in `error.rs` must fire it too.
+
+  **The picker's first click could have closed an open wallet** (revision 4). The configured node
+  sorts first and carries `●`, §7a.2 makes "left down on an already-selected row" an activation, and
+  the initial selection was unspecified — so with row 0 selected on entry, a mouse user's first click
+  in the picker (or a keyboard user's first `Enter`) would run `node_mode::set_remote` for the node
+  they are already on, and §2m.5 step 9 would close an open wallet for a change of nothing. That is
+  the one place in v5.5 where the mouse could cost the user something, against §7a.2's own promise
+  that cancellation and money are untouched by it, and the fresh-user path lands on exactly that row
+  via `tui --node`. Two guards, because either alone leaves a bad shape: **nothing is selected on
+  entry**, so a first click can only select; and activating the configured row raises the toast
+  `this is the node you are using` instead of opening the confirm. Separately, §2m.5 **step 8** is
+  tightened from "restart iff the unit was active" to "iff it was active **and the rendered unit
+  changed**" — which is what step 8's own reason (the argv holds `--daemon-address`) implies, and what
+  makes the idempotence sentence at the top of §2m.5 true rather than aspirational.
+
+  **The `a` modal's `--trusted` toggle is cut, which is the one revision taken in its narrower form**
+  (revision 5). The review offered either cutting it or carrying it properly through `PublicNode`,
+  the cache document, §5c's row and `NodeUseRemote`. Cut, for a reason the review itself supplies and
+  §7a.4 already stated two paragraphs from the toggle: the confirm modal renders `untrusted` "as a
+  fact and not a checkbox", and any path to request trusted from that same screen makes that rendered
+  line an untruth. The documented place for the one legitimate case is
+  `fmonero node remote <addr> --trusted --yes`, which the modal's footer now names. The **other** half
+  of the finding was not optional and is fixed: `PublicNode` gains a real `custom: bool`, in the type,
+  the cache document and §5c's row, and §2n.6 now says a refresh **merges** — a `custom` entry is
+  preserved whether or not monero.fail lists it — because otherwise the LAN node the owner typed by
+  hand vanished the next time he pressed `f`, which is the silent data loss §2j forbids, arriving by a
+  different door than the toggle.
+
+  **The "exhaustive" clickable inventory omitted every `←→` control** (revision 6), so a mouse-only
+  user could not change the **fee priority** or the **sending account** — on the money screen — or pick
+  a **seed language**. §7a.2 now names them and states the general rule once so the next screen
+  inherits it: any control the keymap reaches with `←→` renders its two arrows as hit targets. The
+  priority chips are individually clickable rather than cycled, which is also the more discoverable
+  half of the fix. The inventory already forbade mouse-only affordances (no hover, no drag); this is
+  the symmetric test, which is the one that was missing, and it is the half that decides whether
+  §7a's "the two input methods are peers" is a premise or a slogan.
+
+  **Consent was keyed to a file's existence** (revision 7). §2n.5 recorded the privacy notice as
+  "the cache exists", but a bare `fmonero node list` creates that cache while printing nothing about
+  having contacted monero.fail, and once any CLI path has written it the TUI's notice never appears —
+  so `p` could probe twenty strangers with the disclosure never shown anywhere the user was looking.
+  Worse, a fetch that disclosed nothing would silently satisfy a prompt about *probing*, which is a
+  different act against different parties. Now: an explicit **`notice_ack`** timestamp in the cache
+  document, written by whichever surface displayed the notice, with the TUI showing it before the
+  first fetch **or** the first probe while it is unset; and `node list` in **human mode** prints the
+  one-line disclosure **on stderr whenever this invocation actually fetches or probes**, which is the
+  rendering attached to the act rather than to a flag — the case that matters because README's own
+  first quickstart line is `fmonero node list --probe`, which fetches and probes twenty nodes several
+  paragraphs before the reader reaches the disclosure. `--json` stays silent; the envelope already
+  carries `refreshed` and `probed`.
+
+  **The picker had no empty state** (revision 8) — on the very screen `tui --node` and the widget's
+  new `Choose node…` button land a first-time user on. `nodes::cached` returns `Ok(None)` on a fresh
+  machine, and the only specified footer would have rendered `0 nodes · list  old` against a
+  `fetched_at` that does not exist: v5.5 fixed that shape on the Wallet screen (§7a.5) and then
+  recreated it on the Node screen. §7a.4 now specifies a panel in place of the table — `No public-node
+  list yet.`, a focused `[f] Fetch the list` chip, and one line naming what the fetch discloses — the
+  footer **suppressed** rather than rendered with empty fields, and the chip labelled `Fetch the list`
+  with no cache and `Refresh list` with one. It is in the `tests/tui_tmux.sh` picker flow.
+
+  **Three smaller ones, each a claim that was not quite true.** (9) `Frame::from_buffer` is at
+  `ftui-runtime-0.7.0/src/program.rs:7192`, not `:7445` — verified today: `:7445` is inside
+  `effective_timeout`, and `:7418`'s `Frame::new` and `:7215`'s consumption were both right. That was
+  the citation most likely to be checked, because the conclusion resting on it reverses an entire ftui
+  API, and the conclusion is correct. (10) `--max-filesize` has no effect on an unknown-length
+  (chunked) response before curl 8.4.0 — a hostile server picks chunked freely — and
+  `run_with_deadline`'s drain is time-bounded, not byte-bounded, so on an older curl the only ceiling
+  left is `--max-time` × the attacker's bandwidth. `nodes.rs` now caps the bytes it accepts from the
+  child itself (8 MiB list, 64 KiB probe) and treats an over-cap read as `bad_json`: two lines, true
+  on every machine, and the same argument §2c makes for greps over assertions. 8.22.0 is recorded as
+  the version verified here. (11) `seed_backup_hint` told the user to open the wallet file in a second
+  wallet2 process at the exact moment `create_wallet` has left it **open** in the daemon
+  (`wallet_rpc_server.cpp:3639`, and §4.1 says so in as many words) — so it gains one line naming the
+  close step, in core, where both the CLI and §7a.5's new modal render it from one string.
+
+  **The budget arithmetic was three inconsistencies in numbers the gate enforces** (revision 12). The
+  TUI ceiling was 6 000 against an itemised estimate of 5 983 — 17 lines of headroom for ~1 300 lines
+  of *approximate* estimate, which is precisely the arithmetic §7a itself calls the one that forces a
+  feature to be traded away; it is now **6 400**, with the only permitted escape stated (amend the
+  number here, in the same commit, never delete a specified feature). §6.1's QML total and the
+  DECISIONS entry above disagreed (1 515 vs 1 505) and both were built on `MoneroIcon.qml ≤ 95`
+  asserted "unchanged at 95" about a file that measures **96**; the per-file budget now reads 96, the
+  total is **1 516**, the earlier figure in the uncommitted entry above is corrected in place (it had
+  not been committed, so nothing append-only was rewritten), and `scripts/check.sh` will check the
+  four per-file figures as well as the sum, so the table stops being numbers only prose defends.
