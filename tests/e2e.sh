@@ -317,7 +317,8 @@ expect_rc 15 "an unparsable address is exit 15"
 
 fm settings list --json
 expect_rc 0 "settings list"
-expect_json '.settings | length' '23' "the twenty-three keys of §4 (v5.2 added the three node.* remote keys)"
+expect_json '.settings | length' '26' \
+  "the twenty-six keys of §4 (v5.2 added the three node.* remote keys; v5.5 node.remote_probe_sec, wallet.autostart and tui.mouse)"
 expect_keys "settings list" "ok schema settings"
 
 fm settings get wallet.priority --json
@@ -1482,8 +1483,15 @@ expect_json '[.checks[] | select(.status=="fail") | .reason] | unique' '["node_u
 expect_json '[.checks[] | select(.group=="node" or .group=="wallet" or .group=="storage")
               | select(.status=="skip") | select(.reason == null) | .id] | length' '0' \
   "every node/wallet/storage skip names its reason, never a bare skip (§7.1)"
-expect_json '[.checks[] | select(.group=="install") | select(.status=="skip") | .id] | length' '0' \
+# **`public_node_cache` is the one install check that may legitimately skip** (v5.5, §7.1): a
+# machine that has never run `node list` is not faulty, and a `warn` there would fire on every
+# fresh install — the alarm §7 keeps saying people learn to ignore. Every OTHER install check must
+# still produce a real verdict, which is what §4b's row is about.
+expect_json '[.checks[] | select(.group=="install") | select(.status=="skip")
+              | select(.id != "public_node_cache") | .id] | length' '0' \
   "the install group has real verdicts, not skips (§4b)"
+expect_json '[.checks[] | select(.id=="public_node_cache") | .reason]' '["no_cache"]' \
+  "and public_node_cache's skip names its reason (§7.1)"
 expect_json '[.checks[] | select(.group=="security") | select(.status=="pass") | .id] | sort' \
   '["ports_owned","state_perms"]' \
   "and the security group's own two locally-answerable checks pass"
@@ -1870,6 +1878,159 @@ if [ "$(logged "$WALLET_LOG" transfer)" = "0" ]; then
 else
   bad "  a transfer was built against a node that did not answer"
 fi
+
+# ================================================================ §2n public node discovery (v5.5)
+step "§2n: node list against the captured fixtures, with no internet at all"
+# The whole of §2n is testable offline, which is what §2n.7 exists for: `fmonero-mock --static`
+# serves `tests/fixtures/nodes/` and `FMONERO_NODES_URL` points the fetch at it. Nothing in this
+# block touches monero.fail.
+CASE=nodes; mkdir -p "$WORK/$CASE"
+STATIC_PORT=18199
+"$MOCK" --static "$ROOT/tests/fixtures/nodes" --port "$STATIC_PORT" \
+        --log "$WORK/$CASE/static.jsonl" >/dev/null 2>&1 &
+MOCKS+=("$!")
+wait_port "$STATIC_PORT"
+export FMONERO_NODES_URL="http://127.0.0.1:$STATIC_PORT"
+
+fm node list --refresh --json
+expect_rc 0 "node list --refresh against the fixture server"
+expect_keys "node list" \
+  nodes source fetched_at cache_age_sec skipped_no_port skipped_invalid probed total refreshed \
+  ok schema
+# §2n.1's counts, from the trimmed capture: 10 candidates, 2 portless, and http:// and
+# https://xmr-node.cakewallet.com:18081 collapsing to ONE row, because `address` is the identity.
+expect_json '.total' '7' "10 candidates − 2 portless − 1 duplicate address"
+expect_json '.skipped_no_port' '2' "the portless entries are counted, never repaired"
+expect_json '.skipped_invalid' '0' "and nothing else was refused"
+expect_json '.refreshed' 'true' "this invocation fetched"
+expect_json '.probed' '0' "and probed nothing without --probe"
+# `clear` means "not onion and not i2p", NOT "plaintext": both schemes survive.
+expect_json '[.nodes[].scheme]|unique|sort' '["http","https"]' "§2n.1: both schemes are candidates"
+# The health ratio carries its SAMPLE SIZE, and the sizes differ per row (4 and 86 in the capture),
+# so a fixed denominator could not produce both.
+expect_json '[.nodes[]|select(.address=="node.xmr.pub:443").health_checks]' '[4]' "a 4-check row"
+expect_json '[.nodes[]|select(.address=="node.sethforprivacy.com:443").health_checks]' '[86]' \
+  "and an 86-check row from the same document"
+# A candidate with no health entry renders SIX nulls — a real outcome, not an error (§2n.1).
+expect_json '[.nodes[]|select(.address=="xmr-de-2.boldsuck.org:18081")|.health_ratio,.health_available,.health_checks,.health_last_height,.health_checked_at,.health_checked_at_text]' \
+  '[null,null,null,null,null,null]' "a candidate absent from health.json"
+# `web_compatible` is a FLAG and not a second list: no duplicate row for a flagged candidate.
+expect_json '[.nodes[]|select(.web_compatible)]|length' '2' "§2n.1: web_compatible is a flag"
+
+step "§2n: the human form prints the §2n.5 disclosure on stderr, and --json does not"
+# Revision 7: the rendering attached to the ACT, not to a flag. `node list` with a warm cache and
+# no flags prints nothing, because it contacts nobody.
+script -qec "$FM node list --refresh" /dev/null > "$WORK/$CASE/human.txt" 2>&1 || true
+if grep -q 'contacting monero.fail' "$WORK/$CASE/human.txt"; then
+  ok "a fetching invocation discloses it"
+else
+  bad "the fetch disclosure is missing" "$(head -3 "$WORK/$CASE/human.txt")"
+fi
+fm node list --refresh --json
+case "$ERR" in
+  *monero.fail*) bad "--json must be silent: the envelope carries refreshed and probed" ;;
+  *) ok "--json says nothing on stderr" ;;
+esac
+
+step "§2n.4: --probe measures from THIS machine, against fmonero-mock"
+# The probe path is AMBER by the same mechanism every other RPC is: a real socket, a real
+# `get_info`, fixtures derived from the Monero source.
+mock_node_up
+cat > "$WORK/$CASE/custom.json" <<JSON
+{"schema":1,"fetched_at":$(date +%s),"source":"$FMONERO_NODES_URL","skipped_no_port":0,
+ "skipped_invalid":0,"notice_ack":$(date +%s),
+ "nodes":[{"url":"http://127.0.0.1:$NODE_PORT","address":"127.0.0.1:$NODE_PORT","scheme":"http",
+           "web_compatible":false,"custom":true,"health_available":null,"health_ratio":null,
+           "health_checks":null,"health_last_height":null,"health_checked_at_text":null,
+           "health_checked_at":null,"probe":null}]}
+JSON
+cp "$WORK/$CASE/custom.json" "$FMONERO_CACHE_DIR/public-nodes.json"
+fm node list --probe --json
+expect_rc 0 "node list --probe"
+expect_json '.probed' '1' "one row measured"
+expect_json '.nodes[0].probe.reachable' 'true' "and it answered"
+expect_json '.nodes[0].probe.synchronized' 'true' "synchronized comes from the node"
+expect_json '.nodes[0].probe.reason' 'null' "a success carries no reason"
+if [ "$(printf '%s' "$OUT" | jq -r '.nodes[0].probe.latency_ms')" != "null" ]; then
+  ok "latency_ms is the wall time WE measured"
+else
+  bad "latency_ms must be this machine's own measurement"
+fi
+# The probe of a node that is NOT the configured one must not become `status`'s answer for the
+# node in force (§2j on the one field a user checks to see whether their node works).
+fm status --json
+expect_json '.node.remote_probe' 'null' "a probe of another candidate is not status's answer"
+
+step "§2n.7: the no-internet property of the whole module"
+# With `FMONERO_NODES_URL` unset and a `curl` on PATH that exits 1 immediately: a cold cache is
+# exit 4 with a reason and writes NO cache file, and a warm cache exits 0 having spawned curl
+# ZERO times — asserted by that same fake curl recording its invocations.
+unset FMONERO_NODES_URL
+FAKEBIN="$WORK/$CASE/fakebin"; mkdir -p "$FAKEBIN"
+CURL_CALLS="$WORK/$CASE/curl-calls"
+printf '#!/bin/sh\necho "$@" >> %s\nexit 1\n' "$CURL_CALLS" > "$FAKEBIN/curl"
+chmod +x "$FAKEBIN/curl"
+rm -f "$FMONERO_CACHE_DIR/public-nodes.json"
+: > "$CURL_CALLS"
+OLD_PATH="$PATH"; PATH="$FAKEBIN:$PATH"
+fm node list --json
+PATH="$OLD_PATH"
+expect_rc 4 "a cold cache with a broken curl"
+expect_reason unreachable "and it says which"
+if [ ! -e "$FMONERO_CACHE_DIR/public-nodes.json" ]; then
+  ok "a failed fetch writes no cache file (§2n.6: parse in full, THEN replace)"
+else
+  bad "a failed fetch must not create the cache"
+fi
+cp "$WORK/$CASE/custom.json" "$FMONERO_CACHE_DIR/public-nodes.json"
+: > "$CURL_CALLS"
+PATH="$FAKEBIN:$PATH"
+fm node list --json
+PATH="$OLD_PATH"
+expect_rc 0 "a warm cache"
+if [ "$(grep -c '' "$CURL_CALLS")" = "0" ]; then
+  ok "and it spawns curl ZERO times: nodes::cached cannot fetch, by signature (§5b.4 row 1)"
+else
+  bad "a warm cache must spawn nothing" "$(cat "$CURL_CALLS")"
+fi
+# And with no curl on PATH at all: exit 4 curl_missing, raised BEFORE any network call.
+EMPTYBIN="$WORK/$CASE/emptybin"; mkdir -p "$EMPTYBIN"
+rm -f "$FMONERO_CACHE_DIR/public-nodes.json"
+# An EMPTY PATH is the point: `proc::which("curl")` must find nothing. `cat` would not be found
+# either, so stderr is read back only after the real PATH returns.
+PATH="$EMPTYBIN"
+OUT="$("$FM" node list --refresh --json 2>"$WORK/stderr")"; RC=$?
+PATH="$OLD_PATH"
+ERR="$(cat "$WORK/stderr")"
+expect_rc 4 "no curl on PATH"
+expect_reason curl_missing "and the reason names the dependency"
+expect_contains "omarchy pkg add curl" "with a runnable hint"
+
+step "§7.1: public_node_cache reads the file and spawns nothing"
+cp "$WORK/$CASE/custom.json" "$FMONERO_CACHE_DIR/public-nodes.json"
+: > "$CURL_CALLS"
+PATH="$FAKEBIN:$PATH"
+"$FM" doctor --json > "$WORK/$CASE/doctor.json" 2>/dev/null || true
+PATH="$OLD_PATH"
+if [ "$(grep -c '' "$CURL_CALLS")" = "0" ]; then
+  ok "the doctor never phones monero.fail"
+else
+  bad "a doctor run must spawn no curl" "$(cat "$CURL_CALLS")"
+fi
+PNC="$(jq -r '.checks[]|select(.id=="public_node_cache")|.status' "$WORK/$CASE/doctor.json")"
+if [ "$PNC" = "pass" ]; then ok "public_node_cache passes with a fresh cache"; else
+  bad "public_node_cache: expected pass, got '$PNC'"
+fi
+rm -f "$FMONERO_CACHE_DIR/public-nodes.json"
+"$FM" doctor --json > "$WORK/$CASE/doctor2.json" 2>/dev/null || true
+PNC2="$(jq -r '.checks[]|select(.id=="public_node_cache")|.detail' "$WORK/$CASE/doctor2.json")"
+PNS2="$(jq -r '.checks[]|select(.id=="public_node_cache")|.status' "$WORK/$CASE/doctor2.json")"
+if [ "$PNS2" = "skip" ]; then
+  ok "and SKIPS with no cache — a machine that never ran node list is not faulty: $PNC2"
+else
+  bad "public_node_cache with no cache: expected skip, got '$PNS2'"
+fi
+mocks_down
 
 # ================================================================ §5c coverage
 step "§5c: every command in §4.1 has been asserted, or is named as not covered"

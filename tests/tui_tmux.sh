@@ -211,6 +211,148 @@ if [ -n "$CAPTURE" ]; then
   sleep 0.4
 fi
 
+
+# ---------------------------------------------------------------- §7a.1/§7a.4/§7a.5 (v5.5)
+#
+# The three flows a ProgramSimulator cannot prove, because what is being tested is that the
+# TERMINAL delivers the key to us rather than to the emulator, and that the screen a user looks at
+# says what the program does.
+printf '\n== v5.5: Tab out of a focused field, the picker, and the wallet empty state\n'
+
+# 1. §7a.1, and it is the owner's first complaint on a real pty: type an address into the Send
+#    form's To field — which is exactly where `Tab` used to be swallowed — and press Tab. The
+#    rendered TAB STRIP must show Log.
+tmux send-keys -t "$SESSION" 3 2>/dev/null || true; sleep 0.8
+tmux send-keys -t "$SESSION" -l "42ey1afDFnn4886T7196doS9GPMzex" 2>/dev/null || true; sleep 0.4
+tmux send-keys -t "$SESSION" Tab 2>/dev/null || true; sleep 1
+TABTEXT="$(pane)"
+case "$TABTEXT" in
+  *"[ 4 Log ]"*) ok "§7a.1: Tab out of a focused Send field reaches Log on a real pty" ;;
+  *) bad "Tab was captured by the Send field — the owner's first complaint" \
+         "$(printf '%s' "$TABTEXT" | head -2)" ;;
+esac
+# And the status bar states the rule from wherever the user is.
+case "$TABTEXT" in
+  *"⇥ screens"*) ok "and the status bar says so on every screen" ;;
+  *) bad "the status bar does not carry '⇥ screens'" "$(printf '%s' "$TABTEXT" | tail -2)" ;;
+esac
+# Shift+Tab goes back, which is the other half of the rule.
+tmux send-keys -t "$SESSION" BTab 2>/dev/null || true; sleep 1
+case "$(pane)" in
+  *"[ 3 Send ]"*) ok "and ⇧Tab goes back" ;;
+  *) bad "⇧Tab did not return to Send" "$(printf '%s' "$(pane)" | head -2)" ;;
+esac
+# `Esc` then unfocuses the form. **`1 2 3 4` are legal base58 characters**, so a focused To field
+# keeps them — which is why §7a.1's answer to "I cannot change screens" is `Tab` and not the
+# digits: `Tab` is the one key that works without leaving the field first, and from here on this
+# script navigates with it.
+tmux send-keys -t "$SESSION" Escape 2>/dev/null || true; sleep 0.6
+
+# 2. §7a.4's picker, with NO cache: the panel, the chip and the disclosure — not an empty table
+#    under a footer rendered against a `fetched_at` that does not exist (revision 8).
+tmux send-keys -t "$SESSION" 1 2>/dev/null || true; sleep 1.2
+PTEXT="$(pane)"
+[ -n "$CAPTURE" ] && printf '%s\n' "$PTEXT" > "$CAPTURE/picker-empty.txt"
+case "$PTEXT" in
+  *"No public-node list yet."*) ok "§7a.4: the no-cache panel renders" ;;
+  *) bad "the picker's no-cache panel is missing" "$(printf '%s' "$PTEXT" | tail -14)" ;;
+esac
+case "$PTEXT" in
+  *"[f] Fetch the list"*) ok "with the chip that fetches it" ;;
+  *) bad "the [f] chip is missing" "$(printf '%s' "$PTEXT" | tail -14)" ;;
+esac
+case "$PTEXT" in
+  *"tells monero.fail your IP address"*) ok "and the one line saying what that discloses" ;;
+  *) bad "the disclosure line is missing from the panel" "$(printf '%s' "$PTEXT" | tail -14)" ;;
+esac
+case "$PTEXT" in
+  *"list  old"*|*"0 nodes ·"*) bad "the footer must be SUPPRESSED with no cache, not rendered empty" ;;
+  *) ok "and no footer is rendered against a fetched_at that does not exist" ;;
+esac
+
+# 3. The picker WITH a cache: two column groups, a health ratio beside its sample size, and the
+#    footer that surfaces `skipped_no_port`. The cache is written here, so nothing is fetched.
+cat > "$FMONERO_CACHE_DIR/public-nodes.json" <<JSON
+{"schema":1,"fetched_at":$(date +%s),"source":"https://monero.fail","skipped_no_port":37,
+ "skipped_invalid":0,"notice_ack":$(date +%s),
+ "nodes":[{"url":"http://pty.example:18081","address":"pty.example:18081","scheme":"http",
+           "web_compatible":false,"custom":false,"health_available":true,"health_ratio":0.72,
+           "health_checks":18,"health_last_height":3765172,
+           "health_checked_at_text":"Fri, 18 Sep 2026 05:12:02 GMT",
+           "health_checked_at":$(( $(date +%s) - 600 )),
+           "probe":{"reachable":true,"height":3765172,"synchronized":true,"restricted":true,
+                    "nettype":"mainnet","version":null,"latency_ms":100,"reason":null,
+                    "probed_at":$(date +%s)}}]}
+JSON
+tmux send-keys -t "$SESSION" 4 2>/dev/null || true; sleep 0.5
+tmux send-keys -t "$SESSION" 1 2>/dev/null || true; sleep 1.2
+CTEXT="$(pane)"
+[ -n "$CAPTURE" ] && printf '%s\n' "$CTEXT" > "$CAPTURE/picker.txt"
+case "$CTEXT" in
+  *"pty.example:18081"*) ok "§7a.4: the cached row renders, address first and never elided" ;;
+  *) bad "the picker did not render the cached row" "$(printf '%s' "$CTEXT" | tail -14)" ;;
+esac
+case "$CTEXT" in
+  *"72% of 18"*) ok "with the health ratio BESIDE its sample size (§2n.1)" ;;
+  *) bad "the ratio must carry its sample size" "$(printf '%s' "$CTEXT" | tail -14)" ;;
+esac
+case "$CTEXT" in
+  *"37 skipped (no port)"*) ok "and the footer surfaces skipped_no_port" ;;
+  *) bad "the footer does not surface the skip count" "$(printf '%s' "$CTEXT" | tail -4)" ;;
+esac
+
+# 4. §7a.5's wallet empty state: three chips and a daemon line, on a machine with no wallet.
+tmux send-keys -t "$SESSION" 2 2>/dev/null || true; sleep 1.2
+WTEXT="$(pane)"
+[ -n "$CAPTURE" ] && printf '%s\n' "$WTEXT" > "$CAPTURE/wallet-empty.txt"
+for needle in "[o] Open wallet" "[c] Create wallet" "[W] Start the wallet daemon" "wallet daemon:"; do
+  case "$WTEXT" in
+    *"$needle"*) ok "§7a.5: the empty state carries '$needle'" ;;
+    *) bad "the empty state is missing '$needle'" "$(printf '%s' "$WTEXT" | sed -n '5,12p')" ;;
+  esac
+done
+
+# 5. §7a.1 revision 1, the blocker's own flow: fill ALL FOUR create-wallet controls from the
+#    keyboard alone and reach the seed-backup modal. It is refused before anything is sent — the
+#    name already exists in `wallet.dir` under --capture — so this asserts the modal is REACHABLE
+#    and that its refusal is inline, which is the half a trap would fail.
+tmux send-keys -t "$SESSION" c 2>/dev/null || true; sleep 0.8
+CRTEXT="$(pane)"
+case "$CRTEXT" in
+  *"Create a wallet"*) ok "§7a.5: c opens the create modal (it was close, not create, before v5.5)" ;;
+  *) bad "c did not open the create modal" "$(printf '%s' "$CRTEXT" | sed -n '10,18p')" ;;
+esac
+tmux send-keys -t "$SESSION" -l "ptywallet" 2>/dev/null || true
+tmux send-keys -t "$SESSION" Down 2>/dev/null || true
+tmux send-keys -t "$SESSION" -l "pw1" 2>/dev/null || true
+tmux send-keys -t "$SESSION" Down 2>/dev/null || true
+tmux send-keys -t "$SESSION" -l "pw2" 2>/dev/null || true
+tmux send-keys -t "$SESSION" Down 2>/dev/null || true
+sleep 0.8
+FILLED="$(pane)"
+[ -n "$CAPTURE" ] && printf '%s\n' "$FILLED" > "$CAPTURE/create-filled.txt"
+case "$FILLED" in
+  *"ptywallet"*) ok "and ↑↓ reach every control: the name survived three Downs" ;;
+  *) bad "the name field lost its text while moving between controls" \
+         "$(printf '%s' "$FILLED" | sed -n '10,18p')" ;;
+esac
+case "$FILLED" in
+  *pw1*|*pw2*) bad "a password field is NOT masked (§2b.4)" ;;
+  *) ok "and both password fields are masked" ;;
+esac
+tmux send-keys -t "$SESSION" Enter 2>/dev/null || true; sleep 1
+case "$(pane)" in
+  *"do not match"*) ok "a mismatched pair is refused INLINE, with nothing sent" ;;
+  *) bad "the mismatch refusal did not render" "$(printf '%s' "$(pane)" | sed -n '10,20p')" ;;
+esac
+# And `Tab` is held here, which is the one documented exception — said in the modal itself.
+tmux send-keys -t "$SESSION" Tab 2>/dev/null || true; sleep 0.8
+case "$(pane)" in
+  *"Esc to discard first"*) ok "§7a.1: the create modal holds Tab and says so in the modal" ;;
+  *) bad "the create modal must consume Tab" "$(printf '%s' "$(pane)" | tail -4)" ;;
+esac
+tmux send-keys -t "$SESSION" Escape 2>/dev/null || true; sleep 0.5
+
 # q quits, and the exit code is the TUI's own (0 on a clean quit, §7a).
 tmux send-keys -t "$SESSION" q 2>/dev/null || true
 for _ in $(seq 50); do [ -f "$WORK/rc" ] && break; sleep 0.1; done
