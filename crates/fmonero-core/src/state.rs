@@ -118,6 +118,16 @@ pub struct StateDoc {
     /// An absent key deserializes to `None` through `#[derive(Default)]`, so state files
     /// written by a pre-v5.2 build load unchanged.
     pub last_refresh: Option<i64>,
+    /// v5.5: the last `get_info` probe of the **configured** remote node (§2n.4), so
+    /// `status --json` and the bar widget can render a remote height and sync flag without
+    /// spawning anything (§5's `node.remote_probe`, §2e).
+    ///
+    /// The **address is stored beside the probe**: without it, switching nodes would leave the
+    /// old node's height rendered as the new node's, which is §2j on the one field a user
+    /// checks to see whether their node works. Written only by [`note_remote_probe`]; an
+    /// absent key deserializes to `None` through `#[derive(Default)]`, so older state files
+    /// load.
+    pub remote_probe: Option<(String, crate::nodes::Probe)>,
 }
 
 impl StateDoc {
@@ -236,6 +246,30 @@ pub fn set_last_error(ctx: &Context, e: &Error, text: Option<String>) -> Result<
 pub fn note_refresh(ctx: &Context) -> Result<(), Error> {
     let now = crate::now_unix();
     with_state(ctx, |s| s.last_refresh = Some(now))
+}
+
+/// v5.5. Record a probe of `address` (§2n.4).
+///
+/// Its only callers are the TUI's Node screen and `node list --probe` **when the probed
+/// address is the configured one** — a probe of some other candidate is cached in
+/// `public-nodes.json` and must never become `status`'s answer for the node in force, which is
+/// why the address is stored beside the probe and [`remote_probe`] compares it. `status` reads
+/// this and never writes it (§2e).
+pub fn note_remote_probe(
+    ctx: &Context,
+    address: &str,
+    p: &crate::nodes::Probe,
+) -> Result<(), Error> {
+    let entry = (address.to_string(), p.clone());
+    with_state(ctx, |s| s.remote_probe = Some(entry))
+}
+
+/// The cached probe **for this address only**. A probe recorded against a different address is
+/// `None`, not a number about the wrong node.
+pub fn remote_probe(ctx: &Context, address: &str) -> Result<Option<crate::nodes::Probe>, Error> {
+    Ok(load(ctx)?.remote_probe.and_then(|(stored, p)| {
+        (stored == address).then_some(p)
+    }))
 }
 
 /// Arm a §2d breaker. **Never called by `status`**, and never by `send::relay` (§2d).

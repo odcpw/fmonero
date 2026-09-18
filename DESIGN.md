@@ -2647,8 +2647,14 @@ the alternative renders something untrue:
   of itself — §2m.3's paragraph is unchanged and the picker says so in the column heading
   (`node says`).
 - **A probe failure is `reachable: false` with a reason** — `timed_out`, `refused`, `tls`, `http`,
-  `bad_json` — from curl's exit code and stderr, and is cached like a success. Silence is a result
-  here: the five hosts that timed out on 2026-09-17 are the most useful rows in the table.
+  `bad_json`, and (v5.5, from the implementation) **`cancelled`** — from curl's exit code and
+  stderr, and is cached like a success. Silence is a result here: the five hosts that timed out on
+  2026-09-17 are the most useful rows in the table. `cancelled` is the sixth because `probe_many`
+  returns one result per input **in the input's order**, so a sweep the user stopped with `Esc` has
+  to say why those rows carry no measurement rather than render them `reachable: false` with no
+  reason, which would be a claim about a node nobody contacted — §2j on the rows a cancelled sweep
+  leaves behind. `nodes::PROBE_REASONS` is the closed set, and a cache row naming anything outside
+  it reads back as `null` (the same "STALE, not corrupt" rule §2n.6 gives the document).
 
 **One honest discrepancy, stated because it will otherwise be filed as a bug.** curl **verifies TLS
 certificates by default**; `monero-wallet-rpc`'s `--daemon-ssl autodetect` does **not** (§1b.9 item
@@ -5169,7 +5175,12 @@ pub mod nodes {
     /// all. `nodes_json` reads `monero.clear` as the candidate set and `monero.web_compatible` as a
     /// FLAG (it is a subset, §2n.1), drops portless entries and returns how many; `health_json`
     /// builds an exact-URL lookup and is told nothing about buckets.
-    pub fn parse_nodes_json(bytes: &[u8]) -> Result<(Vec<PublicNode>, u32), Error>;
+    pub fn parse_nodes_json(bytes: &[u8]) -> Result<ParsedNodes, Error>;
+    /// `nodes` plus the two drop counters. A struct and not a tuple because two of its three
+    /// fields are counters and an unnamed `(_, u32, u32)` is a call site nobody can read.
+    #[derive(Clone, Debug, Default)]
+    pub struct ParsedNodes { pub nodes: Vec<PublicNode>, pub skipped_no_port: u32,
+                             pub skipped_invalid: u32 }
     pub fn parse_health_json(bytes: &[u8]) -> Result<HealthMap, Error>;
     pub type HealthMap = std::collections::BTreeMap<String, Health>;
     #[derive(Clone, Debug)]

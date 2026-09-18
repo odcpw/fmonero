@@ -116,6 +116,10 @@ pub const REASONS: &[(i32, &str)] = &[
     // and a `set_daemon` whose address epee's own parser refused.
     (4, "remote_node"),
     (4, "remote_address_rejected"),
+    // v5.5, §2n.3: public node discovery needs `curl` as a child process, and an Arch package
+    // can be removed — so the dependency is checked at run time and refused before any
+    // network call, the same shape §2i's preflight gives for `monerod`.
+    (4, "curl_missing"),
     // 5
     (5, "stalled"),
     (5, "rpc_error"),

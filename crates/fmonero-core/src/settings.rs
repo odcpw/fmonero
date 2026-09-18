@@ -293,6 +293,11 @@ pub struct NodeSettings {
     pub data_dir: PathBuf,
     pub log_file: PathBuf,
     pub prune: bool,
+    /// v5.5, §2n.4: how often the TUI probes **the configured node** while the Node screen is
+    /// showing. It is a TUI cadence and nothing else reads it — `status`, the widget, the
+    /// doctor and `node info` spawn nothing, ever (§2e). `0` turns the automatic probe off and
+    /// leaves `r` and the picker's `p`, which are user actions.
+    pub remote_probe_sec: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -304,6 +309,10 @@ pub struct WalletSettings {
     pub port: u16,
     pub account: u32,
     pub priority: u32,
+    /// v5.5, §7a.5: when true, `fmonero tui` starts the wallet daemon on launch. Read in
+    /// exactly one place, `tui::run`; `status` never honours it (§2e) and neither does the
+    /// widget or the doctor.
+    pub autostart: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -322,6 +331,11 @@ pub struct TimeoutSettings {
 pub struct TuiSettings {
     pub poll_ms: u64,
     pub tick_ms: u64,
+    /// v5.5, §7a.2: mouse capture. `false` starts the program with
+    /// `MouseCapturePolicy::Off`, which is the escape hatch for a terminal whose own selection
+    /// and scrollback the user needs back. Default **true**: the owner has no usable mouse for
+    /// a keyboard-only app, which is what §7a.2 exists to fix.
+    pub mouse: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -345,6 +359,7 @@ impl Default for NodeSettings {
             data_dir: PathBuf::from("~/.bitmonero"),
             log_file: PathBuf::from("~/.bitmonero/bitmonero.log"),
             prune: true,
+            remote_probe_sec: 60,
         }
     }
 }
@@ -360,6 +375,7 @@ impl Default for WalletSettings {
             // 2 = normal. NOT 0: since HF 15 priority 0 behaves exactly as priority 1,
             // the cheapest level, and is not a "wallet default" (§1b.4).
             priority: 2,
+            autostart: false,
         }
     }
 }
@@ -382,6 +398,7 @@ impl Default for TuiSettings {
         TuiSettings {
             poll_ms: 1000,
             tick_ms: 120,
+            mouse: true,
         }
     }
 }
@@ -409,6 +426,11 @@ const KEY_TABLE: &[(&str, &str, &str)] = &[
         "node.remote_trusted",
         "false",
         "send `trusted` to a remote node; NEVER true for a public one (§2m.6)",
+    ),
+    (
+        "node.remote_probe_sec",
+        "60",
+        "how often the TUI probes the configured remote node; 0 = off, 10 is the floor (§2n.4)",
     ),
     (
         "node.url",
@@ -461,6 +483,11 @@ const KEY_TABLE: &[(&str, &str, &str)] = &[
         "2",
         "default fee priority 0-4 (2 = normal; 0 is an alias of the lowest tier, §1b.4)",
     ),
+    (
+        "wallet.autostart",
+        "false",
+        "start the wallet daemon when `fmonero tui` launches (TUI only, §7a.5)",
+    ),
     ("timeouts.node_sec", "3", "node RPC probe deadline"),
     ("timeouts.wallet_sec", "5", "wallet RPC probe deadline"),
     ("timeouts.refresh_sec", "120", "`wallet refresh` deadline"),
@@ -473,6 +500,11 @@ const KEY_TABLE: &[(&str, &str, &str)] = &[
     ("timeouts.systemctl_sec", "10", "any systemctl call"),
     ("tui.poll_ms", "1000", "the TUI's status poll interval"),
     ("tui.tick_ms", "120", "the TUI's spinner frame interval"),
+    (
+        "tui.mouse",
+        "true",
+        "click tabs, rows, fields and buttons; false gives the terminal its selection back",
+    ),
 ];
 
 /// Case-insensitive Levenshtein distance, for the §4 "did you mean" redirect.
@@ -796,12 +828,14 @@ impl Settings {
             "node.data_dir" => self.node.data_dir.display().to_string(),
             "node.log_file" => self.node.log_file.display().to_string(),
             "node.prune" => self.node.prune.to_string(),
+            "node.remote_probe_sec" => self.node.remote_probe_sec.to_string(),
             "wallet.url" => self.wallet.url.clone(),
             "wallet.unit" => self.wallet.unit.clone(),
             "wallet.dir" => self.wallet.dir.display().to_string(),
             "wallet.port" => self.wallet.port.to_string(),
             "wallet.account" => self.wallet.account.to_string(),
             "wallet.priority" => self.wallet.priority.to_string(),
+            "wallet.autostart" => self.wallet.autostart.to_string(),
             "timeouts.node_sec" => self.timeouts.node_sec.to_string(),
             "timeouts.wallet_sec" => self.timeouts.wallet_sec.to_string(),
             "timeouts.refresh_sec" => self.timeouts.refresh_sec.to_string(),
@@ -810,6 +844,7 @@ impl Settings {
             "timeouts.systemctl_sec" => self.timeouts.systemctl_sec.to_string(),
             "tui.poll_ms" => self.tui.poll_ms.to_string(),
             "tui.tick_ms" => self.tui.tick_ms.to_string(),
+            "tui.mouse" => self.tui.mouse.to_string(),
             other => return Err(unknown_key(other, false)),
         })
     }
@@ -868,6 +903,20 @@ impl Settings {
             "node.data_dir" => self.node.data_dir = parse_dir(key, value)?,
             "node.log_file" => self.node.log_file = parse_dir(key, value)?,
             "node.prune" => self.node.prune = parse_bool(key, value)?,
+            // Values 1..9 are refused rather than clamped: a five-second probe of a stranger's
+            // node is a request pattern the stranger can see, and §2n.5's rule is that fmonero
+            // contacts a node when the user is doing something, not on a heartbeat.
+            "node.remote_probe_sec" => {
+                let n: u32 = parse_num(key, value, 0u32, 86_400u32)?;
+                if n > 0 && n < 10 {
+                    return Err(Error::usage(format!(
+                        "{key} must be 0 (off) or at least 10 seconds"
+                    ))
+                    .with_reason("bad_args")
+                    .with_hint(format!("fmonero settings set {key} 60")));
+                }
+                self.node.remote_probe_sec = n;
+            }
             "wallet.url" => {
                 crate::rpc::require_loopback(value)?;
                 self.wallet.url = value.to_string();
@@ -877,6 +926,7 @@ impl Settings {
             "wallet.port" => self.wallet.port = parse_num(key, value, 1u16, u16::MAX)?,
             "wallet.account" => self.wallet.account = parse_num(key, value, 0u32, 1_000_000u32)?,
             "wallet.priority" => self.wallet.priority = parse_num(key, value, 0u32, 4u32)?,
+            "wallet.autostart" => self.wallet.autostart = parse_bool(key, value)?,
             "timeouts.node_sec" => self.timeouts.node_sec = parse_num(key, value, 1u64, 3600u64)?,
             "timeouts.wallet_sec" => {
                 self.timeouts.wallet_sec = parse_num(key, value, 1u64, 3600u64)?
@@ -893,6 +943,7 @@ impl Settings {
             }
             "tui.poll_ms" => self.tui.poll_ms = parse_num(key, value, 100u64, 60_000u64)?,
             "tui.tick_ms" => self.tui.tick_ms = parse_num(key, value, 20u64, 5_000u64)?,
+            "tui.mouse" => self.tui.mouse = parse_bool(key, value)?,
             other => return Err(unknown_key(other, true)),
         }
         Ok(())

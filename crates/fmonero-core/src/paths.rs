@@ -179,6 +179,12 @@ impl Paths {
     pub fn history_cache(&self) -> PathBuf {
         self.cache_dir.join("history.bin")
     }
+    /// `cache_dir/public-nodes.json` — the monero.fail candidate list plus this machine's own
+    /// probes (§2n.6). `cache_dir` and not `state_dir` because it is rebuildable from one
+    /// command and losing it costs a fetch, which is the definition §2b.7 uses.
+    pub fn public_nodes(&self) -> PathBuf {
+        self.cache_dir.join("public-nodes.json")
+    }
     /// `monero-wallet-rpc`'s own credential file, named after its **bind port**
     /// (`wallet_rpc_server.cpp:351-380`, §2c). fmonero only ever reads it.
     pub fn wallet_login_file(&self, port: u16) -> PathBuf {
