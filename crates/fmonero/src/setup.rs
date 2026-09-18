@@ -641,7 +641,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_five_menu_entries_come_from_the_asset() {
+    fn the_six_menu_entries_come_from_the_asset() {
         let entries = menu_entries();
         let ids: Vec<&str> = entries.iter().map(|(id, _)| *id).collect();
         assert_eq!(
@@ -650,6 +650,10 @@ mod tests {
                 "monero",
                 "monero.open",
                 "monero.send",
+                // v5.5, §6.5: the Wallet screen is a menu destination now, because it is the
+                // screen a user with no wallet has to reach, and `Node` becomes `Nodes` — the
+                // picker made "which node" the question that screen answers.
+                "monero.wallet",
                 "monero.node",
                 "monero.doctor"
             ],
@@ -685,7 +689,7 @@ mod tests {
             .into_iter()
             .filter(|(id, _)| !present.contains(&(*id).to_string()))
             .collect();
-        assert_eq!(missing.len(), 4, "one of the five is already there");
+        assert_eq!(missing.len(), 5, "one of the six is already there");
         let merged = insert_before_last_brace(current, &missing).unwrap();
         assert!(merged.contains("// the user's own note"));
         assert!(merged.contains("// fmonero"));
@@ -693,7 +697,7 @@ mod tests {
         // The pre-existing entry is untouched, and the result still parses.
         assert!(merged.contains("\"monero\": {\"icon\":\"x\"}"));
         let ids = existing_ids(&merged);
-        assert_eq!(ids.len(), 5, "{merged}");
+        assert_eq!(ids.len(), 6, "{merged}");
         // Running it again is a no-op.
         let again: Vec<(&str, &str)> = menu_entries()
             .into_iter()
@@ -750,6 +754,6 @@ mod tests {
     fn a_merge_into_an_empty_document_still_parses() {
         let merged = insert_before_last_brace("{\n}\n", &menu_entries()).unwrap();
         let ids = existing_ids(&merged);
-        assert_eq!(ids.len(), 5, "{merged}");
+        assert_eq!(ids.len(), 6, "{merged}");
     }
 }
