@@ -1818,7 +1818,7 @@ impl Tui {
                 return self.task("new address", move |ctx| {
                     let w = WalletClient::from_ctx(ctx)?;
                     let a = w.create_address(account, "")?;
-                    Ok(format!("new subaddress {}", a.address_index))
+                    Ok(format!("new address {}", a.address_index))
                 });
             }
             KeyCode::Char('l') => return self.prompt_label(),
@@ -1970,7 +1970,7 @@ impl Tui {
                         self.task("log level", move |ctx| {
                             let n = NodeClient::from_ctx(ctx)?;
                             n.mutators(ctx)?.set_log_level(level)?;
-                            Ok(format!("daemon log level {level}"))
+                            Ok(format!("your node now logs at level {level}"))
                         })
                     }
                 },
@@ -2246,7 +2246,7 @@ impl Tui {
             return Some("a wallet name is required".into());
         }
         if name.contains('/') {
-            return Some("a wallet name may not contain `/` — the daemon refuses it".into());
+            return Some("A wallet name cannot contain \"/\".".into());
         }
         if self
             .ctx
@@ -2440,7 +2440,7 @@ impl Tui {
             what: Prompt::Label {
                 index: row.address_index,
             },
-            title: format!(" Label subaddress {} ", row.address_index),
+            title: format!(" Name address {} ", row.address_index),
             input: text_input(&self.theme)
                 .with_value(row.label.clone())
                 .with_focused(true),

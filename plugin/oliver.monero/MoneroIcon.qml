@@ -17,8 +17,13 @@ Item {
   property bool crossed: false
   property bool warning: false
   property bool filled: false        // a wallet is open (DESIGN.md §6.4)
-  property bool remote: false         // v5.2: monero-wallet-rpc talks to a remote node (§6.4)
-  property real ringProgress: -1     // 0..1 sync ring around the glyph; < 0 draws none
+  property bool remote: false        // v5.2: the wallet service talks to a public node (§6.4)
+  // 0..1 progress ring around the glyph; < 0 draws none. **v5.6: it draws the WALLET's catch-up
+  // as well as a local node's sync** (§6.4) — a wallet catching up is the one long-running thing
+  // this product does that the user waits on, and it happens in both modes. `walletRing` picks
+  // the softer stroke for it, so the two rings are not the same claim drawn twice.
+  property real ringProgress: -1
+  property bool walletRing: false
   property string percentText: ""    // drawn instead of the M when the bar is tall enough
   readonly property real viewBox: 24
 
@@ -43,8 +48,14 @@ Item {
         capStyle: ShapePath.RoundCap; joinStyle: ShapePath.RoundJoin
         PathSvg { path: root.percentText === "" ? "M 5.4 16.2 L 5.4 8.4 L 12 16.2 L 18.6 8.4 L 18.6 16.2" : "" }
       }
-      ShapePath {   // the sync ring, outside the glyph
-        fillColor: "transparent"; strokeColor: root.color; strokeWidth: 1.8; capStyle: ShapePath.RoundCap
+      ShapePath {   // its track, so a 5 % ring reads as 5 % of something and not as a stray tick
+        fillColor: "transparent"; strokeColor: Util.alpha(root.color, 0.22); strokeWidth: 1.2
+        PathAngleArc { centerX: 12; centerY: 12; radiusX: 11.1; radiusY: 11.1; startAngle: 0
+                       sweepAngle: root.ringProgress < 0 ? 0 : 360 }
+      }
+      ShapePath {   // the progress ring, outside the glyph
+        fillColor: "transparent"; strokeColor: root.color
+        strokeWidth: root.walletRing ? 1.4 : 1.8; capStyle: ShapePath.RoundCap
         PathAngleArc { centerX: 12; centerY: 12; radiusX: 11.1; radiusY: 11.1; startAngle: -90
                        sweepAngle: root.ringProgress < 0 ? 0 : 360 * Math.min(1, root.ringProgress) }
       }

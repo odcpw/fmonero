@@ -28,8 +28,13 @@ Panel {
   // (§6.4): `!nodeUp`, `!synced` and the percent ring all read fields that are null in remote
   // mode, so left below they would draw a crossed glyph and a 0 % ring for a wallet that is
   // working perfectly — a bar icon claiming the node is down.
+  // Case 8 is v5.6's `walletBehind`, and it sits ABOVE both remote rows deliberately (§6.4): a
+  // wallet catching up is the one long-running thing this product does that the user waits on, it
+  // happens in both modes, and with a public node v5.5 had no ring at all — the icon said "public
+  // node, wallet open" for twenty minutes while the wallet scanned a million blocks.
   readonly property int iconCase: !svc.alive ? 0
     : anyError ? 1
+    : svc.walletBehind ? 8
     : (svc.remote && svc.walletOpen) ? 6
     : svc.remote ? 7
     : !svc.nodeUp ? 2
@@ -39,39 +44,29 @@ Panel {
     : (iconCase === 0 || iconCase === 2) ? Qt.darker(barForeground, 1.55) : barForeground
   readonly property bool iconCrossed: iconCase === 0 || iconCase === 2
   readonly property bool iconWarning: iconCase <= 1
-  readonly property bool iconFilled: iconCase === 4 || iconCase === 6
+  readonly property bool iconFilled: iconCase === 4 || iconCase === 6 || iconCase === 8
   // A small chevron in the same badge slot the warning badge uses, in `barForeground` rather
   // than `urgent`: remote mode is a configuration, not a fault (§6.4).
-  readonly property bool iconRemote: iconCase === 6 || iconCase === 7
-  readonly property real iconRing: iconCase === 3 ? svc.syncPct / 100 : -1
+  readonly property bool iconRemote: iconCase === 6 || iconCase === 7 || (iconCase === 8 && svc.remote)
+  // The ring draws the **wallet's** catch-up in case 8 and the node's own sync in case 3. The
+  // wallet's percent is available with a public node precisely because the cached check supplies a
+  // node height (§6.3); when it is not, case 8 does not match and no ring is drawn from a guess.
+  readonly property real iconRing: iconCase === 8 ? svc.walletSyncPct / 100
+    : iconCase === 3 ? svc.syncPct / 100 : -1
   // The number only when the bar is tall enough to draw two legible digits inside the ring.
-  readonly property string iconPercent:
-    iconCase === 3 && bar && bar.barSize >= 30 ? String(svc.syncPct) : ""
+  readonly property string iconPercent: !(bar && bar.barSize >= 30) ? ""
+    : iconCase === 8 ? String(svc.walletSyncPct)
+    : iconCase === 3 ? String(svc.syncPct) : ""
 
+  // **The header line, plus at most two supporting facts** (§6.4, v5.6). It never contains a
+  // block number, a peer count or a sync phrase it does not have, and with a public node the
+  // check's age travels with its height in one string, for §5's reason.
+  readonly property string headerLine:
+    Model.headerLine(svc.status, svc.showBalance, svc.binaryMissing)
   readonly property string tooltipText: {
-    if (!svc.alive) return "Monero · fmonero is not answering"
-    // In remote mode the tooltip never contains a height, a peer count or a sync phrase it
-    // does not have (§6.4): all three are null there.
-    if (svc.remote) {
-      var remoteParts = ["Monero", Model.remoteLabel(svc.node)]
-      // v5.5: a height it DID receive, rendered with its age in the same breath (§6.4). Without
-      // the age this would be the one place the widget states a stranger's height as current.
-      if (svc.probe) remoteParts.push(Model.probeLabel(svc.node))
-      if (svc.walletOpen && svc.wallet.height !== null && svc.wallet.height !== undefined)
-        remoteParts.push("wallet " + Model.grouped(svc.wallet.height))
-      if (svc.walletOpen && svc.showBalance && svc.wallet.balance_xmr)
-        remoteParts.push(String(svc.wallet.balance_xmr) + " XMR")
-      return remoteParts.join(" · ")
-    }
-    var parts = ["Monero"]
-    if (svc.node && svc.node.height !== null && svc.node.height !== undefined)
-      parts.push(Model.grouped(svc.node.height))
-    if (svc.node && svc.node.outgoing_connections_count !== null
-        && svc.node.outgoing_connections_count !== undefined)
-      parts.push(Model.int(svc.node.outgoing_connections_count, 0) + " peers")
-    parts.push(Model.syncLabel(svc.status))
-    if (svc.walletOpen && svc.showBalance && svc.wallet.balance_xmr)
-      parts.push(String(svc.wallet.balance_xmr) + " XMR")
+    var parts = [root.headerLine]
+    if (svc.alive && svc.remote && svc.probe) parts.push(Model.checkedLabel(svc.node))
+    if (svc.alive && svc.walletBehind) parts.push(Model.grouped(svc.blocksLeft) + " blocks left")
     return parts.join(" · ")
   }
 
@@ -81,14 +76,71 @@ Panel {
   property int selectedIndex: 0
 
   readonly property bool walletHidden: !svc.showBalance
-  // 0 = nothing to act on (the daemon is down), 1 = "open one in the TUI", 2 = copy + refresh.
-  readonly property int walletTargets: svc.walletOpen ? 2 : (svc.walletReachable ? 1 : 0)
+  // 0 = nothing to act on, 2 = copy + check for payments. A **closed wallet is a state, never a
+  // warning** (§6.5), and the `Open wallet…` button below is its action — so it has no row here.
+  readonly property int walletTargets: svc.walletOpen ? 2 : 0
   readonly property bool lockedFunds:
     svc.walletOpen && Model.int(svc.wallet.blocks_to_unlock, 0) > 0
+  // Minutes from `time_to_unlock_sec`, or two per block, which is Monero's block time. **The
+  // amount is absent here and present in the TUI's otherwise identical line**: it is
+  // `balance - unlocked`, arithmetic on money, which §2a.5 forbids in QML outright, and Status
+  // carries no pre-rendered locked amount to display instead (DECISIONS).
+  readonly property int lockedMinutes: {
+    if (!svc.walletOpen) return 0
+    var sec = svc.wallet.time_to_unlock_sec
+    if (sec !== null && sec !== undefined) return Math.ceil(Model.int(sec, 0) / 60)
+    return Model.int(svc.wallet.blocks_to_unlock, 0) * 2
+  }
+
+  // §6.5: **the one fact that explains the header**, and nothing when a row below would repeat
+  // it — which is why a `Public node…` header has no second line: the `Checked` row already says
+  // `checked 2m ago`, and the same sentence twice in a 380-pixel panel is what this removes.
+  readonly property string heroMeta: {
+    if (svc.binaryMissing || !svc.alive || svc.pending) return ""
+    if (svc.walletBehind) return Model.walletSyncLabel(svc.status)
+    if (svc.walletOpen) return refreshedAgo()
+    if (svc.remote || !svc.node) return ""
+    if (svc.nodeUp && !svc.synced && svc.node.target_height)
+      return Model.grouped(svc.node.height) + " / " + Model.grouped(svc.node.target_height)
+    return ""
+  }
+
+  // `wallet.last_refresh_at` is the last refresh **fmonero itself issued** (§5) — not the wallet
+  // service's own 20 s auto-refresh, which fmonero cannot observe. Date arithmetic on a timestamp
+  // is not arithmetic on money.
+  function refreshedAgo() {
+    var raw = svc.walletOpen ? svc.wallet.last_refresh_at : null
+    if (!raw) return ""
+    var t = Date.parse(String(raw))
+    if (!isFinite(t)) return ""
+    return "refreshed " + Model.age(Math.floor((Date.now() - t) / 1000)) + " ago"
+  }
+
+  // **The problems section, which is not the warnings list** (§6.5, v5.6). `info` warnings are
+  // the state the rows above already show, and v5.5 put them in the alarm channel — on the
+  // owner's correctly configured machine that meant an alarm about a wallet service designed to
+  // be down. The one exclusion is `send_may_be_in_flight` while the pending row renders it:
+  // together they are one alarm printed twice.
+  readonly property var problems: {
+    var out = []
+    for (var i = 0; i < svc.warnings.length; i++) {
+      var w = svc.warnings[i]
+      var sev = String(w.severity || "")
+      if (sev !== "warn" && sev !== "error") continue
+      if (svc.pending && String(w.id || "") === "send_may_be_in_flight") continue
+      out.push(w)
+    }
+    return out
+  }
+
+  // Two or three: `Start your node` / `Stop your node` only with your own node (§6.5). Five
+  // buttons in a 380-pixel panel is a menu, and the owner's complaint was that the widget did not
+  // answer a question — not that it was missing a sixth control.
+  readonly property int footerCount: svc.remote || !svc.alive ? 2 : 3
 
   readonly property var navSections: {
     var s = ["header"]
-    if (svc.warnings.length > 0) s.push("warnings")
+    if (problems.length > 0) s.push("problems")
     if (walletTargets > 0) s.push("wallet")
     if (svc.pending) s.push("pending")
     s.push("footer")
@@ -96,9 +148,9 @@ Panel {
   }
 
   function sectionCount(name) {
-    if (name === "warnings") return svc.warnings.length
+    if (name === "problems") return problems.length
     if (name === "wallet") return walletTargets
-    if (name === "footer") return 5
+    if (name === "footer") return footerCount
     return 1
   }
   function isHorizontal(name) { return name === "footer" }
@@ -150,43 +202,48 @@ Panel {
 
   function activateCursor() {
     ensureCursor()
-    if (focusSection === "header") svc.toggleNode()
-    else if (focusSection === "warnings") activateWarning(selectedIndex)
+    if (focusSection === "header") { svc.openTui(); root.close() }
+    else if (focusSection === "problems") activateProblem(selectedIndex)
     else if (focusSection === "wallet") activateWallet(selectedIndex)
     else if (focusSection === "pending") { svc.openTui(); root.close() }
     else if (focusSection === "footer") activateFooter(selectedIndex)
   }
 
-  // A hint is a runnable command (DESIGN.md §4). The doctor is the one we can run ourselves;
-  // everything else goes to the clipboard so the user can paste it into a terminal.
-  function activateWarning(index) {
-    var w = svc.warnings[index]
+  // **§2o.1: a problem row's action is something the user can do here**, never a command to copy
+  // into a terminal. The doctor is where a machine-shaped problem is diagnosed and it is the one
+  // thing this panel can run itself; everything else opens the TUI screen the action names, which
+  // is where the keys the action mentions actually are.
+  function activateProblem(index) {
+    var w = problems[index]
     if (!w) return
-    var hint = String(w.hint || "")
-    if (hint === "") return
-    if (hint === "fmonero doctor") { svc.openDoctor(); root.close(); return }
-    svc.copyText(hint)
+    var id = String(w.id || "")
+    if (id === "node_stalled" || id === "wallet_stalled" || id === "monero_not_installed") {
+      svc.openDoctor(); root.close(); return
+    }
+    if (id === "remote_node" || id === "remote_node_trusted" || id === "node_down") {
+      svc.openNodeScreen(); root.close(); return
+    }
+    svc.openWalletScreen(); root.close()
   }
 
   function activateWallet(index) {
-    if (walletTargets === 1) { svc.openTui(); root.close(); return }
     if (index === 0) svc.copyAddress()
     else svc.refreshWallet()
   }
 
   function activateFooter(index) {
-    if (index === 0) { svc.openTui(); root.close() }
-    else if (index === 1) { svc.openSendScreen(); root.close() }
-    // v5.5, §6.5: the two additions. Both open the TUI on a screen — the affordance that LEADS
-    // to the thing the owner could not find, not a shortcut past the prompt.
-    else if (index === 2) { svc.openWalletScreen(); root.close() }
-    else if (index === 3) { svc.openNodeScreen(); root.close() }
-    else { svc.openDoctor(); root.close() }
+    // Both of the first two open the TUI on a screen — the affordance that LEADS to the thing the
+    // owner could not find, not a shortcut past the prompt (§6.3).
+    if (index === 0) {
+      if (svc.walletOpen) svc.refreshWallet()
+      else { svc.openWalletScreen(); root.close() }
+    } else if (index === 1) { svc.openNodeScreen(); root.close() }
+    else svc.toggleNode()
   }
 
   // ---- scrolling -----------------------------------------------------------
   function sectionColumn(name) {
-    if (name === "warnings") return warningColumn
+    if (name === "problems") return warningColumn
     if (name === "wallet") return walletActionColumn
     return null
   }
@@ -275,12 +332,17 @@ Panel {
         filled: root.iconFilled
         remote: root.iconRemote
         ringProgress: root.iconRing
+        walletRing: root.iconCase === 8
         percentText: root.iconPercent
       }
     }
     onPressed: function(buttonCode) {
-      if (buttonCode === Qt.RightButton) svc.toggleNode()
-      else if (buttonCode === Qt.MiddleButton) svc.refresh()
+      // v5.6: **right refreshes** and middle opens the TUI. v5.5 gave right-click the node
+      // toggle, which is inert with a public node and had to be special-cased into an error
+      // message; a toggle that does nothing on the owner's machine is not worth a button, and
+      // refresh is what a person clicking a stale-looking bar icon means (§6.4).
+      if (buttonCode === Qt.RightButton) svc.refresh()
+      else if (buttonCode === Qt.MiddleButton) svc.openTui()
       else root.toggle()
     }
   }
@@ -308,7 +370,10 @@ Panel {
       // h j k l are consumed by the catcher as movement and never reach here (DESIGN.md §6.5).
       onTextKey: function(t) {
         var k = String(t).toLowerCase()
-        if (k === "n") { if (svc.remote) { svc.openNodeScreen(); root.close() } else svc.toggleNode() }
+        // v5.6: `n` opens `Choose node…` in **both** modes. v5.5 made it a node toggle with your
+        // own node and a picker with a public one — one key, two acts — and the panel now has
+        // explicit Start/Stop buttons for the toggle.
+        if (k === "n") { svc.openNodeScreen(); root.close() }
         else if (k === "r") svc.refresh()
         else if (k === "t") { svc.openTui(); root.close() }
         else if (k === "c") svc.copyAddress()
@@ -348,12 +413,16 @@ Panel {
             readonly property bool ringVisible: root.cursorActive && root.focusSection === "header"
             function focusHero() { root.setCursor("header", 0) }
 
+            // **One header line and at most one supporting fact** (§6.4/§6.5). v5.5's lines were
+            // `Node · 3 541 122` and `remote: 185.220.101.63:18081 · trusted`, and neither answers
+            // what someone glances at a bar widget to answer — is my money there, is anything
+            // wrong. The `detail` row (the nettype) was a third line of chrome on a two-line hero.
             PanelHero {
               id: hero
               width: parent.width
-              title: svc.alive ? Model.heightLabel(svc.node) : "Node"
-              meta: Model.syncLabel(svc.status)
-              detail: svc.node && svc.node.nettype ? String(svc.node.nettype) : ""
+              title: root.headerLine
+              meta: root.heroMeta
+              detail: ""
               foreground: root.foreground
               fontFamily: root.fontFamily
               iconOpacity: svc.nodeUp ? 1.0 : 0.5
@@ -388,7 +457,7 @@ Panel {
 
                   PanelToolTip {
                     visible: nodeSwitch.containsMouse
-                    text: svc.desiredOn ? "Stop the node (n)" : "Start the node (n)"
+                    text: svc.desiredOn ? "Stop your node" : "Start your node"
                     fontFamily: hero.fontFamily
                   }
                 }
@@ -396,56 +465,42 @@ Panel {
             }
           }
 
-          // ---- remote mode: two rows and one dim line (v5.5, §6.5) ---------
+          // ---- node: one row, plus the one or two that carry information (§6.5) ----
           //
-          // No gauge, no percent, no peer counts: every one of them is null in remote mode (§5),
-          // and the panel renders what Status JSON contains and never a substitute for what it
-          // does not. The probe row is read from `status.node.remote_probe` and **the panel never
-          // probes**: it polls `status --json`, which spawns nothing (§2e, §2n.4), so the row goes
-          // stale rather than expensive and its age says so.
+          // **A row renders only when it carries information for the current state.** Not
+          // "renders —", not "renders not available": absent. Five of v5.5's rows were `null`
+          // with a public node and each one spent a line saying so, which is how a 520-pixel
+          // panel came to be mostly disclaimers. The `Checked` row is read from
+          // `status.node.remote_probe` and **the panel never checks anything itself**: it polls
+          // `status`, and §6.3's `--check-node` variant is what keeps that cache fresh.
           Column {
             width: parent.width
             spacing: Style.space(3)
-            visible: svc.alive && svc.remote && !svc.binaryMissing
+            visible: svc.alive && !svc.binaryMissing
 
-            DetailRow { label: "Node"; value: Model.remoteLabel(svc.node) }
-            DetailRow { label: "Probed"; value: Model.probeLabel(svc.node) }
-            Text {
-              textFormat: Text.PlainText; width: parent.width
-              text: "fmonero does not talk to this node; monero-wallet-rpc does"
-              color: root.dim; font.family: root.fontFamily
-              font.pixelSize: Style.font.bodySmall; wrapMode: Text.WordWrap
+            DetailRow { label: "node"; value: Model.nodeLabel(svc.node) }
+            DetailRow {
+              visible: svc.remote
+              label: "Checked"; value: Model.checkedLabel(svc.node)
             }
           }
 
-          // ---- node detail (not cursor targets) ----------------------------
+          // ---- your own node: two more rows, and no others (§6.5) ----------
+          //
+          // `Last block` and `Traffic` are gone: with your own node they are two rows nobody
+          // glances at a bar for, and `Open TUI` is one key away and has all of them.
           Column {
             width: parent.width
             spacing: Style.space(3)
             visible: svc.alive && svc.nodeUp && !svc.remote && !svc.binaryMissing
 
-            MiniBar {
-              width: parent.width
-              visible: !svc.synced
-              progress: svc.syncPct / 100
-              label: svc.node && svc.node.target_height
-                ? Model.grouped(svc.node.height) + " / " + Model.grouped(svc.node.target_height)
-                : Model.grouped(svc.node ? svc.node.height : 0)
-              percent: svc.syncPct
-            }
-
             DetailRow { label: "Peers"; value: Model.peersLabel(svc.node) }
             DetailRow {
-              label: "Mempool"
+              label: "Waiting"
               value: svc.node && svc.node.tx_pool_size !== null && svc.node.tx_pool_size !== undefined
-                ? Model.int(svc.node.tx_pool_size, 0) + " tx" + (svc.node.restricted === true ? " (lower bound)" : "")
-                : "—"
-            }
-            DetailRow { label: "Last block"; value: svc.node ? Model.age(svc.node.top_block_age_sec) + " ago" : "—" }
-            DetailRow {
-              label: "Net"
-              value: svc.node && svc.node.net
-                ? "↓ " + Model.rate(svc.node.net.rx_bps) + "   ↑ " + Model.rate(svc.node.net.tx_bps)
+                ? Model.int(svc.node.tx_pool_size, 0) + " transactions"
+                  + (svc.node.restricted === true
+                     ? " (at least " + Model.int(svc.node.tx_pool_size, 0) + ")" : "")
                 : "—"
             }
           }
@@ -463,16 +518,16 @@ Panel {
 
           Text {
             textFormat: Text.PlainText; visible: svc.binaryMissing; width: parent.width
-            text: "fmonero is not installed or not on PATH (~/.local/bin)."
+            text: "fmonero is not installed."
             color: root.urgent; font.family: root.fontFamily
             font.pixelSize: Style.font.body; wrapMode: Text.WordWrap
           }
 
-          // ---- warnings ----------------------------------------------------
+          // ---- problems (§6.5) ---------------------------------------------
           Column {
             width: parent.width
             spacing: Style.space(6)
-            visible: svc.warnings.length > 0
+            visible: root.problems.length > 0
 
             PanelSeparator { foreground: root.foreground }
 
@@ -482,15 +537,17 @@ Panel {
               spacing: Style.space(4)
 
               Repeater {
-                model: svc.warnings
+                model: root.problems
                 WarnRow {
                   required property var modelData
                   required property int index
-                  section: "warnings"
+                  section: "problems"
                   idx: index
                   width: warningColumn.width
                   message: String(modelData.text || "")
-                  hint: String(modelData.hint || "")
+                  // §2o.1: the warning's **action**, not its `hint` — which is where
+                  // `fmonero node local --yes` reached the bar.
+                  hint: String(modelData.action || "")
                   severity: String(modelData.severity || "warn")
                 }
               }
@@ -520,9 +577,11 @@ Panel {
                 value: root.walletHidden ? "•••••"
                   : (svc.walletOpen && svc.wallet.unlocked_xmr ? String(svc.wallet.unlocked_xmr) + " XMR" : "—")
               }
+              // Minutes, not blocks, and with the amount: blocks are the mechanism, minutes are
+              // the answer, and the TUI's line reads word for word the same (§2o rule 9).
               Text {
                 textFormat: Text.PlainText; visible: root.lockedFunds; width: parent.width
-                text: "↑ locked for " + (svc.walletOpen ? Model.int(svc.wallet.blocks_to_unlock, 0) : 0) + " blocks"
+                text: "locked for about " + root.lockedMinutes + " min"
                 color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall
               }
             }
@@ -542,32 +601,42 @@ Panel {
               ListRow {
                 visible: svc.alive && svc.walletOpen
                 section: "wallet"; idx: 1; width: parent.width
-                title: "Refresh the wallet"
+                title: "Check for payments"
                 meta: svc.walletOpen && svc.wallet.blocks_behind !== null
                         && svc.wallet.blocks_behind !== undefined
-                  ? Model.int(svc.wallet.blocks_behind, 0) + " blocks behind" : ""
-              }
-              ListRow {
-                visible: svc.alive && !svc.walletOpen && svc.walletReachable
-                section: "wallet"; idx: 0; width: parent.width
-                title: "No wallet is loaded — load one in the TUI"
-                meta: "open TUI (t)"
+                  ? Model.int(svc.wallet.blocks_behind, 0) + " blocks to go" : ""
               }
             }
 
-            // **v5.5 replaced two dead ends with one sentence that says what will happen**
-            // (§6.5): "Wallet daemon is not running" and "open it in the TUI" together were the
-            // panel's half of the owner's complaint — two statements of a problem and no route
-            // to the fix. `walletStateLabel` distinguishes `idle` (remote mode, nothing open:
-            // the daemon is supposed to be down) from `not running` (a real fault), and the
-            // `Open wallet…` chip in the footer is the route.
+            // **Decision 7, said out loud.** The wallet keeps scanning inside the wallet service
+            // whether or not the TUI is open, exactly as fbittorrent's transfers keep running when
+            // its window closes, and until v5.6 nothing on either surface said so.
             Text {
-              textFormat: Text.PlainText; visible: !svc.alive || !svc.walletReachable; width: parent.width
-              text: svc.alive
-                ? "wallet daemon: " + Model.walletStateLabel(svc.wallet, svc.warnings)
-                : "No wallet state — fmonero is not answering."
+              textFormat: Text.PlainText; visible: svc.alive && svc.walletBehind
+              width: parent.width; text: "This keeps going in the background."
               color: root.dim; font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall; wrapMode: Text.WordWrap
+            }
+
+            // **A closed wallet is a state, and never a warning** (§6.5, and §5 makes
+            // `wallet_idle` an `info` for the same reason): one row, and the `Open wallet…` button
+            // below it is the route. The service's own state follows in the quieter line, because
+            // "not running" and "starts when you open a wallet" are the same fact in two
+            // situations that are not the same.
+            Column {
+              width: parent.width
+              spacing: Style.space(2)
+              visible: !svc.walletOpen
+
+              DetailRow { visible: svc.alive; label: "wallet"; value: "Wallet closed" }
+              Text {
+                textFormat: Text.PlainText; width: parent.width
+                text: svc.alive
+                  ? "wallet service: " + Model.walletStateLabel(svc.wallet, svc.warnings)
+                  : "fmonero is not answering."
+                color: root.dim; font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall; wrapMode: Text.WordWrap
+              }
             }
           }
 
@@ -618,14 +687,23 @@ Panel {
 
             PanelSeparator { foreground: root.foreground }
 
+            // **Two or three** (§6.5). `Open TUI` stays on `t` and on the hero, `Doctor` appears
+            // as the action of the problem row that needs it — the only place a person wants it —
+            // and `Send` was a button on a bar panel that opens a money screen, one key from a
+            // route that is not.
             Row {
               width: parent.width
               spacing: Style.space(6)
-              Chip { section: "footer"; idx: 0; label: "Open TUI" }
-              Chip { section: "footer"; idx: 1; label: "Send" }
-              Chip { section: "footer"; idx: 2; label: "Open wallet…" }
-              Chip { section: "footer"; idx: 3; label: "Choose node…" }
-              Chip { section: "footer"; idx: 4; label: "Doctor" }
+              Chip {
+                section: "footer"; idx: 0
+                label: svc.walletOpen ? "Check for payments" : "Open wallet…"
+              }
+              Chip { section: "footer"; idx: 1; label: "Choose node…" }
+              Chip {
+                visible: root.footerCount > 2
+                section: "footer"; idx: 2
+                label: svc.desiredOn ? "Stop your node" : "Start your node"
+              }
             }
           }
         }
@@ -648,37 +726,6 @@ Panel {
       textFormat: Text.PlainText; width: parent.width - Style.space(78); text: parent.value
       color: root.foreground; font.family: root.fontFamily
       font.pixelSize: Style.font.bodySmall; elide: Text.ElideRight
-    }
-  }
-
-  // The sync gauge: a track, a fill and the percentage. Not a cursor target.
-  component MiniBar: Item {
-    id: gauge
-    property real progress: 0
-    property string label: ""
-    property int percent: 0
-
-    implicitHeight: gaugeLabel.implicitHeight + Style.space(9)
-
-    Rectangle {
-      id: track
-      anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
-      height: Math.max(3, Style.space(4)); radius: height / 2
-      color: Util.alpha(root.foreground, 0.18)
-
-      Rectangle {
-        height: parent.height; radius: parent.radius; color: root.foreground
-        width: Math.max(0, Math.min(1, gauge.progress)) * parent.width
-        Behavior on width { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
-      }
-    }
-
-    Text {
-      id: gaugeLabel
-      textFormat: Text.PlainText
-      anchors.left: parent.left; anchors.top: track.bottom; anchors.topMargin: Style.space(3)
-      text: gauge.percent + "%  " + gauge.label
-      color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption
     }
   }
 

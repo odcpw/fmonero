@@ -1459,7 +1459,7 @@ fn the_create_modal_is_fillable_from_the_keyboard_alone() {
 fn the_create_modal_refuses_a_slash_a_mismatch_and_an_empty_password() {
     let w = World::new("create-refusals");
     for (name, p1, p2, want) in [
-        ("a/b", "x", "x", "may not contain"),
+        ("a/b", "x", "x", "cannot contain"),
         ("ok", "one", "two", "do not match"),
         ("ok", "", "", "unencrypted"),
         ("main", "x", "x", "already exists"),

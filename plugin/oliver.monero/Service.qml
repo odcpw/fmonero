@@ -43,6 +43,16 @@ Item {
   // renders with its age and never measures itself (§2e, §2n.4).
   readonly property bool walletUp:   !!(wallet && wallet.unit_active === true)
   readonly property var  probe:      (node && node.remote_probe) || null
+  // v5.6, §6.3: the wallet's own catch-up, because the widget's headline is now the wallet's.
+  // `nodeHeight` is the live `get_info` height with your own node and the **cached check's** with
+  // a public one — the only source there is — and `blocksLeft` is `-1` when either side is
+  // unknown, so nothing renders a 0 that would read as "caught up". Integer arithmetic on block
+  // numbers, never on money (§2a.5).
+  readonly property int  walletHeight: Model.walletHeight(status)
+  readonly property int  nodeHeight:   Model.nodeHeight(status)
+  readonly property int  blocksLeft:   Model.blocksLeft(status)
+  readonly property bool walletBehind: Model.walletBehind(status)
+  readonly property int  walletSyncPct: Model.walletSyncPct(status)
 
   property string actionStatus: ""     // transient label, cleared 2.2 s after an action exits
   property string localError: ""       // stderr (or the JSON error) of the last failed action
@@ -87,6 +97,16 @@ Item {
     if (binaryMissing) return
     if (!binaryChecked) { checkBinary(); return }
     if (statusProc.running) return
+    // **v5.6, §6.3: the second poll variant.** `status` spawns nothing (§2e), which is what makes
+    // this poll cheap — and also why a public node's block number and sync flag went stale on the
+    // bar with nobody to refresh them. While the panel is OPEN the poll asks for `--check-node`,
+    // which prints the identical document and, only when the cached check of the configured node
+    // is older than `node.remote_probe_sec`, starts the bounded check in the background and
+    // returns at once with the cached values — so the next poll is fresh. The closed-panel poll
+    // at 8 s stays plain `status --json`.
+    statusProc.command = opened
+      ? [root.bin, "status", "--json", "--check-node"]
+      : [root.bin, "status", "--json"]
     statusProc.running = true
     if (!pollWatchdog.running) pollWatchdog.start()
   }
@@ -119,26 +139,29 @@ Item {
   function startNode() {
     _desired = 1
     desiredTimer.restart()
-    runAction(["node", "up", "--json"], "Starting the node…")
+    runAction(["node", "up", "--json"], "Starting your node…")
   }
   function stopNode() {
     _desired = 0
     desiredTimer.restart()
-    runAction(["node", "down", "--yes", "--json"], "Stopping the node…")
+    runAction(["node", "down", "--yes", "--json"], "Stopping your node…")
   }
   // **Inert in remote mode** (§6.4): `node up`/`node down` are specified to exit 4
   // `remote_node` there, and firing a command that cannot succeed would put a red error on the
   // bar every time someone mis-clicks. `_desired` is never set either: `node.reachable` is
   // null, so the optimism bridge has nothing to converge on (§6.3).
   function toggleNode() {
-    if (remote) { localError = "fmonero node local --yes"; return }
+    // §2o.1: never a shell command on the bar — this is where `fmonero node local --yes` reached
+    // it. The panel does not render the toggle with a public node at all (§6.5), so this is a
+    // belt for the IPC handlers.
+    if (remote) { localError = "You are using a public node."; return }
     desiredOn ? stopNode() : startNode()
   }
 
   // Shown only while a wallet is open, so it can never be the call that starts a wallet daemon.
   function refreshWallet() {
     if (!walletOpen) return
-    runAction(["wallet", "refresh", "--json"], "Refreshing the wallet…")
+    runAction(["wallet", "refresh", "--json"], "Checking for payments…")
   }
 
   // ---- detached launches ---------------------------------------------------
@@ -230,7 +253,7 @@ Item {
   Process {
     id: statusProc
     running: false
-    command: [root.bin, "status", "--json"]
+    command: [root.bin, "status", "--json"]   // replaced per poll by refresh() (§6.3)
     stdout: StdioCollector { id: statusOut; waitForEnd: true }
     stderr: StdioCollector { id: statusErr; waitForEnd: true }
     onExited: function(exitCode) {
@@ -252,7 +275,8 @@ Item {
         root._desired = -1
         var doc = Model.parseJson(String(actionOut.text || ""))
         var msg = doc && doc.error ? String(doc.error) : String(actionErr.text || "").trim().split("\n")[0]
-        if (doc && doc.hint) msg += " — try: " + doc.hint
+        // **The `hint` is deliberately not appended** (§2o.1): it is a shell command, and this
+        // panel is not a terminal. The message alone, and the buttons below it are the route.
         root.localError = msg !== "" ? msg : "fmonero exited " + exitCode
         root.actionStatus = root.localError
       } else {

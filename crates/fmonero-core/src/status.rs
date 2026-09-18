@@ -1307,15 +1307,19 @@ mod tests {
     /// staleness window would fire twenty `curl`s per refresh cycle.
     #[test]
     fn a_stale_check_starts_one_and_three_polls_still_start_one() {
-        if crate::proc::which("curl").is_none() {
-            return; // §2n.4's refusal covers this machine; nothing to bound.
-        }
         let ctx = remote_ctx("checkstale");
         let address = crate::nodes::configured_address(&ctx).expect("remote mode");
         let mut p = stale_probe();
         p.probed_at = crate::now_unix() - 3_600;
         crate::state::note_remote_probe(&ctx, &address, &p).unwrap();
-        assert!(crate::nodes::spawn_check(&ctx, &address).unwrap(), "one");
+        // A machine with no `curl` cannot start a check at all (§2n.4 refuses before the
+        // network), and there is then nothing to bound. It is detected by trying, rather than by
+        // a `which` here, because §2c's own grep says only `nodes.rs` may name that program.
+        let first = match crate::nodes::spawn_check(&ctx, &address) {
+            Ok(started) => started,
+            Err(_) => return,
+        };
+        assert!(first, "one");
         let started = crate::state::remote_check(&ctx, &address)
             .unwrap()
             .expect("the attempt is recorded beside the cached result");

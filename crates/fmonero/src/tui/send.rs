@@ -108,8 +108,8 @@ const FIELDS: [(Field, &str, &str); 3] = [
         "To",
         "an address, or @name from your address book",
     ),
-    // The piconero form stays accepted and stays in `--help`; as a placeholder it taught a
-    // reader that amounts look like that (§2o rule 9).
+    // The piconero form stays accepted and stays in `--help`; as the empty field's example it
+    // taught a reader that amounts look like that (§2o rule 9).
     (Field::Amount, "Amount", "0.5 XMR"),
     (Field::Note, "Note", "optional, kept with this wallet"),
 ];

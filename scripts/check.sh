@@ -318,6 +318,91 @@ else
   printf '  skip  crates/fmonero/src/tui does not exist yet (Phase 2 owns it)\n'
 fi
 
+# ---------------------------------------------------------------- §2o plain language
+#
+# "Every string a person can read follows this section" (DESIGN.md §2o, v5.6). The rule that can
+# be mechanised is rule 7's word list, and this is the grep for it, over the **string literals**
+# of the four surfaces a person reads: the TUI, `output.rs`, the warning texts in `status.rs` and
+# the bar widget. `--json` is exempt by contract and so are the ids in it, which is why a literal
+# that is a single bare token is skipped: prose has spaces in it, and `"wallet_idle"` is a
+# contract key, not a sentence.
+step "§2o  no banned word in a user-facing string"
+# Comments are stripped, then the file is folded into ONE line before the literals are pulled out,
+# so a Rust literal broken across lines with a trailing `\` is examined whole rather than slipping
+# between two greps. Its one known blind spot, stated rather than hidden: a `//` INSIDE a literal
+# on a continuation line is read as the start of a comment, so anything after it on that line is
+# not examined.
+literals_2o() {
+  # `#[cfg(test)]` and everything after it is not a user-facing surface: a test that asserts the
+  # OLD words are gone has to name them, and a grep that fires on its own assertions is a grep
+  # nobody can keep. These files put their test module last, which is what makes the cut safe.
+  sed '/^#\[cfg(test)\]/q' "$1" | awk '
+    {
+      out = ""; inq = 0
+      for (i = 1; i <= length($0); i++) {
+        c = substr($0, i, 1)
+        if (inq) {
+          if (c == "\\") { out = out c substr($0, i + 1, 1); i++; continue }
+          if (c == "\"") inq = 0
+          out = out c
+          continue
+        }
+        if (c == "\"") { inq = 1; out = out c; continue }
+        if (c == "/" && substr($0, i + 1, 1) == "/") break
+        out = out c
+      }
+      print out
+    }
+  ' | tr '\n' ' ' | grep -oE '"([^"\\]|\\.)*"'
+}
+# §2o rule 7's list, plus `§` (rule 4) and the two multi-word phrases §2o.2 retires.
+BANNED_2O='(daemons?|units?|RPC|loopback|restricted|probes?|probed|layouts?|ssl|SSL|systemd|systemctl|relay(ed|ing)?|broadcast|mutator|nettype|txpool|mempool|subaddress|subaddr|priority|in flight|high water|§)'
+# Two exemptions, and each is the reason the grep is honest rather than decorative:
+#   * a **runnable command** is a command on purpose — §2o.1's four exceptions and every CLI hint;
+#   * a **single bare token** is an id, a key, a JSON value or an argv element, never prose.
+ALLOWED_2O='("(fmonero|omarchy|sudo|monero-wallet-cli|monerod|monero-wallet-rpc|systemctl|which|wl-copy)[ "]|In a terminal: |^"[A-Za-z0-9][A-Za-z0-9_.:@/+-]*"$|^"--[A-Za-z0-9-]+"$)'
+COPY_SURFACES=()
+for f in "$BIN"/tui/mod.rs "$BIN"/tui/screens.rs "$BIN"/tui/send.rs "$BIN"/tui/subs.rs \
+         "$BIN"/tui/theme.rs "$BIN"/tui/hit.rs "$BIN"/output.rs "$CORE"/status.rs \
+         plugin/oliver.monero/Panel.qml plugin/oliver.monero/Service.qml \
+         plugin/oliver.monero/MoneroIcon.qml plugin/oliver.monero/Model.js; do
+  [ -f "$f" ] && COPY_SURFACES+=("$f")
+done
+HITS_2O=""
+for f in "${COPY_SURFACES[@]}"; do
+  while IFS= read -r lit; do
+    [ -n "$lit" ] || continue
+    printf '%s\n' "$lit" | grep -qE "$ALLOWED_2O" && continue
+    printf '%s\n' "$lit" | grep -qE "$BANNED_2O" || continue
+    HITS_2O="$HITS_2O$f: $lit"$'\n'
+  done < <(literals_2o "$f")
+done
+if [ -n "$HITS_2O" ]; then
+  fail "§2o rule 7: a banned word reaches a user-facing string"
+  printf '%s' "$HITS_2O" | sed 's/^/        /'
+else
+  pass "§2o rule 7: no banned word in the TUI, output.rs, status.rs or the widget"
+fi
+# The self-test §2o asks for by name: the planted literal must fire, and the allowed command
+# must not. A grep that cannot be shown to fire is a grep the first agent to hit it relaxes.
+SELF_2O="$SELFTEST/plain-language"
+mkdir -p "$SELF_2O"
+printf '%s\n' 'let s = "the wallet daemon is not running";' > "$SELF_2O/bad.rs"
+printf '%s\n' 'let s = "In a terminal: omarchy pkg add monero";' > "$SELF_2O/good.rs"
+BAD_LIT="$(literals_2o "$SELF_2O/bad.rs")"
+GOOD_LIT="$(literals_2o "$SELF_2O/good.rs")"
+if printf '%s\n' "$BAD_LIT" | grep -qE "$BANNED_2O" &&
+   ! printf '%s\n' "$BAD_LIT" | grep -qE "$ALLOWED_2O"; then
+  pass "self-test: §2o fires on a planted \"the wallet daemon is not running\""
+else
+  fail "self-test: §2o does NOT fire on its own fixture — the check above proves nothing"
+fi
+if printf '%s\n' "$GOOD_LIT" | grep -qE "$ALLOWED_2O"; then
+  pass "self-test: §2o exempts \"In a terminal: omarchy pkg add monero\""
+else
+  fail "self-test: §2o would reject its own documented exception"
+fi
+
 # ---------------------------------------------------------------- §7a / §6.1 line budgets
 #
 # §7a's budget is a **ceiling against growth**, not a target: DESIGN.md v5.1 replaced "≤ 1 800"
@@ -327,7 +412,10 @@ fi
 # than recorded in a ledger nothing reads. `tests.rs` is excluded by §7a: it is test code.
 step "§7a  the TUI fits its line budget · §6.1 the plugin fits its own"
 # v5.2: 4700, measured 4655 — §2m's Node screen, stated in DESIGN.md §7a first (was 4600).
-TUI_BUDGET=7200
+# v5.6: 7600, and §7a says so before the code was written — the plain-language round's own
+# arithmetic is the ` This node ` pane, the `Context` reload and its three cases, and the fee-level
+# helpers (was 7200).
+TUI_BUDGET=7600
 if [ -d "$BIN/tui" ]; then
   TUI_FILES=()
   for f in mod theme screens send subs hit; do
@@ -344,7 +432,9 @@ else
 fi
 # v5.2 raised it from 1310 by §6.1's +15/+15 for the remote badge and `Model.remoteLabel`
 # and by nothing else, stated in DESIGN.md before the code was written (§6.1).
-QML_BUDGET=1516
+# v5.6: 1529, and §6.1 writes the derivation out — the four per-file budgets (340 + 820 + 112 +
+# 225 = 1 497) plus manifest.json's 32 real lines, which this gate counts.
+QML_BUDGET=1529
 if [ -d plugin/oliver.monero ]; then
   QML_LINES="$(cat plugin/oliver.monero/*.qml plugin/oliver.monero/*.js plugin/oliver.monero/manifest.json 2>/dev/null | grep -c '')"
   if [ "$QML_LINES" -le "$QML_BUDGET" ]; then
@@ -364,10 +454,10 @@ if [ -d plugin/oliver.monero ]; then
       fail "§6.1: $file $have lines exceeds its $want-line budget"
     fi
   done <<'PERFILE'
-420 Service.qml
-800 Panel.qml
-96 MoneroIcon.qml
-200 Model.js
+340 Service.qml
+820 Panel.qml
+112 MoneroIcon.qml
+225 Model.js
 PERFILE
 else
   printf '  skip  §6.1 line budget: plugin/oliver.monero does not exist yet\n'

@@ -5,11 +5,9 @@
 //
 // **No arithmetic on money happens in this file, or anywhere else in this plugin.** Status JSON
 // carries every monetary value twice — an integer `*_pico` and a pre-rendered `*_xmr` string
-// (DESIGN.md §5) — and the widget only ever displays the string. That is the QML half of
-// DESIGN.md §2a.5 ("no f64 touches a monetary value anywhere, in Rust or in QML"), and
-// tests/plugin-smoke.sh enforces it by refusing float parsing and scientific-notation division in
-// every QML and JS file here. Byte rates and block heights are not money and are formatted
-// normally; `int()` below is the only numeric coercion in the plugin and it is integer-only.
+// (DESIGN.md §5) — and the widget only ever displays the string: the QML half of §2a.5, which
+// tests/plugin-smoke.sh enforces by refusing float parsing and `/ 1e` in every file here. Byte
+// rates and block numbers are not money; `int()` is the only numeric coercion and it is integer.
 
 function parseJson(raw) {
   try {
@@ -33,9 +31,9 @@ function int(value, fallback) {
   return isFinite(n) ? n : fallback
 }
 
-// Space-grouped, so 3 541 122 reads as a height rather than a phone number. An ordinary space and
-// not U+2009: the bar's font is the monospace fontconfig alias, which renders a thin space at zero
-// width — the grouping was invisible on screen when this was first drawn.
+// Space-grouped, so 3 541 122 reads as a block number rather than a phone number. An ordinary
+// space and not U+2009: the bar's font renders a thin space at zero width, so the grouping was
+// invisible on screen when this was first drawn.
 function grouped(value) {
   var s = String(int(value, 0))
   var out = ""
@@ -78,89 +76,126 @@ function shortAddr(addr) {
   return a.substring(0, 8) + "…" + a.substring(a.length - 6)
 }
 
-// The row that REPLACES the sync gauge in remote mode (DESIGN.md §6.5, v5.2). Every gauge
-// field is null there, and a 0 % bar for a wallet that is working is the rendered untruth §2j
-// forbids. `node` is Status.node.
-function remoteLabel(node) {
-  if (!node) return "remote"
-  var label = "remote: " + shortAddr(String(node.url || ""))
-  if (node.trusted === true) label += " · trusted"
-  return label
+// §6.5's node row, in one line (v5.6). `node` is Status.node.
+function nodeLabel(node) {
+  if (!node) return "—"
+  if (node.layout === "remote") return "public node " + shortAddr(String(node.url || ""))
+  return "your own node"
 }
 
-// v5.5, §6.1/§6.5: `node.remote_probe` rendered as a height **with its age in the same string**.
-//
-// It refuses to produce the height without the age rather than leaving that to the caller: this
-// is the one place the widget would otherwise state a stranger's height as current, and the
-// measurement came from an earlier invocation (§2n.4 — `status` spawns nothing, §2e), so a
-// four-hour-old `synchronized: true` says nothing about now.
-function probeLabel(node) {
+// §6.5: `node.remote_probe` as a block number **with its age in the same string** — the
+// measurement came from an earlier invocation (§2n.4), so a four-hour-old `synced` says nothing
+// about now. Renamed from `probeLabel` in v5.6; §2o.2 deletes that word.
+function checkedLabel(node) {
   var p = node && node.remote_probe ? node.remote_probe : null
-  if (!p) return "not probed yet"
-  if (p.reachable !== true) {
-    return "did not answer" + (p.reason ? " (" + String(p.reason) + ")" : "") +
-           " · " + age(int(p.age_sec, 0)) + " ago"
-  }
-  var out = "node"
-  if (p.height !== null && p.height !== undefined) out += " " + grouped(p.height)
-  if (p.synchronized === true) out += " · synced"
-  else if (p.synchronized === false) out += " · syncing"
-  return out + " · probed " + age(int(p.age_sec, 0)) + " ago"
+  if (!p) return "not checked yet"
+  var when = " · checked " + age(int(p.age_sec, 0)) + " ago"
+  if (p.reachable !== true) return "no answer" + when
+  var out = ""
+  if (p.height !== null && p.height !== undefined) out += "block " + grouped(p.height)
+  if (p.synchronized === true) out += (out === "" ? "" : " · ") + "synced"
+  else if (p.synchronized === false) out += (out === "" ? "" : " · ") + "syncing"
+  return out + when
 }
 
-// v5.5, §6.1/§6.5: the panel's one-line answer to the question the owner could not answer from
-// the old panel — is the wallet daemon up, and if not, is that a fault or the design?
-//
-// `idle` and `not running` are the same fact in two situations that are not the same: in remote
-// mode with nothing open the daemon is SUPPOSED to be down until a wallet is opened (§4.2 writes
-// both units disabled), which is why §5 makes that state an `info` and not a warning.
+// The wallet service's state as a person reads it (§2o.2). `up` and `idle` were the program's
+// words: with a public node and nothing open the service is SUPPOSED to be down (§4.2), which
+// is why §5 makes that an `info` rather than a warning.
 function walletStateLabel(wallet, warnings) {
-  if (wallet && wallet.unit_active === true) return "up"
+  if (wallet && wallet.unit_active === true) return "running"
   var idle = Array.isArray(warnings) && warnings.some(function (w) {
     return w && w.id === "wallet_idle"
   })
-  return idle ? "idle — starts when you open a wallet" : "not running"
+  return idle ? "starts when you open a wallet" : "not running"
 }
 
-// The one phrase under the hero. `node` is Status.node, or null.
-function syncLabel(status) {
+// The node's own block number: the live `get_info` height with your own node, the **cached
+// check's** with a public one (§5). `-1` when unknown, so nothing renders a 0 as "caught up".
+function nodeHeight(status) {
+  var n = status && status.node ? status.node : null
+  if (!n) return -1
+  if (n.height !== null && n.height !== undefined) return int(n.height, -1)
+  var p = n.remote_probe
+  if (p && p.reachable === true && p.height !== null && p.height !== undefined) return int(p.height, -1)
+  return -1
+}
+
+function walletHeight(status) {
+  var w = status && status.wallet ? status.wallet : null
+  if (!w || w.height === null || w.height === undefined) return -1
+  return int(w.height, -1)
+}
+function blocksLeft(status) {
+  var n = nodeHeight(status), w = walletHeight(status)
+  return n > 0 && w > 0 ? Math.max(0, n - w) : -1
+}
+
+function walletBehind(status) { return blocksLeft(status) > 0 }
+function walletSyncPct(status) {
+  var n = nodeHeight(status), w = walletHeight(status)
+  return n > 0 && w > 0 ? Math.floor(w * 100 / n) : 0
+}
+
+// Decision 7's headline while a wallet is behind. The scanning happens inside the wallet
+// service, so it continues after the TUI's window closes — as fbittorrent's transfers do.
+function walletSyncLabel(status) {
+  var left = blocksLeft(status)
+  if (left <= 0) return ""
+  return "Syncing " + walletSyncPct(status) + "% · " + grouped(left) + " blocks left"
+}
+
+// §6.4's header line: **at most five words**, one first-match table, the only string the hero
+// renders. Ordered by what the user is waiting for — money moving, a wallet catching up, a
+// balance, then the node — the reverse of v5.5, where the node came first because it came first
+// in the JSON. One deviation from §6.4's written order, and it is a dead-row fix:
+// `layout === "none"` is tested BEFORE `!nodeUp`, because a machine with no node configured also
+// reports `reachable: false` and the row below could never match.
+function headerLine(status, showAmounts, binaryMissing) {
+  if (binaryMissing === true) return "fmonero not installed"
   if (!status || status.ok !== true) return "fmonero is not answering"
-  var n = status.node
-  // Remote mode answers FIRST: `reachable` is null there, not false, and every branch below
-  // reads a field that has no source (§2m.3).
-  if (n && n.layout === "remote") return remoteLabel(n)
-  if (!n || n.reachable !== true) {
-    return n && n.layout === "none" ? "No node configured" : "Node is not running"
+  var n = status.node, w = status.wallet
+  if (status.pending) {
+    return showAmounts === true
+      ? "Sending " + String(status.pending.total_amount_xmr) + " XMR" : "Sending"
   }
-  if (n.synchronized === true) return "Synced"
-  if (n.sync_percent === null || n.sync_percent === undefined) return "Syncing"
-  return "Syncing " + Math.floor(n.sync_percent) + "%"
-}
-
-function heightLabel(node) {
-  if (!node || node.height === null || node.height === undefined) return "Node"
-  return "Node · " + grouped(node.height)
+  if (walletBehind(status)) return "Wallet syncing " + walletSyncPct(status) + "%"
+  if (w && w.open === true) {
+    return showAmounts === true && w.balance_xmr
+      ? "Wallet open · " + String(w.balance_xmr) + " XMR" : "Wallet open"
+  }
+  if (n && n.layout === "remote") {
+    var p = n.remote_probe
+    return p && p.reachable === true && p.synchronized === true
+      ? "Public node · synced · wallet closed" : "Public node · wallet closed"
+  }
+  if (!n || n.layout === "none") return "No node set up yet"
+  if (n.reachable !== true) return "Your node is not running"
+  if (n.synchronized !== true) {
+    var pct = n.sync_percent === null || n.sync_percent === undefined
+      ? 0 : Math.floor(n.sync_percent)
+    return "Your node syncing " + pct + "%"
+  }
+  return "Your node · synced · wallet closed"
 }
 
 function peersLabel(node) {
   if (!node) return "—"
   var out = node.outgoing_connections_count, inc = node.incoming_connections_count
-  if (out === null || out === undefined) return "not available on a restricted node"
+  if (out === null || out === undefined) return "not shown by this node"
   return "↑ " + int(out, 0) + " out · ↓ " + int(inc, 0) + " in"
 }
 
-// `status.pending` (DESIGN.md §5), rendered for the panel's pending row (§6.5).
-// `showAmounts` is the §6.2 showBalance flag: with it off the row carries neither the amount nor
-// the destination, because pending is the row most likely to be on screen while someone is
-// looking over a shoulder.
+// `status.pending` (§5) for the panel's pending row (§6.5). `showAmounts` is §6.2's showBalance:
+// with it off the row carries neither the amount nor the destination, because pending is the row
+// most likely to be on screen while someone is looking over a shoulder.
 function pendingLabel(pending, showAmounts) {
   if (!pending) return ""
-  var head = "Send in flight"
+  var head = "Sending"
   if (showAmounts === true) {
-    head += ": " + String(pending.total_amount_xmr) + " XMR → " + shortAddr(pending.dest)
+    head += " " + String(pending.total_amount_xmr) + " XMR to " + shortAddr(pending.dest)
   }
   var relayed = int(pending.relayed_count, 0), total = int(pending.total_count, 0)
-  if (total > 0 && relayed < total) head += " · " + relayed + " of " + total + " relayed"
+  if (total > 0 && relayed < total) head += " · " + relayed + " of " + total + " sent"
   return head
 }
 
