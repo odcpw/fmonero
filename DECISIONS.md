@@ -9048,3 +9048,69 @@ moved, so §2k's manifest freeze holds.
   - The three defects and two findings were **reported, not fixed**: this pass's mandate was
     verification plus false documentation claims, and a four-character change to a hit rect belongs
     with a test that would have caught it.
+
+- 2026-09-18 · independent verifier · **addendum to the verification above: DEFECT F, which the
+  installer run found in the doctor rather than in the TUI.** Found after the entry above was
+  committed, by running `fmonero doctor` on the owner's real configuration as the last act of the
+  session. It had been **green** before this pass and was **red** after it, and the cause was the
+  `scripts/install.sh --yes` the brief asked for:
+
+  ```
+  $ fmonero doctor --json | jq '[.checks[]|select(.status=="fail")]'
+  [fail] state_perms: /home/oliver/.local/state/fmonero/backups/omarchy-menu.jsonc.20260918T170624Z
+                      is 0644, want 0600      || hint: null
+  $ fmonero doctor --fix --dry-run --json
+  {"ok":false,"planned":[],"checks":["state_perms"]}
+  ```
+
+  **Three faults in one line of `setup.rs`.** `setup --menu` backs the Omarchy menu file up with
+  `std::fs::copy(&path, &backup)` (`crates/fmonero/src/setup.rs:487-490`), and `fs::copy`
+  **carries the source file's mode to the destination**. The source is
+  `~/.config/omarchy/extensions/omarchy-menu.jsonc`, which is **0644** — it is Omarchy's file, not
+  fmonero's — so the copy lands at 0644 inside fmonero's own state directory, where §2b.7 says
+  everything fmonero writes under `$HOME` is 0600 and where the doctor's `state_perms` check
+  enforces exactly that. Then: · the check **fails**, · `doctor --fix` plans **nothing** for it, and
+  · the check's `hint` is **`null`** — so the user is told they are broken, offered no repair, and
+  given no command, which is the one thing §4 and §9's "One Rule" exist to prevent. `install.sh`'s
+  own `umask 077` does not help: `fs::copy` calls `set_permissions` from the source metadata after
+  creating the file.
+
+  Reproduced from nothing, on a fresh sandbox with a 0644 menu file, which is the ordinary state of
+  that file on any machine Omarchy has written it:
+
+  ```
+  source menu file mode: 644
+  $ fmonero setup --menu --yes            # "6 Omarchy menu entries (backup: …)"
+  644  <sandbox>/state/backups/omarchy-menu.jsonc.20260918T171657Z
+  $ fmonero doctor --fix --dry-run --json
+  {"planned":[],"fails":["node_reachable","state_perms"]}
+  ```
+
+  So this is not a consequence of anything unusual about the owner's machine: any `setup --menu`
+  that backs up an 0644 menu file leaves the doctor red and unfixable. The reason it had not fired
+  before is that the 2026-09-17 backup was taken when the menu file was still the 0600 one fmonero
+  had created; once Omarchy or the owner rewrote it at 0644, the next backup inherited that.
+  The fix is one `set_permissions(&backup, 0o600)` after the copy, and — separately — a
+  `state_perms` repair in `doctor --fix` with a hint, because a check that cannot be fixed and does
+  not say how is worse than no check.
+
+  **The damage this pass did was repaired, and it is the only thing this session changed on the
+  owner's machine beyond the installer's one menu line:** `chmod 600` on that single backup file —
+  the mode fmonero itself requires, on a file fmonero itself wrote, in fmonero's own state dir.
+  `fmonero doctor` now exits **0** again with one warning, `wallet_rpc_reachable`, which is correct
+  on a machine whose wallet daemon is deliberately down until a wallet is opened:
+
+  ```
+  $ fmonero doctor ; echo $?
+  0
+  warned: ["wallet_rpc_reachable"]
+  ```
+
+  Units still inactive and disabled with `NRestarts=0`, all four sha256 sums unchanged,
+  `node.mode = remote`, `wallet.dir` empty.
+
+  **One observation that is not a claim.** Two `fmonero-mock` processes (`--static … --port 18099`
+  and `--role node --port 18100`) were found still listening at the end of the session, with logs
+  under this session's scratchpad. `tests/e2e.sh --fast` and `--full` were each re-run afterwards
+  and **neither leaked anything**, so this did not reproduce and is recorded as an observation
+  rather than a defect. They were killed; nothing of this session is left listening.
