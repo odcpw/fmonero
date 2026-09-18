@@ -257,10 +257,26 @@ if grep -rnE "$CURL_SPAWN" "$CURL_PROBE" 2>/dev/null | grep -vE "$CURL_EXEMPT" |
 else
   fail "self-test: the error.rs exemption is too wide — a planted spawn there would pass"
 fi
-# The test seam is read in ONE place (§2n.7).
+# The test seam is read in ONE place (§2n.7), and — the revision-3 lesson applied to a second
+# check — the name's two DOCUMENTED appearances are exempt by site, not by file: `nodes.rs`'s
+# `URL_ENV` const, which is the only reader, and `agent.rs`'s `capabilities.env` row, which §2n.7
+# requires. A grep that fired on the documentation would be a grep whose first fix is to delete the
+# documentation.
 forbid_except "FMONERO_NODES_URL is read only in nodes.rs" 'FMONERO_NODES_URL' \
-  '(fmonero-core/src/nodes\.rs):' "${SHIPPED[@]}"
+  '(fmonero-core/src/nodes\.rs):|agent\.rs:[0-9]+:[[:space:]]*name: "FMONERO_NODES_URL"' \
+  "${SHIPPED[@]}"
 selftest "a second reader of the seam" 'FMONERO_NODES_URL' 'std::env::var("FMONERO_NODES_URL")'
+# And the exemption is by SITE: a real read planted in agent.rs is still a hit.
+SEAM_PROBE="$SELFTEST/seam-exempt"
+mkdir -p "$SEAM_PROBE"
+printf 'let base = std::env::var("FMONERO_NODES_URL").unwrap();\n' > "$SEAM_PROBE/agent.rs"
+if grep -rnE 'FMONERO_NODES_URL' "$SEAM_PROBE" 2>/dev/null \
+   | grep -vE '(fmonero-core/src/nodes\.rs):|agent\.rs:[0-9]+:[[:space:]]*name: "FMONERO_NODES_URL"' \
+   | grep -q .; then
+  pass "self-test: the agent.rs exemption does not cover a read"
+else
+  fail "self-test: the agent.rs exemption is too wide — a planted read there would pass"
+fi
 # §7a.5: `wallet.autostart` has exactly one reader, `tui::run` — `status` must never start
 # anything (§2e), and neither may the widget or the doctor.
 # `\.wallet\.autostart` is the FIELD ACCESS, not the setting's name: a prose mention of the key
