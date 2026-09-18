@@ -4148,6 +4148,21 @@ The call set is fixed and bounded:
   on `PATH` records zero invocations); with a stale cache it spawns exactly one and returns before it
   finishes; with `node.mode == local` it spawns nothing; and three invocations inside one deadline
   spawn one.
+
+  **Where the answer goes, settled by the implementation** (v5.6): the detached `curl`'s stdout is
+  redirected into `<state_dir>/remote-check.json` at 0600, and the **next** `--check-node` call
+  harvests it — `nodes::harvest_check` reads the file, turns it into a `nodes::Probe` with the time
+  the check took (the file's modification time minus the recorded start, which is why
+  `now_unix_millis` exists), records it as that address's cached check and removes the file. Four
+  outcomes, each a state a poll really meets: an answer becomes the cached check; an **empty** file
+  past the child's own deadline becomes a recorded failure, so §7a.3's pane can say `No answer when
+  checked 2m ago.` rather than `Not checked yet.` for ever; an empty file *before* it is left
+  alone, because the check is still running and serving the cache is the whole point of the flag;
+  and an answer about an address we have since left is discarded unread. The harvest runs **only**
+  behind the flag, so plain `status` is byte for byte the call it always was. The four bounds are
+  tested in `status.rs`, and **not** in the fake-`curl`-on-`PATH` form the paragraph above first
+  imagined: `PATH` is process-global and the suite runs its tests in threads, so what is asserted
+  is whether a spawn was attempted and what was recorded beside it.
 - **In remote mode, every node call above — hot and cold — is skipped and no `NodeClient` is
   constructed at all** (§2m.3). The wallet halves of both paths are unchanged, and both
   `systemctl --user is-active` spawns stay: `units.node` is a real field a user switching back
@@ -5439,7 +5454,14 @@ pub struct StateDoc { pub last_open: Option<(String, NetType)>, pub last_error: 
                       /// sync flag without spawning anything (§5's `node.remote_probe`, §2e).
                       /// Written only by `state::note_remote_probe`; an absent key deserializes
                       /// to `None` through `#[derive(Default)]`, so older state files load.
-                      pub remote_probe: Option<(String, nodes::Probe)> }
+                      pub remote_probe: Option<(String, nodes::Probe)>,
+                      /// v5.6: the detached check `status --json --check-node` last started — the
+                      /// address it is about and the unix MILLISECONDS it began at (§5). It is
+                      /// what makes the flag's third bound true: several polls arriving inside one
+                      /// check's own deadline spawn ONCE, because every one of them sees this entry
+                      /// and waits. Cleared when the answer is harvested, when the deadline passes
+                      /// with no answer, and when the configured address changes under it.
+                      pub remote_check: Option<(String, i64)> }
 impl StateDoc { pub fn to_bytes(&self) -> Result<Vec<u8>, Error>; }
 impl Settings { pub fn to_toml_bytes(&self) -> Result<Vec<u8>, Error>; }
 pub mod fsinfo {
@@ -6013,6 +6035,12 @@ font is the bar's, so a sixth word elides on the owner's screen. The table is or
 is waiting for — money moving, then a wallet catching up, then a balance, then the node — which is the
 reverse of v5.5's order, where the node came first because the node came first in the JSON.
 
+**One correction the implementation made to the table above** (v5.6): `layout === "none"` is tested
+**before** `local, !nodeUp`, not after it. A machine with no node configured also reports
+`reachable: false`, so in the written order the `No node set up yet` row could never match and
+`Your node is not running` would answer for a machine that has no node to run. A first-match table
+with a dead row is a bug in the table, and the code is the place it shows.
+
 **The tooltip** (closed panel) is the header line, followed by `· {checkedLabel}` when a public node
 has been checked and `· {blocksLeft} blocks left` while `walletBehind`. It never contains a height, a
 peer count or a sync phrase it does not have, and with a public node the check's **age travels with
@@ -6164,6 +6192,16 @@ touching a monetary value anywhere, in Rust or in QML. The Rust side sums with
 `Sending` plus its `· 1 of 2 sent` counter and carries neither the amount nor the destination: the
 setting exists so an amount can be kept off a bar other people can see, and pending is the row most
 likely to be on screen while someone is looking over a shoulder.
+
+**One line the widget cannot render in full, and §2a.5 is why** (v5.6). §3.8 of `docs/COPY.md` asks
+the locked-funds row to read `{x} XMR locked for about {m} min`, word for word as the TUI's does. The
+widget renders `locked for about {m} min` **without the amount**: that amount is
+`balance - unlocked`, the subtraction is arithmetic on a monetary value, and §2a.5 forbids it in QML
+outright — Status carries no pre-rendered locked amount for the widget to display instead. The TUI
+computes it in Rust and prints it. Recorded here rather than fudged, because a QML subtraction of
+two piconero integers would pass a reader's eye and fail the one rule this plugin is built on; the
+fix, when the row is worth it, is a `wallet.locked_pico`/`locked_xmr` pair in §5, which is a schema
+addition and not a rendering decision.
 
 **The widget still never opens, creates or restores a wallet, never sends, never sweeps, and has no
 password field** (§2b.5). §6.3's argv table is the whole mutating surface and v5.6 removes one entry
@@ -7363,6 +7401,18 @@ the ` This node ` pane shows B's height rather than `Not checked yet.` A second 
 `node.remote` into `config.toml` from outside and asserts the same four after one poll. A third
 asserts the failure path: an unreadable `config.toml` mid-session leaves the previous values on screen
 and raises one toast, and does not panic.
+
+**Three things the implementation settled** (v5.6), because §7a.7 wrote the fix and not its
+mechanics. (1) The immediate re-check of part 3 rides §2n.4's **existing** cadence rather than
+issuing an `Action::NodeProbe` of its own: `picker.probed_at` is cleared, so the next 1 s poll
+checks the new address — which keeps "the only automatic probe in this design" one piece of code
+and one rule (only the configured node, only while the Node screen shows). (2) Dropping the stale
+cached check needs no code: `state.json`'s entry is **address-matched**, so `status` already
+returns `None` for the new address and the pane renders `Not checked yet.` until the check lands.
+(3) A failed reload records the new mtime anyway and **skips the rest of that tick's outbound
+work**, so an unreadable `config.toml` raises **one** toast rather than one per second — and so the
+action a poll would otherwise arm cannot overwrite that toast with its own label, which is how the
+failure path first went unseen.
 
 **Why not simply re-read settings inside `status::status`.** Because `status` takes `&Context` and the
 whole of §5b's freeze rests on a `Context` being a value the caller owns and can build in a test; a

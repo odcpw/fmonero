@@ -739,3 +739,40 @@ peers table's header (5), the history header in the TUI (6) and in `output.rs` (
 screen's fee chips (5), the Node screen's four fee levels (4), the log-level confirm's five
 variants (5), and the batch of fourteen already-plain toasts (1 rewritten). Counted by literal
 rather than by row, the rewrite is **432 strings**.
+
+---
+
+## 7. What the implementation settled (2026-09-18)
+
+The rewrite table above is a specification; this section is what happened when it met the code, so
+the next reader does not have to diff the two. **The reviewer returned no revisions**, so nothing in
+§1–§6 was amended on review; every entry below comes from the implementation.
+
+**Four strings the table missed, and the grep found.** §5's word grep landed before the last commit
+and fired on four literals no row named: `new subaddress {i}` (→ `new address {i}`),
+`daemon log level {n}` (→ `your node now logs at level {n}`), `a wallet name may not contain \`/\`
+— the daemon refuses it` (→ `A wallet name cannot contain "/".`) and the modal title
+` Label subaddress {i} ` (→ ` Name address {i} `). That is the whole argument for the grep: a table
+of 450 rows written by hand misses four, and a grep with a self-test does not.
+
+**Three deviations from the table, each in the direction of the rule.**
+
+| Where | The table says | The code says | Why |
+|---|---|---|---|
+| the seed modal's close line (§3.5) | `Close this wallet first — press x.` | the modal says `With the wallet closed, in a terminal:` and no separate line | The table's own phrasing carries an em-dash, which DESIGN.md §2o rule 12 forbids; and the sentence core already prints says the same thing without needing a second one. §2o is the contract, so it wins over an illustration in this document. |
+| the widget's locked-funds row (§3.8) | `{x} XMR locked for about {m} min` | `locked for about {m} min` | The amount is `balance - unlocked`, and that subtraction is arithmetic on money, which §2a.5 forbids in QML outright. DESIGN.md §6.5 records it and names the fix (a pre-rendered `locked_xmr` in §5). |
+| `monerod_conf_mode`'s doctor title (§3.12) | unchanged, "already plain" | `~/.config/fmonero/monerod.conf is private (it carries a password)` | The old title named `rpc-login`, a flag, in prose. Rule 6 applies to the doctor's titles like everywhere else. |
+
+**Two words the grep does not police, stated so nobody mistakes silence for coverage.** §2o rule 7
+bans `build` (of a transaction) and `layout`; `scripts/check.sh` greps for `layout` but **not** for
+`build`, because the word is unavoidable in the code around the strings and a grep that fires on
+`fn build_transfer` is a grep the next agent relaxes. Every `build` the table names was rewritten by
+hand and the tests pin the replacements. The grep's other blind spot is its own: a `//` **inside** a
+string literal on a continuation line reads as the start of a comment, so anything after it on that
+line is not examined. Both are in the step's own comment, where the person who hits them will read
+them.
+
+**What the grep covers is wider than §5 asked for.** The word list gained `systemctl`, `mutator`,
+`mempool` and `subaddr` — each of them a word §2o.2 retires and none of them in rule 7's own
+list — and two exemptions rather than one: a runnable command (rule 11's whole point) and **a
+single bare token**, because `"wallet_idle"` is a contract key and prose has spaces in it.
