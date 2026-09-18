@@ -14,11 +14,11 @@
 mod mock;
 
 use std::path::PathBuf;
-use std::sync::atomic::AtomicI32;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
 
 use ftui::runtime::simulator::ProgramSimulator;
-use ftui::{Event, Frame, GraphemePool, KeyCode, KeyEvent, Model};
+use ftui::{Event, Frame, GraphemePool, KeyCode, KeyEvent, Model, Modifiers};
 
 use fmonero_core::{state, CancelToken, Context, PendingKind, PendingSend, PendingTx, Piconero};
 
@@ -1488,5 +1488,280 @@ fn the_seed_backup_modal_names_the_command_and_contains_no_seed() {
     for line in render(s.model(), 110, 34) {
         let words = line.split_whitespace().count();
         assert!(words < 20, "a 25-word line would be a seed: {line}");
+    }
+}
+
+// ======================================================================================
+// The TUI UX fix-up round: DEFECT A (the tab strip's hit rects), DEFECT B (the picker's
+// address budget), DEFECT C (the `?` overlay's first row) and FINDING D (the wallet badge).
+// ======================================================================================
+
+/// The column at which `needle` is drawn in `haystack`, in **cells** rather than bytes: the
+/// strip can carry a spinner or a nettype, and a multi-byte char would make byte offsets lie.
+fn cell_col(haystack: &str, needle: &str) -> Option<u16> {
+    let h: Vec<char> = haystack.chars().collect();
+    let n: Vec<char> = needle.chars().collect();
+    let at = (0..=h.len().saturating_sub(n.len())).find(|&i| h[i..i + n.len()] == n[..])?;
+    u16::try_from(at).ok()
+}
+
+/// **The assertion the whole mouse suite was missing** (DEFECT A). Every other mouse case reads
+/// its coordinate out of `m.hits` — the same map it then clicks — so a map two columns off the
+/// rendered text is perfectly self-consistent and passes: the suite can prove routing and can
+/// never prove alignment. This one reads the **frame**. It finds each tab's title in the strip
+/// that was actually drawn, clicks the title's LAST cell and the next tab's FIRST cell, and
+/// asserts where it lands.
+///
+/// On the pre-fix tree the last cell of `2 Wallet` selected Send, of `3 Send` selected Log, and
+/// `4 Log` selected nothing at all, because `tab_strip` advanced by the bare title width while
+/// `Tabs::tab_label` draws `title.width() + 2`.
+#[test]
+fn a_click_on_a_tab_label_lands_on_that_tab_and_never_on_its_neighbour() {
+    for (w, h) in [(150u16, 40u16), (100, 30), (90, 30), (56, 24)] {
+        // Below 60 columns or 20 rows `tab_strip` draws its own `1·2·3·4` (§7a resize); above,
+        // it delegates to `Tabs`, which is the tier the defect was in.
+        let narrow = w < 60 || h < 20;
+        let titles: [&str; 4] = if narrow {
+            ["1", "2", "3", "4"]
+        } else {
+            ["1 Node", "2 Wallet", "3 Send", "4 Log"]
+        };
+        for (i, title) in titles.iter().enumerate() {
+            // Start two screens away, so that neither the tab under test nor the neighbour a
+            // misaligned rect selects is where we already are: "nothing happened" must fail.
+            let from = Screen::from_index(i + 2);
+            let mut s = sim(offline_model(from));
+            let strip = render(s.model(), w, h).remove(0);
+            let at = cell_col(&strip, title).unwrap_or_else(|| {
+                panic!("`{title}` is not in the strip drawn at {w}x{h}: {strip:?}")
+            });
+            let last = at + title.chars().count() as u16 - 1;
+            s.inject_event(click(last, 0));
+            assert_eq!(
+                s.model().screen,
+                Screen::from_index(i),
+                "a click on column {last}, the LAST cell of `{title}` at {w}x{h} (from {from:?}), \
+                 in the strip {strip:?}"
+            );
+            if i + 1 >= titles.len() {
+                continue;
+            }
+            // And the FIRST cell of the next tab is the next tab's: at the wide tiers that is
+            // its leading decoration cell, two columns left of its title (the `[`/space `Tabs`
+            // draws, plus the literal's own leading space).
+            let next = titles[i + 1];
+            let nat = cell_col(&strip, next).expect("the next title");
+            let first = if narrow { nat } else { nat - 2 };
+            let mut s2 = sim(offline_model(Screen::from_index(i + 3)));
+            let _ = render(s2.model(), w, h);
+            s2.inject_event(click(first, 0));
+            assert_eq!(
+                s2.model().screen,
+                Screen::from_index(i + 1),
+                "a click on column {first}, the FIRST cell of `{next}` at {w}x{h}"
+            );
+        }
+    }
+}
+
+/// §7a.4: the **address** is "never elided, for the reason the send confirm never elides an
+/// address". DEFECT B: at the brief's own 150×40 the owner's configured node rendered as
+/// `● xmr-node.cakewallet.co` while a 100-column terminal rendered it whole — the drop loop
+/// budgeted `COL` per kept column and `Table` spends `COL + 1`, and its 26-column minimum was
+/// below the 31 cells that address needs. The list carries the longest address monero.fail
+/// actually served this machine (49 columns) so the cap is exercised and not assumed.
+#[test]
+fn the_picker_never_elides_the_configured_address_at_any_width() {
+    const MINE: &str = "xmr-node.cakewallet.com:18081";
+    const LONGEST: &str = "static.63.34.245.188.clients.your-server.de:18089";
+    let dir = std::env::temp_dir().join(format!(
+        "fmonero-tui-addr-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut ctx = Context::for_test(&dir).expect("test context");
+    ctx.settings.node.mode = fmonero_core::NodeMode::Remote;
+    ctx.settings.node.remote = MINE.into();
+    ctx.settings.wallet.url = "http://127.0.0.1:2".into();
+    seed_cache(
+        &ctx,
+        &[
+            (MINE, false),
+            (LONGEST, true),
+            ("109.199.98.74:18081", true),
+        ],
+    );
+    for w in [90u16, 100, 120, 150, 180] {
+        let s = sim(model(&ctx, Screen::Node));
+        let text = sim_text(&s, w, 40);
+        assert!(
+            text.contains("Public nodes"),
+            "the picker must be on screen at {w} columns:\n{text}"
+        );
+        assert!(
+            text.contains(&format!("● {MINE}")),
+            "the configured address is elided at {w} columns:\n{text}"
+        );
+        // Wide enough to seat the longest row too, once the budget is right: half of the pane at
+        // 180 is 54 cells and the widest cell is 51, so nothing there is cut either.
+        if w == 180 {
+            assert!(
+                text.contains(LONGEST),
+                "the widest address is elided at {w} columns:\n{text}"
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// DEFECT C, as the one test that reads the overlay's text **and** the dispatcher's behaviour:
+/// `KEYS`'s `always` row may only name keys that are resolved above every branch, and the row
+/// that names `1 2 3 4` has to say what the Send screen's own status line already says.
+///
+/// The old first row — `Tab  ⇧Tab  1 2 3 4` → "screens — always, even inside a field or a
+/// modal" — was false the moment a field had focus, which on the money screen means a digit
+/// lands in the amount.
+#[test]
+fn the_keys_table_promises_always_only_for_the_keys_the_dispatcher_resolves_first() {
+    let always: Vec<&(&str, &str)> = KEYS
+        .iter()
+        .filter(|(_, what)| what.contains("always"))
+        .collect();
+    assert_eq!(
+        always.len(),
+        1,
+        "exactly one row may claim `always`, and it is §7a.1's: {always:?}"
+    );
+    assert_eq!(
+        always[0].0, "Tab  ⇧Tab  Ctrl+C",
+        "`always` may name only the keys resolved above every screen, focus state and modal"
+    );
+    let numbers = KEYS
+        .iter()
+        .find(|(k, _)| k.contains("1 2 3 4"))
+        .expect("a row for the direct route");
+    assert!(
+        numbers.1.contains("no field has focus"),
+        "the `1 2 3 4` row has to carry its condition: {numbers:?}"
+    );
+    // Rendered, because the overlay is the thing a user reads.
+    let mut m = offline_model(Screen::Node);
+    m.show_help = true;
+    let text = screen_text(&m, 110, 44);
+    assert!(
+        !text.contains("even inside a field"),
+        "the overlay still renders the sentence that is false:\n{text}"
+    );
+    assert!(text.contains("when no field has focus"), "{text}");
+
+    // The behaviour, on the money screen with real digits — the capture that found it.
+    let mut s = sim(offline_model(Screen::Send));
+    s.inject_event(key(KeyCode::Down)); // To → Amount (§7a.1: fields move with ↑↓)
+    type_str(&mut s, "0.01");
+    for c in ['2', '4'] {
+        s.inject_event(key(KeyCode::Char(c)));
+    }
+    assert_eq!(
+        s.model().screen,
+        Screen::Send,
+        "a focused field keeps every printable character, digits included"
+    );
+    assert_eq!(
+        s.model().send.amount.value(),
+        "0.0124",
+        "the digits went into the amount, which is why the row cannot say `always`"
+    );
+    // `q` likewise: it is typed, not obeyed.
+    s.inject_event(key(KeyCode::Char('q')));
+    assert_eq!(s.model().send.amount.value(), "0.0124q");
+    // Unfocused, the same keys are the direct route the row describes.
+    s.inject_event(key(KeyCode::Escape));
+    s.inject_event(key(KeyCode::Char('2')));
+    assert_eq!(s.model().screen, Screen::Wallet);
+    // And the `always` row is true from inside a focused field, which is the half that was.
+    let mut s2 = sim(offline_model(Screen::Send));
+    type_str(&mut s2, "9");
+    s2.inject_event(key(KeyCode::Tab));
+    assert_eq!(s2.model().screen, Screen::Log);
+    let mut s3 = sim(offline_model(Screen::Send));
+    type_str(&mut s3, "9");
+    s3.inject_event(Event::Key(
+        KeyEvent::new(KeyCode::Char('c')).with_modifiers(Modifiers::CTRL),
+    ));
+    assert_eq!(
+        s3.model().exit.load(Ordering::SeqCst),
+        130,
+        "Ctrl+C is resolved before every branch, a focused field included"
+    );
+}
+
+/// FINDING D: `wallet down` is an assertion about a daemon, and it was printed while the TUI's
+/// own action was the reason the poll could not answer — two lines under a panel reading
+/// `starting…`. The badge now has a term for it, and `down` survives only for the state it
+/// describes: nothing of ours in flight, and the poll still failing.
+#[test]
+fn the_wallet_badge_never_says_down_for_a_daemon_the_tui_is_itself_working() {
+    for (active, action, want) in [
+        (false, None, "down"),
+        (true, None, "down"),
+        (false, Some(subs::Action::WalletDaemonStart), "starting"),
+        (
+            true,
+            Some(subs::Action::WalletCreate {
+                name: "fresh".into(),
+                password: "x".into(),
+                language: "English".into(),
+            }),
+            "busy",
+        ),
+    ] {
+        let dir = std::env::temp_dir().join(format!(
+            "fmonero-tui-badge-{}-{active}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut ctx = Context::for_test(&dir).expect("test context");
+        // A port nothing listens on, so every poll fails; the §2i fixture decides whether the
+        // unit is active, which is the other half of the state the badge reads.
+        ctx.settings.wallet.url = "http://127.0.0.1:2".into();
+        ctx.settings.node.url = "http://127.0.0.1:1".into();
+        let fixture = dir.join("systemctl.fixture");
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(
+            &fixture,
+            format!(
+                "fmonero-monerod.service inactive disabled yes -\n\
+                 fmonero-wallet-rpc.service {} disabled yes -\n",
+                if active { "active" } else { "inactive" }
+            ),
+        )
+        .expect("fixture");
+        ctx.systemctl = fmonero_core::context::Systemctl::Fixture(fixture);
+        let mut s = sim(model(&ctx, Screen::Wallet));
+        assert_eq!(
+            s.model().status.as_ref().map(|st| st.wallet.unit_active),
+            Some(active),
+            "the fixture must really reach unit_active = {active}, or this proves nothing"
+        );
+        assert!(
+            !s.model().has_warning("wallet_idle"),
+            "local mode with no wallet is `wallet_down`, not `wallet_idle` — the arm above"
+        );
+        if let Some(a) = action {
+            let _ = s.model_mut().start(a);
+            assert!(s.model().action.is_some(), "the action must be armed");
+        }
+        assert_eq!(s.model().wallet_badge(), want, "unit_active = {active}");
+        let text = sim_text(&s, 120, 40);
+        assert!(text.contains(&format!("wallet {want}")), "{text}");
+        if want != "down" {
+            assert!(
+                !text.contains("wallet down"),
+                "the status line still says down:\n{text}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -192,18 +192,21 @@ fn tab_strip(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
     .active_style(th.selected())
     .separator("");
     StatefulWidget::render(&tabs, cols[0], frame, &mut m.tabs.borrow_mut());
-    // The fix for "the tabs look clickable and are not" (§7a.2). The labels' widths are the
-    // literals above, so the rects are computed from the same source as the text — `Tabs` does
-    // not report where it drew, and `register_hit` does nothing under `App::fullscreen` (§1.4).
+    // The fix for "the tabs look clickable and are not" (§7a.2), from the geometry `Tabs`
+    // **draws**: `tab_label` wraps every tab in one leading and one trailing cell — `[`/`]` when
+    // active, a space each side when not (`ftui-widgets-0.7.0/src/tabs.rs:239-256`) — so a tab is
+    // `title.width() + 2` wide, with `.separator("")` costing nothing between (`:474-479`).
+    // Advancing by the bare title width put every rect 2 columns narrow and `2 × index` columns
+    // left of its label: `Send` selected `Log`, `4 Log` nothing (DECISIONS: DEFECT A). The labels
+    // total 41 columns against this tier's 60-column floor, so the overflow markers (`:445-462`)
+    // cannot fire; the `min` is the clip `draw_text_span` applies at the pane edge, and a tab with
+    // no room left registers a zero-width rect, which `Map::at` can never match.
     let mut x = cols[0].x;
     for (i, label) in [" 1 Node ", " 2 Wallet ", " 3 Send ", " 4 Log "]
         .iter()
         .enumerate()
     {
-        let w = label.width() as u16;
-        if x + w > cols[0].right() {
-            break;
-        }
+        let w = (label.width() as u16 + 2).min(cols[0].right().saturating_sub(x));
         m.hits.tab(i, Rect::new(x, cols[0].y, w, 1));
         x += w;
     }
@@ -581,13 +584,31 @@ fn picker_pane(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
     let rows = Flex::vertical()
         .constraints([Constraint::Fill, Constraint::Fixed(1), Constraint::Fixed(1)])
         .split(body);
-    // **The address is never elided at any tier** (§7a.4), so the columns to its right are
-    // dropped from the RIGHT until it has room — rather than handed `Constraint::Fill` over
-    // whatever is left, which at 72 columns gave the address **zero** width and rendered a table
-    // of health figures for nodes it did not name.
-    const ADDRESS_MIN: u16 = 26;
+    // **The address is never elided at any tier** (§7a.4), so columns are dropped from the RIGHT
+    // until it has room — rather than handed `Constraint::Fill` over whatever is left, which at 72
+    // columns gave the address **zero** width and named none of the nodes it rated. Two
+    // corrections (DECISIONS: DEFECT B), which is how 150×40 elided the owner's own address
+    // while 100 columns rendered it whole. · `Table` spends one cell **between** columns
+    // (`column_spacing` defaults to 1 and becomes the `Flex` gap —
+    // `ftui-widgets-0.7.0/src/table.rs:114`, `:845`), so a kept column costs `COL + 1`, and a
+    // budget counting only `COL` left the address `header.len() - 1` cells short. · And the
+    // minimum is **measured**: 26 was under the 31 cells `● xmr-node.cakewallet.com:18081` needs.
+    // It is the widest address cell drawn — capped at half the pane, so one 49-column hostname
+    // cannot delete every data column, and never below the configured row's own width.
     const COL: u16 = 12;
-    while header.len() > 1 && rows[0].width < ADDRESS_MIN + COL * (header.len() as u16 - 1) {
+    const PER_COL: u16 = COL + 1;
+    const ADDRESS_FLOOR: u16 = 26; // what to budget when the list is empty: nothing to measure
+    let mut widest = ADDRESS_FLOOR;
+    let mut mine = 0;
+    for (cells, n) in cell_rows.iter().zip(rows_data.iter()) {
+        let w = cells.first().map_or(0, |s| s.width() as u16);
+        widest = widest.max(w);
+        if configured.as_deref() == Some(n.address.as_str()) {
+            mine = w;
+        }
+    }
+    let address_min = widest.min(rows[0].width / 2).max(mine);
+    while header.len() > 1 && rows[0].width < address_min + PER_COL * (header.len() as u16 - 1) {
         header.pop();
     }
     let keep = header.len();

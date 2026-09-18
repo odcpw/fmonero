@@ -129,15 +129,21 @@ pub(super) enum Pane {
 
 /// The help overlay and the behaviour share this one table, so they cannot drift (§7a).
 pub const KEYS: &[(&str, &str)] = &[
-    // **The first row is §7a.1's rule**, and it is the one row whose text has to be true
-    // everywhere: `Tab` is resolved above every screen, focus state and modal branch.
+    // **§7a.1's rule, split in two because one row could not state it truthfully.** `Tab`, `⇧Tab`
+    // and `Ctrl+C` are resolved above every screen, focus state and modal branch. But `1 2 3 4`
+    // and `q` are printable, and §7a.1's own second bullet gives a focused field **every**
+    // printable character: with Amount focused, `2` then `4` types `0.0124` and `q` appends a `q`
+    // (DECISIONS: DEFECT C). The dispatcher below, `send.rs:94` and the Send screen's status line
+    // already said so — the overlay was the thing that lied.
     (
-        "Tab  ⇧Tab  1 2 3 4",
-        "screens — always, even inside a field or a modal",
+        "Tab  ⇧Tab  Ctrl+C",
+        "screens · quit — always, in a field, a modal, the overlay or a running action (quit \
+         twice while one runs: cancel, then quit)",
     ),
     (
-        "q  Ctrl+C",
-        "quit (twice while an action runs: cancel, then quit)",
+        "1 2 3 4  q",
+        "the same two — but only when no field has focus: a field keeps every printable key, \
+         and Esc unfocuses it",
     ),
     ("?", "this help"),
     ("r", "refresh now"),
@@ -394,6 +400,9 @@ struct ActionSlot {
     started: Instant,
     deadline_sec: u64,
     cancellable: bool,
+    /// [`Action::wallet_busy`], recorded here because the `Action` moves into `slot` and the
+    /// subscription takes it (FINDING D).
+    wallet_busy: bool,
 }
 
 /// The rows `history::query` returned, plus the WALLET height and local clock it derived —
@@ -584,6 +593,7 @@ impl Tui {
         if self.has_warning("wallet_stalled") {
             return "error";
         }
+        let ours = self.action.as_ref().is_some_and(|a| a.wallet_busy);
         match (s.wallet.reachable, s.wallet.open) {
             // **`idle`, not `down`, when §5 says `wallet_idle`** (v5.5). The daemon is DESIGNED to
             // be down until a wallet is opened (§4.2 writes both units disabled), and this line is
@@ -591,6 +601,14 @@ impl Tui {
             // same state an *info* and §6.4 keeps the bar icon calm is the drift §2j is about, in
             // the most-read place on the screen.
             (false, _) if self.has_warning("wallet_idle") => "idle",
+            // **`starting`/`busy`, not `down`, while one of our own actions is the reason a poll
+            // cannot answer** (DECISIONS: FINDING D). `W` and a TUI create both ran under a badge
+            // reading `down` two lines below a panel reading `starting…`: an assertion about a
+            // daemon this model knew to be false. `down` survives only for the state it describes
+            // — nothing of ours in flight and the poll still failing, which core has already split
+            // into `wallet_idle` (deliberately not running, above) and `wallet_down`.
+            (false, _) if ours && s.wallet.unit_active => "busy",
+            (false, _) if ours => "starting",
             (false, _) => "down",
             (true, true) => "up",
             (true, false) => "syncing",
@@ -875,6 +893,7 @@ impl Tui {
             label: action.label(),
             deadline_sec: action.deadline_sec(&self.ctx),
             cancellable: action.cancellable(),
+            wallet_busy: action.wallet_busy(),
             started: Instant::now(),
             slot: Arc::new(Mutex::new(Some(action))),
         });

@@ -180,6 +180,19 @@ impl Action {
     pub fn cancellable(&self) -> bool {
         !matches!(self, Action::Relay(_))
     }
+
+    /// Would this action explain a wallet-RPC poll that does not answer? The status badge asks, so
+    /// that `down` is never printed for a daemon fmonero is itself starting, creating a wallet in,
+    /// opening, refreshing, spending from or restarting under a mode switch (FINDING D). The
+    /// **complement** of the four node-only actions on purpose: a new wallet action is busy by
+    /// default, so the badge's honesty does not depend on this list being extended.
+    pub fn wallet_busy(&self) -> bool {
+        use Action::{NodeDown, NodeListFetch, NodeProbe, NodeUp};
+        !matches!(
+            self,
+            NodeUp | NodeDown | NodeListFetch { .. } | NodeProbe { .. }
+        )
+    }
 }
 
 /// What an action produced, in the form the model needs to go on.
