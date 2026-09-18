@@ -137,77 +137,107 @@ pub const KEYS: &[(&str, &str)] = &[
     // already said so — the overlay was the thing that lied.
     (
         "Tab  ⇧Tab  Ctrl+C",
-        "screens · quit — always, in a field, a modal, the overlay or a running action (quit \
-         twice while one runs: cancel, then quit)",
+        "screens · quit. Always: in a field, in a pop-up, in this help, or while something is \
+         running. Press quit twice while something runs and it stops first.",
     ),
     (
         "1 2 3 4  q",
-        "the same two — but only when no field has focus: a field keeps every printable key, \
-         and Esc unfocuses it",
+        "the same two, but only when no field has focus. A field keeps every key you type. Esc \
+         leaves the field.",
     ),
     ("?", "this help"),
-    ("r", "refresh now"),
+    ("r", "check now"),
     (
         "Esc",
-        "close this overlay, else unfocus the field, else cancel the running action",
+        "close this help, else leave the field, else stop what is running",
     ),
     (
         "mouse",
-        "click tabs, rows, fields and every [key] chip · wheel scrolls the list under the          cursor · right-click is Esc",
+        "click tabs, rows, fields and every [key] chip. The wheel scrolls the list under the          pointer. Right-click is Esc.",
     ),
-    ("u  d", "Node: start · stop the node (confirm modal; remote mode: disabled)"),
-    ("b", "Node: peers ⇄ bans"),
-    ("L", "cycle the daemon log level (confirm modal)"),
     (
-        "p  f",
-        "Node: probe the listed nodes · refresh the list from monero.fail",
+        "u  d",
+        "Node: start · stop your node. Not available while you use a public node.",
     ),
+    ("b", "Node: peers ⇄ bans"),
+    (
+        "L",
+        "change how much your node writes to its log (it asks first)",
+    ),
+    ("p  f", "Node: check the listed nodes · get a fresh list"),
     (
         "Enter  a  H",
-        "Node: use the selected node (confirm) · add an address · back to the previous node",
+        "Node: use the selected node (it asks first) · add an address · go back to the last one",
     ),
+    ("l", "Node: use your own node instead (it asks first)"),
     (
         "o  c  x",
-        "Wallet: open a wallet (modal) · create a wallet (modal) · close the open wallet",
+        "Wallet: open a wallet · create one · close the open wallet",
     ),
     (
         "W",
-        "Wallet: start the wallet daemon (or stop it when idle and nothing is open)",
+        "Wallet: start the wallet service, or stop it when nothing is open",
     ),
-    ("a  l", "Wallet: new subaddress · label the selected one"),
-    ("n", "Wallet: edit the selected transfer's note"),
-    ("R  Q", "Wallet: refresh · show the address as a QR"),
-    ("/  t", "Wallet: filter rows · cycle the type filter"),
+    ("a  l", "Wallet: new address · rename the selected one"),
+    ("n", "Wallet: edit the note on the selected payment"),
+    ("R  Q", "Wallet: check for payments · show the address as a QR code"),
+    ("/  t", "Wallet: filter rows · change which kinds show"),
     (
         "←→  Enter",
         "Wallet: swap panes · copy an address · open a row",
     ),
     (
         "Send: ↑↓  Enter",
-        "next/previous field · build  (Tab no longer moves between fields; Esc unfocuses,          Enter from outside returns to the form)",
+        "next/previous field · check it. Tab leaves the form. Esc leaves the field; Enter goes          back into it.",
     ),
     (
         "modals: ↑↓  Enter",
-        "move between a modal's controls · advance, then submit on the last one",
+        "move between a pop-up's fields · next, then confirm on the last one",
     ),
     (
         "Send: p  Ctrl+P  @",
-        "cycle priority (on its row, or from anywhere) · address book",
+        "change the fee level (on its row, or from anywhere) · address book",
     ),
-    (
-        "Send: ←→",
-        "on the Priority or Account row: change it (accounts come from the wallet)",
-    ),
+    ("Send: ←→", "on the Fee or Account row: change it"),
     (
         "Send: sweep",
-        "not in the TUI — run: fmonero wallet sweep <addr> --dry-run",
+        "not in the TUI. To send everything, in a terminal: fmonero wallet sweep <address>          --dry-run",
     ),
     (
         "Send: type \"send\"",
-        "the confirm modal's --yes; Esc discards, and a relay cannot be cancelled",
+        "typing the word is how you confirm. Esc discards. Once it is sent it cannot be taken          back.",
     ),
     ("Log: /  f  n N", "search · follow · next/previous match"),
 ];
+
+/// The four fee levels, by the names the user chooses between (§2o.2). Monero's priority is
+/// `0..=4` on the wire, where **0 is the daemon's own alias of 1** (§1b.4) — so there are four
+/// names, and a stored `0` renders as the first of them. The Send screen's chips, the Node
+/// screen's fee row and the send confirm all read from here, so the three cannot disagree.
+pub(super) const FEE_LEVELS: [&str; 4] = ["cheapest", "normal", "fast", "fastest"];
+
+/// A wire priority as its name.
+pub(super) fn fee_level_name(priority: u32) -> &'static str {
+    FEE_LEVELS[(priority.max(1) - 1).min(3) as usize]
+}
+
+/// `p`, `Ctrl+P` and `→` cycle **within the four named levels**: 0 and 1 are the same fee, so a
+/// five-step cycle spent one press doing nothing visible.
+pub(super) fn next_fee_level(priority: u32) -> u32 {
+    if priority >= 4 {
+        1
+    } else {
+        priority.max(1) + 1
+    }
+}
+
+/// `←`, the other way.
+pub(super) fn prev_fee_level(priority: u32) -> u32 {
+    match priority {
+        0 | 1 => 4,
+        n => n - 1,
+    }
+}
 
 const SPINNER: [&str; 4] = ["⠋", "⠙", "⠸", "⠴"];
 /// One sample per `status` poll; §7a asks for a 60-sample rx sparkline.
@@ -386,6 +416,10 @@ pub(super) enum Confirm {
     NodeDown,
     /// The next level in the 0–4 cycle. A mutation, so it asks first (§7a).
     LogLevel(i8),
+    /// v5.6, §7a.4's `l`: go back to your own node. It asks first for the same reason
+    /// `Confirm::UseNode` does — it restarts the wallet service and can close the wallet this
+    /// session is holding (§2m.5).
+    NodeLocal,
 }
 
 pub(super) enum Prompt {
@@ -439,6 +473,12 @@ pub struct Tui {
     exit: Arc<AtomicI32>,
     theme: Theme,
     theme_mtime: Option<SystemTime>,
+    /// v5.6, §7a.7. `config.toml`'s modification time as of the last time this model read it,
+    /// so a settings change made **anywhere else** — the CLI in another terminal, an editor, a
+    /// `doctor --fix` that repaired a key — is noticed on the 1 s poll instead of being
+    /// invisible until the TUI is restarted. `stat` on one file per second is not a cost worth
+    /// optimising: §2l's budget is spawns and RPC, and this is neither.
+    config_mtime: Option<SystemTime>,
     screen: Screen,
     tabs: RefCell<TabsState>,
     show_help: bool,
@@ -508,6 +548,9 @@ impl Tui {
             theme_mtime: std::fs::metadata(theme::colors_path())
                 .and_then(|m| m.modified())
                 .ok(),
+            config_mtime: std::fs::metadata(ctx.paths.config_file())
+                .and_then(|m| m.modified())
+                .ok(),
             node: NodeUi::default(),
             picker: PickerUi {
                 filter: text_input(&theme),
@@ -562,21 +605,35 @@ impl Tui {
             .map_or(self.ctx.settings.wallet.account, |s| s.wallet.account_index)
     }
 
-    pub(super) fn node_badge(&self) -> &'static str {
-        let Some(s) = &self.status else { return "down" };
+    /// The node badge as **the word a person reads** and the **tone the theme paints it**
+    /// (§2o rule 8, v5.6). The two were one string until v5.6, which is why the badge said
+    /// `down` for a node that may be perfectly well and merely unreachable: the word had to
+    /// double as `Theme::badge`'s style key. The tone keys are internal and never rendered.
+    fn node_state(&self) -> (&'static str, &'static str) {
+        let Some(s) = &self.status else {
+            return ("not answering", "down");
+        };
         if self.status_err.is_some() || s.pending.is_some() || self.has_warning("node_stalled") {
-            return "error";
+            return ("problem", "error");
         }
         // Remote mode answers first (§2m.3): `reachable` and `synchronized` are both `null`
-        // there, so every badge below would paint "down" for a wallet that is working.
+        // there, so every badge below would paint "not answering" for a wallet that is working.
         if self.remote_mode() {
-            return "remote";
+            return ("public node", "up");
         }
         match (s.node.reachable, s.node.synchronized) {
-            (Some(true), Some(true)) => "up",
-            (Some(true), _) => "syncing",
-            _ => "down",
+            (Some(true), Some(true)) => ("synced", "up"),
+            (Some(true), _) => ("syncing", "syncing"),
+            _ => ("not answering", "down"),
         }
+    }
+
+    pub(super) fn node_badge(&self) -> &'static str {
+        self.node_state().0
+    }
+
+    pub(super) fn node_tone(&self) -> &'static str {
+        self.node_state().1
     }
 
     /// `node.mode == remote` — the one discriminator the whole Node screen branches on (§2m).
@@ -588,10 +645,13 @@ impl Tui {
             })
     }
 
-    pub(super) fn wallet_badge(&self) -> &'static str {
-        let Some(s) = &self.status else { return "down" };
+    /// The wallet badge, word and tone (see [`Tui::node_state`]).
+    fn wallet_state(&self) -> (&'static str, &'static str) {
+        let Some(s) = &self.status else {
+            return ("not running", "down");
+        };
         if self.has_warning("wallet_stalled") {
-            return "error";
+            return ("problem", "error");
         }
         let ours = self.action.as_ref().is_some_and(|a| a.wallet_busy);
         match (s.wallet.reachable, s.wallet.open) {
@@ -600,34 +660,42 @@ impl Tui {
             // the one a user reads on every screen — telling them `down` there while §5 calls the
             // same state an *info* and §6.4 keeps the bar icon calm is the drift §2j is about, in
             // the most-read place on the screen.
-            (false, _) if self.has_warning("wallet_idle") => "idle",
+            (false, _) if self.has_warning("wallet_idle") => ("closed", "down"),
             // **`starting`/`busy`, not `down`, while one of our own actions is the reason a poll
             // cannot answer** (DECISIONS: FINDING D). `W` and a TUI create both ran under a badge
             // reading `down` two lines below a panel reading `starting…`: an assertion about a
             // daemon this model knew to be false. `down` survives only for the state it describes
             // — nothing of ours in flight and the poll still failing, which core has already split
             // into `wallet_idle` (deliberately not running, above) and `wallet_down`.
-            (false, _) if ours && s.wallet.unit_active => "busy",
-            (false, _) if ours => "starting",
-            (false, _) => "down",
-            (true, true) => "up",
-            (true, false) => "syncing",
+            (false, _) if ours && s.wallet.unit_active => ("scanning", "syncing"),
+            (false, _) if ours => ("starting", "syncing"),
+            (false, _) => ("not running", "down"),
+            (true, true) => ("open", "up"),
+            (true, false) => ("catching up", "syncing"),
         }
+    }
+
+    pub(super) fn wallet_badge(&self) -> &'static str {
+        self.wallet_state().0
+    }
+
+    pub(super) fn wallet_tone(&self) -> &'static str {
+        self.wallet_state().1
     }
 
     pub(super) fn node_phrase(&self) -> String {
         let Some(s) = &self.status else {
-            return "reading status…".into();
+            return "checking…".into();
         };
         if self.remote_mode() {
-            return format!("Remote node · {}", s.node.url);
+            return format!("Public node · {}", s.node.url);
         }
         if s.node.reachable != Some(true) {
-            return "Node is not running".into();
+            return "Your node is not running".into();
         }
         match (s.node.synchronized, s.node.sync_percent) {
-            (Some(true), _) => "Synchronized".into(),
-            (_, Some(p)) => format!("Syncing — {p:.1}%"),
+            (Some(true), _) => "Synced".into(),
+            (_, Some(p)) => format!("Syncing {p:.0}%"),
             _ => "Running".into(),
         }
     }
@@ -655,7 +723,12 @@ impl Tui {
             .warnings
             .iter()
             .find(|w| w.id == id)
-            .map(|w| format!("{} — {}", w.text, w.hint))
+            // §2o.1: the in-app sentence, never the shell command. `action` is `None` where
+            // nothing can be done from in here, and then the text stands alone.
+            .map(|w| match w.action.as_deref() {
+                Some(a) => format!("{}  {a}", w.text),
+                None => w.text.clone(),
+            })
     }
 
     pub(super) fn sync_eta(&self) -> Option<String> {
@@ -869,7 +942,7 @@ impl Tui {
     /// nothing on screen saying a transaction had existed. Those two callers put it back.
     fn try_start(&mut self, action: Action) -> Result<Cmd<Msg>, Box<Action>> {
         if let Some(a) = &self.action {
-            self.note(format!("{} already — Esc cancels it", a.label), true);
+            self.note(format!("Already {}. Esc cancels it.", a.label), true);
             return Err(Box::new(action));
         }
         let daemon = match action {
@@ -904,16 +977,16 @@ impl Tui {
     /// the `CancelToken`. A relay is never cancelled (§7a).
     fn cancel_action(&mut self) -> Cmd<Msg> {
         match self.action.take() {
-            None => self.note("nothing running to cancel", false),
+            None => self.note("Nothing is running.", false),
             Some(a) if !a.cancellable => {
                 let label = a.label.clone();
                 self.action = Some(a);
                 self.note(
-                    format!("{label} cannot be cancelled — the transaction is already on the wire"),
+                    format!("{label} cannot be stopped. The payment has already gone out."),
                     true,
                 );
             }
-            Some(a) => self.note(format!("cancelled: {}", a.label), true),
+            Some(a) => self.note(format!("Stopped: {}", a.label), true),
         }
         Cmd::none()
     }
@@ -993,7 +1066,7 @@ impl Tui {
             .map(|n| ProbeTarget::from_node(n))
             .collect();
         if targets.is_empty() {
-            self.note("no nodes to probe — press f to fetch the list", true);
+            self.note("No nodes to check. Press f to get the list.", true);
             return Cmd::none();
         }
         self.picker.progress = Some(format!("probing {} nodes · Esc to stop", targets.len()));
@@ -1033,7 +1106,7 @@ impl Tui {
     /// is a one-key undo of the switch just made, not a mode change (§7a.3).
     fn previous_node(&mut self) -> Cmd<Msg> {
         let Some(address) = self.picker.prev.clone() else {
-            self.note("no previous node in this session", true);
+            self.note("No earlier node to go back to.", true);
             return Cmd::none();
         };
         let wallet_open = self.status.as_ref().and_then(|s| s.wallet.name.clone());
@@ -1042,6 +1115,19 @@ impl Tui {
             wallet_open,
         });
         Cmd::none()
+    }
+
+    /// v5.6, §7a.4's `l` and §2o.1's destination for the command the old refusal printed.
+    ///
+    /// It goes through a confirm modal rather than acting, for the reason `Confirm::UseNode`
+    /// does: the switch re-renders the wallet service and closes the wallet this session may be
+    /// holding (§2m.5). With your own node already in force it is a no-op with a sentence.
+    fn use_local(&mut self) -> Cmd<Msg> {
+        if !self.remote_mode() {
+            self.note("You are already using your own node.", false);
+            return Cmd::none();
+        }
+        self.confirm_local()
     }
 
     /// The §2n.4 cadence: probe **the configured node** on entering the Node screen and every
@@ -1080,6 +1166,74 @@ impl Tui {
         self.note_at = Instant::now();
     }
 
+    /// §7a.7, part 1. Replace the model's `Context` from disk after anything changed
+    /// settings.
+    ///
+    /// The defect this exists for: `Tui` held **one** `Context`, cloned at startup, and never
+    /// reloaded it. `Action::NodeUseRemote` rewrote `config.toml` and the wallet service
+    /// correctly — the switch really happened — but `self.ctx.settings` kept the old
+    /// `node.remote`, so every poll, the Node hero, the status bar and the picker's `●` all
+    /// went on naming the node the user had just left. *"When I change nodes it says I'm still
+    /// on Cake Wallet."*
+    ///
+    /// `paths`, the `systemctl` seam and every global flag are kept: they came from argv and the
+    /// environment, not from the file. A reload that fails leaves the old `Context` and says so
+    /// in a toast — a TUI that exited on an unreadable settings file would be worse than one
+    /// showing a stale address it tells you about.
+    fn reload_ctx(&mut self) -> Result<(), Error> {
+        let settings = coresettings::Settings::load(&self.ctx.paths)?;
+        let timeouts = coresettings::Timeouts::from_settings(&settings.timeouts);
+        self.ctx.settings = settings;
+        self.ctx.timeouts = timeouts;
+        self.config_mtime = std::fs::metadata(self.ctx.paths.config_file())
+            .and_then(|m| m.modified())
+            .ok();
+        self.logs.path = self.ctx.settings.node.log_file.clone();
+        Ok(())
+    }
+
+    /// §7a.7, part 2. Notice a settings change made outside this process, on the 1 s poll.
+    ///
+    /// Returns **false** when a reload was needed and failed, and the caller then skips the rest
+    /// of the tick's outbound work: fmonero does not start checking nodes while it cannot read
+    /// the settings that name them, and — the reason the return value exists at all — an action
+    /// armed in the same tick would overwrite the toast this raised with its own label.
+    fn maybe_reload_settings(&mut self) -> bool {
+        let m = std::fs::metadata(self.ctx.paths.config_file())
+            .and_then(|m| m.modified())
+            .ok();
+        if m == self.config_mtime {
+            return true;
+        }
+        // Record the new mtime even when the load fails, so an unreadable file raises **one**
+        // toast rather than one per second until it is fixed.
+        self.config_mtime = m;
+        let before = nodes::configured_address(&self.ctx);
+        match self.reload_ctx() {
+            Ok(()) => {
+                if nodes::configured_address(&self.ctx) != before {
+                    self.node_changed_under_us();
+                }
+                true
+            }
+            Err(e) => {
+                self.note(format!("Could not read your settings: {e}"), true);
+                false
+            }
+        }
+    }
+
+    /// §7a.7, part 3. The address in force has changed, so the screen catches up: the picker's
+    /// `●` moves on the next render (it compares against the reloaded `Context`), the old
+    /// node's cached check is dropped — it is **address-matched**, so it is not about this node
+    /// at all — and the picker is told to check the new one at once, because leaving the pane
+    /// reading `Not checked yet.` for up to `node.remote_probe_sec` would be a second
+    /// contradiction of a row the user had just measured.
+    fn node_changed_under_us(&mut self) {
+        self.picker.probed_at = None;
+        self.reload_picker();
+    }
+
     fn maybe_reload_theme(&mut self) {
         let m = std::fs::metadata(theme::colors_path())
             .and_then(|m| m.modified())
@@ -1106,7 +1260,7 @@ impl Tui {
     /// that is what makes leaving safe enough to be the default.
     fn switch_screen(&mut self, forward: bool) -> Cmd<Msg> {
         if self.send.confirming() || matches!(self.modal, Some(Modal::CreateWallet(_))) {
-            self.note("Esc to discard first", true);
+            self.note("Esc to discard first.", true);
             return Cmd::none();
         }
         self.show_help = false;
@@ -1172,12 +1326,12 @@ impl Tui {
     /// The clipboard is `wl-copy`, as argv (§2f) — never a shell string.
     fn copy(&mut self, text: &str) {
         if proc::which("wl-copy").is_none() {
-            self.note("wl-copy is not installed — cannot copy", true);
+            self.note("Cannot copy: wl-copy is not installed.", true);
             return;
         }
         match proc::run_with_deadline(&["wl-copy", "--", text], Duration::from_secs(2), None) {
-            Ok(o) if o.success() => self.note("copied to the clipboard", false),
-            Ok(o) => self.note(format!("wl-copy failed: {}", o.stderr_tail()), true),
+            Ok(o) if o.success() => self.note("Copied.", false),
+            Ok(o) => self.note(format!("Could not copy: {}", o.stderr_tail()), true),
             Err(e) => self.note(e.to_string(), true),
         }
     }
@@ -1192,9 +1346,9 @@ impl Tui {
                 let extra = if a.cancellable {
                     "Esc cancels it, or press quit again to cancel and quit"
                 } else {
-                    "a broadcast is on the wire; press quit again to leave it running"
+                    "The payment has already gone out. Press quit again to leave it running."
                 };
-                self.note(format!("an action is running — {extra}"), true);
+                self.note(format!("Something is running. {extra}"), true);
                 return Cmd::none();
             }
             self.action = None;
@@ -1382,7 +1536,7 @@ impl Tui {
             return Cmd::none();
         }
         if self.send.confirming() || matches!(self.modal, Some(Modal::CreateWallet(_))) {
-            self.note("Esc to discard first", true);
+            self.note("Esc to discard first.", true);
             return Cmd::none();
         }
         if self.modal.is_some() {
@@ -1558,12 +1712,13 @@ impl Tui {
             hit::Button::Qr => {
                 match self.selected_address() {
                     Some(address) => self.modal = Some(Modal::Qr { address }),
-                    None => self.note("no address to show yet", true),
+                    None => self.note("No address to show yet.", true),
                 }
                 Cmd::none()
             }
             hit::Button::NodeUp => self.confirm(Confirm::NodeUp),
             hit::Button::NodeDown => self.confirm(Confirm::NodeDown),
+            hit::Button::UseLocal => self.use_local(),
             hit::Button::Probe => self.start_probe(),
             hit::Button::RefreshList => self.start_fetch(true),
             hit::Button::AddNode => self.add_node_modal(),
@@ -1603,6 +1758,9 @@ impl Tui {
             }
             KeyCode::Char('u') => return self.confirm(Confirm::NodeUp),
             KeyCode::Char('d') => return self.confirm(Confirm::NodeDown),
+            // v5.6, §2o.1. The way out of public-node mode, from inside the app. It bypasses
+            // `confirm`'s remote-mode guard deliberately: that guard is what this key answers.
+            KeyCode::Char('l') => return self.use_local(),
             KeyCode::Char('L') => {
                 let next = (self.logs.level + 1) % 5;
                 return self.confirm(Confirm::LogLevel(next));
@@ -1670,7 +1828,7 @@ impl Tui {
             }
             KeyCode::Char('Q') => match self.selected_address() {
                 Some(address) => self.modal = Some(Modal::Qr { address }),
-                None => self.note("no address to show yet", true),
+                None => self.note("No address to show yet.", true),
             },
             KeyCode::Char('/') => {
                 self.wallet.filter_open = true;
@@ -1801,6 +1959,10 @@ impl Tui {
                 KeyCode::Char('y') | KeyCode::Enter => match what {
                     Confirm::NodeUp => self.start(Action::NodeUp),
                     Confirm::NodeDown => self.start(Action::NodeDown),
+                    Confirm::NodeLocal => {
+                        self.picker.prev = fmonero_core::nodes::configured_address(&self.ctx);
+                        self.start(Action::NodeLocal)
+                    }
                     Confirm::LogLevel(level) => {
                         // The daemon does not report its level, so the cycle pointer is the
                         // TUI's own and advances when the call is sent, not when it lands.
@@ -1813,7 +1975,7 @@ impl Tui {
                     }
                 },
                 _ => {
-                    self.note("cancelled", false);
+                    self.note("Cancelled.", false);
                     Cmd::none()
                 }
             },
@@ -1999,7 +2161,7 @@ impl Tui {
                     })
                 }
                 KeyCode::Escape => {
-                    self.note("cancelled — the node was not changed", false);
+                    self.note("Cancelled. The node was not changed.", false);
                     Cmd::none()
                 }
                 _ => {
@@ -2016,7 +2178,7 @@ impl Tui {
                     let typed = input.value().trim().to_string();
                     match fmonero_core::nodes::add_custom(&self.ctx, &typed) {
                         Ok(node) => {
-                            self.note(format!("added {}", node.address), false);
+                            self.note(format!("Added {}.", node.address), false);
                             self.reload_picker();
                         }
                         // The SAME function the CLI validates with, so the TUI cannot accept a
@@ -2049,7 +2211,7 @@ impl Tui {
                     }
                 }
                 KeyCode::Escape => {
-                    self.note("nothing was contacted", false);
+                    self.note("Nothing was contacted.", false);
                     Cmd::none()
                 }
                 _ => {
@@ -2111,36 +2273,62 @@ impl Tui {
 
     // ------------------------------------------------------------ modal builders
 
+    /// `Confirm::NodeLocal`'s own entry point (v5.6). It is **not** `confirm`, because
+    /// `confirm`'s first act is to refuse in public-node mode and this is the one confirm that
+    /// only exists there.
+    fn confirm_local(&mut self) -> Cmd<Msg> {
+        let mut state = DialogState::new();
+        state.focused_button = Some(0);
+        let wallet = self
+            .status
+            .as_ref()
+            .and_then(|s| s.wallet.name.clone())
+            .filter(|_| self.status.as_ref().is_some_and(|s| s.wallet.open));
+        let message = match wallet {
+            Some(name) => format!("{name} will be closed. y confirms · Esc cancels"),
+            None => "y confirms · Esc cancels".to_string(),
+        };
+        self.modal = Some(Modal::Confirm {
+            what: Confirm::NodeLocal,
+            dialog: Box::new(screens::confirm_dialog(
+                &self.theme,
+                " Use your own node ",
+                &message,
+            )),
+            state: RefCell::new(state),
+        });
+        Cmd::none()
+    }
+
     fn confirm(&mut self, what: Confirm) -> Cmd<Msg> {
-        // In remote mode `u`, `d` and `L` toast instead of acting (§7a): all three exit 4
-        // `remote_node`, and the toast names the command that restores them — the only place a
-        // TUI user learns the mode is reversible. The TUI never offers the switch itself: it
-        // restarts a daemon and closes the wallet this session is holding (§2m.5).
+        // In public-node mode `u`, `d` and `L` say so instead of acting (§7a): all three exit 4
+        // `remote_node`. **v5.6 names the two keys that do something about it** rather than the
+        // shell command the refusal used to print (§2o.1) — `f` to pick another public node, `l`
+        // to go back to your own. The switch still asks first: it restarts the wallet service and
+        // closes the wallet this session is holding (§2m.5).
         if self.remote_mode() {
-            self.note("remote node mode — run: fmonero node local --yes", true);
-            return Cmd::none();
-        }
-        if !matches!(units::may_mutate_node(&self.ctx), Ok(true)) {
             self.note(
-                "this monerod is not fmonero's to mutate — sudo systemctl <verb> monerod",
+                "You are using a public node. Press f for the list, or l to use your own node.",
                 true,
             );
             return Cmd::none();
         }
+        if !matches!(units::may_mutate_node(&self.ctx), Ok(true)) {
+            self.note(fmonero_core::FOREIGN_NODE_READ_ONLY, true);
+            return Cmd::none();
+        }
         let (title, message) = match what {
-            Confirm::NodeUp => (" Start the node ", "systemctl --user start · y confirms"),
-            Confirm::NodeDown => (
-                " Stop the node ",
-                "stop_daemon then systemctl --user stop · y confirms",
-            ),
+            Confirm::NodeUp => (" Start your node ", "y confirms · Esc cancels"),
+            Confirm::NodeDown => (" Stop your node ", "y confirms · Esc cancels"),
+            Confirm::NodeLocal => (" Use your own node ", "y confirms · Esc cancels"),
             Confirm::LogLevel(l) => (
-                " Daemon log level ",
+                " How much your node logs ",
                 match l {
-                    0 => "set the daemon log level to 0 · y confirms",
-                    1 => "set the daemon log level to 1 · y confirms",
-                    2 => "set the daemon log level to 2 · y confirms",
-                    3 => "set the daemon log level to 3 · y confirms",
-                    _ => "set the daemon log level to 4 · y confirms",
+                    0 => "set it to 0, where 0 is quietest · y confirms",
+                    1 => "set it to 1, where 0 is quietest · y confirms",
+                    2 => "set it to 2, where 0 is quietest · y confirms",
+                    3 => "set it to 3, where 0 is quietest · y confirms",
+                    _ => "set it to 4, where 0 is quietest · y confirms",
                 },
             ),
         };
@@ -2228,11 +2416,11 @@ impl Tui {
             return self.start(Action::WalletDaemonStart);
         }
         if s.wallet.open || s.wallet.name.is_some() {
-            self.note("a wallet is open — press x to close it first", true);
+            self.note("A wallet is open. Press x to close it first.", true);
             return Cmd::none();
         }
         if self.action.is_some() {
-            self.note("something is already running", true);
+            self.note("Something is already running.", true);
             return Cmd::none();
         }
         self.start(Action::WalletDaemonStop)
@@ -2240,12 +2428,12 @@ impl Tui {
 
     fn prompt_label(&mut self) -> Cmd<Msg> {
         let Some(set) = &self.wallet.addresses else {
-            self.note("no subaddress selected", true);
+            self.note("No address selected.", true);
             return Cmd::none();
         };
         let i = self.wallet.table.borrow().selected.unwrap_or(0);
         let Some(row) = set.addresses.get(i) else {
-            self.note("no subaddress selected", true);
+            self.note("No address selected.", true);
             return Cmd::none();
         };
         self.modal = Some(Modal::Prompt {
@@ -2262,7 +2450,7 @@ impl Tui {
 
     fn prompt_note(&mut self) -> Cmd<Msg> {
         let Some(t) = self.selected_transfer() else {
-            self.note("no transfer selected", true);
+            self.note("No payment selected.", true);
             return Cmd::none();
         };
         let txid = t.txid.clone();
@@ -2438,6 +2626,9 @@ impl Model for Tui {
             Msg::Raw(_) => Cmd::none(),
             Msg::Poll => {
                 self.maybe_reload_theme();
+                // §7a.7 part 2, before the poll that would otherwise ask `status` about the
+                // node this process still thinks is configured.
+                let settings_ok = self.maybe_reload_settings();
                 let mut cmds = vec![self.poll()];
                 if self.logs.follow && self.screen == Screen::Log {
                     cmds.push(self.load_log());
@@ -2445,7 +2636,9 @@ impl Model for Tui {
                 // §2n.4's cadence, and it is the **only** automatic probe in this design: the node
                 // already in use, only while the Node screen is showing, only every
                 // `node.remote_probe_sec` seconds, and never from `status`.
-                cmds.push(self.maybe_probe_configured());
+                if settings_ok {
+                    cmds.push(self.maybe_probe_configured());
+                }
                 Cmd::batch(cmds)
             }
             Msg::Tick => {
@@ -2591,7 +2784,7 @@ impl Model for Tui {
                     }
                     Err(e) => {
                         self.exit.store(e.code, Ordering::SeqCst);
-                        self.note(format!("{label}: {} ({})", e.text, e.code_name), true);
+                        self.note(format!("{label}: {}", e.text), true);
                     }
                 }
                 Cmd::none()
@@ -2610,7 +2803,7 @@ impl Model for Tui {
                     }
                     Ok(Outcome::Built(plan)) => {
                         self.exit.store(0, Ordering::SeqCst);
-                        self.note("built — nothing is broadcast yet", false);
+                        self.note("Checked. Nothing has been sent yet.", false);
                         self.send.typed.clear();
                         self.send.stage = Stage::Built(plan);
                         return Cmd::none();
@@ -2629,7 +2822,7 @@ impl Model for Tui {
                     // ---- v5.5 -------------------------------------------------------
                     Ok(Outcome::Created { name, hint }) => {
                         self.exit.store(0, Ordering::SeqCst);
-                        self.note(format!("{name} created and open"), false);
+                        self.note(format!("{name} created and open."), false);
                         // The seed-backup modal carries `seed_backup_hint` verbatim from core —
                         // the same string the CLI prints. **fmonero never displays a seed**
                         // (§2b, §0): showing one would put it into a terminal scrollback, a tmux
@@ -2639,16 +2832,16 @@ impl Model for Tui {
                         let mut lines: Vec<String> = hint.lines().map(str::to_string).collect();
                         lines.push(String::new());
                         lines.push(
-                            "fmonero never displays a seed — a scrollback is not a safe place \
-                             for one."
+                            "fmonero never shows your seed. A terminal's scrollback is not a \
+                             safe place for one."
                                 .into(),
                         );
                         if self.ctx.settings.node.mode.is_remote() {
                             // §2m.3: the NODE chose where this wallet starts scanning, and this
                             // modal is the last moment before the first refresh.
                             lines.push(
-                                "remote mode: the node decided this wallet's restore height — \
-                                 keep it answering until the first refresh finishes."
+                                "This public node set where the wallet starts looking. Keep it \
+                                 selected until the first check finishes."
                                     .into(),
                             );
                         }
@@ -2659,7 +2852,7 @@ impl Model for Tui {
                         self.exit.store(0, Ordering::SeqCst);
                         self.picker.progress = None;
                         self.picker.err = None;
-                        self.note(format!("{} public nodes", list.nodes.len()), false);
+                        self.note(format!("{} public nodes.", list.nodes.len()), false);
                         self.picker.list = Some(*list);
                         self.sort_picker();
                     }
@@ -2668,7 +2861,7 @@ impl Model for Tui {
                         self.picker.progress = None;
                         let reached = pairs.iter().filter(|(_, p)| p.reachable).count();
                         self.note(
-                            format!("probed {} · {reached} answered", pairs.len()),
+                            format!("checked {} · {reached} answered", pairs.len()),
                             false,
                         );
                         // The cache is the authority (`nodes::record_probes` wrote it), so the
@@ -2681,20 +2874,27 @@ impl Model for Tui {
                         must_reopen,
                     }) => {
                         self.exit.store(0, Ordering::SeqCst);
-                        self.picker.probed_at = None;
-                        self.reload_picker();
+                        // §7a.7 part 1, and this is the one place it is called from: the action
+                        // that wrote `config.toml` has just finished, so the model's `Context`
+                        // is what is now stale.
+                        if let Err(e) = self.reload_ctx() {
+                            self.note(format!("Could not read your settings: {e}"), true);
+                        }
+                        self.node_changed_under_us();
                         match must_reopen {
                             // The reopen is offered **by name, at the moment it is needed** —
                             // the recovery v5.4's objection to a TUI mode switch asked for
                             // (§7a.3, §2m.5 step 9).
                             Some(name) => {
                                 self.note(
-                                    format!("now on {address} · {name} was closed — reopen it"),
+                                    format!(
+                                        "Now on {address}. {name} was closed. Press o to reopen it."
+                                    ),
                                     true,
                                 );
                                 return self.open_wallet_modal();
                             }
-                            None => self.note(format!("now on {address}"), false),
+                            None => self.note(format!("Now on {address}."), false),
                         }
                     }
                     Err(e) => {
@@ -2704,9 +2904,11 @@ impl Model for Tui {
                             self.send.back_to_form();
                         }
                         if e.interrupted {
-                            self.note("cancelled", true);
+                            self.note("Cancelled.", true);
                         } else {
-                            self.note(format!("{} ({}) — {}", e.text, e.code_name, e.hint), true);
+                            // §2o rule 5 and §2o.1: neither the `code_name` nor the CLI's hint.
+                            // The text alone.
+                            self.note(e.text.clone(), true);
                         }
                     }
                 }

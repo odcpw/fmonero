@@ -20,11 +20,11 @@ use ftui_extras::canvas::{Canvas, Mode, Painter};
 use qrcode::{Color as QrColor, QrCode};
 use unicode_width::UnicodeWidthStr;
 
-use fmonero_core::{history, units::Layout, Severity, Transfer};
+use fmonero_core::{history, units::Layout, Severity, Status, Transfer};
 
 use super::hit::{Button, HitPane, Selector};
 use super::theme::Theme;
-use super::{Modal, NodeView, Pane, Screen, Tui, KEYS, SPINNER};
+use super::{Modal, NodeView, Pane, Screen, Tui, FEE_LEVELS, KEYS, SPINNER};
 
 /// Which layout the terminal has room for (§7a's resize table).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,8 +63,12 @@ pub(super) fn view(m: &Tui, frame: &mut Frame) {
     let th = &m.theme;
     let tier = tier_of(b);
     if tier == Tier::Tiny {
-        para("fmonero — terminal too small (need 40x10)", th.warn(), true)
-            .render(Rect::new(b.x, b.y, b.width, b.height.min(3)), frame);
+        para(
+            "Window too small. Make it at least 40 by 10.",
+            th.warn(),
+            true,
+        )
+        .render(Rect::new(b.x, b.y, b.width, b.height.min(3)), frame);
         return;
     }
     // The banner carries the txid AND both commands in full (§7a), which is about 135 columns of
@@ -108,16 +112,18 @@ pub(super) fn view(m: &Tui, frame: &mut Frame) {
             asking,
         }) => {
             let rows: Vec<String> = if names.is_empty() {
+                // §2o.1: one key creates a wallet, so the empty state names the key, not the
+                // command it would have printed into a modal nobody can type into.
                 vec![
-                    format!("no wallets in {}", m.ctx.settings.wallet.dir.display()),
-                    "fmonero wallet create <name> --yes".into(),
+                    format!("No wallets in {}.", m.ctx.settings.wallet.dir.display()),
+                    "Press c to create one.".into(),
                 ]
             } else {
                 names.clone()
             };
             list_modal(
                 m,
-                " Open a wallet — Enter · Esc cancels ",
+                " Open a wallet — Enter opens · Esc cancels ",
                 &rows,
                 if names.is_empty() { usize::MAX } else { *sel },
                 asking.then_some((pass, "password ")),
@@ -229,16 +235,17 @@ fn tab_strip(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
 
 /// The §7a banner's text, in one place so that `view` can measure what `pending_banner` draws.
 ///
-/// **Both commands written out in full**: `history --limit 5 | clear-pending --yes` is not two
-/// commands, it is one command piped into a program that does not exist — and this is the one
-/// banner whose whole job is telling the user how to find out whether their money moved.
+/// **The two shell commands are gone** (§2o.1): this banner's whole job is telling the user how
+/// to find out whether their money moved, and it used to do that by printing a command line into
+/// a panel nobody can type into. The Wallet screen — one key away, and it is named — is where
+/// the payment and its confirmations are.
 fn pending_banner_text(p: &fmonero_core::PendingStatus) -> String {
     let txid: String = p
         .txs
         .first()
         .map_or("—".into(), |t| t.txid.chars().take(8).collect());
     format!(
-        "SEND IN FLIGHT {} XMR → {} {}/{} · tx {txid} · fmonero wallet history --limit 5 · fmonero wallet clear-pending --yes",
+        "SENDING {} XMR to {} · {} of {} sent · id {txid} · press 2 for the wallet",
         p.total_amount_xmr,
         short_addr(&p.dest),
         p.relayed_count,
@@ -281,10 +288,22 @@ fn status_line(m: &Tui, area: Rect, frame: &mut Frame) {
             .render(area, frame);
     }
     let (node, wallet) = (m.node_badge(), m.wallet_badge());
-    let mut spans = vec![
-        Span::styled("●", th.badge(node)),
-        Span::styled(format!(" node {node} "), th.text()),
-    ];
+    let (node_tone, wallet_tone) = (m.node_tone(), m.wallet_tone());
+    // **With a public node the segment names the node, not a row label** (§2o, v5.6): the
+    // badge word already is the noun, so ` node public node ` was a stutter, and the address
+    // is the one thing a user who has just switched needs to read back (§7a.7).
+    let remote = m.remote_mode();
+    let mut spans = vec![Span::styled("●", th.badge(node_tone))];
+    if remote {
+        let addr = m
+            .status
+            .as_ref()
+            .map(|s| s.node.url.clone())
+            .unwrap_or_default();
+        spans.push(Span::styled(format!(" {node} {addr} "), th.text()));
+    } else {
+        spans.push(Span::styled(format!(" node {node} "), th.text()));
+    }
     if let Some(s) = &m.status {
         if let Some(h) = s.node.height {
             spans.push(Span::styled(format!("{h} "), th.dimmed()));
@@ -293,7 +312,7 @@ fn status_line(m: &Tui, area: Rect, frame: &mut Frame) {
             let inc = s.node.incoming_connections_count.unwrap_or(0);
             spans.push(Span::styled(format!("{out}↑{inc}↓ "), th.dimmed()));
         }
-        spans.push(Span::styled("●", th.badge(wallet)));
+        spans.push(Span::styled("●", th.badge(wallet_tone)));
         spans.push(Span::styled(format!(" wallet {wallet} "), th.text()));
         if let Some(b) = &s.wallet.balance_xmr {
             spans.push(Span::styled(format!("{b} XMR "), th.accented()));
@@ -349,11 +368,17 @@ fn node_screen(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
                 .constraints([Constraint::Percentage(52.0), Constraint::Fill])
                 .split(rows[0]);
             node_hero(m, top[0], frame);
-            let right = Flex::vertical()
-                .constraints([Constraint::Fixed(5), Constraint::Fill])
-                .split(top[1]);
-            net_pane(m, right[0], frame, true);
-            pool_pane(m, right[1], frame);
+            // **With a public node the two panes that said "not available" are gone** and one
+            // pane of what is known stands in their place (§7a.3, v5.6).
+            if remote {
+                this_node_pane(m, top[1], frame);
+            } else {
+                let right = Flex::vertical()
+                    .constraints([Constraint::Fixed(5), Constraint::Fill])
+                    .split(top[1]);
+                net_pane(m, right[0], frame, true);
+                pool_pane(m, right[1], frame);
+            }
             let bottom = Flex::horizontal()
                 .constraints([Constraint::Percentage(62.0), Constraint::Fill])
                 .split(rows[1]);
@@ -409,7 +434,7 @@ fn node_screen(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
                     .split(area);
                 node_hero(m, rows[0], frame);
                 if remote {
-                    pool_pane(m, rows[1], frame);
+                    this_node_pane(m, rows[1], frame);
                 } else {
                     list_pane(m, rows[1], frame, false);
                 }
@@ -429,6 +454,19 @@ fn node_screen(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
             picker_pane(m, rows[1], frame, tier);
             warnings_pane(m, rows[2], frame);
         }
+    }
+}
+
+/// §2n.4's machine reason, as a person reads it (§2o rule 5). The reason string itself is the
+/// discriminator `node list --json` carries and agents branch on; this is the cell.
+pub(super) fn probe_reason(reason: Option<&'static str>) -> &'static str {
+    match reason {
+        Some("timed_out") => "too slow",
+        Some("refused") => "refused",
+        Some("bad_json") => "bad answer",
+        Some("cancelled") => "stopped",
+        Some(_) => "no answer",
+        None => "no answer",
     }
 }
 
@@ -453,17 +491,18 @@ fn picker_pane(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
         let rows = Flex::vertical()
             .constraints([Constraint::Fixed(1), Constraint::Fixed(1), Constraint::Fill])
             .split(inner);
-        para("No public-node list yet.".to_string(), th.text(), false).render(rows[0], frame);
+        para("No list of public nodes yet.".to_string(), th.text(), false).render(rows[0], frame);
         chips(
             m,
             rows[1],
-            &[(Button::RefreshList, "f", "Fetch the list")],
+            &[(Button::RefreshList, "f", "Get the list")],
             frame,
         );
         lines_at(
             vec![
                 Line::styled(
-                    "Fetching tells monero.fail your IP address. Nothing else is contacted.",
+                    "Getting the list tells monero.fail your IP address. Nothing else is \
+                     contacted.",
                     th.dimmed(),
                 ),
                 Line::styled(m.picker.err.clone().unwrap_or_default(), th.err()),
@@ -487,15 +526,15 @@ fn picker_pane(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
     let mut header: Vec<&'static str> = vec!["address"];
 
     if health {
-        header.push("health");
-        header.push("height");
+        header.push("reliability");
+        header.push("block");
     }
     if checked {
-        header.push("checked");
+        header.push("last seen");
     }
     if probe_cols {
-        header.push("ms");
-        header.push("node height");
+        header.push("ping");
+        header.push("block");
         header.push("synced");
     }
     let now = fmonero_core::now_unix();
@@ -507,20 +546,18 @@ fn picker_pane(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
             } else {
                 "  "
             };
-            let tag = if n.custom {
-                " own"
-            } else if n.web_compatible {
-                " web"
-            } else {
-                ""
-            };
+            // `web_compatible` is a CORS flag for browser wallets: it decides nothing here, so
+            // v5.6 drops the marker and leaves the field to `node list --json` (§2o).
+            let tag = if n.custom { " yours" } else { "" };
             let mut cells = vec![format!("{mark}{}{tag}", n.address)];
             if health {
                 // The ratio **with its sample size**: 100 % of 3 and 72 % of 94 are not
                 // comparable, and a bare percent invites the comparison (§2n.1). A `custom` row
                 // renders `—` here because monero.fail has never heard of it.
                 cells.push(match (n.health_ratio, n.health_checks) {
-                    (Some(r), Some(c)) => format!("{}% of {c}", (r * 100.0).round() as i64),
+                    (Some(r), Some(c)) => {
+                        format!("{}% of {c} checks", (r * 100.0).round() as i64)
+                    }
                     _ => "—".into(),
                 });
                 cells.push(
@@ -556,7 +593,7 @@ fn picker_pane(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
                     // hosts that timed out from this machine are the most useful rows in a table
                     // monero.fail rated fine.
                     Some(p) => {
-                        cells.push(p.reason.unwrap_or("no").to_string());
+                        cells.push(probe_reason(p.reason).to_string());
                         cells.push("—".into());
                         cells.push("—".into());
                     }
@@ -644,13 +681,13 @@ fn picker_pane(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
     if let Some(list) = m.picker.list.as_ref() {
         let footer = match &m.picker.progress {
             Some(p) => p.clone(),
+            // One total, not four numbers, two of which named parse failures: both skip
+            // counts stay in `node list --json`, which is where a machine reads them (§2o).
             None => format!(
-                "{} nodes · list {} · {} skipped (no port) · {} bad · source {}",
+                "{} nodes from monero.fail · list {} old · {} skipped",
                 rows_data.len(),
                 list.cache_age_sec.map(age).unwrap_or_else(|| "—".into()),
-                list.skipped_no_port,
-                list.skipped_invalid,
-                list.source.trim_start_matches("https://"),
+                list.skipped_no_port + list.skipped_invalid,
             ),
         };
         para(
@@ -668,19 +705,21 @@ fn picker_pane(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
         m,
         rows[2],
         &[
-            (Button::Probe, "p", "Probe"),
+            (Button::Probe, "p", "Check these"),
             (
                 Button::RefreshList,
                 "f",
                 if m.picker.list.is_some() {
-                    "Refresh list"
+                    "Get a fresh list"
                 } else {
-                    "Fetch the list"
+                    "Get the list"
                 },
             ),
             (Button::UseNode, "Enter", "Use this node"),
             (Button::AddNode, "a", "Add a node"),
-            (Button::PrevNode, "H", "Previous node"),
+            (Button::PrevNode, "H", "Back to the last one"),
+            // v5.6, §2o.1: the destination the old refusal named as a shell command.
+            (Button::UseLocal, "l", "Use your own node"),
         ],
         frame,
     );
@@ -694,33 +733,33 @@ fn node_hero(m: &Tui, area: Rect, frame: &mut Frame) {
     let mut lines: Vec<Line> = Vec::new();
     let mut gauge = None;
     if let Some(e) = &m.status_err {
-        lines.push(Line::styled(format!("status failed: {e}"), th.err()));
-        lines.push(Line::styled("press r to try again", th.dimmed()));
+        lines.push(Line::styled(
+            format!("Could not read the status: {e}"),
+            th.err(),
+        ));
+        lines.push(Line::styled("Press r to try again.", th.dimmed()));
     } else if let Some(s) = &m.status {
         let n = &s.node;
         lines.push(Line::from_spans([
-            Span::styled("● ", th.badge(m.node_badge())),
+            Span::styled("● ", th.badge(m.node_tone())),
             Span::styled(m.node_phrase(), th.title()),
         ]));
         // In remote mode the hero is a different, much smaller one (§2m.3, §7a): no gauge, no
         // percent, no ETA, no peers, no version. All of them are `null` here, and a gauge at
         // 0 % is the rendered untruth §2j forbids.
+        // **With a public node the hero is two lines and no disclaimers** (§7a.3, v5.6). The
+        // row that showed the trust flag and the ssl mode is **deleted**: fmonero never marks a
+        // public node trusted, so there was no choice to display, and both words are ones §2o
+        // removes. So is the sentence *"fmonero does not talk to this node — monero-wallet-rpc
+        // does…"*, which was an architecture lecture standing where the user's answer belongs.
+        // What *is* known is in the ` This node ` pane beside it.
         if n.layout == Layout::Remote {
-            lines.push(kv(
-                th,
-                "trust",
-                format!(
-                    "{} · ssl {}",
-                    if n.trusted { "trusted" } else { "untrusted" },
-                    fmonero_core::units::ssl_for_address(&n.url)
-                ),
-            ));
             if s.wallet.open {
                 lines.push(kv(
                     th,
-                    "wallet",
+                    "this wallet",
                     format!(
-                        "{} · last refresh {}",
+                        "block {} · checked {}",
                         opt(s.wallet.height),
                         s.wallet
                             .last_refresh_at
@@ -728,16 +767,16 @@ fn node_hero(m: &Tui, area: Rect, frame: &mut Frame) {
                             .unwrap_or_else(|| "—".into())
                     ),
                 ));
+                // Decision 7, on the screen a user watches while it happens: the scanning is
+                // inside the wallet service, so closing this window does not stop it.
+                if let Some(line) = wallet_sync_line(s) {
+                    lines.push(Line::styled(line, th.warn()));
+                    lines.push(Line::styled(
+                        "Syncing in the background. You can close this window.",
+                        th.dimmed(),
+                    ));
+                }
             }
-            lines.extend(
-                wrap_words(
-                    "fmonero does not talk to this node — monero-wallet-rpc does. Its own sync \
-                     state cannot be seen from here.",
-                    inner.width as usize,
-                )
-                .into_iter()
-                .map(|l| Line::styled(l, th.dimmed())),
-            );
             lines_at(lines, inner, false, frame);
             return;
         }
@@ -746,9 +785,9 @@ fn node_hero(m: &Tui, area: Rect, frame: &mut Frame) {
             // rows, and at 150 columns this 75-character line came out as
             // `fmonero setup --unit` — a command that looks complete and exits 2.
             let text = if m.monero_missing() {
-                "Monero is not installed. omarchy pkg add monero, then fmonero setup --units"
+                "Monero is not installed on this machine.  In a terminal: omarchy pkg add monero"
             } else {
-                "Node is not running — press u to start it"
+                "Your node is not running. Press u to start it."
             };
             lines.extend(
                 wrap_words(text, inner.width as usize)
@@ -765,11 +804,11 @@ fn node_hero(m: &Tui, area: Rect, frame: &mut Frame) {
             gauge = Some((lines.len() as u16, pct / 100.0));
             lines.push(kv(
                 th,
-                "sync",
-                format!("{:13}{pct:.1}%  {} / {target}", "", opt(n.height)),
+                "blocks",
+                format!("{:13}{pct:.0}%  {} / {target}", "", opt(n.height)),
             ));
             if let Some(eta) = m.sync_eta() {
-                lines.push(kv(th, "eta", eta));
+                lines.push(kv(th, "done in", eta));
             }
         }
         lines.push(kv(
@@ -787,26 +826,29 @@ fn node_hero(m: &Tui, area: Rect, frame: &mut Frame) {
                 opt(n.incoming_connections_count)
             ),
         ));
+        // The hard-fork version is an internal number no user acts on; it stays in
+        // `node info --json` (§2o).
         lines.push(kv(
             th,
             "version",
             format!(
-                "{} · fork v{} · {}",
+                "{} · {}",
                 n.version.clone().unwrap_or_else(|| "—".into()),
-                opt(n.hard_fork_version),
                 n.nettype.clone().unwrap_or_else(|| "—".into())
             ),
         ));
         if n.layout == Layout::SystemUnit {
-            lines.push(Line::styled(
-                "Node owned by the system unit — read-only (u/d/L disabled)",
-                th.warn(),
-            ));
+            // One sentence, shared with core, so the refusal and the hero cannot drift (§2o).
+            lines.extend(
+                wrap_words(fmonero_core::FOREIGN_NODE_READ_ONLY, inner.width as usize)
+                    .into_iter()
+                    .map(|l| Line::styled(l, th.warn())),
+            );
         }
         if n.restricted == Some(true) {
             lines.extend(
                 wrap_words(
-                    "restricted RPC: peers, net stats and bans have no source",
+                    "This node only answers basic questions, so peers and traffic are not shown.",
                     inner.width as usize,
                 )
                 .into_iter()
@@ -814,7 +856,7 @@ fn node_hero(m: &Tui, area: Rect, frame: &mut Frame) {
             );
         }
     } else {
-        lines.push(Line::styled("reading status…", th.dimmed()));
+        lines.push(Line::styled("checking…", th.dimmed()));
     }
     // The `u`/`d` chips, **in local mode only** (§7a.2's rule that a key hint is a button, and
     // §6.5's rule that a control which can never be enabled here teaches the user the app is
@@ -827,8 +869,8 @@ fn node_hero(m: &Tui, area: Rect, frame: &mut Frame) {
             m,
             Rect::new(inner.x, inner.y + used, inner.width, 1),
             &[
-                (Button::NodeUp, "u", "Start node"),
-                (Button::NodeDown, "d", "Stop node"),
+                (Button::NodeUp, "u", "Start your node"),
+                (Button::NodeDown, "d", "Stop your node"),
             ],
             frame,
         );
@@ -840,6 +882,109 @@ fn node_hero(m: &Tui, area: Rect, frame: &mut Frame) {
                 .colors(MiniBarColors::new(th.red, th.yellow, th.green, th.green))
                 .render(Rect::new(inner.x + 11, inner.y + row, 12, 1), frame);
         }
+    }
+}
+
+/// A block number as a person reads it: `3 765 346`, thin spaces every three digits, the same
+/// grouping the bar widget's `Model.grouped` applies (§2o rule 9).
+pub(super) fn grouped(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(' ');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Decision 7's line, on both screens that render it and in the widget, from one formula.
+///
+/// `None` when the wallet is not behind, or when either height is unknown — a percentage
+/// computed from a missing node height would be the rendered untruth §2j forbids. The node's
+/// height is the live `get_info` with your own node and the **cached check's** with a public
+/// one, which is the only source there is (§5's `node.remote_probe`).
+pub(super) fn wallet_sync_line(s: &Status) -> Option<String> {
+    let wallet = s.wallet.height?;
+    let node = s.node.height.or_else(|| {
+        s.node
+            .remote_probe
+            .as_ref()
+            .filter(|p| p.reachable)
+            .and_then(|p| p.height)
+    })?;
+    if wallet == 0 || node <= wallet {
+        return None;
+    }
+    let pct = wallet.saturating_mul(100) / node.max(1);
+    Some(format!(
+        "Syncing {pct}% · {} blocks left.",
+        grouped(node - wallet)
+    ))
+}
+
+/// §7a.3's ` This node ` pane (v5.6) — **the whole of decision 3**.
+///
+/// With a public node v5.5 rendered two panes whose entire content was a sentence about what
+/// they could not show. This one renders what *is* known: the four facts of the cached check
+/// (§2n.4), which is a measurement fmonero already had and never showed here, and the way out.
+/// The height and its age always render **together**: a four-hour-old `synced` says nothing
+/// about now.
+fn this_node_pane(m: &Tui, area: Rect, frame: &mut Frame) {
+    let th = &m.theme;
+    let Some(inner) = framed(area, th, " This node ", false, frame) else {
+        return;
+    };
+    let probe = m.status.as_ref().and_then(|s| s.node.remote_probe.as_ref());
+    let mut lines: Vec<Line> = Vec::new();
+    let chip: (Button, &str, &str) = match probe {
+        None => {
+            lines.push(Line::styled("Not checked yet.", th.dimmed()));
+            (Button::Probe, "p", "Check this node")
+        }
+        Some(p) if !p.reachable => {
+            lines.push(Line::styled(
+                format!("No answer when checked {}.", age(p.age_sec.max(0) as u64)),
+                th.warn(),
+            ));
+            (Button::RefreshList, "f", "Choose another node")
+        }
+        Some(p) => {
+            lines.push(Line::styled(
+                match p.height {
+                    Some(h) => format!("block {}", grouped(h)),
+                    None => "it answered, but did not say which block".to_string(),
+                },
+                th.title(),
+            ));
+            lines.push(Line::styled(
+                match p.synchronized {
+                    Some(true) => "synced".to_string(),
+                    Some(false) => "syncing".to_string(),
+                    None => "it did not say whether it is synced".to_string(),
+                },
+                th.text(),
+            ));
+            if let Some(ms) = p.latency_ms {
+                lines.push(Line::styled(format!("answered in {ms} ms"), th.dimmed()));
+            }
+            lines.push(Line::styled(
+                format!("checked {}", age(p.age_sec.max(0) as u64)),
+                th.dimmed(),
+            ));
+            (Button::RefreshList, "f", "Choose another node")
+        }
+    };
+    let used = lines.len() as u16;
+    lines_at(lines, inner, false, frame);
+    if inner.height > used {
+        chip_row(
+            m,
+            Rect::new(inner.x, inner.y + used, inner.width, 1),
+            &[chip],
+            frame,
+        );
     }
 }
 
@@ -862,15 +1007,12 @@ fn list_pane(m: &Tui, area: Rect, frame: &mut Frame, wide: bool) {
         }
     };
     if m.remote_mode() {
-        empty("not available with a remote node", frame);
+        empty("This is about your own node.", frame);
         return;
     }
     if m.node_restricted() {
-        let method = if bans { "get_bans" } else { "get_connections" };
-        empty(
-            &format!("not available on a restricted node ({method})"),
-            frame,
-        );
+        // The method name was an internal identifier in a sentence (§2o rule 5).
+        empty("This node does not answer that.", frame);
         return;
     }
     let Some(extras) = extras else {
@@ -878,13 +1020,15 @@ fn list_pane(m: &Tui, area: Rect, frame: &mut Frame, wide: bool) {
             .node
             .err
             .clone()
-            .unwrap_or_else(|| "reading the node…".into());
+            .unwrap_or_else(|| "checking the node…".into());
         empty(&text, frame);
         return;
     };
     if bans {
         if extras.bans.is_empty() {
-            empty("no bans · fmonero node ban <host>", frame);
+            // §2o.1: there is no in-app ban key, so the pane states the fact and stops rather
+            // than printing a command at a user who cannot type it (docs/COPY.md §2).
+            empty("No banned peers.", frame);
             return;
         }
         let rows = extras
@@ -903,7 +1047,7 @@ fn list_pane(m: &Tui, area: Rect, frame: &mut Frame, wide: bool) {
         return;
     }
     if extras.connections.is_empty() {
-        empty("no connections yet", frame);
+        empty("No peers yet.", frame);
         return;
     }
     let rows = extras
@@ -921,43 +1065,25 @@ fn list_pane(m: &Tui, area: Rect, frame: &mut Frame, wide: bool) {
         .collect();
     let (header, widths): (&[&str], &[u16]) = if wide {
         (
-            &["HOST", "STATE", "HEIGHT", "PRUNE", "AVG ↓/↑"],
+            &["HOST", "STATE", "BLOCK", "KEEPS", "AVG ↓/↑"],
             &[23, 14, 9, 6],
         )
     } else {
-        (&["HOST", "STATE", "HEIGHT"], &[23, 14])
+        (&["HOST", "STATE", "BLOCK"], &[23, 14])
     };
     table(m, area, &title, rows, header, widths, frame);
 }
 
-/// §7a: in remote mode every pane that needs a gated method renders the same "not available"
-/// treatment a restricted node gets, with the reason `remote node` instead of a method name.
-/// Returns true when it drew it, so the caller returns.
-fn remote_pane(m: &Tui, area: Rect, title: &str, frame: &mut Frame) -> bool {
-    if !m.remote_mode() {
-        return false;
-    }
-    if let Some(inner) = framed(area, &m.theme, title, false, frame) {
-        para(
-            "not available with a remote node".to_string(),
-            m.theme.dimmed(),
-            true,
-        )
-        .render(inner, frame);
-    }
-    true
-}
-
+/// **Never rendered with a public node** (§7a.3, v5.6): v5.5's version of this pane was a
+/// frame around the sentence *"not available with a remote node"*, and `node_screen` now lays
+/// out ` This node ` there instead.
 fn net_pane(m: &Tui, area: Rect, frame: &mut Frame, sparkline: bool) {
-    if remote_pane(m, area, " Net ", frame) {
-        return;
-    }
     let th = &m.theme;
     let Some(inner) = framed(area, th, " Net ", false, frame) else {
         return;
     };
     let Some(n) = m.status.as_ref().map(|s| &s.node.net) else {
-        para("node unreachable", th.dimmed(), false).render(inner, frame);
+        para("Your node is not answering.", th.dimmed(), false).render(inner, frame);
         return;
     };
     let rows = Flex::vertical()
@@ -969,7 +1095,7 @@ fn net_pane(m: &Tui, area: Rect, frame: &mut Frame, sparkline: bool) {
             kv(th, "↓ ↑", format!("{}   {}", bps(n.rx_bps), bps(n.tx_bps))),
             kv(
                 th,
-                "limits",
+                "speed limits",
                 format!("↑{} ↓{} kB/s", opt(n.limit_up_kbps), opt(n.limit_down_kbps)),
             ),
         ],
@@ -982,22 +1108,15 @@ fn net_pane(m: &Tui, area: Rect, frame: &mut Frame, sparkline: bool) {
         if data.len() > 1 {
             Sparkline::new(&data).style(th.ok()).render(rows[1], frame);
         } else {
-            para(
-                "the rx sparkline fills as samples arrive",
-                th.dimmed(),
-                true,
-            )
-            .render(rows[1], frame);
+            para("The graph fills in as it measures.", th.dimmed(), true).render(rows[1], frame);
         }
     }
 }
 
+/// **Never rendered with a public node**, for [`net_pane`]'s reason.
 fn pool_pane(m: &Tui, area: Rect, frame: &mut Frame) {
-    if remote_pane(m, area, " Mempool · fees ", frame) {
-        return;
-    }
     let th = &m.theme;
-    let Some(inner) = framed(area, th, " Mempool · fees ", false, frame) else {
+    let Some(inner) = framed(area, th, " Waiting to be mined · fees ", false, frame) else {
         return;
     };
     let mut lines = Vec::new();
@@ -1012,16 +1131,16 @@ fn pool_pane(m: &Tui, area: Rect, frame: &mut Frame) {
             };
             lines.push(kv(
                 th,
-                "pool",
+                "waiting",
                 format!(
-                    "{} txs · {} · oldest {oldest}",
+                    "{} transactions · {} · oldest {oldest}",
                     p.txs_total,
                     bytes(p.bytes_total)
                 ),
             ));
             lines.push(kv(
                 th,
-                "pool fees",
+                "their fees",
                 format!(
                     "{} XMR · {} failing · {} double spends",
                     p.fee_total.to_xmr_string(),
@@ -1034,32 +1153,37 @@ fn pool_pane(m: &Tui, area: Rect, frame: &mut Frame) {
             m.node
                 .err
                 .clone()
-                .unwrap_or_else(|| "reading the transaction pool…".into()),
+                .unwrap_or_else(|| "checking what is waiting…".into()),
             th.dimmed(),
         )),
     }
     if let Some(f) = m.status.as_ref().map(|s| &s.node.fee) {
+        // The four levels by the **names the Send screen offers**, so the two screens agree
+        // (§2o): the old row labelled them by their priority index, which is a number nobody
+        // chooses between.
         let fees = f.fees_pico.as_ref().map_or("—".to_string(), |v| {
             v.iter()
                 .enumerate()
-                .map(|(i, p)| format!("{}:{}", i + 1, p.to_xmr_string()))
+                .map(|(i, p)| format!("{} {}", FEE_LEVELS[i.min(3)], p.to_xmr_string()))
                 .collect::<Vec<_>>()
-                .join("  ")
+                .join(" · ")
         });
-        lines.push(kv(th, "fee/byte", fees));
+        lines.push(kv(th, "fee levels", format!("{fees}  XMR per byte")));
     }
     lines_at(lines, inner, true, frame);
 }
 
 fn warnings_pane(m: &Tui, area: Rect, frame: &mut Frame) {
     let th = &m.theme;
-    let Some(inner) = framed(area, th, " Warnings ", false, frame) else {
+    // ` Notes `, not ` Warnings `: two of the three severities are `info`, and the pane was
+    // shouting at a correct machine (§2o).
+    let Some(inner) = framed(area, th, " Notes ", false, frame) else {
         return;
     };
     let empty = Vec::new();
     let list = m.status.as_ref().map_or(&empty, |s| &s.warnings);
     if list.is_empty() {
-        para("none", th.dimmed(), false).render(inner, frame);
+        para("Nothing to report.", th.dimmed(), false).render(inner, frame);
         return;
     }
     // Most severe first: this pane can be three rows tall, and the entry that gets cut must
@@ -1077,12 +1201,15 @@ fn warnings_pane(m: &Tui, area: Rect, frame: &mut Frame) {
             Severity::Warn => th.warn(),
             Severity::Info => th.text(),
         };
+        // **The id is gone and the action replaces the hint** (§2o rule 5, §2o.1): every
+        // warning used to be printed with its internal identifier in front of it and a shell
+        // command under it, in a panel nobody can type into.
         lines.push(Line::from_spans([
-            Span::styled(format!("{} ", w.id), style),
+            Span::styled("• ", style),
             Span::styled(w.text.clone(), th.text()),
         ]));
-        if !w.hint.is_empty() {
-            lines.push(Line::styled(format!("  hint: {}", w.hint), th.dimmed()));
+        if let Some(action) = w.action.as_deref() {
+            lines.push(Line::styled(format!("  {action}"), th.dimmed()));
         }
     }
     lines_at(lines, inner, true, frame);
@@ -1103,18 +1230,44 @@ fn wallet_screen(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
         wallet_empty(m, rows[1], frame);
         return;
     }
+    // **Decision 7, said out loud** (v5.6): while a wallet is behind, the scanning is happening
+    // inside the wallet service and closing this window does not stop it — exactly as
+    // fbittorrent's transfers keep running when its window closes. The program has always
+    // behaved this way and never said so.
+    let sync = m.status.as_ref().and_then(wallet_sync_line);
+    let rest = match &sync {
+        Some(line) if rows[1].height > 3 => {
+            let split = Flex::vertical()
+                .constraints([Constraint::Fixed(2), Constraint::Fill])
+                .split(rows[1]);
+            lines_at(
+                vec![
+                    Line::styled(line.clone(), m.theme.warn()),
+                    Line::styled(
+                        "Syncing in the background. You can close this window.".to_string(),
+                        m.theme.dimmed(),
+                    ),
+                ],
+                split[0],
+                false,
+                frame,
+            );
+            split[1]
+        }
+        _ => rows[1],
+    };
     // Every key hint on an open wallet is a chip too (§7a.2): a hint that is not clickable is half
     // of what the owner asked for.
     let body = Flex::vertical()
         .constraints([Constraint::Fill, Constraint::Fixed(1)])
-        .split(rows[1]);
+        .split(rest);
     chip_row(
         m,
         body[1],
         &[
-            (Button::RefreshWallet, "R", "Refresh"),
-            (Button::Qr, "Q", "QR"),
-            (Button::CloseWallet, "x", "Close"),
+            (Button::RefreshWallet, "R", "Check for payments"),
+            (Button::Qr, "Q", "QR code"),
+            (Button::CloseWallet, "x", "Close wallet"),
         ],
         frame,
     );
@@ -1159,7 +1312,7 @@ fn wallet_empty(m: &Tui, area: Rect, frame: &mut Frame) {
     }
     let n = m.wallets.len();
     let dir = m.ctx.settings.wallet.dir.display().to_string();
-    let open_label = format!("Open wallet…      pick one of the {n} wallets in {dir}");
+    let open_label = format!("Open wallet…      choose one of the {n} in {dir}");
     let rows = Flex::vertical()
         .constraints([
             Constraint::Fixed(1),
@@ -1180,12 +1333,12 @@ fn wallet_empty(m: &Tui, area: Rect, frame: &mut Frame) {
             (
                 Button::CreateWallet,
                 "c",
-                "Create wallet…    a new wallet, on this machine, in that directory",
+                "Create wallet…    a new one, kept on this machine",
             ),
             (
                 Button::WalletDaemon,
                 "W",
-                "Start the wallet daemon   (not needed first — opening or creating one starts it)",
+                "Start the wallet service   (not needed: opening or creating a wallet starts it)",
             ),
         ],
         frame,
@@ -1196,7 +1349,7 @@ fn wallet_empty(m: &Tui, area: Rect, frame: &mut Frame) {
     lines_at(
         vec![
             Line::styled(
-                format!("wallet daemon: {}", wallet_daemon_phrase(m)),
+                format!("wallet service: {}", wallet_daemon_phrase(m)),
                 th.dimmed(),
             ),
             Line::styled(format!("node: {}", node_phrase(m)), th.dimmed()),
@@ -1212,21 +1365,22 @@ fn wallet_empty(m: &Tui, area: Rect, frame: &mut Frame) {
 fn wallet_daemon_phrase(m: &Tui) -> String {
     if m.action
         .as_ref()
-        .is_some_and(|a| a.label.contains("wallet daemon"))
+        .is_some_and(|a| a.label.contains("wallet service"))
     {
         return "starting…".into();
     }
     let Some(s) = m.status.as_ref() else {
-        return "reading status…".into();
+        return "checking…".into();
     };
     if s.wallet.unit_active {
-        return "up".into();
+        return "running".into();
     }
-    // `idle` rather than `not running` in remote mode with nothing open: the daemon is DESIGNED to
-    // be down until a wallet is opened (§4.2 writes both units disabled), which is the same fact
-    // §5's `wallet_idle` takes out of the alarm channel.
+    // Not `idle`, which is the program's word: the service is DESIGNED to be down until a wallet
+    // is opened (§4.2 writes both units disabled), which is the same fact §5's `wallet_idle`
+    // takes out of the alarm channel. The sentence is the whole point of the row, so it gets to
+    // be a sentence (§2o).
     if s.node.layout == Layout::Remote && s.wallet.name.is_none() {
-        "idle · starts when you open a wallet".into()
+        "not running yet. It starts when you open or create a wallet.".into()
     } else {
         "not running".into()
     }
@@ -1237,21 +1391,15 @@ fn node_phrase(m: &Tui) -> String {
         return "—".into();
     };
     match s.node.layout {
-        Layout::Remote => format!(
-            "remote · {} · {}",
-            s.node.url,
-            if s.node.trusted {
-                "trusted"
-            } else {
-                "untrusted"
-            }
-        ),
+        // The trust flag is deleted everywhere (§2o.2): fmonero never marks a public node
+        // trusted, so the row showed a value the user did not choose and cannot change.
+        Layout::Remote => format!("public node {}", s.node.url),
         _ => format!(
-            "local · {} · {}",
+            "your own node {} · {}",
             s.node.url,
             match s.node.reachable {
-                Some(true) => "up",
-                Some(false) => "down",
+                Some(true) => "running",
+                Some(false) => "not running",
                 None => "—",
             }
         ),
@@ -1281,8 +1429,19 @@ fn wallet_header(m: &Tui, area: Rect, frame: &mut Frame) {
         ),
     ];
     if let Some(blocks) = w.blocks_to_unlock.filter(|b| *b > 0) {
+        // The amount, and minutes rather than blocks: blocks are the mechanism, minutes are the
+        // answer (§2o rule 9).
+        let locked = match (w.balance_pico, w.unlocked_pico) {
+            (Some(b), Some(u)) => {
+                fmonero_core::amount::Piconero(b.0.saturating_sub(u.0)).to_xmr_string()
+            }
+            _ => "some".to_string(),
+        };
+        let mins = w
+            .time_to_unlock_sec
+            .map_or(blocks * 2, |sec| sec.div_ceil(60));
         spans.push(Span::styled(
-            format!("   ↑ locked for {blocks} blocks (≈ {} min)", blocks * 2),
+            format!("   {locked} XMR locked for about {mins} min"),
             th.warn(),
         ));
     }
@@ -1291,7 +1450,7 @@ fn wallet_header(m: &Tui, area: Rect, frame: &mut Frame) {
     }
     if let Some(behind) = w.blocks_behind.filter(|b| *b > 0) {
         spans.push(Span::styled(
-            format!("   {behind} blocks behind"),
+            format!("   {behind} blocks to go"),
             th.dimmed(),
         ));
     }
@@ -1302,12 +1461,12 @@ fn subaddress_pane(m: &Tui, area: Rect, frame: &mut Frame) {
     let wide = area.width >= 62;
     let th = &m.theme;
     let focused = m.wallet.pane == Pane::Subaddresses;
-    let title = " Subaddresses — Enter copies · a new · l label ";
+    let title = " Your addresses — Enter copies · a new · l rename ";
     let Some(set) = &m.wallet.addresses else {
         if let Some(inner) = framed(area, th, title, focused, frame) {
             let (text, style) = match &m.wallet.err {
                 Some(e) => (format!("{e}\nr retries"), th.err()),
-                None => ("loading…".to_string(), th.dimmed()),
+                None => ("checking…".to_string(), th.dimmed()),
             };
             para(text, style, true).render(inner, frame);
         }
@@ -1357,9 +1516,9 @@ fn subaddress_pane(m: &Tui, area: Rect, frame: &mut Frame) {
         })
         .collect();
     let (header, fixed): (&[&str], &[u16]) = if wide {
-        (&["#", "LABEL", "ADDRESS ✓=used", "BALANCE"], &[3, 11, 22])
+        (&["#", "NAME", "ADDRESS (✓ used)", "BALANCE"], &[3, 11, 22])
     } else {
-        (&["#", "ADDRESS ✓=used", "BALANCE"], &[3, 22])
+        (&["#", "ADDRESS (✓ used)", "BALANCE"], &[3, 22])
     };
     table(m, area, title, rows, header, fixed, frame);
 }
@@ -1417,7 +1576,7 @@ fn history_pane(m: &Tui, area: Rect, frame: &mut Frame, wide: bool) {
     let th = &m.theme;
     let focused = m.wallet.pane == Pane::History;
     let title = format!(
-        " History  {} rows · t: {} ",
+        " Payments  {} · t: {} ",
         m.wallet.rows.len(),
         m.wallet.kind.map_or("all", |k| k.as_str())
     );
@@ -1438,24 +1597,25 @@ fn history_pane(m: &Tui, area: Rect, frame: &mut Frame, wide: bool) {
         rows[0],
         frame,
     );
-    // Built with the row's own format string, so the column §4.1 insists on labelling
-    // `locked (est.)` cannot drift out of alignment with its values.
+    // Built with the row's own format string, so the header cannot drift out of alignment with
+    // its values. `est.` is gone from `LOCKED`: every value in that column is an estimate, and
+    // saying so once in the detail modal is enough (§2o).
     let mut header = format!(
         "{:<12} {:<7} {:>14} {:>6} {}",
-        "WHEN", "TYPE", "AMOUNT", "CONF", "LOCKED est."
+        "WHEN", "WHAT", "AMOUNT", "CONFIRMS", "LOCKED"
     );
     if wide {
         header.push_str(&format!("  {:>12}  {}", "FEE", "NOTE"));
     }
     para(header, th.dimmed(), false).render(rows[1], frame);
     if let Some(e) = &m.wallet.rows_err {
-        para(format!("history is unavailable: {e}"), th.err(), true).render(rows[2], frame);
+        para(format!("Could not read your payments: {e}"), th.err(), true).render(rows[2], frame);
         return;
     }
     let shown = m.visible_history();
     if shown.is_empty() {
         para(
-            "No rows. R refreshes the wallet, / filters, t cycles the type.".to_string(),
+            "Nothing yet. Press R to check, / to filter, t to change what shows.".to_string(),
             th.dimmed(),
             true,
         )
@@ -1489,7 +1649,7 @@ fn history_pane(m: &Tui, area: Rect, frame: &mut Frame, wide: bool) {
     if m.wallet.wh.is_none() && rows[2].height > 0 {
         // §4.1: `—` rather than 0, and a footer saying which guarantee was given up.
         para(
-            "cached: confirmations unknown (no daemon call)".to_string(),
+            "From the saved copy: confirmation counts are not known.".to_string(),
             th.dimmed(),
             false,
         )
@@ -1507,13 +1667,8 @@ fn detail_modal(m: &Tui, frame: &mut Frame) {
         return;
     };
     let h = 13 + t.destinations.len() as u16;
-    let Some(inner) = overlay(
-        m,
-        frame,
-        76,
-        h,
-        " Transfer — n edits the note · Esc closes ",
-    ) else {
+    let Some(inner) = overlay(m, frame, 76, h, " Payment — n edits the note · Esc closes ")
+    else {
         return;
     };
     let bg = th.selection;
@@ -1529,11 +1684,11 @@ fn detail_modal(m: &Tui, frame: &mut Frame) {
         }
     };
     let mut lines = vec![
-        pair("txid", t.txid.clone()),
+        pair("id", t.txid.clone()),
         pair(
-            "type",
+            "what",
             format!(
-                "{} · height {} · {}",
+                "{} · block {} · {}",
                 t.kind.as_str(),
                 t.height,
                 short_time(t.timestamp)
@@ -1550,24 +1705,30 @@ fn detail_modal(m: &Tui, frame: &mut Frame) {
         pair(
             "confirms",
             format!(
-                "{} · locked (est.) {}",
+                "{} · locked {}",
                 history::confirmations(t, m.wallet.wh).map_or("—".into(), |c| c.to_string()),
                 history::locked(t, m.wallet.wh, m.wallet.now)
                     .map_or("—".into(), |v| v.to_string())
             ),
         ),
         pair(
-            "subaddr",
-            format!("{}/{}", t.subaddr_index.major, t.subaddr_index.minor),
+            "address #",
+            format!(
+                "{} (account {})",
+                t.subaddr_index.minor, t.subaddr_index.major
+            ),
         ),
-        pair("unlock", t.unlock_time.to_string()),
-        pair("payment id", dash(&t.payment_id)),
-        pair("double sp", t.double_spend_seen.to_string()),
-        pair("note", dash(&t.note)),
-        Line::styled("destinations", dim),
+        pair("unlocks at", t.unlock_time.to_string()),
     ];
+    // A real Monero term where it has a value; an always-present empty row taught it as noise.
+    if !t.payment_id.is_empty() {
+        lines.push(pair("payment id", t.payment_id.clone()));
+    }
+    lines.push(pair("double spend", t.double_spend_seen.to_string()));
+    lines.push(pair("note", dash(&t.note)));
+    lines.push(Line::styled("destinations", dim));
     if t.destinations.is_empty() {
-        lines.push(Line::styled("  — (an incoming transfer has none)", dim));
+        lines.push(Line::styled("  none (this payment came in)", dim));
     }
     for d in &t.destinations {
         lines.push(Line::styled(
@@ -1617,7 +1778,7 @@ fn log_screen(m: &Tui, area: Rect, frame: &mut Frame) {
     if m.logs.empty {
         para(
             format!(
-                "no log yet at {} — the node writes it once it runs",
+                "No log yet. Your node writes it once it runs.\n{}",
                 m.logs.path.display()
             ),
             th.dimmed(),
@@ -1672,7 +1833,10 @@ pub(super) fn list_modal(
             Line::styled(format!(" {r} "), style)
         })
         .collect();
-    lines.push(Line::styled("Enter · Esc cancels", th.dimmed().bg(bg)));
+    lines.push(Line::styled(
+        "Enter chooses · Esc cancels",
+        th.dimmed().bg(bg),
+    ));
     lines_at(lines, inner, false, frame);
     if let Some((input, label)) = input {
         let row = inner.bottom().saturating_sub(1);
@@ -1791,7 +1955,7 @@ fn create_modal(m: &Tui, form: &super::CreateForm, frame: &mut Frame) {
     for (i, (label, input)) in [
         ("name      ", name),
         ("password  ", pass),
-        ("again     ", again),
+        ("repeat    ", again),
     ]
     .iter()
     .enumerate()
@@ -1812,7 +1976,7 @@ fn create_modal(m: &Tui, form: &super::CreateForm, frame: &mut Frame) {
         m,
         rows[3],
         Selector::Language,
-        "language  ",
+        "seed lang ",
         fmonero_core::settings::SEED_LANGUAGES[lang].1,
         field == 3,
         frame,
@@ -1827,7 +1991,10 @@ fn create_modal(m: &Tui, form: &super::CreateForm, frame: &mut Frame) {
                 th.dimmed().bg(bg),
             ),
             // The one documented `Tab` exception, documented IN the modal (§7a.1).
-            Line::styled("Tab is held here — Esc to discard first", th.warn().bg(bg)),
+            Line::styled(
+                "Tab is off here. Press Esc to discard first.",
+                th.warn().bg(bg),
+            ),
         ],
         rows[5],
         false,
@@ -1866,8 +2033,9 @@ fn seed_modal(m: &Tui, lines: &[String], frame: &mut Frame) {
 }
 
 /// §7a.4's use-this-node confirm — the safety surface of the picker, so it is spelled out: the
-/// **full address** (never elided, for the reason the send confirm never elides one), `untrusted`
-/// as a **fact and not a checkbox**, then the three consequences in order.
+/// **full address** (never elided, for the reason the send confirm never elides one), what the
+/// node will and will not be told **as a fact rather than a flag** (§2o deletes both the word
+/// `untrusted` and the mechanism behind it), then the consequences in order.
 fn use_node_modal(m: &Tui, address: &str, wallet_open: Option<&str>, frame: &mut Frame) {
     let th = &m.theme;
     let Some(inner) = overlay(m, frame, 74, 13, " Use this node ") else {
@@ -1878,24 +2046,20 @@ fn use_node_modal(m: &Tui, address: &str, wallet_open: Option<&str>, frame: &mut
     let mut lines = vec![
         Line::styled(address.to_string(), th.accented().bg(bg)),
         Line::styled(
-            "untrusted — a public node is never trusted (it would receive this wallet's own \
-             unspent amounts inside a request)",
+            "fmonero will not tell this node which amounts your wallet holds.",
             th.warn().bg(bg),
         ),
         Line::styled(String::new(), th.text().bg(bg)),
-        Line::styled(
-            "· the wallet unit will be re-rendered and restarted",
-            th.text().bg(bg),
-        ),
+        Line::styled("· the wallet service will restart", th.text().bg(bg)),
     ];
     if let Some(name) = wallet_open {
         lines.push(Line::styled(
-            format!("· {name} is open and will be closed — you must reopen it"),
+            format!("· {name} will be closed. You will be offered it again."),
             th.text().bg(bg),
         ));
     }
     lines.push(Line::styled(
-        "· this node will see this machine's IP address and the timing of every request",
+        "· this node will see your IP address and when you ask it anything",
         th.text().bg(bg),
     ));
     lines.push(Line::styled(String::new(), th.text().bg(bg)));
@@ -1910,9 +2074,9 @@ fn use_node_modal(m: &Tui, address: &str, wallet_open: Option<&str>, frame: &mut
 
 /// §7a.4's `a` modal: **one** field, validated by the same function the CLI validates with.
 ///
-/// There is deliberately no `--trusted` toggle (revision 5): nothing in the schema supported one,
-/// and a path to request trusted from this screen would make the confirm modal's rendered
-/// `untrusted` line an untruth. The footer names the command that is the documented place.
+/// There is deliberately no trusted toggle (revision 5): nothing in the schema supported one,
+/// and a path to request it from this screen would make the confirm modal's own sentence an
+/// untruth. The footer states the consequence instead of naming a CLI flag (§2o.1).
 fn add_node_modal(m: &Tui, input: &TextInput, frame: &mut Frame) {
     let th = &m.theme;
     let Some(inner) = overlay(m, frame, 70, 8, " Add a node ") else {
@@ -1938,12 +2102,11 @@ fn add_node_modal(m: &Tui, input: &TextInput, frame: &mut Frame) {
     lines_at(
         vec![
             Line::styled(
-                "[http[s]://]host:port — the port is required".to_string(),
+                "host:port, and the port is required".to_string(),
                 th.dimmed().bg(bg),
             ),
             Line::styled(
-                "for a node you run yourself: fmonero node remote <addr> --trusted --yes"
-                    .to_string(),
+                "Nodes you add here are treated as public.".to_string(),
                 th.dimmed().bg(bg),
             ),
             Line::styled(
@@ -1970,17 +2133,17 @@ fn notice_modal(m: &Tui, frame: &mut Frame) {
     lines_at(
         vec![
             Line::styled(
-                "Fetching the list tells monero.fail your IP address.",
+                "Getting the list tells monero.fail your IP address.",
                 th.text().bg(bg),
             ),
             Line::styled(
-                "Probing tells each node you probe. Nothing else is contacted.",
+                "Checking a node tells that node too. Nothing else is contacted.",
                 th.text().bg(bg),
             ),
             Line::styled(String::new(), th.text().bg(bg)),
             Line::styled(
-                "monero.fail's health figures are its measurements from its own vantage point — \
-                 not a recommendation, and not this machine's.",
+                "monero.fail's figures are its own measurements. They are not a recommendation, \
+                 and not yours.",
                 th.dimmed().bg(bg),
             ),
             Line::styled(String::new(), th.text().bg(bg)),
@@ -2059,7 +2222,7 @@ fn qr_modal(m: &Tui, address: &str, frame: &mut Frame) {
             .render(area, frame);
     } else {
         para(
-            format!("terminal too small for a QR (needs {side}x{qr_rows}) — the address is below"),
+            "Window too small for a QR code. The address is below.".to_string(),
             th.warn(),
             true,
         )
@@ -2120,9 +2283,11 @@ fn help(m: &Tui, frame: &mut Frame) {
             // cannot drift from the policy actually in force (§7a.2's reason for making it a
             // setting and not a flag).
             let action = if disabled {
-                format!("{a}  (remote mode: disabled)")
+                format!("{a}  (not while you use a public node)")
             } else if *k == "mouse" && !m.ctx.settings.tui.mouse {
-                "off — fmonero settings set tui.mouse true".to_string()
+                // The settings key stays: it is a name the user types, which is §2o rule 5's
+                // own carve-out. What goes is the shell command (§2o.1).
+                "off — turn on tui.mouse in your settings".to_string()
             } else {
                 (*a).to_string()
             };

@@ -58,6 +58,8 @@ pub(super) enum Button {
     AddNode,
     UseNode,
     PrevNode,
+    /// v5.6, §7a.4's `l`: go back to your own node.
+    UseLocal,
     Help,
     NextScreen,
 }

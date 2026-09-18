@@ -261,9 +261,11 @@ fn every_screen_renders_at_every_tier_with_both_daemons_absent() {
             );
         }
         // Tiny: one honest line naming the size it needs.
-        let tiny = sim_text(&s, 38, 9);
+        // Flattened, because the sentence wraps at 38 columns — which is the whole point of
+        // the state it describes.
+        let tiny = sim_text(&s, 38, 9).replace('\n', " ");
         assert!(tiny.contains("too small"), "{screen:?}:\n{tiny}");
-        assert!(tiny.contains("40x10"), "{screen:?}:\n{tiny}");
+        assert!(tiny.contains("40 by 10"), "{screen:?}:\n{tiny}");
     }
 }
 
@@ -284,7 +286,7 @@ fn the_narrow_tier_collapses_the_tab_strip() {
 #[test]
 fn the_offline_node_screen_says_what_to_press_and_never_shows_a_zero_height() {
     let text = sim_text(&sim(offline_model(Screen::Node)), 120, 40);
-    assert!(text.contains("Node is not running"), "{text}");
+    assert!(text.contains("Your node is not running"), "{text}");
     // §5's shape rule: unknown is `—`, never a zero standing in for unknown.
     assert!(text.contains('—'), "{text}");
 }
@@ -298,8 +300,8 @@ fn the_offline_wallet_screen_offers_the_open_key() {
     assert!(text.contains("No wallet is open."), "{text}");
     assert!(text.contains("[o] Open wallet…"), "{text}");
     assert!(text.contains("[c] Create wallet…"), "{text}");
-    assert!(text.contains("[W] Start the wallet daemon"), "{text}");
-    assert!(text.contains("wallet daemon:"), "{text}");
+    assert!(text.contains("[W] Start the wallet service"), "{text}");
+    assert!(text.contains("wallet service:"), "{text}");
 }
 
 /// §7a: the keymap table "is also the exact content of the `?` overlay — one
@@ -356,8 +358,10 @@ fn the_not_installed_hero_keeps_its_command_whole_at_every_width() {
         if !text.contains("Monero is not installed") {
             continue; // monerod IS installed on this machine; the other empty state renders
         }
+        // §2o.1's first exception, and the only command left on this hero: installing a package
+        // is not something fmonero does (docs/COPY.md §2). It must still be whole.
         assert!(
-            text.contains("fmonero setup --units"),
+            text.contains("omarchy pkg add monero"),
             "{w}x{h}: the hero's command was clipped:\n{text}"
         );
     }
@@ -378,12 +382,12 @@ fn the_node_screen_still_shows_its_warnings_in_a_short_medium_terminal() {
     for (w, h) in [(70u16, 20u16), (70, 24), (80, 24), (99, 30)] {
         let text = sim_text(&s, w, h);
         assert!(
-            text.contains("Warnings"),
-            "{w}x{h}: the Warnings pane did not render:\n{text}"
+            text.contains("Notes"),
+            "{w}x{h}: the notes pane did not render:\n{text}"
         );
         // And no pane was given room it then left blank.
         assert!(
-            !text.contains("Peers") || text.contains("no connections") || text.contains("not"),
+            !text.contains("Peers") || text.contains("No peers yet") || text.contains("not"),
             "{w}x{h}: the peers pane rendered a frame with nothing in it:\n{text}"
         );
     }
@@ -441,29 +445,31 @@ fn every_screen_renders_against_the_mock() {
             Screen::Node => assert!(text.contains("3541122"), "{text}"),
             // The wallet fixture is open, so a balance and a subaddress table are there.
             Screen::Wallet => assert!(text.contains("XMR"), "{text}"),
-            Screen::Send => assert!(text.contains("Priority"), "{text}"),
+            Screen::Send => assert!(text.contains("cheapest"), "{text}"),
             Screen::Log => assert!(text.contains("synced"), "{text}"),
         }
     }
 }
 
-/// §7a: on a restricted node every pane that needs a gated method says so **and names the
-/// method** — never a zero, and never a poisoned `get_info` field (§1b.3, §5).
+/// §7a: on a restricted node every pane that needs a gated method says so — never a zero, and
+/// never a poisoned `get_info` field (§1b.3, §5). **v5.6 drops the method name from the
+/// sentence** (§2o rule 5: an RPC method is an internal identifier).
 #[test]
-fn a_restricted_node_names_the_method_each_dark_pane_needs() {
+fn a_restricted_node_says_each_dark_pane_is_unanswered() {
     let w = World::with_node("restricted", &["--restricted", "--scenario", "restricted"]);
     let text = sim_text(&sim(model(&w.ctx, Screen::Node)), 120, 40);
     assert!(
-        text.contains("not available on a restricted node"),
+        text.contains("This node does not answer that."),
         "the peers pane must say so:\n{text}"
     );
+    // **And never the method name** — that is the point of the rewrite (§2o rule 5).
     assert!(
-        text.contains("get_connections"),
-        "…and name the method:\n{text}"
+        !text.contains("get_connections"),
+        "no RPC method may be shown as prose:\n{text}"
     );
     assert!(
-        text.contains("restricted RPC"),
-        "the hero must carry the warning:\n{text}"
+        text.contains("only answers basic questions"),
+        "the hero must carry the note:\n{text}"
     );
     // The poisoned fields render as `—`: a restricted node reports 0 peers and 2^64-1 free
     // bytes by construction, and §5 turns both into null.
@@ -506,7 +512,7 @@ fn the_send_screen_refuses_all_inline_and_never_reaches_the_daemon() {
     assert_eq!(sim.model().note, NO_SWEEP);
     assert_eq!(w.count("transfer"), 0, "nothing may be built");
     let text = sim_text(&sim, 110, 30);
-    assert!(text.contains("sweep is not available"), "{text}");
+    assert!(text.contains("Sweep is not in the TUI yet"), "{text}");
 }
 
 /// §7a's send machine: a **refused** start must leave the screen recoverable.
@@ -540,7 +546,7 @@ fn a_refused_start_returns_the_send_screen_to_its_form() {
         matches!(sim.model().send.stage, Stage::Form),
         "a refused build must return the form, not strand the screen"
     );
-    assert!(sim.model().note.contains("already"), "{}", sim.model().note);
+    assert!(sim.model().note.contains("Already"), "{}", sim.model().note);
 }
 
 /// §2d: "**`send::relay` likewise never consults a breaker**: once a plan is built the §2a.11
@@ -725,7 +731,7 @@ fn node_mutations_are_refused_when_fmonero_does_not_own_the_node() {
         );
         assert!(m.action.is_none(), "{k}: nothing may be started");
         assert!(
-            m.note.contains("not fmonero's to mutate"),
+            m.note.contains("can read it but not change it"),
             "{k}: {}",
             m.note
         );
@@ -733,7 +739,12 @@ fn node_mutations_are_refused_when_fmonero_does_not_own_the_node() {
 }
 
 /// §7a: an unresolved `pending.json` record is a red banner on **every** screen, carrying the
-/// txid and the two commands — and it turns the node badge red (§7a's badge colours).
+/// payment id and where to look — and it turns the node badge red (§7a's badge colours).
+///
+/// **v5.6 removed the two shell commands** (§2o.1): the banner named `wallet history --limit 5`
+/// and `wallet clear-pending --yes` at a user who cannot type into it. What it must still carry
+/// at every width is the amount, the destination, the counter, the id and the key that reaches
+/// the payments table.
 #[test]
 fn an_unresolved_pending_record_banners_every_screen() {
     let w = World::new("pending");
@@ -753,28 +764,24 @@ fn an_unresolved_pending_record_banners_every_screen() {
     state::set_pending_send(&w.ctx, &record).expect("the record");
     for screen in [Screen::Node, Screen::Wallet, Screen::Send, Screen::Log] {
         let s = sim(model(&w.ctx, screen));
-        assert_eq!(s.model().node_badge(), "error", "{screen:?}");
-        // §7a: "the txid and the two commands", at every width the banner is drawn at. Both
-        // commands in full: `history --limit 5 | clear-pending --yes` is one command piped into
-        // a program that does not exist, and at 45 columns two rows dropped the second half —
-        // the only command that gets the Send screen building again.
+        assert_eq!(s.model().node_badge(), "problem", "{screen:?}");
         for (cw, ch) in [(150u16, 40u16), (120, 40), (70, 24), (45, 20)] {
             let text = sim_text(&s, cw, ch);
-            // The banner wraps at a narrow width, so the commands are checked on the joined
-            // text: what matters is that neither is CUT OFF, which is what a fixed two-row
-            // banner did to `clear-pending` at 45 columns.
+            // The banner wraps at a narrow width, so it is checked on the joined text: what
+            // matters is that nothing is CUT OFF, which is what a fixed two-row banner did at
+            // 45 columns.
             let flat = text.replace('\n', " ");
-            for needle in [
-                "SEND IN FLIGHT",
-                "wallet history --limit 5",
-                "wallet clear-pending --yes",
-                &BUILT_TXID[..8],
-            ] {
+            for needle in ["SENDING", "press 2 for the wallet", &BUILT_TXID[..8]] {
                 assert!(
                     flat.contains(needle),
                     "{screen:?} at {cw}x{ch} lost {needle}:\n{text}"
                 );
             }
+            // §2o.1: no shell command anywhere in it.
+            assert!(
+                !flat.contains("fmonero wallet"),
+                "{screen:?} at {cw}x{ch} printed a command:\n{text}"
+            );
         }
     }
 }
@@ -870,36 +877,41 @@ fn the_node_screen_in_remote_mode_shows_the_address_and_no_gauge() {
     ctx.settings.wallet.url = "http://127.0.0.1:2".into();
     let s = sim(model(&ctx, Screen::Node));
     let text = sim_text(&s, 100, 30);
-    assert!(text.contains("Remote node"), "{text}");
+    assert!(text.contains("Public node"), "{text}");
     assert!(text.contains("node.example.com:18089"), "{text}");
-    assert!(text.contains("untrusted"), "{text}");
+    // **v5.6: the two panes that said "not available" are gone, and one pane of what IS known
+    // stands in their place** (§7a.3, decision 3). The trust flag and the architecture sentence
+    // are deleted outright (§2o).
     assert!(
-        text.contains("monero-wallet-rpc does"),
-        "the one dim line §7a asks for, verbatim:\n{text}"
+        text.contains("This node"),
+        "the one pane of what is known:\n{text}"
     );
-    // Every pane that needs a gated method says so, with `remote node` as the reason (§7a).
-    // v5.5: the picker takes the peers table's place in remote mode (§7a.3), so Net and
-    // Mempool·fees are the two panes left that need a gated method — the third pane is now the
-    // one thing a remote node CAN be asked, which is the point of the change.
-    assert_eq!(
-        text.matches("not available with a remote node").count(),
-        2,
-        "Net and Mempool·fees each say it:\n{text}"
+    assert!(
+        text.contains("Not checked yet."),
+        "nothing has checked this address, and the pane says so:\n{text}"
     );
+    assert!(text.contains("[p] Check this node"), "{text}");
     assert!(
         text.contains("Public nodes"),
         "the picker replaces the peers table in remote mode (§7a.3):\n{text}"
     );
-    // No gauge, and none of the phrases that would need a number remote mode has not got.
+    // §2o's own word list, over the rendered screen rather than the source — which is the half a
+    // source grep cannot prove.
     for absent in [
+        "not available",
+        "untrusted",
+        "trusted",
+        "ssl",
+        "monero-wallet-rpc",
+        "daemon",
+        "probe",
         "eta ",
         "Node is not running",
-        "reading the transaction pool",
         "sparkline fills",
     ] {
         assert!(
             !text.contains(absent),
-            "the remote hero rendered `{absent}`:\n{text}"
+            "the public-node screen rendered `{absent}`:\n{text}"
         );
     }
     let _ = std::fs::remove_dir_all(&dir);
@@ -1008,13 +1020,13 @@ fn the_create_wallet_modal_consumes_tab_and_says_so() {
     let before = s.model().screen;
     s.inject_event(key(KeyCode::Tab));
     assert_eq!(s.model().screen, before, "the create modal holds Tab");
-    assert_eq!(s.model().note, "Esc to discard first");
+    assert_eq!(s.model().note, "Esc to discard first.");
     // And it is documented IN the modal — on its own line under the controls, which is a
     // rendering assertion and not a status-bar one: a one-row footer clipped that line away, so
     // the rule was true only in DESIGN.md.
     let text = sim_text(&s, 110, 34);
     assert!(
-        text.contains("Tab is held here — Esc to discard first"),
+        text.contains("Tab is off here. Press Esc to discard first."),
         "{text}"
     );
 }
@@ -1239,10 +1251,10 @@ fn the_status_bar_says_idle_when_the_daemon_is_supposed_to_be_down() {
         s.model().has_warning("wallet_idle"),
         "the fixture must actually reach the wallet_idle state, or this proves nothing"
     );
-    assert_eq!(s.model().wallet_badge(), "idle");
+    assert_eq!(s.model().wallet_badge(), "closed");
     let text = sim_text(&s, 120, 40);
-    assert!(text.contains("wallet idle"), "{text}");
-    assert!(!text.contains("wallet down"), "{text}");
+    assert!(text.contains("wallet closed"), "{text}");
+    assert!(!text.contains("wallet not running"), "{text}");
 }
 
 #[test]
@@ -1254,7 +1266,7 @@ fn the_wallet_empty_state_keeps_all_three_chips_at_every_tier() {
         for want in [
             "[o] Open wallet",
             "[c] Create wallet",
-            "[W] Start the wallet daemon",
+            "[W] Start the wallet service",
         ] {
             assert!(text.contains(want), "{want} missing at {w}x{h}:\n{text}");
         }
@@ -1314,10 +1326,8 @@ fn the_picker_renders_the_cache_on_entry_and_shows_both_column_groups() {
         text.contains("42"),
         "the latency of the probed row:\n{text}"
     );
-    assert!(
-        text.contains("skipped (no port)"),
-        "the footer surfaces it:\n{text}"
-    );
+    // v5.6 collapses the two parse-failure counts into one total; both stay in `--json`.
+    assert!(text.contains("skipped"), "the footer surfaces it:\n{text}");
 }
 
 /// Revision 4, both guards: nothing is selected on entry, and the configured row refuses
@@ -1358,8 +1368,13 @@ fn the_picker_selects_nothing_on_entry_and_refuses_the_configured_node() {
     s.inject_event(key(KeyCode::Enter));
     let text = sim_text(&s, 120, 44);
     assert!(text.contains("other.example:18081"), "{text}");
-    assert!(text.contains("untrusted"), "{text}");
-    assert!(text.contains("re-rendered and restarted"), "{text}");
+    // §2o deletes the flag and states the fact behind it instead.
+    assert!(!text.contains("untrusted"), "{text}");
+    assert!(
+        text.contains("will not tell this node which amounts"),
+        "{text}"
+    );
+    assert!(text.contains("the wallet service will restart"), "{text}");
     assert!(text.contains("IP address"), "{text}");
 }
 
@@ -1370,8 +1385,8 @@ fn the_picker_with_no_cache_offers_the_fetch_chip_and_prints_no_broken_footer() 
     let w = World::new("picker-empty");
     let s = sim(model(&w.ctx, Screen::Node));
     let text = sim_text(&s, 120, 44);
-    assert!(text.contains("No public-node list yet."), "{text}");
-    assert!(text.contains("[f] Fetch the list"), "{text}");
+    assert!(text.contains("No list of public nodes yet."), "{text}");
+    assert!(text.contains("[f] Get the list"), "{text}");
     assert!(text.contains("tells monero.fail your IP address"), "{text}");
     assert!(
         !text.contains("list  old") && !text.contains("0 nodes ·"),
@@ -1395,7 +1410,7 @@ fn the_privacy_notice_stands_in_front_of_the_first_fetch_and_the_first_probe() {
         s.inject_event(key(keypress));
         let text = sim_text(&s, 120, 44);
         assert!(
-            text.contains("Fetching the list tells monero.fail your IP address"),
+            text.contains("Getting the list tells monero.fail your IP address"),
             "the notice must precede the first {what}:\n{text}"
         );
         assert!(s.model().action.is_none(), "and nothing may be armed yet");
@@ -1481,9 +1496,12 @@ fn the_seed_backup_modal_names_the_command_and_contains_no_seed() {
     let text = sim_text(&s, 110, 34);
     assert!(text.contains("monero-wallet-cli"), "{text}");
     assert!(text.contains("--offline"), "{text}");
-    // Revision 11: the close step, because `create_wallet` leaves the wallet OPEN in the daemon.
-    assert!(text.contains("fmonero wallet close"), "{text}");
-    assert!(text.contains("never displays a seed"), "{text}");
+    // Revision 11: the close step, because `create_wallet` leaves the wallet OPEN in the wallet
+    // service. **v5.6 states it without naming a command** (§2o.1): the modal says the wallet
+    // must be closed, and `x` is the key that does it.
+    assert!(text.contains("With the wallet closed"), "{text}");
+    assert!(!text.contains("fmonero wallet close"), "{text}");
+    assert!(text.contains("never shows your seed"), "{text}");
     // No line of the modal is 25 words long, which is what a seed would be.
     for line in render(s.model(), 110, 34) {
         let words = line.split_whitespace().count();
@@ -1626,7 +1644,7 @@ fn the_picker_never_elides_the_configured_address_at_any_width() {
 fn the_keys_table_promises_always_only_for_the_keys_the_dispatcher_resolves_first() {
     let always: Vec<&(&str, &str)> = KEYS
         .iter()
-        .filter(|(_, what)| what.contains("always"))
+        .filter(|(_, what)| what.contains("Always"))
         .collect();
     assert_eq!(
         always.len(),
@@ -1703,8 +1721,8 @@ fn the_keys_table_promises_always_only_for_the_keys_the_dispatcher_resolves_firs
 #[test]
 fn the_wallet_badge_never_says_down_for_a_daemon_the_tui_is_itself_working() {
     for (active, action, want) in [
-        (false, None, "down"),
-        (true, None, "down"),
+        (false, None, "not running"),
+        (true, None, "not running"),
         (false, Some(subs::Action::WalletDaemonStart), "starting"),
         (
             true,
@@ -1713,7 +1731,7 @@ fn the_wallet_badge_never_says_down_for_a_daemon_the_tui_is_itself_working() {
                 password: "x".into(),
                 language: "English".into(),
             }),
-            "busy",
+            "scanning",
         ),
     ] {
         let dir = std::env::temp_dir().join(format!(
@@ -1756,12 +1774,202 @@ fn the_wallet_badge_never_says_down_for_a_daemon_the_tui_is_itself_working() {
         assert_eq!(s.model().wallet_badge(), want, "unit_active = {active}");
         let text = sim_text(&s, 120, 40);
         assert!(text.contains(&format!("wallet {want}")), "{text}");
-        if want != "down" {
+        if want != "not running" {
             assert!(
-                !text.contains("wallet down"),
-                "the status line still says down:\n{text}"
+                !text.contains("wallet not running"),
+                "the status line still says not running:\n{text}"
             );
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+// ---- §7a.7: settings that change under a running TUI (v5.6) --------------------------
+
+/// The owner: *"When I change nodes it says I'm still on Cake Wallet."*
+///
+/// `Tui` held **one** `Context`, cloned at startup, and never reloaded it, so after a switch
+/// every poll asked `status` about the old `node.remote`, the hero printed the old address, the
+/// status bar printed it too, and the picker's `●` stayed on the old row. The address was right
+/// in `config.toml`, right in the unit and right in the wallet service's argv, and wrong in every
+/// pixel.
+///
+/// Three cases, and each is a real sequence rather than a call of the fix: the switch the owner
+/// made, a change from another terminal, and an unreadable file mid-session.
+fn stale_node_ctx(tag: &str) -> (std::path::PathBuf, Context) {
+    let dir = std::env::temp_dir().join(format!(
+        "fmonero-stale-{tag}-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut ctx = Context::for_test(&dir).expect("test context");
+    ctx.settings.node.mode = fmonero_core::NodeMode::Remote;
+    ctx.settings.node.remote = NODE_A.into();
+    // A port nothing listens on, so no wallet answers and the screen is the public-node one.
+    ctx.settings.wallet.url = "http://127.0.0.1:2".into();
+    (dir, ctx)
+}
+
+const NODE_A: &str = "a.example:18081";
+const NODE_B: &str = "b.example:18081";
+
+/// Write `config.toml` the way `node_mode::set_remote` does — the single `Settings::save` of
+/// §2m.5, which happens **before** the unit render, and is therefore exactly what is on disk
+/// after a switch.
+fn write_remote(ctx: &Context, address: &str) {
+    let mut s = ctx.settings.clone();
+    s.set("node.remote", address).expect("a valid address");
+    s.set("node.mode", "remote").expect("remote");
+    std::fs::create_dir_all(&ctx.paths.config_dir).expect("config dir");
+    s.save(ctx).expect("save");
+    // `stat` has one-second granularity on some filesystems and the model compares mtimes, so
+    // the written file is aged deliberately rather than racing the test's own clock.
+    let _ = std::fs::metadata(ctx.paths.config_file()).expect("the file exists");
+}
+
+/// A cached check of `address`, so §7a.3's pane has something to render for the new node —
+/// which is the fourth surface that was wrong (§7a.7 part 3).
+fn cache_check(ctx: &Context, address: &str, height: u64) {
+    let probe = fmonero_core::nodes::Probe {
+        reachable: true,
+        height: Some(height),
+        synchronized: Some(true),
+        restricted: Some(false),
+        nettype: Some("mainnet".into()),
+        version: Some("0.18.5.1".into()),
+        latency_ms: Some(240),
+        reason: None,
+        probed_at: fmonero_core::now_unix(),
+    };
+    state::note_remote_probe(ctx, address, &probe).expect("the cached check");
+}
+
+/// Case 1 — **the switch the owner made.** All four surfaces name the new node within one poll.
+#[test]
+fn switching_nodes_moves_every_surface_within_one_poll() {
+    let (dir, ctx) = stale_node_ctx("switch");
+    write_remote(&ctx, NODE_A);
+    seed_cache(&ctx, &[(NODE_A, false), (NODE_B, false)]);
+    cache_check(&ctx, NODE_B, 3_765_346);
+    let mut s = sim(model(&ctx, Screen::Node));
+
+    // Before: every surface names A.
+    let before = sim_text(&s, 120, 44);
+    assert!(
+        before.contains(NODE_A),
+        "the fixture starts on A:\n{before}"
+    );
+
+    // The switch: `config.toml` now holds B — which is what `node_mode::set_remote` writes
+    // before anything else (§2m.5) — and the action reports the outcome it reports on a real
+    // machine. `set_remote` itself is not called here: under `FMONERO_STATE_DIR` it refuses at
+    // `units::install` with exit 3 `sandboxed_units` **after** having saved the settings
+    // (DECISIONS, 2026-09-18), so calling it would test the sandbox guard rather than the fix.
+    write_remote(&ctx, NODE_B);
+    s.send(Msg::ActionDone(Box::new(Ok(subs::Outcome::NodeSwitched {
+        address: NODE_B.to_string(),
+        must_reopen: None,
+    }))));
+    s.send(Msg::Poll);
+
+    let text = sim_text(&s, 120, 44);
+    // 1. the model's own `Context` — the thing that was stale.
+    assert_eq!(
+        s.model().ctx.settings.node.remote,
+        NODE_B,
+        "the reload did not happen"
+    );
+    // 2. the Node hero and 3. the status bar, both of which read the poll's Status document.
+    assert!(
+        text.contains(&format!("Public node · {NODE_B}")),
+        "the hero still names the old node:\n{text}"
+    );
+    assert!(
+        text.contains(&format!("● public node {NODE_B}")),
+        "the status bar still names the old node:\n{text}"
+    );
+    // 4. the picker's `●`, which compares each row against the address in force.
+    assert!(
+        text.contains(&format!("● {NODE_B}")),
+        "the picker's marker did not move:\n{text}"
+    );
+    assert!(
+        !text.contains(&format!("● {NODE_A}")),
+        "the marker is on two rows:\n{text}"
+    );
+    // 5. and ` This node ` shows B's measurement rather than `Not checked yet.`
+    assert!(
+        text.contains("block 3 765 346"),
+        "the pane must show the new node's own check:\n{text}"
+    );
+    assert!(!text.contains("Not checked yet."), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Case 2 — **a change made anywhere else**: the CLI in another terminal, an editor, a
+/// `doctor --fix` that repaired a key. Part 1 cannot see those, and part 2 is the `stat` on the
+/// 1 s poll that does.
+#[test]
+fn a_settings_change_from_outside_is_noticed_on_the_next_poll() {
+    let (dir, ctx) = stale_node_ctx("outside");
+    write_remote(&ctx, NODE_A);
+    seed_cache(&ctx, &[(NODE_A, false), (NODE_B, false)]);
+    cache_check(&ctx, NODE_B, 3_765_346);
+    let mut s = sim(model(&ctx, Screen::Node));
+    assert!(sim_text(&s, 120, 44).contains(NODE_A));
+
+    // Nothing in the TUI did this, and no action completed.
+    write_remote(&ctx, NODE_B);
+    s.send(Msg::Poll);
+
+    let text = sim_text(&s, 120, 44);
+    assert_eq!(s.model().ctx.settings.node.remote, NODE_B);
+    assert!(
+        text.contains(&format!("Public node · {NODE_B}")),
+        "the hero still names the old node:\n{text}"
+    );
+    assert!(text.contains(&format!("● public node {NODE_B}")), "{text}");
+    assert!(text.contains("block 3 765 346"), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Case 3 — **the failure path.** An unreadable `config.toml` mid-session leaves the previous
+/// values on screen and raises **one** toast: a TUI that exited on an unreadable settings file
+/// would be worse than one showing a stale address it tells you about (§7a.7 part 1).
+#[test]
+fn an_unreadable_settings_file_keeps_the_old_values_and_says_so_once() {
+    let (dir, ctx) = stale_node_ctx("unreadable");
+    write_remote(&ctx, NODE_A);
+    seed_cache(&ctx, &[(NODE_A, false)]);
+    let mut s = sim(model(&ctx, Screen::Node));
+    assert!(sim_text(&s, 120, 44).contains(NODE_A));
+
+    std::fs::write(ctx.paths.config_file(), b"this is not toml = = =\n").expect("clobber");
+    s.send(Msg::Poll);
+    let text = sim_text(&s, 120, 44);
+    assert_eq!(
+        s.model().ctx.settings.node.remote,
+        NODE_A,
+        "the old Context must survive an unreadable file"
+    );
+    assert!(text.contains(NODE_A), "{text}");
+    assert!(
+        s.model().note.contains("Could not read your settings"),
+        "{}",
+        s.model().note
+    );
+
+    // And **once**: a second poll with the same broken file must not raise it again, because the
+    // mtime has already been recorded. (Another note may well be there — the poll also arms
+    // §2n.4's check of the configured node — so the assertion is about this message, not about
+    // the line being empty.)
+    s.model_mut().note.clear();
+    s.send(Msg::Poll);
+    assert!(
+        !s.model().note.contains("Could not read your settings"),
+        "the same failure was raised twice: {}",
+        s.model().note
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

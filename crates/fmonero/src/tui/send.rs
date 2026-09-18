@@ -25,14 +25,19 @@ use fmonero_core::{address, send::Plan, Piconero, SendRequest};
 
 use super::screens::{fit, panel, short_addr, wrapped, Tier};
 use super::theme::Theme;
-use super::Tui;
+use super::{next_fee_level, prev_fee_level, Tui};
 
 /// Typing this word is the TUI's `--yes` (§7a): the modal needs the word, not just Enter.
 pub(super) const CONFIRM_WORD: &str = "send";
 
-/// What the Amount field says when someone types `all` — the same sentence §4 gives the CLI.
-pub(super) const NO_SWEEP: &str =
-    "sweep is not available in the TUI — run: fmonero wallet sweep <addr> --dry-run";
+/// What the Amount field says when someone types `all`.
+///
+/// **One of the four places a shell command may appear in the TUI** (§2o.1, `docs/COPY.md` §2),
+/// and the only one whose cause is a scope decision rather than an impossibility: §0 keeps
+/// sweep out of the TUI in v0.1 and this screen prepares exactly one payment. When sweep enters
+/// the TUI this line goes.
+pub(super) const NO_SWEEP: &str = "Sweep is not in the TUI yet. To send everything, in a \
+                                   terminal: fmonero wallet sweep <address> --dry-run";
 
 /// The Tab cycle. `Priority` is a field rather than a bare shortcut so that `p` can cycle it
 /// without being swallowed by an address — base58 contains `p`, and `Ctrl+P` cycles it from
@@ -98,9 +103,15 @@ pub(super) struct SendScreen {
 
 /// The three fields, in Tab order, with the hint each draws while it is empty.
 const FIELDS: [(Field, &str, &str); 3] = [
-    (Field::To, "To", "address, or @label from the address book"),
-    (Field::Amount, "Amount", "0.5   ·   250000000000p"),
-    (Field::Note, "Note", "optional note, kept in the wallet"),
+    (
+        Field::To,
+        "To",
+        "an address, or @name from your address book",
+    ),
+    // The piconero form stays accepted and stays in `--help`; as a placeholder it taught a
+    // reader that amounts look like that (§2o rule 9).
+    (Field::Amount, "Amount", "0.5 XMR"),
+    (Field::Note, "Note", "optional, kept with this wallet"),
 ];
 
 impl SendScreen {
@@ -161,11 +172,11 @@ impl SendScreen {
             return (NO_SWEEP.to_string(), false);
         }
         if to.is_empty() && amount.is_empty() {
-            return ("enter a recipient and an amount".into(), false);
+            return ("Enter who to pay and how much.".into(), false);
         }
         let dest = if let Some(label) = to.strip_prefix('@') {
             if label.is_empty() {
-                return ("@ needs an address-book label after it".into(), false);
+                return ("Type a name after @.".into(), false);
             }
             format!("address book: {label}")
         } else {
@@ -175,9 +186,9 @@ impl SendScreen {
             }
         };
         match Piconero::parse(amount) {
-            Ok(p) if p.0 == 0 => ("0 is not an amount to send".into(), false),
+            Ok(p) if p.0 == 0 => ("0 XMR is not an amount.".into(), false),
             Ok(p) => (
-                format!("{dest} · {} XMR · Enter builds it", p.to_xmr_string()),
+                format!("{dest} · {} XMR · Enter checks the fee", p.to_xmr_string()),
                 true,
             ),
             Err(e) => (e.to_string(), false),
@@ -238,10 +249,10 @@ impl SendScreen {
             KeyCode::Escape => {
                 self.editing = false;
                 self.blur();
-                SendCmd::Info("form unfocused — 1..4 switch screens, Enter returns".into())
+                SendCmd::Info("You left the form. 1-4 change screens, Enter goes back.".into())
             }
             KeyCode::Char('p') if ctrl => {
-                self.priority = (self.priority + 1) % 5;
+                self.priority = next_fee_level(self.priority);
                 SendCmd::None
             }
             KeyCode::Tab | KeyCode::Down => {
@@ -288,8 +299,10 @@ impl SendScreen {
             }
             code if self.field == Field::Priority => {
                 match code {
-                    KeyCode::Char('p') | KeyCode::Right => self.priority = (self.priority + 1) % 5,
-                    KeyCode::Left => self.priority = (self.priority + 4) % 5,
+                    KeyCode::Char('p') | KeyCode::Right => {
+                        self.priority = next_fee_level(self.priority)
+                    }
+                    KeyCode::Left => self.priority = prev_fee_level(self.priority),
                     KeyCode::Char(c @ '0'..='4') => {
                         self.priority = u32::from(c as u8 - b'0');
                     }
@@ -341,7 +354,7 @@ impl SendScreen {
                 // Discarding drops the `Plan`, which releases the §2a.11 `send.lock` and
                 // leaves nothing to clean up: `do_not_relay` never committed the tx.
                 self.back_to_form();
-                SendCmd::Note("discarded — nothing was broadcast".into())
+                SendCmd::Note("Discarded. Nothing was sent.".into())
             }
             KeyCode::Backspace => {
                 self.typed.pop();
@@ -355,10 +368,10 @@ impl SendScreen {
             // renders `—` for it (§5's shape rules). Confirming a sum that was never computed is
             // the one thing this screen exists to prevent, so the word is refused.
             KeyCode::Enter if matches!(&self.stage, Stage::Built(p) if p.total().is_err()) => {
-                SendCmd::Note("this plan's total overflows u64 — Esc discards it".into())
+                SendCmd::Note("That total is too large to add up. Esc discards it.".into())
             }
             KeyCode::Enter if self.typed.trim() == CONFIRM_WORD => SendCmd::Relay,
-            KeyCode::Enter => SendCmd::Note(format!("type \"{CONFIRM_WORD}\" to broadcast")),
+            KeyCode::Enter => SendCmd::Note(format!("Type \"{CONFIRM_WORD}\" to confirm.")),
             _ => SendCmd::None,
         }
     }
@@ -463,7 +476,7 @@ pub(super) fn view(m: &Tui, area: Rect, frame: &mut ftui::Frame, tier: Tier) {
         .and_then(|st| st.node.fee.fees_pico.clone())
         .unwrap_or_default();
     let mut chips = vec![Span::styled(
-        "Priority".to_string(),
+        "Fee".to_string(),
         if s.field == Field::Priority {
             th.accented()
         } else {
@@ -473,20 +486,18 @@ pub(super) fn view(m: &Tui, area: Rect, frame: &mut ftui::Frame, tier: Tier) {
     // Each chip is **individually** clickable, and a click **selects that priority** rather than
     // cycling (§7a.2, revision 6) — which is also more discoverable than four presses of `p`.
     // Without this a mouse-only user could not change the fee on the money screen.
-    let mut x = rows[3].x + "Priority".width() as u16;
-    for level in 0..5u32 {
-        let fee = fees.get(level.saturating_sub(1).min(3) as usize);
-        // **The fee is rendered in piconero per byte, as an integer** — which is the unit
-        // `get_fee_estimate.fees[]` actually returns (§1b.4) and the only form that fits: five
-        // chips of `0.00000002` need 70 columns, so at the Wide tier's 67-column form the FIFTH
-        // chip fell off the row entirely and priority 4 was unclickable, which §7a.2 forbids.
-        // An integer beside a level is also easier to compare than eight leading zeroes, and it
-        // needs no float at all (§2a.5).
-        let label = match (level, fee) {
-            (0, _) => " 0=1 ".to_string(),
-            (l, Some(f)) => format!(" {l} {}p ", f.0),
-            (l, None) => format!(" {l} — "),
-        };
+    // **Four chips, by name** (§2o): the old row was `Priority 0=1  1 20000p  2 80000p …` — an
+    // alias notation and four per-byte piconero figures, none of which a person chooses between.
+    // The node's own `fees[]` still decides what each level costs (§1b.4); it is simply not the
+    // label. `0` is monerod's alias of the cheapest level, so it highlights that chip, and each
+    // chip stays **individually** clickable (§7a.2, revision 6) — without that a mouse-only user
+    // could not change the fee on the money screen.
+    let selected = s.priority.max(1);
+    let mut x = rows[3].x + "Fee".width() as u16;
+    for (i, name) in super::FEE_LEVELS.iter().enumerate() {
+        let level = i as u32 + 1;
+        let _ = fees.get(i);
+        let label = format!(" {name} ");
         let w = label.width() as u16;
         if x + w <= rows[3].right() {
             m.hits.priority(level, Rect::new(x, rows[3].y, w, 1));
@@ -494,7 +505,7 @@ pub(super) fn view(m: &Tui, area: Rect, frame: &mut ftui::Frame, tier: Tier) {
         x += w;
         chips.push(Span::styled(
             label,
-            if level == s.priority {
+            if level == selected {
                 th.selected()
             } else {
                 th.dimmed()
@@ -541,20 +552,17 @@ pub(super) fn view(m: &Tui, area: Rect, frame: &mut ftui::Frame, tier: Tier) {
     let line = match &s.stage {
         Stage::Validating => Line::styled("checking the address…".to_string(), th.warn()),
         Stage::Building => Line::styled(
-            "building with do_not_relay — nothing is broadcast yet · Esc cancels".to_string(),
+            "Checking the fee. Nothing has been sent yet. Esc cancels.".to_string(),
             th.warn(),
         ),
-        Stage::Relaying => Line::styled(
-            "broadcasting — this one cannot be cancelled".to_string(),
-            th.warn(),
-        ),
+        Stage::Relaying => Line::styled("Sending. This cannot be stopped.".to_string(), th.warn()),
         Stage::Sent(txid) => Line::styled(format!("sent · {txid}"), th.ok()),
         _ => Line::styled(text, if ok { th.ok() } else { th.err() }),
     };
     let mut lines = vec![line];
     lines.push(Line::styled(
         format!(
-            "account {} · ↑↓ fields · ⇥ screens · @ picks from the address book · {}",
+            "account {} · ↑↓ fields · ⇥ screens · @ address book · {}",
             s.account,
             if s.editing {
                 "Esc leaves the form"
@@ -603,7 +611,7 @@ fn view_preview(m: &Tui, area: Rect, frame: &mut ftui::Frame) {
     ]));
     lines.push(Line::from_spans([
         Span::styled("Fee     ".to_string(), th.dimmed()),
-        Span::styled("known only after the build".to_string(), th.dimmed()),
+        Span::styled("known after the check".to_string(), th.dimmed()),
     ]));
     lines.push(Line::from_spans([
         Span::styled("Account ".to_string(), th.dimmed()),
@@ -625,7 +633,9 @@ fn view_preview(m: &Tui, area: Rect, frame: &mut ftui::Frame) {
 
 fn view_picker(m: &Tui, entries: &[BookEntry], sel: usize, frame: &mut ftui::Frame) {
     let rows: Vec<String> = if entries.is_empty() {
-        vec!["the book is empty — fmonero wallet book add <address> <description>".into()]
+        // §2o.1: `wallet book add` is CLI-only, so the empty state states the fact and names
+        // no command (docs/COPY.md §2).
+        vec!["Your address book is empty.".into()]
     } else {
         entries
             .iter()
@@ -650,13 +660,9 @@ pub(super) fn view_confirm(m: &Tui, plan: &Plan, frame: &mut ftui::Frame) {
     // (a border row and a padding row at each end). `addr_rows + 11` was one short, and the row
     // that lost was the echo: the user typed the confirmation word into a modal that showed no
     // character of it, on the one screen that moves money (§7a: never abbreviated).
-    let Some(inner) = super::screens::overlay(
-        m,
-        frame,
-        w,
-        addr_rows + 12,
-        " Confirm — this broadcasts a transaction ",
-    ) else {
+    let Some(inner) =
+        super::screens::overlay(m, frame, w, addr_rows + 12, " Confirm — this sends money ")
+    else {
         return;
     };
     let bg = th.selection;
@@ -693,15 +699,17 @@ pub(super) fn view_confirm(m: &Tui, plan: &Plan, frame: &mut ftui::Frame) {
         lines.push(Line::from_spans([
             Span::styled(label.to_string(), dim),
             Span::styled(format!("{xmr} XMR  "), text),
-            Span::styled(format!("({pico} pico)"), dim),
+            Span::styled(format!("({pico} piconero)"), dim),
         ]));
     }
     lines.push(Line::from_spans([
         Span::styled("Account".to_string(), dim),
         Span::styled(
+            // The transaction's weight is an internal number and stays in `--json` (§2o).
             format!(
-                " {}  Priority {}  Weight {}",
-                plan.account_index, plan.priority, plan.total_weight
+                " {}  Fee level {}",
+                plan.account_index,
+                super::fee_level_name(plan.priority)
             ),
             text,
         ),
@@ -709,9 +717,10 @@ pub(super) fn view_confirm(m: &Tui, plan: &Plan, frame: &mut ftui::Frame) {
     lines.push(Line::styled(String::new(), dim));
     lines.push(Line::styled(
         if plan.total().is_err() {
-            "this plan's total overflows u64 and cannot be confirmed · Esc to discard".to_string()
+            "That total is too large to add up, so it cannot be confirmed · Esc discards"
+                .to_string()
         } else {
-            format!("Type \"{CONFIRM_WORD}\" and press Enter to broadcast · Esc to discard")
+            format!("Type \"{CONFIRM_WORD}\" and press Enter to send · Esc discards")
         },
         th.warn().bg(bg),
     ));
@@ -770,12 +779,12 @@ mod tests {
         let mut s = screen();
         s.to.set_value(DEST);
         s.amount.set_value("0");
-        assert_eq!(s.validation().0, "0 is not an amount to send");
+        assert_eq!(s.validation().0, "0 XMR is not an amount.");
         s.amount.set_value("0.5");
         s.to.set_value("not-an-address");
         assert!(!s.validation().1);
         s.to.set_value("@");
-        assert!(s.validation().0.contains("label"));
+        assert!(s.validation().0.contains("Type a name after @"));
         s.to.set_value("@rent");
         assert!(s.validation().1, "a label is a legal recipient");
     }
@@ -818,7 +827,7 @@ mod tests {
         assert_eq!(s.account, 0);
         assert_eq!(
             s.request(None).err(),
-            Some("enter a recipient and an amount".to_string()),
+            Some("Enter who to pay and how much.".to_string()),
             "the selector must not build anything by itself"
         );
     }

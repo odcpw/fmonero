@@ -88,6 +88,11 @@ pub enum Action {
         address: String,
         trusted: bool,
     },
+    /// v5.6, §7a.4's `l` → `node_mode::set_local(ctx, false, cancel)`, the identical core call
+    /// `fmonero node local --yes` makes. It exists because §2o.1 forbids the TUI from telling a
+    /// user to run a command: the refusal for `u`, `d` and `L` in public-node mode used to print
+    /// `fmonero node local --yes`, and a rule that bans the command needs somewhere for it to go.
+    NodeLocal,
 }
 
 impl std::fmt::Debug for Action {
@@ -127,6 +132,7 @@ impl std::fmt::Debug for Action {
                 .field("address", address)
                 .field("trusted", trusted)
                 .finish(),
+            Action::NodeLocal => f.write_str("NodeLocal"),
         }
     }
 }
@@ -138,15 +144,16 @@ impl Action {
             Action::NodeUp => "starting the node".into(),
             Action::NodeDown => "stopping the node".into(),
             Action::WalletOpen { name, .. } => format!("opening {name}"),
-            Action::WalletRefresh { .. } => "refreshing the wallet".into(),
-            Action::BuildTx(_) => "building the transaction".into(),
-            Action::Relay(_) => "broadcasting".into(),
+            Action::WalletRefresh { .. } => "checking for payments".into(),
+            Action::BuildTx(_) => "checking the fee".into(),
+            Action::Relay(_) => "sending".into(),
             Action::WalletCreate { name, .. } => format!("creating {name}"),
-            Action::WalletDaemonStart => "starting the wallet daemon".into(),
-            Action::WalletDaemonStop => "stopping the wallet daemon".into(),
-            Action::NodeListFetch { .. } => "fetching the node list".into(),
-            Action::NodeProbe { targets } => format!("probing {} nodes", targets.len()),
+            Action::WalletDaemonStart => "starting the wallet service".into(),
+            Action::WalletDaemonStop => "stopping the wallet service".into(),
+            Action::NodeListFetch { .. } => "getting the node list".into(),
+            Action::NodeProbe { targets } => format!("checking {} nodes", targets.len()),
             Action::NodeUseRemote { address, .. } => format!("switching to {address}"),
+            Action::NodeLocal => "switching to your own node".into(),
         }
     }
 
@@ -170,7 +177,9 @@ impl Action {
             Action::NodeProbe { targets } => {
                 7 * (targets.len().div_ceil(nodes::PROBE_CONCURRENCY)).max(1) as u64
             }
-            Action::NodeUseRemote { .. } => ctx.timeouts.systemctl.as_secs() * 3,
+            Action::NodeUseRemote { .. } | Action::NodeLocal => {
+                ctx.timeouts.systemctl.as_secs() * 3
+            }
         }
     }
 
@@ -224,8 +233,15 @@ pub enum Outcome {
 #[derive(Clone, Debug)]
 pub struct ActionErr {
     pub code: i32,
+    /// §4a's code name. **No longer rendered** (v5.6, §2o rule 5: an internal identifier is
+    /// never shown as prose — it belongs in `--json`), and kept because it is the shape core
+    /// hands over and what the exit-code test asserts.
+    #[allow(dead_code)]
     pub code_name: String,
     pub text: String,
+    /// The CLI's runnable command. **Never rendered by the TUI** (v5.6, §2o.1: every hint in
+    /// here names an in-app action), and kept for the same reason as `code_name`.
+    #[allow(dead_code)]
     pub hint: String,
     pub interrupted: bool,
 }
@@ -266,14 +282,14 @@ pub fn execute(
             Action::NodeUp => {
                 let s = node_session::up(ctx, None, cancel)?;
                 Ok(Outcome::Note(if s.already_running {
-                    "the node was already running".into()
+                    "your node was already running".into()
                 } else {
-                    format!("node up in {}s", s.waited_sec)
+                    format!("your node started in {}s", s.waited_sec)
                 }))
             }
             Action::NodeDown => {
                 node_session::down(ctx, cancel)?;
-                Ok(Outcome::Note("node stopped".into()))
+                Ok(Outcome::Note("your node is stopped".into()))
             }
             Action::WalletOpen { name, password } => {
                 let w = WalletClient::from_ctx(ctx)?;
@@ -286,10 +302,10 @@ pub fn execute(
                 // of "refresh, then record that we did" (§5b, §5's `wallet.last_refresh_at`).
                 let r = fmonero_core::wallet_session::refresh(ctx, &w, start_height, cancel)?;
                 Ok(Outcome::Note(format!(
-                    "refreshed {} blocks{}",
+                    "checked {} blocks{}",
                     r.blocks_fetched,
                     if r.received_money {
-                        " · received money"
+                        " · money came in"
                     } else {
                         ""
                     }
@@ -348,14 +364,14 @@ pub fn execute(
                     cancel,
                 )?;
                 Ok(Outcome::Note(if started {
-                    "the wallet daemon is up".into()
+                    "the wallet service is running".into()
                 } else {
-                    "the wallet daemon was already up".into()
+                    "the wallet service was already running".into()
                 }))
             }
             Action::WalletDaemonStop => {
                 units::stop(ctx, &ctx.settings.wallet.unit, cancel)?;
-                Ok(Outcome::Note("the wallet daemon is stopped".into()))
+                Ok(Outcome::Note("the wallet service is stopped".into()))
             }
             Action::NodeListFetch { refresh } => {
                 let list = nodes::list(
@@ -388,6 +404,13 @@ pub fn execute(
             }
             Action::NodeUseRemote { address, trusted } => {
                 let change = node_mode::set_remote(ctx, &address, trusted, false, cancel)?;
+                Ok(Outcome::NodeSwitched {
+                    address: change.address,
+                    must_reopen: change.wallet_must_reopen,
+                })
+            }
+            Action::NodeLocal => {
+                let change = node_mode::set_local(ctx, false, cancel)?;
                 Ok(Outcome::NodeSwitched {
                     address: change.address,
                     must_reopen: change.wallet_must_reopen,
