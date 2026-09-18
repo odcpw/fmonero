@@ -8,6 +8,7 @@
   "monero": {"icon":"󰗠","label":"Monero","aliases":["monero","xmr","wallet"]},
   "monero.open": {"icon":"󰆍","label":"Open","action":"omarchy-launch-or-focus-tui --app-id=fmonero fmonero tui"},
   "monero.send": {"icon":"󰧧","label":"Send","action":"omarchy-launch-or-focus-tui --app-id=fmonero fmonero tui --send"},
-  "monero.node": {"icon":"󰒋","label":"Node","action":"omarchy-launch-or-focus-tui --app-id=fmonero fmonero tui --node"},
+  "monero.wallet": {"icon":"󰉉","label":"Wallet","action":"omarchy-launch-or-focus-tui --app-id=fmonero fmonero tui --wallet"},
+  "monero.node": {"icon":"󰒋","label":"Nodes","action":"omarchy-launch-or-focus-tui --app-id=fmonero fmonero tui --node"},
   "monero.doctor": {"icon":"󰩺","label":"Doctor","action":"omarchy-launch-or-focus-tui --app-id=fmonerodoctor fmonero doctor"}
 }

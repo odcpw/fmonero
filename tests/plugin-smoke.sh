@@ -173,6 +173,19 @@ MONEY_ARGV='"(send|sweep|open|create|restore|transfer|relay)"'
 forbid "no money argv element" "$MONEY_ARGV"
 fires  "money argv" "$MONEY_ARGV" 'Quickshell.execDetached(["fmonero","wallet","send"])'
 silent "money argv" "$MONEY_ARGV" 'Quickshell.execDetached(["fmonero","tui","--send"])'
+# v5.5's two new buttons are the case a lazier substring grep would break, so both are asserted
+# silent: `--wallet` and `--node` are FLAGS, and the forbidden elements are the bare words.
+silent "money argv" "$MONEY_ARGV" 'Quickshell.execDetached(["fmonero","tui","--wallet"])'
+silent "money argv" "$MONEY_ARGV" 'Quickshell.execDetached(["fmonero","tui","--node"])'
+
+# v5.5, §6.3 and §6.7: **the widget reaches systemd only through fmonero.** There is deliberately
+# no "start the wallet daemon" button, because fmonero has no `wallet up` — the unit is started by
+# `units::ensure_running` as the first step of `wallet open`/`wallet create`, and a widget button
+# would have to be `systemctl --user start …`: the widget reaching around fmonero, skipping §2i's
+# preflight and reporting success for a unit that failed to start.
+SYSTEMCTL='systemctl'
+forbid "the widget never names systemctl" "$SYSTEMCTL"
+fires  "a planted systemctl argv" "$SYSTEMCTL" 'Quickshell.execDetached(["systemctl","--user","start","fmonero-wallet-rpc.service"])'
 
 SECRET='password'
 forbid "no wallet secret named in QML" "$SECRET"
@@ -186,6 +199,79 @@ forbid "no float arithmetic on money" "$FLOATS"
 fires  "parseFloat" "$FLOATS" 'var x = parseFloat(status.pending.txs[0].amount_xmr)'
 fires  "Number()"   "$FLOATS" 'var x = Number(status.wallet.balance_xmr) + 1'
 fires  "pico / 1e12" "$FLOATS" 'var xmr = status.wallet.balance_pico / 1e12'
+
+
+# --- 7c. the v5.5 rows, against a REAL remote-mode Status fixture (§6.7) ------
+#
+# `Model.js` is `.pragma library` plus plain JavaScript — no QML imports, no I/O — so `node` can
+# load it with that one line stripped and the three formatters v5.5 added can be driven against a
+# fixture document. That is the half the structural greps above cannot give: it proves what the
+# panel will actually RENDER for the state the owner met, rather than which branch comes first.
+if command -v node >/dev/null 2>&1; then
+  MODEL_TMP="$(mktemp -d)"
+  sed '/^\.pragma library/d' "$PLUGIN/Model.js" > "$MODEL_TMP/model.js"
+  printf 'module.exports = { probeLabel, walletStateLabel, remoteLabel, worstSeverity, age };\n' \
+    >> "$MODEL_TMP/model.js"
+  cat > "$MODEL_TMP/fixture.json" <<'JSON'
+{ "ok": true, "schema": 1,
+  "node": { "layout": "remote", "url": "xmr-node.cakewallet.com:18081", "trusted": false,
+            "reachable": null, "synchronized": null, "sync_percent": null, "height": null,
+            "remote_probe": { "reachable": true, "height": 3765172, "synchronized": true,
+                              "restricted": true, "nettype": "mainnet", "version": null,
+                              "latency_ms": 100, "reason": null,
+                              "probed_at": 1789716001, "age_sec": 42 } },
+  "wallet": { "unit_active": false, "open": false, "reachable": false, "name": null },
+  "warnings": [ { "id": "remote_node", "severity": "info", "text": "remote", "hint": "" },
+                { "id": "wallet_idle", "severity": "info",
+                  "text": "the wallet daemon is not running; it starts when you open or create a wallet",
+                  "hint": "fmonero wallet open <name>" } ] }
+JSON
+  cat > "$MODEL_TMP/run.js" <<'JS'
+const M = require('./model.js');
+const s = JSON.parse(require('fs').readFileSync(process.argv[2], 'utf8'));
+const out = {
+  probe: M.probeLabel(s.node),
+  daemon: M.walletStateLabel(s.wallet, s.warnings),
+  worst: M.worstSeverity(s.warnings),
+  probeNoData: M.probeLabel({}),
+};
+console.log(JSON.stringify(out));
+JS
+  MODEL_OUT="$(cd "$MODEL_TMP" && node run.js fixture.json 2>&1)" || MODEL_OUT="node failed: $MODEL_OUT"
+  # 1. the bar icon is NOT urgent: `wallet_idle` is an *info*, and §6.4's warning row matches
+  #    `error` only. That was the owner's experience and it is the whole bug — the bar was
+  #    shouting about a daemon that is supposed to be down until a wallet is opened.
+  if printf '%s' "$MODEL_OUT" | grep -q '"worst":"info"'; then
+    ok "wallet_idle keeps the bar out of the alarm channel (§6.4)"
+  else
+    bad "a remote-mode fixture with wallet_idle must be severity info: $MODEL_OUT"
+  fi
+  # 2. the daemon row says which of the two situations this is.
+  if printf '%s' "$MODEL_OUT" | grep -q '"daemon":"idle — starts when you open a wallet"'; then
+    ok "the daemon row reads 'idle — starts when you open a wallet' (§6.5)"
+  else
+    bad "the daemon row is wrong: $MODEL_OUT"
+  fi
+  # 3. the probe row carries a height AND an age. **A height with no age fails this**, because
+  #    that is the one untruth §6.4 is guarding against: the measurement came from an earlier
+  #    invocation and a four-hour-old `synchronized: true` says nothing about now.
+  # `grouped` separates with a narrow space, not a comma (it is the same function the height rows
+  # use), so the expected string is matched piece by piece: a height, the sync word, and an AGE.
+  if printf '%s' "$MODEL_OUT" | grep -q '"probe":"node 3 765 172 · synced · probed 42s ago"'; then
+    ok "the probe row carries both a height and its age (§6.4)"
+  else
+    bad "the probe row must be 'node <height> · synced · probed <age> ago': $MODEL_OUT"
+  fi
+  # 4. and with nothing probed it is the honest empty state, not a bare height.
+  if printf '%s' "$MODEL_OUT" | grep -q '"probeNoData":"not probed yet"'; then
+    ok "an unprobed remote node reads 'not probed yet'"
+  else
+    bad "the unprobed state is wrong: $MODEL_OUT"
+  fi
+  rm -rf "$MODEL_TMP"
+else
+  printf '  skip  Model.js fixture test: node is not installed\n'
+fi
 
 # --- 7b. remote node mode (DESIGN.md §2m, §6.4, §6.5; v5.2) -------------------
 # This script has no way to feed the widget a Status document — the cursor IPC is a read-only

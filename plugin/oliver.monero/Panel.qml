@@ -54,6 +54,9 @@ Panel {
     // does not have (§6.4): all three are null there.
     if (svc.remote) {
       var remoteParts = ["Monero", Model.remoteLabel(svc.node)]
+      // v5.5: a height it DID receive, rendered with its age in the same breath (§6.4). Without
+      // the age this would be the one place the widget states a stranger's height as current.
+      if (svc.probe) remoteParts.push(Model.probeLabel(svc.node))
       if (svc.walletOpen && svc.wallet.height !== null && svc.wallet.height !== undefined)
         remoteParts.push("wallet " + Model.grouped(svc.wallet.height))
       if (svc.walletOpen && svc.showBalance && svc.wallet.balance_xmr)
@@ -95,7 +98,7 @@ Panel {
   function sectionCount(name) {
     if (name === "warnings") return svc.warnings.length
     if (name === "wallet") return walletTargets
-    if (name === "footer") return 3
+    if (name === "footer") return 5
     return 1
   }
   function isHorizontal(name) { return name === "footer" }
@@ -174,6 +177,10 @@ Panel {
   function activateFooter(index) {
     if (index === 0) { svc.openTui(); root.close() }
     else if (index === 1) { svc.openSendScreen(); root.close() }
+    // v5.5, §6.5: the two additions. Both open the TUI on a screen — the affordance that LEADS
+    // to the thing the owner could not find, not a shortcut past the prompt.
+    else if (index === 2) { svc.openWalletScreen(); root.close() }
+    else if (index === 3) { svc.openNodeScreen(); root.close() }
     else { svc.openDoctor(); root.close() }
   }
 
@@ -301,11 +308,15 @@ Panel {
       // h j k l are consumed by the catcher as movement and never reach here (DESIGN.md §6.5).
       onTextKey: function(t) {
         var k = String(t).toLowerCase()
-        if (k === "n") svc.toggleNode()
+        if (k === "n") { if (svc.remote) { svc.openNodeScreen(); root.close() } else svc.toggleNode() }
         else if (k === "r") svc.refresh()
         else if (k === "t") { svc.openTui(); root.close() }
         else if (k === "c") svc.copyAddress()
         else if (k === "d") { svc.openDoctor(); root.close() }
+        // v5.5: one key whose meaning follows the mode exactly as the rows above it do. In remote
+        // mode there is no node of ours to toggle, and "which node" is the only node question
+        // left; `w` is the panel's own route to the thing the owner could not find.
+        else if (k === "w") { svc.openWalletScreen(); root.close() }
       }
 
       Flickable {
@@ -357,9 +368,17 @@ Panel {
                   remote: svc.remote
                 }
               }
+              // **Node up / Node down are rendered only in local mode** (v5.5, §6.5, tightening
+              // §6.3's note from "disabled" to "absent"): in remote mode both commands are
+              // specified to exit 4 `remote_node`, and a visible-but-disabled control that can
+              // never be enabled from this panel is a control that teaches the user the app is
+              // broken. `Choose node…` in the footer is what stands in its place, which is also
+              // the honest mapping — in remote mode the node question is *which* node.
               trailingControl: Component {
                 ToggleSwitch {
                   id: nodeSwitch
+                  // Not drawn at all in remote mode — `visible: false`, not `enabled: false`.
+                  visible: !svc.remote
                   checked: svc.desiredOn
                   busy: svc.busy
                   hasCursor: heroBlock.ringVisible
@@ -377,11 +396,33 @@ Panel {
             }
           }
 
+          // ---- remote mode: two rows and one dim line (v5.5, §6.5) ---------
+          //
+          // No gauge, no percent, no peer counts: every one of them is null in remote mode (§5),
+          // and the panel renders what Status JSON contains and never a substitute for what it
+          // does not. The probe row is read from `status.node.remote_probe` and **the panel never
+          // probes**: it polls `status --json`, which spawns nothing (§2e, §2n.4), so the row goes
+          // stale rather than expensive and its age says so.
+          Column {
+            width: parent.width
+            spacing: Style.space(3)
+            visible: svc.alive && svc.remote && !svc.binaryMissing
+
+            DetailRow { label: "Node"; value: Model.remoteLabel(svc.node) }
+            DetailRow { label: "Probed"; value: Model.probeLabel(svc.node) }
+            Text {
+              textFormat: Text.PlainText; width: parent.width
+              text: "fmonero does not talk to this node; monero-wallet-rpc does"
+              color: root.dim; font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall; wrapMode: Text.WordWrap
+            }
+          }
+
           // ---- node detail (not cursor targets) ----------------------------
           Column {
             width: parent.width
             spacing: Style.space(3)
-            visible: svc.alive && svc.nodeUp && !svc.binaryMissing
+            visible: svc.alive && svc.nodeUp && !svc.remote && !svc.binaryMissing
 
             MiniBar {
               width: parent.width
@@ -514,9 +555,17 @@ Panel {
               }
             }
 
+            // **v5.5 replaced two dead ends with one sentence that says what will happen**
+            // (§6.5): "Wallet daemon is not running" and "open it in the TUI" together were the
+            // panel's half of the owner's complaint — two statements of a problem and no route
+            // to the fix. `walletStateLabel` distinguishes `idle` (remote mode, nothing open:
+            // the daemon is supposed to be down) from `not running` (a real fault), and the
+            // `Open wallet…` chip in the footer is the route.
             Text {
               textFormat: Text.PlainText; visible: !svc.alive || !svc.walletReachable; width: parent.width
-              text: svc.alive ? "Wallet daemon is not running." : "No wallet state — fmonero is not answering."
+              text: svc.alive
+                ? "wallet daemon: " + Model.walletStateLabel(svc.wallet, svc.warnings)
+                : "No wallet state — fmonero is not answering."
               color: root.dim; font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall; wrapMode: Text.WordWrap
             }
@@ -574,7 +623,9 @@ Panel {
               spacing: Style.space(6)
               Chip { section: "footer"; idx: 0; label: "Open TUI" }
               Chip { section: "footer"; idx: 1; label: "Send" }
-              Chip { section: "footer"; idx: 2; label: "Doctor" }
+              Chip { section: "footer"; idx: 2; label: "Open wallet…" }
+              Chip { section: "footer"; idx: 3; label: "Choose node…" }
+              Chip { section: "footer"; idx: 4; label: "Doctor" }
             }
           }
         }

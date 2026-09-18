@@ -38,6 +38,11 @@ Item {
   readonly property bool walletOpen: !!(wallet && wallet.open === true)
   readonly property bool walletUnitActive: !!(wallet && wallet.unit_active === true)
   readonly property bool walletReachable:  !!(wallet && wallet.reachable === true)
+  // v5.5: `walletUp` is the panel's own name for the daemon's unit state, and `probe` is §5's
+  // `node.remote_probe` — a measurement an EARLIER invocation took and cached, which the panel
+  // renders with its age and never measures itself (§2e, §2n.4).
+  readonly property bool walletUp:   !!(wallet && wallet.unit_active === true)
+  readonly property var  probe:      (node && node.remote_probe) || null
 
   property string actionStatus: ""     // transient label, cleared 2.2 s after an action exits
   property string localError: ""       // stderr (or the JSON error) of the last failed action
@@ -167,6 +172,16 @@ Item {
     // `--send` is the TUI's Send *screen* flag (§7a), not a money argv: the widget has no send
     // path at all (§2b.5). Constant literals only.
     Quickshell.execDetached(["omarchy-launch-or-focus-tui", "--app-id=fmonero", "fmonero", "tui", "--send"])
+  }
+  // v5.5, §6.3. Both of these **open the TUI on a screen** and do nothing themselves: opening a
+  // wallet needs a secret §2b.5 says the widget may not have a field for, and picking a node
+  // restarts the wallet daemon and can close an open wallet (§2m.5), which is a confirm modal's
+  // job and not a bar button's. The ellipsis in each label says so. Constant literals only.
+  function openWalletScreen() {
+    Quickshell.execDetached(["omarchy-launch-or-focus-tui", "--app-id=fmonero", "fmonero", "tui", "--wallet"])
+  }
+  function openNodeScreen() {
+    Quickshell.execDetached(["omarchy-launch-or-focus-tui", "--app-id=fmonero", "fmonero", "tui", "--node"])
   }
   function openDoctor() {
     Quickshell.execDetached(["omarchy-launch-or-focus-tui", "--app-id=fmonerodoctor", "fmonero", "doctor"])

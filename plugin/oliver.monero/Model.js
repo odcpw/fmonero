@@ -88,6 +88,40 @@ function remoteLabel(node) {
   return label
 }
 
+// v5.5, §6.1/§6.5: `node.remote_probe` rendered as a height **with its age in the same string**.
+//
+// It refuses to produce the height without the age rather than leaving that to the caller: this
+// is the one place the widget would otherwise state a stranger's height as current, and the
+// measurement came from an earlier invocation (§2n.4 — `status` spawns nothing, §2e), so a
+// four-hour-old `synchronized: true` says nothing about now.
+function probeLabel(node) {
+  var p = node && node.remote_probe ? node.remote_probe : null
+  if (!p) return "not probed yet"
+  if (p.reachable !== true) {
+    return "did not answer" + (p.reason ? " (" + String(p.reason) + ")" : "") +
+           " · " + age(int(p.age_sec, 0)) + " ago"
+  }
+  var out = "node"
+  if (p.height !== null && p.height !== undefined) out += " " + grouped(p.height)
+  if (p.synchronized === true) out += " · synced"
+  else if (p.synchronized === false) out += " · syncing"
+  return out + " · probed " + age(int(p.age_sec, 0)) + " ago"
+}
+
+// v5.5, §6.1/§6.5: the panel's one-line answer to the question the owner could not answer from
+// the old panel — is the wallet daemon up, and if not, is that a fault or the design?
+//
+// `idle` and `not running` are the same fact in two situations that are not the same: in remote
+// mode with nothing open the daemon is SUPPOSED to be down until a wallet is opened (§4.2 writes
+// both units disabled), which is why §5 makes that state an `info` and not a warning.
+function walletStateLabel(wallet, warnings) {
+  if (wallet && wallet.unit_active === true) return "up"
+  var idle = Array.isArray(warnings) && warnings.some(function (w) {
+    return w && w.id === "wallet_idle"
+  })
+  return idle ? "idle — starts when you open a wallet" : "not running"
+}
+
 // The one phrase under the hero. `node` is Status.node, or null.
 function syncLabel(status) {
   if (!status || status.ok !== true) return "fmonero is not answering"
