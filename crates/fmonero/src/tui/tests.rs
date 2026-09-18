@@ -1216,6 +1216,30 @@ fn every_wallet_empty_state_chip_is_a_hit_target_and_acts() {
 /// §7a.5's empty state, at the **Narrow** tier too: a screen whose whole content is three
 /// buttons has nothing to drop, and the tier where a user is most likely to be stuck is not the
 /// tier to hide the way out.
+/// The status bar's own badge follows §5: `idle`, not `down`, when the wallet daemon is behaving
+/// exactly as designed. That line is on every screen, so telling a user `down` there while §5 calls
+/// the same state an *info* and §6.4 keeps the bar icon calm would be the drift §2j is about, in
+/// the most-read place on the screen.
+#[test]
+fn the_status_bar_says_idle_when_the_daemon_is_supposed_to_be_down() {
+    let w = World::new("idle-badge");
+    let mut ctx = w.ctx.clone();
+    ctx.settings.node.mode = fmonero_core::NodeMode::Remote;
+    ctx.settings.node.remote = "node.example.com:18089".into();
+    // A port nothing listens on: the wallet daemon is absent, which in remote mode with no wallet
+    // recorded open is `wallet_idle` (§5), not `wallet_down`.
+    ctx.settings.wallet.url = "http://127.0.0.1:2".into();
+    let s = sim(model(&ctx, Screen::Wallet));
+    assert!(
+        s.model().has_warning("wallet_idle"),
+        "the fixture must actually reach the wallet_idle state, or this proves nothing"
+    );
+    assert_eq!(s.model().wallet_badge(), "idle");
+    let text = sim_text(&s, 120, 40);
+    assert!(text.contains("wallet idle"), "{text}");
+    assert!(!text.contains("wallet down"), "{text}");
+}
+
 #[test]
 fn the_wallet_empty_state_keeps_all_three_chips_at_every_tier() {
     let m = offline_model(Screen::Wallet);

@@ -585,6 +585,12 @@ impl Tui {
             return "error";
         }
         match (s.wallet.reachable, s.wallet.open) {
+            // **`idle`, not `down`, when §5 says `wallet_idle`** (v5.5). The daemon is DESIGNED to
+            // be down until a wallet is opened (§4.2 writes both units disabled), and this line is
+            // the one a user reads on every screen — telling them `down` there while §5 calls the
+            // same state an *info* and §6.4 keeps the bar icon calm is the drift §2j is about, in
+            // the most-read place on the screen.
+            (false, _) if self.has_warning("wallet_idle") => "idle",
             (false, _) => "down",
             (true, true) => "up",
             (true, false) => "syncing",
