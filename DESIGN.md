@@ -1393,7 +1393,15 @@ no hit outside the doctor's read-only probes (§2a.3);
 7. **Everything fmonero writes is owner-only.** Every file created under `state_dir`, `cache_dir`
    and `config_dir` is created mode **0600** and every directory **0700**, at the target mode —
    open with `O_EXCL` at that mode, write, `rename(2)`; never `chmod` after the fact, which leaves a
-   window. This covers `state.json` (which holds the recipient address, the amounts and the open
+   window. **Two standard-library calls are therefore forbidden anywhere under those three roots**
+   (v5.5.1, each found writing one): `std::fs::copy`, which calls `set_permissions` from the
+   **source's** metadata after creating the destination — so a backup of Omarchy's own 0644 menu
+   file landed 0644 inside `state_dir/backups/` and the doctor's `state_perms` failed at `error`
+   severity on a correct machine — and `std::fs::create_dir_all`, which uses `0777 & ~umask`, so
+   `backups/` was 0700 only because `install.sh` happens to set `umask 077` and was 0755 when a
+   user ran `fmonero setup --menu` by hand. A backup is `read` + `write_private`; a directory is
+   `paths::ensure_private_dir`. *Test:* a 0644 source file yields a 0600 backup in a 0700
+   directory. This covers `state.json` (which holds the recipient address, the amounts and the open
    wallet's name), `cache_dir/history.bin` (the whole transfer history with addresses and notes),
    `doctor/runs/**` and `backups/**`. §2c's threat model already includes other local users; the
    files that record who was paid what are not an exception, and on a machine where `$HOME` is 0755
@@ -3289,7 +3297,9 @@ nothing.
   read (finding 2 of the Phase 4 verification).
 - `--menu` merges `crates/fmonero/assets/menu.jsonc` into
   `~/.config/omarchy/extensions/omarchy-menu.jsonc` **textually**, exactly as fproton does: copy
-  the file verbatim to `~/.local/state/fmonero/backups/omarchy-menu.jsonc.<UTC basic>`; strip
+  the file verbatim to `~/.local/state/fmonero/backups/omarchy-menu.jsonc.<UTC basic>` — **by
+  reading it and writing it through the 0600 create path, never `std::fs::copy`**, which carries
+  the source's mode (§2b.7, v5.5.1); strip
   comments into a scratch copy only, and parse *that* to learn which ids exist; insert the single
   line for each absent id immediately before the file's final `}`, preceded on first insertion by a
   `// fmonero` marker; leave existing ids byte-for-byte alone. A serde round-trip would delete every
@@ -3298,7 +3308,7 @@ nothing.
   `"monero.open": {"icon":"󰆍","label":"Open","action":"omarchy-launch-or-focus-tui --app-id=fmonero fmonero tui"}` ·
   `"monero.send": {"icon":"󰧧","label":"Send","action":"omarchy-launch-or-focus-tui --app-id=fmonero fmonero tui --send"}` ·
   `"monero.wallet": {"icon":"󰉹","label":"Wallet","action":"omarchy-launch-or-focus-tui --app-id=fmonero fmonero tui --wallet"}` **(v5.5)** ·
-  `"monero.node": {"icon":"󰒋","label":"Node","action":"omarchy-launch-or-focus-tui --app-id=fmonero fmonero tui --node"}` ·
+  `"monero.node": {"icon":"󰒋","label":"Nodes","action":"omarchy-launch-or-focus-tui --app-id=fmonero fmonero tui --node"}` **(v5.5.1: the label the asset has carried since v5.5 — the two disagreed here)** ·
   `"monero.doctor": {"icon":"󰩺","label":"Doctor","action":"omarchy-launch-or-focus-tui --app-id=fmonerodoctor fmonero doctor"}`.
   **v5.5 adds `monero.wallet` and nothing else**: `monero.node` already existed and now lands on the
   Node screen with the public-node picker (§7a.4), so the entry the owner was missing — *"here I
@@ -3307,6 +3317,19 @@ nothing.
   literal** through `omarchy-launch-or-focus-tui`'s `eval` (§1.5); the ids are additive, so
   `menu_entries` (§7.1) reports one absent id on an existing install and its class-B fixer inserts
   exactly that line.
+  **A changed label reaches only a machine that does not yet have the id, and that is the decision**
+  (v5.5.1). The asset's `monero.node` label is `Nodes` — the picker made "which node" the question
+  that screen answers — and "leave existing ids byte-for-byte alone" means an already-installed
+  machine keeps `Node` for ever: no `setup` invocation will ever change it. The alternative was
+  considered and rejected: a table of every line fmonero has written in an earlier version, so a
+  refresh could rewrite its own output and never a user-edited line. It is sound, and it is a
+  permanent obligation — one row per rendering change for ever, silently doing nothing when the row
+  is forgotten — bought for a **label**, against a one-sentence safety rule that protects a file the
+  user maintains by hand. The recovery is two commands the user can read
+  (`$EDITOR ~/.config/omarchy/extensions/omarchy-menu.jsonc` to delete the line, then
+  `fmonero setup --menu --yes`), and labels are the one part of the template §4.2 already declares
+  non-contractual. A test pins the behaviour on that exact line, so the choice is a property of the
+  code rather than an accident of it.
 
 **The two units.** Written by `setup --units`, and reproduced here so a doctor or plugin agent can
 check them without running `setup`:
@@ -6136,7 +6159,19 @@ screens,subs,theme}.rs` and `~/.cargo/registry/src/*/ftui-0.7.0/examples/`. Widg
 1..h-2: the screen. Row h-1: `widgets::StatusLine` =
 `[node badge] [height] [peers] [wallet badge] [balance] │ [spinner + action label when busy] │ ? help`.
 Badge colours: green for synced / wallet open, yellow for syncing / wallet closed, dim for down,
-red for `state == error` or a `pending_send`. **v5.5 adds one segment on the right, before `? help`:
+red for `state == error` or a `pending_send`. **The wallet badge's words, in the order it decides
+them** (v5.5.1, after the round's verification caught the last one): `error` when `wallet_stalled` is
+up · `idle` when §5 raises `wallet_idle` (the unit is deliberately not running, §7a.5) · **`starting`
+or `busy` while one of the TUI's own actions is the reason a poll cannot answer** — `starting` when
+the unit is not yet active, `busy` when it is — · `down` only then, which is the state the word
+actually describes · `up` / `syncing` when the poll answers. The `starting`/`busy` pair exists
+because `W` and a TUI create both ran for seconds under a badge reading `wallet down` two lines under
+a panel reading `starting…`: the daemon was coming up, or was busy scanning, *for us*, and `down` was
+an assertion the model itself knew to be false (§2j, in the one line present on every screen). The
+predicate is the **complement** of the four node-only actions — node up, node down, the list fetch
+and the probe sweep — so a wallet action added later is busy by default and this badge's honesty
+does not depend on the list being extended. *Test:* the badge for both unit states, with and without
+an action in flight, asserting the rendered status line too. **v5.5 adds one segment on the right, before `? help`:
 `⇥ screens`** — the status bar's own statement of §7a.1's rule, present on every screen and in every
 focus state, because the rule's whole value is that it is true everywhere and a user who has just
 been trapped in a field needs to read it from where they are.
@@ -6197,10 +6232,20 @@ Consequences, each stated because each is a place the old code did something els
   name, `Down`, password, `Down`, password again, `Down`, a language, `Enter` — and reaches the
   seed-backup modal.
 - **`1 2 3 4` keep working** and are the direct route; `Tab` is the one that has to work without
-  knowing the numbering.
+  knowing the numbering. **They are not, however, `always`** (v5.5.1, after the round's
+  verification): they are printable characters, and the bullet two above gives a focused field
+  *every* printable character — with Amount focused, `2` then `4` types `0.0124`, and `q` appends a
+  `q`. That is the right behaviour on a money screen and it is what `send.rs`'s own comment and the
+  Send screen's status line already said; the **overlay** was the thing that disagreed.
 - **`KEYS`, the `?` overlay and the status bar carry exactly this text, from one table** (§7a's
-  existing one-`&[(&str,&str)]` rule). The first row of `KEYS` becomes
-  `Tab ⇧Tab · 1 2 3 4` → `screens — always, even inside a field or a modal`.
+  existing one-`&[(&str,&str)]` rule). The first two rows of `KEYS` are
+  `Tab ⇧Tab Ctrl+C` → `screens · quit — always, in a field, a modal, the overlay or a running
+  action (quit twice while one runs: cancel, then quit)` and `1 2 3 4  q` → `the same two — but
+  only when no field has focus: a field keeps every printable key, and Esc unfocuses it`
+  (**v5.5.1**; the single row this section first specified — `Tab ⇧Tab · 1 2 3 4` →
+  `screens — always, even inside a field or a modal` — was true of `Tab` and false of the digits,
+  in the one row this section wrote to be believed. A test now pins the split: exactly one row may
+  say `always`, and only keys the dispatcher resolves above every branch may be in it).
 
 *Tests* (all three, because this defect was reachable three ways): a `ProgramSimulator` case injects
 `Tab` from **each of the four screens × each focus state** — nothing focused, the Wallet filter open
@@ -6293,7 +6338,16 @@ have:
    **backdrop** is `Esc` for every modal *except* the two §7a.1 protects (send confirm, create
    wallet), where it flashes the same `Esc to discard first`. A misplaced click must never discard a
    built transaction;
-3. **the tab strip** (row 0) — `Target::Tab(i)`, the fix for "the tabs look clickable and are not";
+3. **the tab strip** (row 0) — `Target::Tab(i)`, the fix for "the tabs look clickable and are not".
+   **Its rects are computed from the geometry `Tabs` draws, never from the titles** (v5.5.1):
+   `Tabs::tab_label` wraps every tab in one leading and one trailing cell — `[`/`]` when active, a
+   space on each side when not (`ftui-widgets-0.7.0/src/tabs.rs:239-256`) — so a tab occupies
+   `title.width() + 2`, and the separator (`""` here) costs nothing between them. A hit loop that
+   advanced by `label.width()` left every rect 2 columns narrow and `2 × index` columns to the left
+   of its label: on a real 150×40 pty, clicking the word `Send` selected `Log` and clicking `4 Log`
+   selected nothing. The *test* is the other half of this, and it is stated in §7a.2's test list
+   below, because the suite that was green through all of it read its coordinates out of the same
+   map it clicked;
 4. **pane content** — rows, fields, buttons, in the layout order of the focused screen;
 5. **the status line** (row h-1) — `? help` opens the overlay and `⇥ screens` advances one screen,
    the two segments that are already labelled like controls;
@@ -6359,7 +6413,12 @@ a wheel over the tab strip does not; a click on the `?` overlay closes it; a cli
 confirm's backdrop does **not** discard the built transaction. One case per priority level asserts
 the chain: with the overlay up, a click on a tab closes the overlay and does **not** switch screens.
 Every case is run a second time at the Narrow tier (§7a resize) to prove the cache is the layout in
-force and not a wide-tier assumption.
+force and not a wide-tier assumption. **And one case takes its coordinates from the rendered frame
+rather than from the map** (v5.5.1, and it is the case the tab-strip defect was invisible to): it
+finds each tab's title in the strip that was drawn, clicks the title's **last** cell and the next
+tab's **first** cell, and asserts the screen it lands on, at 150×40, 100×30, 90×30 and the Narrow
+tier. A hit map that disagrees with the frame is self-consistent, so a suite that reads its
+coordinate out of `hits` can prove routing and can never prove alignment.
 
 ### 7a.3 The four screens
 
@@ -6398,7 +6457,8 @@ I can choose one"* and nothing more: it lists, it probes, it switches.
 
 **Layout.** A `Table` (§1.4 — imported from `table::`), columns in this order, dropping from the right
 at the Medium and Narrow tiers (§7a resize): **address** (the `host:port` §2m.2 accepted — never
-elided, for the reason the send confirm never elides an address) · **health** (`72% of 18` — the ratio
+elided, for the reason the send confirm never elides an address; **the budget that keeps that true
+is arithmetic and is stated at the end of this section** — v5.5.1) · **health** (`72% of 18` — the ratio
 **with its sample size**, because 100 % of 3 and 72 % of 94 are not comparable and a bare percent
 invites the comparison, §2n.1) · **height** (monero.fail's `last_height`) · **checked** (the age of
 `health_checked_at`, or the raw HTTP-date when it did not parse) · then, **only for rows this machine
@@ -6487,6 +6547,20 @@ previous node · `Esc` cancel a running fetch or probe. `↑↓`/wheel move, and
 - **`H`** re-applies the address that was configured before the last switch (kept in the model for the
   session only, not persisted — a "previous node" that survives a restart is a fourth piece of node
   state nobody asked for), through the same confirm modal.
+
+**The column budget, because "never elided" is arithmetic** (v5.5.1). Columns drop from the right
+while the table's width is under `address_min + (COL + 1) × (kept − 1)`, where `COL` is 12 and the
+`+ 1` is the cell `Table` spends **between** columns (`column_spacing` defaults to 1 and becomes the
+`Flex` gap — `ftui-widgets-0.7.0/src/table.rs:114`, `:845`). Omitting that `+ 1` is how a 150-column
+terminal came to render a *worse* address column than a 100-column one and elide the node this
+machine is configured on. And `address_min` is **measured, not chosen**: the widest address cell the
+table will draw — marker, address and `web`/`own` tag — capped at half the table's width so that one
+49-column hostname cannot delete every data column, and never below the **configured** row's own
+width, because the node the user is using is the one whose address has to be readable. A fixed 26
+was below the 31 cells `● xmr-node.cakewallet.com:18081` needs, which is the whole of the defect:
+the sentence above was true of the loop's intent and false of its arithmetic. *Test:* the configured
+address renders complete at 90, 100, 120, 150 and 180 columns, with the longest address monero.fail
+actually served this machine (49 columns) in the list.
 
 **The picker never writes `node.mode = local`, never starts or stops a daemon directly, and never
 probes on entry.** Entry reads the cache (`nodes::cached`, which cannot spawn) and probes **only the
@@ -6597,8 +6671,8 @@ six; the changes are marked.**
 
 | Keys | Means |
 |---|---|
-| `Tab` `⇧Tab` · `1 2 3 4` | **screens — always, even inside a field or a modal** (§7a.1, changed) |
-| `q` `Ctrl+C` | quit (refused with a status-line note while an action is in flight; a second press within 2 s cancels and quits) |
+| `Tab` `⇧Tab` `Ctrl+C` | **screens · quit — always, in a field, a modal, the overlay or a running action** (§7a.1, changed; **v5.5.1** moved `Ctrl+C` into this row and `1 2 3 4` out of it) |
+| `1 2 3 4` `q` | the same two, **but only when no field has focus** — a focused field keeps every printable key, and `Esc` unfocuses it (**v5.5.1**: the row that said `always` was false here, and half of it is what a user types into the Amount field) |
 | `?` | this help |
 | `r` | refresh now |
 | `Esc` | close this overlay, else unfocus the field, else cancel the running action (**changed**: the field step is new, §7a.1) |

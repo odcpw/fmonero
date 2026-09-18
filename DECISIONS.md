@@ -9114,3 +9114,440 @@ moved, so §2k's manifest freeze holds.
   under this session's scratchpad. `tests/e2e.sh --fast` and `--full` were each re-run afterwards
   and **neither leaked anything**, so this did not reproduce and is recorded as an observation
   rather than a defect. They were killed; nothing of this session is left listening.
+
+## TUI UX fix-up (real output)
+
+- 2026-09-18 · fixer · **## TUI UX fix-up (real output)** — the three defects and two findings the
+  verification above reported are closed, each with a test that fails on the pre-fix tree, plus
+  DEFECT F from its addendum. Baseline `5004b95`. **Every claim below was measured on this machine**:
+  the pre-fix failures by reverting one expression at a time and pasting the panic, and the tab strip
+  and the picker again on a real 150×40 tmux pty with real SGR-1006 mouse reports. A real send or
+  sweep of any amount is **still RED** — nothing here built or relayed a transaction.
+
+  ### The gates
+
+  ```
+  $ cargo fmt --all --check                         # no output, exit 0
+  $ cargo clippy --all-targets -- -D warnings       # no warning, exit 0
+  $ cargo test
+  test result: ok. 115 passed; 0 failed    (fmonero)        # 109 + the 6 new cases
+  test result: ok. 177 passed; 0 failed    (fmonero-core)
+  test result: ok. 3 passed; 0 failed      (fmonero-mock)
+  test result: ok. 0 passed; 0 failed      (integration)
+  $ bash scripts/check.sh --full                    # 1m12.1s cold, 19.6s warm on the re-run
+  check.sh: PASS (/home/oliver/Projects/odcpw/fmonero)
+    ok    §7a: 7197 lines across src/tui/{mod,theme,screens,send,subs,hit}.rs (budget 7200)
+    ok    no RED claim in README, 1841 lines of --help/robot-docs/capabilities
+  $ bash tests/e2e.sh --fast                        # 23.4s
+  e2e.sh (fast): 566 passed, 0 failed, 3 skipped
+  $ bash tests/e2e.sh --full                        # 2m28.6s
+  e2e.sh (full): 600 passed, 0 failed, 3 skipped
+  $ bash tests/plugin-smoke.sh
+  plugin-smoke: 45 passed, 0 failed
+  $ bash tests/tui_tmux.sh                          # 24.8s
+  == 35 passed, 0 failed
+  ```
+
+  Every number matches the verification above except `cargo test` for `fmonero`, which gains the six
+  cases below, and the TUI line count. **The line budget is now 7 197 of 7 200** — this round spent
+  46 of the 56 lines that were left, and the two comment blocks it added were cut twice to fit
+  rather than the ceiling being raised: a budget moved for the convenience of the change being
+  measured against it is not a budget.
+
+  ### DEFECT A — the tab strip's hit rects (the blocker)
+
+  **The fix is arithmetic.** `tab_strip` (`crates/fmonero/src/tui/screens.rs:195-212`) now advances
+  by `label.width() + 2`, which is what `Tabs` draws: `tab_label` wraps every tab in one leading and
+  one trailing cell (`ftui-widgets-0.7.0/src/tabs.rs:239-256`), and `.separator("")` costs nothing
+  between them (`:474-479`). The old loop's comment — "the rects are computed from the same source
+  as the text" — is gone, because it was the bug stated as a reassurance: the literals are the
+  source of the *title*, not of the drawn width. Two smaller honesties came with it: the rect is
+  clipped to the pane rather than dropped (`draw_text_span` clips too, so a clipped tab is still
+  drawn and must still be clickable), and the comment records that the four labels total 41 columns
+  against this tier's 60-column floor, so `Tabs`' overflow markers cannot fire here.
+
+  **The test, and how the failure was proved.** `tui::tests::a_click_on_a_tab_label_lands_on_that_
+  tab_and_never_on_its_neighbour` takes its coordinates **from the rendered frame** — it finds each
+  title in row 0, clicks the title's last cell and the next tab's first cell — and starts each cell
+  of the matrix **two screens away** from the tab under test, so neither the target nor the
+  neighbour a misaligned rect selects is where the model already is and "nothing happened" cannot
+  pass. Reverting the `+ 2` and nothing else:
+
+  ```
+  $ cargo test -p fmonero tui::tests::a_click_on_a_tab_label
+  ---- a_click_on_a_tab_label_lands_on_that_tab_and_never_on_its_neighbour stdout ----
+  panicked at crates/fmonero/src/tui/tests.rs:1540:13:
+  assertion `left == right` failed: a click on column 19, the LAST cell of `2 Wallet` at 150x40
+    (from Log), in the strip "  1 Node    2 Wallet    3 Send  [ 4 Log ]  …  omarchy"
+    left: Send
+   right: Wallet
+  test result: FAILED. 0 passed; 1 failed
+  ```
+
+  That is the verifier's measurement reproduced by a test at the same geometry, which is the point:
+  the suite was green through all of it because `find()` read the coordinate out of `m.hits` — the
+  same map it then clicked — so it could prove routing and never alignment. The new case is the one
+  assertion §7a.2's premise needs, and it runs at 150×40, 100×30, 90×30 (Medium) and 56×24 (Narrow).
+
+  **And on a real pty, the same nine clicks, before and after.** `tmux new-session -d -x 150 -y 40`
+  in a sandbox carrying the owner's own cached node list, driving the release binary; each click is
+  `ESC [ < 0 ; col ; 1 M` then the same with `m`, 0.9 s settle, and the answer is read back from
+  `capture-pane` row 0 — the active tab is the one `Tabs` brackets. The strip as drawn:
+
+  ```
+  [ 1 Node ]  2 Wallet    3 Send    4 Log
+  123456789012345678901234567890123456789012345    (1-based columns)
+  ```
+
+  ```
+  BEFORE (the reverted binary)                       AFTER
+  col  8 'e'  -> [1 Node]    ok                      col  8 'e'  -> [1 Node]    ok
+  col 11 ' '  -> [2 Wallet]  ok                      col 11 ' '  -> [2 Wallet]  ok
+  col 20 't'  -> [3 Send]    WRONG                   col 20 't'  -> [2 Wallet]  ok
+  col 23 '['  -> [3 Send]    ok                      col 23 ' '  -> [3 Send]    ok
+  col 30 'd'  -> [4 Log]     WRONG                   col 30 'd'  -> [3 Send]    ok
+  col 33 '['  -> [4 Log]     ok                      col 33 ' '  -> [4 Log]     ok
+  col 39 'g'  -> [4 Log]     ok*                     col 39 'g'  -> [4 Log]     ok
+  col 41 ']'  -> [4 Log]     ok*                     col 41 ']'  -> [4 Log]     ok
+  col  3 '1'  -> [1 Node]    ok                      col  3 '1'  -> [1 Node]    ok
+  ```
+
+  \* **stated because it is a weakness of this script and not a pass**: the pty cases run in
+  sequence from wherever the previous one left, so a case whose *wrong* answer equals the screen
+  already showing reads `ok` — which is exactly what happened to `4 Log` here, the case the verifier
+  measured as "nothing at all" from a fresh frame. The `ProgramSimulator` case is the one that
+  discriminates every cell, because it rebuilds the model two screens away each time. The pty run is
+  what proves the fix on a real terminal with real mouse bytes; the test is what proves it can never
+  regress.
+
+  The Narrow tier, which was already correct and draws its own strip, still is — `56×24`, strip
+  `1·2·3·4  Node`: columns 1, 3, 5, 7 select Node, Wallet, Send, Log in order, and `q` quits
+  cleanly.
+
+  ### DEFECT B — the picker's address budget
+
+  Two corrections in `picker_pane` (`screens.rs:590-613`), both of them arithmetic:
+
+  · a kept column costs **`COL + 1`**, not `COL`, because `Table`'s `column_spacing` defaults to 1
+    and becomes the `Flex` gap (`ftui-widgets-0.7.0/src/table.rs:114`, `:845`). The old loop stopped
+    "with 26 left for the address" and actually left `26 - (n-1)`.
+  · the minimum is **measured**: the widest address cell the table will draw (marker, address and
+    `web`/`own` tag), capped at half the table's width so one 49-column hostname cannot delete every
+    data column, and never below the **configured** row's own width. 26 was below the 31 cells
+    `● xmr-node.cakewallet.com:18081` needs, so even correct arithmetic would have elided the
+    address this machine is configured with.
+
+  **The failure, proved by reverting the budget to `ADDRESS_MIN + COL * (n-1)` with `ADDRESS_MIN`
+  26** — the new test then renders the defect at the first width it tries:
+
+  ```
+  $ cargo test -p fmonero tui::tests::the_picker_never_elides
+  panicked at crates/fmonero/src/tui/tests.rs:1598:9: the configured address is elided at 90 columns:
+  │ address              │health      │height      │ms          │node height │synced       │
+  │ ● xmr-node.cakewallet│50% of 18   │3765000     │—           │—           │—            │
+  test result: FAILED. 0 passed; 1 failed
+  ```
+
+  Post-fix, the same model rendered at seven widths — the configured address complete at every one,
+  and the columns dropping from the right as the pane narrows, which is §7a.4's rule:
+
+  ```
+  width  90  address(48) health height ms                              ● xmr-node.cakewallet.com:18081
+  width 100  address(33) health height                                 ● xmr-node.cakewallet.com:18081
+  width 120  address(45) health height                                 ● xmr-node.cakewallet.com:18081
+  width 150  address(51) health height checked                         ● xmr-node.cakewallet.com:18081
+  width 180  address(57) health height checked ms                      ● xmr-node.cakewallet.com:18081
+  width 200  address(56) health height checked ms node-height          ● xmr-node.cakewallet.com:18081
+  width 240  address(68) health height checked ms node-height synced   ● xmr-node.cakewallet.com:18081
+  ```
+
+  The address column is **wider at 90 columns than at 100** and that is the tier layout, not the
+  budget: at 90 the terminal is Medium and the picker is the full width of the screen, while from
+  100 it is Wide and the picker takes 62 % of it beside the Warnings pane (§7a.3). Inside one pane
+  width the budget is monotonic.
+
+  The test seeds the list with the owner's own address **and** the longest one monero.fail actually
+  served this machine (`static.63.34.245.188.clients.your-server.de:18089`, 49 columns), and asserts
+  at 180 that the long one is complete too — so the cap is exercised rather than assumed. Below that
+  the cap does bite: a 51-column cell in a 60-column pane would leave nothing for health, and the
+  half-pane rule prefers three honest columns to one. The configured row is the floor, always.
+
+  **On the real pty**, at the brief's own 150×40, with the owner's cached list and his configured
+  node, which is the capture the verification asked for:
+
+  ```
+  ╭ Public nodes ──────────────────────────────────────────────────────────────────────╮
+  │ address                                           │health      │height      │checked      │
+  │ ● xmr-node.cakewallet.com:18081                   │95% of 19   │3765137     │5h 29m ago   │
+  │   109.192.204.136:18081                           │100% of 18  │3765039     │9h 17m ago   │
+  │   109.196.118.68:18081                            │100% of 18  │3765113     │6h 17m ago   │
+  ```
+
+  and the same TUI resized live to 90 and 180 columns, still complete:
+
+  ```
+  -- 90 columns
+  │ address                                        │health      │height      │ms           │
+  │ ● xmr-node.cakewallet.com:18081                │95% of 19   │3765137     │273          │
+  -- 180 columns
+  │ address                                                 │health      │height      │checked     │ms           │
+  │ ● xmr-node.cakewallet.com:18081                         │95% of 19   │3765137     │5h 29m ago  │273          │
+  ```
+
+  **The `273` in that `ms` column is a real network contact and is disclosed here rather than
+  buried**: entering the Node screen probes **the configured node only**, on §2n.4's schedule, and
+  it did — one request to `xmr-node.cakewallet.com:18081`, the node the owner's own wallet already
+  talks to, 273 ms, written into the **sandbox's** copy of the cache. monero.fail was not contacted
+  at all in this round: the list was copied in from `~/.cache/fmonero/public-nodes.json` read-only
+  and no fetch ran.
+
+  ### DEFECT C — the `?` overlay's first row
+
+  The row is now two rows, because one row could not state the rule truthfully:
+
+  ```
+  Tab  ⇧Tab  Ctrl+C   screens · quit — always, in a field, a modal, the overlay or a running
+                      action (quit twice while one runs: cancel, then quit)
+  1 2 3 4             the same two — but only when no field has focus: a field keeps every
+                      printable key, and Esc unfocuses it
+  q  Ctrl+C  …        (folded into the two rows above)
+  ```
+
+  `Ctrl+C` moved **into** the `always` row because it belongs there — `on_key` resolves it before
+  `Tab` and before every branch (`mod.rs:1212-1215`) — and `1 2 3 4` and `q` moved out because they
+  are printable characters and §7a.1's own second bullet gives a focused field every printable
+  character. DESIGN.md §7a.1 and §7a.6 are amended to match (v5.5.1), including the sentence that
+  specified the old row: the *behaviour* was right in v5.5 and the *specification of the text* was
+  what was wrong, which is why this is a text change and not a behaviour change.
+
+  **The test is the row and the dispatcher in one case**, which is what the brief meant by the
+  KEYS-vs-dispatcher test: exactly one `KEYS` row may contain the word `always`, its key list must
+  be exactly the keys resolved above every branch, the `1 2 3 4` row must carry its condition, the
+  rendered overlay must no longer contain `even inside a field`, and then the behaviour on the money
+  screen with real digits:
+
+  ```
+  Send screen, Amount focused, "0.01" typed, then 2 and 4  -> amount "0.0124", screen still Send
+  then q                                                   -> amount "0.0124q" (typed, not obeyed)
+  then Esc, then 2                                         -> screen Wallet   (the direct route)
+  Send screen, "9" typed, then Tab                         -> screen Log      (`always`, in a field)
+  Send screen, "9" typed, then Ctrl+C                      -> exit code 130   (`always`, in a field)
+  ```
+
+  With the old two rows restored the case fails on the first assertion:
+
+  ```
+  panicked at crates/fmonero/src/tui/tests.rs:1636:5: `always` may name only the keys resolved
+  above every screen, focus state and modal
+    left: "Tab  ⇧Tab  1 2 3 4"
+   right: "Tab  ⇧Tab  Ctrl+C"
+  ```
+
+  ### FINDING D — the wallet badge
+
+  `wallet_badge` (`mod.rs:591-616`) gains one state with two words. `starting` when one of the TUI's
+  own actions is in flight and the unit is **not** active; `busy` when it is active and the poll
+  still did not answer; `down` only when nothing of ours is running and the poll fails — which is
+  the state the word describes. The predicate is `Action::wallet_busy()`
+  (`subs.rs:184-195`), written as the **complement** of the four node-only actions (node up, node
+  down, the list fetch, the probe sweep) so that a wallet action added later is busy by default and
+  this badge's honesty does not depend on the list being extended. `NodeUseRemote` is therefore
+  included on purpose: §2m.5 restarts the wallet unit, and the poll that fails during it is ours.
+
+  **The brief asked for `down` "only when the unit is active, no action is in flight, and the poll
+  still fails", and the unit-active clause is deliberately not written as a fourth condition**: core
+  already splits the inactive case into `wallet_idle` (remote mode, no wallet — the daemon is
+  *designed* to be down, §5, an `info`) and `wallet_down` (a warning: it should be running and is
+  not), and the badge reads the first as `idle` two arms above. Adding `!unit_active => starting`
+  would print `starting` for a daemon that died under an open wallet, with nothing starting it. The
+  state the clause was protecting is exactly the state the new arm covers.
+
+  **The test drives both unit states with and without an action**, through the §2i systemctl fixture
+  so `unit_active` is a fact and not a guess, and asserts the rendered status line too:
+
+  ```
+  unit inactive, nothing in flight               -> "down"       (unchanged)
+  unit active,   nothing in flight               -> "down"       (unchanged)
+  unit inactive, Action::WalletDaemonStart armed -> "starting"    <- was "down"
+  unit active,   Action::WalletCreate armed      -> "busy"        <- was "down"
+  ```
+
+  and it first asserts that the fixture really reaches the unit state it claims and that
+  `wallet_idle` is **not** up, so it cannot pass through the arm above. With the new arm deleted:
+
+  ```
+  panicked at crates/fmonero/src/tui/tests.rs:1739:9: assertion failed: unit_active = false
+    left: "down"
+   right: "starting"
+  ```
+
+  ### FINDING E — the `Node` → `Nodes` label, decided: **left alone, and pinned by a test**
+
+  The smaller honest option is not to build the refresh. Stated fully, because the brief asked for a
+  decision and not a preference:
+
+  · **What it would cost.** A table of every line fmonero has written for an id in an earlier
+    version, compared byte-for-byte (modulo the trailing comma the merge itself adds) before a
+    rewrite. It is sound, and it is a **permanent obligation**: one row per rendering change for
+    ever, silently doing nothing the first time someone forgets — the "compiles, runs, does nothing"
+    shape this document exists to prevent — and it weakens §4.2's one-sentence rule protecting a
+    file the user maintains by hand, for a **label**.
+  · **What leaving it costs.** The owner's `monero.node` entry keeps the label `Node`. Nothing
+    functional depends on it: the id, the action and the screen it opens are unchanged, and that
+    screen is the picker either way. The recovery is two commands he can read — delete the line from
+    `~/.config/omarchy/extensions/omarchy-menu.jsonc`, then `fmonero setup --menu --yes`.
+  · **Nothing shipped had to be retracted**, which is what made the choice easy: no README, `--help`
+    or `robot-docs` line claims the rename reaches an installed machine (the claim lives in this
+    file, in the 2026-09-18 implementer entry, and this paragraph is its correction). DESIGN.md §4.2
+    now states the consequence and the recovery in the section that describes the merge — and its
+    template listing, which still said `"label":"Node"` while the asset has said `Nodes` since
+    v5.5, is corrected: the document and the asset disagreed about the very label this finding is
+    about.
+  · **A test pins it**: `setup::tests::an_existing_entry_keeps_its_own_label_even_when_the_asset_
+    renames_it` writes the exact line the previous version wrote, runs the real `menu_step`, and
+    asserts the line is byte-for-byte unchanged, that `"label":"Nodes"` did **not** appear, and that
+    the five absent ids were still inserted. It passes on the pre-fix tree too, and says so: it
+    records a decision rather than closing a defect.
+
+  ### DEFECT F — the 0644 backup, and two claims in its report that do not reproduce
+
+  **The defect is real and is fixed twice over.** `setup --menu`'s backup no longer goes through
+  `std::fs::copy`, which calls `set_permissions` from the **source's** metadata after creating the
+  destination — the source being Omarchy's own 0644 file. It is read and written through
+  `fmonero_core::write_private`, the one 0600 create path (`O_EXCL` + `mode(0o600)`, write, fsync,
+  rename). And the same three lines had the **directory** half of the fault: `create_dir_all` uses
+  `0777 & ~umask`, so `state/backups/` was 0700 only because `install.sh` sets `umask 077` — a
+  hand-run `fmonero setup --menu` under the ordinary 022 made it **0755**, which the doctor also
+  fails. It now goes through a new `paths::ensure_private_dir`, which is `ensure_dirs`' own
+  DirBuilder-at-0700 for one path; `ensure_dirs` calls it too, so there is one implementation.
+
+  ```
+  BEFORE (5004b95), umask 022, a 0644 source menu file
+  $ fmonero setup --menu --yes          # "6 Omarchy menu entries (backup: …)"
+  644 <sandbox>/state/backups/omarchy-menu.jsonc.20260918T173309Z
+  755 <sandbox>/state/backups
+  $ fmonero doctor --only security --json | …
+  state_perms: fail | …omarchy-menu.jsonc.20260918T173309Z is 0644, want 0600   exit 11
+
+  AFTER, same umask, same 0644 source
+  $ fmonero setup --menu --yes
+  700 <sandbox>/state
+  700 <sandbox>/state/backups
+  600 <sandbox>/state/backups/omarchy-menu.jsonc.20260918T180825Z
+  $ fmonero doctor --only security --json | …
+  state_perms: pass | 3 files and directories under the state, config and cache directories
+                      are owner-only                                            exit 0
+  ```
+
+  The test asserts the mode of the backup **and** of the directory **and** that the backup is the
+  bytes the merge was computed from; on the pre-fix code it fails with `left: 420  right: 384`
+  (0644 against 0600).
+
+  **The audit the brief asked for.** `std::fs::copy` appears exactly twice in the tree and only once
+  in shipped code — the line above. The other is `doctor/fixture_tests.rs:94`, inside a `#[cfg(test)]`
+  module, copying fixture inputs into a temp directory that is not under any fmonero root. The
+  doctor's own backups already go through `write_private` (`mutate.rs:475`) and its run directories
+  through `mkdir_private`, so nothing else in the tree carried a foreign mode into fmonero's state.
+  Two neighbouring calls were checked and are correct as they are: `setup --menu`'s
+  `fs::write` of the **Omarchy** file (not ours — and `write` on an existing file leaves its mode
+  alone), and `units.rs:1146`'s `fs::write` of the §2i systemctl **fixture**, which is a test seam
+  outside the state dir. §2b.7 now names both `fs::copy` and `create_dir_all` as forbidden under the
+  three roots, with the reason, because the next implementer will reach for them again.
+
+  **Two secondary claims in the addendum do not reproduce, and the correction is the point of
+  running it rather than reading it.** The addendum says the doctor "plans **nothing** for it" and
+  that "the check's `hint` is **`null`** — so the user is told they are broken, offered no repair,
+  and given no command". On this tree, at `5004b95`, with a 0644 backup as the only perms failure:
+
+  ```
+  $ fmonero doctor --only security --json | jq -c '.checks[]|select(.id=="state_perms")|
+      {status, fixable, class, fix_cmd}'
+  {"status":"fail","fixable":true,"class":"A","fix_cmd":"fmonero doctor --fix"}
+
+  $ fmonero doctor --only security            # on a pty
+  fail:bad_mode   state_perms   <sandbox>/state/backups/omarchy-menu.jsonc… is 0644, want 0600
+                                fix: fmonero doctor --fix
+
+  $ fmonero doctor --fix --dry-run --json | jq -r '.checks[]|select(.id=="state_perms")|
+      .actions[].action'
+  run chmod 600 <sandbox>/state/backups/omarchy-menu.jsonc…   (undo: chmod 644 <same file>)
+
+  $ fmonero doctor --fix --only security --json | jq -c .summary
+  {… "fixed":1, "fix_failed":0, "exit_code":0}      # the file went 0644 -> 0600
+  ```
+
+  So `state_perms` **is** class A, fixable, and repaired through the `mutate.rs` chokepoint with a
+  recorded inverse — which is what the brief's "make it fixable … or explain why not" asks for, and
+  the answer is that it already was. The `hint: null` half is true of the field read and false of
+  the conclusion: a check row has **no** `hint` key (its keys are `actions, class, detail, fix_cmd,
+  fix_error, fix_outcome, fixable, group, id, reason, severity, status, verdict`), and the command
+  lives in `fix_cmd`, which was populated, and which the human renderer prints as `fix: fmonero
+  doctor --fix` on the line under the failure. The lesson is the one this file keeps relearning from
+  the other side: a `jq` path that does not exist returns `null`, and `null` read as "absent" turns
+  a schema mistake into a defect report. The **only** real fault was the mode, and it is fixed.
+
+  ### Documentation
+
+  **README needed nothing removed for DEFECT A.** The brief expected a tab-strip caveat in README's
+  Status section; there is none — the verifier put that finding in this file and in its commit
+  message, and README's only tab-strip sentence is "Click a tab…" in the TUI section, which the fix
+  makes true rather than requiring its removal. What README *did* under-claim is the round itself:
+  its LIVE paragraph stopped at 2026-09-17, so the 2026-09-18 facts — a wallet created through the
+  TUI against a real `monero-wallet-rpc` and a real public node, `node list --refresh --probe`
+  against monero.fail, the picker's switch re-rendering real units, and the mouse driven with real
+  SGR-1006 bytes on a real pty — were nowhere in it. One paragraph was added, and nothing in it is
+  this round's own work. `BUILD_NOTE` was read and **not** changed, for the reason the verifier gave:
+  it is stale but every sentence it makes is true and it under-claims, which is the safe direction.
+  DESIGN.md carries six **v5.5.1** amendments: §2b.7 (the two forbidden calls), §4.2 (the backup's
+  create path, the label decision, the corrected template line), §7a.1 and §7a.6 (the two KEYS
+  rows), §7a.2 (the tab rects come from `Tabs`' geometry, and the frame-not-map test), §7a.4 (the
+  column budget) and §7a's status-line paragraph (the badge's five words, in order).
+
+  ### The owner's machine
+
+  Untouched, and measured before and after the whole session:
+
+  ```
+  === units, before and after (identical) ===
+  fmonero-monerod.service:    ActiveState=inactive UnitFileState=disabled NRestarts=0
+  fmonero-wallet-rpc.service: ActiveState=inactive UnitFileState=disabled NRestarts=0
+  === sha256, before and after (identical) ===
+  64580d70a21719503a105b67aa633d31d9c25921ffc0c8956a7fc8d5d333d82f  ~/.config/systemd/user/fmonero-monerod.service
+  51ab51b9c26863bece7521f51a5e4d9904230bf1f2963abe6e54b3da80fd0a7f  ~/.config/systemd/user/fmonero-wallet-rpc.service
+  bed63c9603dc9f5cbcc2d81fbab42d9c57763479c7f87b2a54a7707a74efd5ba  ~/.config/fmonero/monerod.conf
+  d546e5951645c64f0d670c320471f1ed8c0d299fdd0f5c286be5dcf51f4948e9  ~/.config/fmonero/config.toml
+  230cb88cd25864cbc5ff165e4a8bb7436e609cdab7ac3907859bc544ed7341bd  ~/.config/omarchy/extensions/omarchy-menu.jsonc
+  ```
+
+  `node.mode = remote` and `node.remote = xmr-node.cakewallet.com:18081` unchanged, `wallet.dir`
+  still empty, `~/.cache/fmonero/public-nodes.json` unchanged (0600, same mtime — it was **copied**
+  into each sandbox, never re-fetched), and the installed `~/.local/bin/fmonero` deliberately **not**
+  replaced: this round changed no CLI behaviour the owner is waiting on, and installing is his
+  command to run. Every write this session made went to `FMONERO_STATE_DIR`/`_CONFIG_DIR`/
+  `_CACHE_DIR`/`XDG_DATA_HOME`/`XDG_CONFIG_HOME`/`FMONERO_SYSTEMD_USER_DIR` sandboxes under `mktemp
+  -d`, or to this repository. No `sudo`, and no `systemctl` against his manager beyond the read-only
+  `show -p ActiveState -p UnitFileState -p NRestarts` printed above.
+
+  **One file of his does have a fresh mtime, and it is not this session's doing**:
+  `~/.local/state/fmonero/state.json`, 20:08:54. It is the live bar widget — `quickshell -n -p
+  /usr/share/omarchy/shell` is running, `Service.qml` polls `fmonero status --json` every 3 s, and
+  `status` rewrites that document through §5's `with_state` chokepoint on every call. Its contents
+  are the documented empty state (`last_open`, `last_error`, `net_sample`, `cold`, `wallet_behind`,
+  `last_refresh` and `remote_probe` all `null`, `stalls` `{}`), so his configured node still has not
+  been probed from his own configuration, exactly as the verification above left it.
+
+  ### What this round does not claim
+
+  - **A real send or sweep of any amount is still RED**, in every mode. No transaction was built and
+    nothing was relayed; the Send screen was exercised on a simulator and, for DEFECT C, with four
+    digits typed into an Amount field.
+  - The mouse is proved on **this** emulator (tmux, SGR-1006) and, for the alignment, by arithmetic
+    that will hold anywhere. Nothing here was tried under Hyprland's own terminal.
+  - The `starting`/`busy` badge was proved with the §2i fixture and armed actions, **not** against a
+    real `monero-wallet-rpc` coming up: the state it describes lasts a second or two on a real
+    machine, and the verification above is where it was seen live (reading `down`).
+  - `FINDING E` is a **decision**, not a fix: the owner's menu entry still says `Node`, and it will
+    until he removes that line and re-runs `fmonero setup --menu --yes`.
+  - The picker's cap means a **49-column** address can still be elided in a narrow pane; the
+    configured row cannot, at any width the picker renders in. §7a.4 now says which of those two
+    "never elided" means.

@@ -265,6 +265,22 @@ refresh gate, which is the point of the row: the wallet's `last_refresh_at` adva
 build, nothing was relayed, and no pending record was written. A real send or sweep of any amount
 is still RED, in this mode as in the other.
 
+**LIVE, a second round on 2026-09-18 — the TUI, driven by an independent verifier on a real
+150×40 pty.** A wallet was **created through the TUI** for the first time, against a real
+`monero-wallet-rpc` and a real public node: the four-field modal from the keyboard alone, an inline
+refusal for a name that already existed, the seed-backup modal carrying core's own hint, then a
+balance of `0.0000 XMR` and a clean close — and no seed was ever displayed. The public-node picker
+was driven against the real monero.fail (`node list --refresh --probe --limit 8`: eight probed,
+eight reachable, one height between them, and the node this machine is configured on the slowest of
+the eight at 3 344 ms against 43 ms for the fastest) and its confirm modal really switched the node,
+re-rendering the sandboxed wallet unit through the same core call the CLI makes. The **mouse** was
+driven with real SGR-1006 reports written to the pane, which is byte-for-byte what a terminal sends:
+rows select and activate, chips fire, the wheel scrolls the list under the cursor and does nothing
+over the tab strip, right-click is `Esc`. That round found the tab strip's hit rects two columns per
+tab out of line — clicking `Send` selected `Log` — and it is fixed, with a test that clicks the
+**rendered** label rather than the hit map; the full transcript of both, and of the picker's address
+column, is in `DECISIONS.md` under "TUI UX round verification" and "TUI UX fix-up".
+
 **Three defects that live run found, all three since fixed and re-checked against the same public
 node.** `fmonero doctor --fix` used to rewrite `node.mode` from `remote` back to `local` on a
 correctly configured machine, from a `settings_valid` warning that was itself false; the check now
