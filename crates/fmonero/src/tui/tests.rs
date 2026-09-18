@@ -488,7 +488,7 @@ fn a_syncing_node_shows_the_gauge_and_no_block_age() {
     let text = sim_text(&sim(model(&w.ctx, Screen::Node)), 120, 40);
     assert!(text.contains("Syncing"), "{text}");
     assert!(
-        text.contains("last block —"),
+        text.contains("last block  —"),
         "a BUSY header must render as — (§1b.3):\n{text}"
     );
     assert!(!text.contains("56 years"), "{text}");

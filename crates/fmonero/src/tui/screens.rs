@@ -1461,7 +1461,9 @@ fn subaddress_pane(m: &Tui, area: Rect, frame: &mut Frame) {
     let wide = area.width >= 62;
     let th = &m.theme;
     let focused = m.wallet.pane == Pane::Subaddresses;
-    let title = " Your addresses — Enter copies · a new · l rename ";
+    // `Addresses`, not `Your addresses`: this pane is 48 columns and the longer title clipped to
+    // `… · a new · l renam`, which is a title that lies about its own keys.
+    let title = " Addresses · Enter copies · a new · l rename ";
     let Some(set) = &m.wallet.addresses else {
         if let Some(inner) = framed(area, th, title, focused, frame) {
             let (text, style) = match &m.wallet.err {
@@ -2332,7 +2334,9 @@ fn lines_at(lines: Vec<Line<'static>>, area: Rect, wrap: bool, frame: &mut Frame
 /// `label      value` — the one row shape every panel uses.
 fn kv(th: &Theme, label: &str, value: impl Into<String>) -> Line<'static> {
     Line::from_spans([
-        Span::styled(format!("{label:<11}"), th.dimmed()),
+        // 11 wide **plus one space**: `speed limits` is twelve characters and came out as
+        // `speed limits↑2048` — a number touching a word is a number nobody can read.
+        Span::styled(format!("{label:<11} "), th.dimmed()),
         Span::styled(value.into(), th.text()),
     ])
 }

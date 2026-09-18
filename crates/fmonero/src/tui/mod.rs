@@ -473,11 +473,10 @@ pub struct Tui {
     exit: Arc<AtomicI32>,
     theme: Theme,
     theme_mtime: Option<SystemTime>,
-    /// v5.6, §7a.7. `config.toml`'s modification time as of the last time this model read it,
-    /// so a settings change made **anywhere else** — the CLI in another terminal, an editor, a
-    /// `doctor --fix` that repaired a key — is noticed on the 1 s poll instead of being
-    /// invisible until the TUI is restarted. `stat` on one file per second is not a cost worth
-    /// optimising: §2l's budget is spawns and RPC, and this is neither.
+    /// v5.6, §7a.7. `config.toml`'s modification time as of the last time this model read it, so
+    /// a settings change made **anywhere else** — the CLI in another terminal, an editor, a
+    /// `doctor --fix` that repaired a key — is noticed on the 1 s poll instead of being invisible
+    /// until the TUI is restarted. `stat` on one file per second is not a cost worth optimising.
     config_mtime: Option<SystemTime>,
     screen: Screen,
     tabs: RefCell<TabsState>,
@@ -1224,11 +1223,10 @@ impl Tui {
     }
 
     /// §7a.7, part 3. The address in force has changed, so the screen catches up: the picker's
-    /// `●` moves on the next render (it compares against the reloaded `Context`), the old
-    /// node's cached check is dropped — it is **address-matched**, so it is not about this node
-    /// at all — and the picker is told to check the new one at once, because leaving the pane
-    /// reading `Not checked yet.` for up to `node.remote_probe_sec` would be a second
-    /// contradiction of a row the user had just measured.
+    /// `●` moves on the next render (it compares against the reloaded `Context`), the old node's
+    /// cached check is dropped — it is **address-matched**, so it was never about this node — and
+    /// the new one is checked at once, because leaving the pane on `Not checked yet.` for up to
+    /// `node.remote_probe_sec` would contradict a row the user had just measured.
     fn node_changed_under_us(&mut self) {
         self.picker.probed_at = None;
         self.reload_picker();

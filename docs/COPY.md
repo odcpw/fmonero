@@ -762,6 +762,15 @@ of 450 rows written by hand misses four, and a grep with a self-test does not.
 | the seed modal's close line (§3.5) | `Close this wallet first — press x.` | the modal says `With the wallet closed, in a terminal:` and no separate line | The table's own phrasing carries an em-dash, which DESIGN.md §2o rule 12 forbids; and the sentence core already prints says the same thing without needing a second one. §2o is the contract, so it wins over an illustration in this document. |
 | the widget's locked-funds row (§3.8) | `{x} XMR locked for about {m} min` | `locked for about {m} min` | The amount is `balance - unlocked`, and that subtraction is arithmetic on money, which §2a.5 forbids in QML outright. DESIGN.md §6.5 records it and names the fix (a pre-rendered `locked_xmr` in §5). |
 | `monerod_conf_mode`'s doctor title (§3.12) | unchanged, "already plain" | `~/.config/fmonero/monerod.conf is private (it carries a password)` | The old title named `rpc-login`, a flag, in prose. Rule 6 applies to the doctor's titles like everywhere else. |
+| the addresses pane title (§3.3) | ` Your addresses — Enter copies · a new · l rename ` | ` Addresses · Enter copies · a new · l rename ` | At the Wide tier that pane is 48 columns and the specified title clipped to `… · a new · l renam` — a title that lies about its own keys. The em-dash goes with it, which rule 12 wanted anyway. |
+
+**One thing rule 12 does not reach, stated so it is a decision and not an oversight.** Several modal
+titles keep a ` — `: ` Open a wallet — Enter opens · Esc cancels `, ` Payment — n edits the note ·
+Esc closes `, ` Keys — any key closes `. In those the dash separates a pane's **name** from its
+**controls**, which is the structural role rule 12 explicitly allows `·` to play — it is not prose
+punctuation inside a sentence, and §3's table keeps every one of them. Rule 12 is enforced by
+reading, not by the grep, for the same reason `build` is: a grep for `—` would fire on this
+document, on every comment that uses one and on the row separators of these very tables.
 
 **Two words the grep does not police, stated so nobody mistakes silence for coverage.** §2o rule 7
 bans `build` (of a transaction) and `layout`; `scripts/check.sh` greps for `layout` but **not** for
