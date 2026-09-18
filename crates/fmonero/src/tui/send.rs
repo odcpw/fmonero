@@ -476,9 +476,14 @@ pub(super) fn view(m: &Tui, area: Rect, frame: &mut ftui::Frame, tier: Tier) {
     let mut x = rows[3].x + "Priority".width() as u16;
     for level in 0..5u32 {
         let fee = fees.get(level.saturating_sub(1).min(3) as usize);
+        // **The fee is rendered in piconero per byte, as an integer** — which is the unit
+        // `get_fee_estimate.fees[]` actually returns (§1b.4) and the only form that fits: five
+        // chips of `0.00000002` need 70 columns, so at the Wide tier's 67-column form the FIFTH
+        // chip fell off the row entirely and priority 4 was unclickable, which §7a.2 forbids.
+        // An `as f64`-free integer beside a level is also easier to compare than eight zeroes.
         let label = match (level, fee) {
             (0, _) => " 0=1 ".to_string(),
-            (l, Some(f)) => format!(" {l} {} ", f.to_xmr_string()),
+            (l, Some(f)) => format!(" {l} {}p ", f.0),
             (l, None) => format!(" {l} — "),
         };
         let w = label.width() as u16;

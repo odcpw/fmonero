@@ -482,6 +482,7 @@ fn picker_pane(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
         _ => (true, false, probed_any),
     };
     let mut header: Vec<&'static str> = vec!["address"];
+
     if health {
         header.push("health");
         header.push("height");
@@ -495,7 +496,7 @@ fn picker_pane(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
         header.push("synced");
     }
     let now = fmonero_core::now_unix();
-    let table_rows: Vec<TableRow> = rows_data
+    let cell_rows: Vec<Vec<String>> = rows_data
         .iter()
         .map(|n| {
             let mark = if configured.as_deref() == Some(n.address.as_str()) {
@@ -558,7 +559,7 @@ fn picker_pane(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
                     }
                 }
             }
-            TableRow::new(cells)
+            cells
         })
         .collect();
     let body = if m.picker.filter_open {
@@ -580,9 +581,26 @@ fn picker_pane(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
     let rows = Flex::vertical()
         .constraints([Constraint::Fill, Constraint::Fixed(1), Constraint::Fixed(1)])
         .split(body);
+    // **The address is never elided at any tier** (§7a.4), so the columns to its right are
+    // dropped from the RIGHT until it has room — rather than handed `Constraint::Fill` over
+    // whatever is left, which at 72 columns gave the address **zero** width and rendered a table
+    // of health figures for nodes it did not name.
+    const ADDRESS_MIN: u16 = 26;
+    const COL: u16 = 12;
+    while header.len() > 1 && rows[0].width < ADDRESS_MIN + COL * (header.len() as u16 - 1) {
+        header.pop();
+    }
+    let keep = header.len();
+    let table_rows: Vec<TableRow> = cell_rows
+        .into_iter()
+        .map(|mut cells| {
+            cells.truncate(keep);
+            TableRow::new(cells)
+        })
+        .collect();
     let mut widths: Vec<Constraint> = vec![Constraint::Fill];
-    for _ in 1..header.len() {
-        widths.push(Constraint::Fixed(12));
+    for _ in 1..keep {
+        widths.push(Constraint::Fixed(COL));
     }
     let t = Table::new(table_rows, widths)
         .header(TableRow::new(header.clone()).style(th.dimmed()))
@@ -606,12 +624,12 @@ fn picker_pane(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
         let footer = match &m.picker.progress {
             Some(p) => p.clone(),
             None => format!(
-                "{} nodes · list {} old · {} skipped (no port) · {} skipped (bad address) · source {}",
+                "{} nodes · list {} · {} skipped (no port) · {} bad · source {}",
                 rows_data.len(),
                 list.cache_age_sec.map(age).unwrap_or_else(|| "—".into()),
                 list.skipped_no_port,
                 list.skipped_invalid,
-                list.source,
+                list.source.trim_start_matches("https://"),
             ),
         };
         para(
@@ -1798,8 +1816,16 @@ fn create_modal(m: &Tui, form: &super::CreateForm, frame: &mut Frame) {
 /// core. **fmonero never displays a seed**, in the TUI or anywhere else.
 fn seed_modal(m: &Tui, lines: &[String], frame: &mut Frame) {
     let th = &m.theme;
-    let h = lines.len() as u16 + 6;
-    let Some(inner) = overlay(m, frame, 76, h, " Back up your seed ") else {
+    // Sized from the **wrap of its own text**, measured with the same helper that draws it — the
+    // hand-written `lines.len() + 6` pushed the last two rows (including "fmonero never displays
+    // a seed") off the bottom as soon as the wallet path was long enough to wrap.
+    let w = 84.min(frame.bounds().width);
+    let wrapped_rows: u16 = lines
+        .iter()
+        .map(|l| wrap_words(l, w.saturating_sub(4) as usize).len().max(1) as u16)
+        .sum();
+    let h = wrapped_rows + 7;
+    let Some(inner) = overlay(m, frame, w, h, " Back up your seed ") else {
         return;
     };
     m.hits.modal(inner);

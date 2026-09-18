@@ -904,3 +904,560 @@ fn the_node_screen_in_remote_mode_shows_the_address_and_no_gauge() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ======================================================================================
+// v5.5 — §7a.1 navigation, §7a.2 mouse, §7a.4 the picker, §7a.5 the wallet and daemon flow
+// ======================================================================================
+
+use super::hit::{Button, HitPane, Target};
+use ftui::{MouseButton, MouseEvent, MouseEventKind};
+
+fn mouse(kind: MouseEventKind, x: u16, y: u16) -> Event {
+    Event::Mouse(MouseEvent::new(kind, x, y))
+}
+
+fn click(x: u16, y: u16) -> Event {
+    mouse(MouseEventKind::Down(MouseButton::Left), x, y)
+}
+
+/// **The one non-obvious precondition of every mouse test** (§7a.2): the layout cache is empty
+/// until a frame has been rendered, so a test that injects a click before its first render is
+/// testing `Map::at` on zeroed rects. This renders, then finds the coordinate of the first cell
+/// whose target satisfies `want` — so the test never hard-codes a column that a layout change
+/// would silently move.
+fn find(m: &Tui, w: u16, h: u16, want: impl Fn(Target) -> bool) -> Option<(u16, u16)> {
+    let _ = render(m, w, h);
+    (0..h).find_map(|y| {
+        (0..w).find_map(|x| match m.hits.at(x, y, None) {
+            Some(t) if want(t) => Some((x, y)),
+            _ => None,
+        })
+    })
+}
+
+/// §7a.1's matrix, and it is a matrix because the defect was reachable three ways: `Tab` was
+/// dispatched per screen while the filter branch and `send.rs`'s `Tab | Down` each ate it first.
+#[test]
+fn tab_switches_screens_from_every_screen_and_every_focus_state() {
+    /// One cell of the matrix: what to do before pressing `Tab`.
+    type Arrange = fn(&mut ProgramSimulator<Tui>);
+    let cases: Vec<(&str, Arrange)> = vec![
+        ("nothing focused", |_s| {}),
+        ("the Wallet filter open with text in it", |s| {
+            s.inject_event(key(KeyCode::Char('2')));
+            s.inject_event(key(KeyCode::Char('/')));
+            type_str(s, "abc");
+        }),
+        ("the Log search open", |s| {
+            s.inject_event(key(KeyCode::Char('4')));
+            s.inject_event(key(KeyCode::Char('/')));
+            type_str(s, "sync");
+        }),
+        ("a Send field focused with an address typed", |s| {
+            s.inject_event(key(KeyCode::Char('3')));
+            type_str(s, DEST);
+        }),
+        ("the picker's filter open", |s| {
+            s.inject_event(key(KeyCode::Char('1')));
+            s.inject_event(key(KeyCode::Char('/')));
+            type_str(s, "example");
+        }),
+        ("a confirm modal open", |s| {
+            s.inject_event(key(KeyCode::Char('1')));
+            s.inject_event(key(KeyCode::Char('u')));
+        }),
+        ("the ? overlay up", |s| {
+            s.inject_event(key(KeyCode::Char('?')));
+        }),
+        ("an add-node modal open", |s| {
+            s.inject_event(key(KeyCode::Char('1')));
+            s.inject_event(key(KeyCode::Char('a')));
+        }),
+    ];
+    for (what, arrange) in cases {
+        for from in [Screen::Node, Screen::Wallet, Screen::Send, Screen::Log] {
+            let mut s = sim(offline_model(from));
+            arrange(&mut s);
+            let before = s.model().screen;
+            s.inject_event(key(KeyCode::Tab));
+            assert_eq!(
+                s.model().screen,
+                Screen::from_index(before.index() + 1),
+                "Tab must advance one screen from {before:?} with {what}"
+            );
+        }
+    }
+}
+
+#[test]
+fn shift_tab_goes_back_from_every_screen() {
+    for from in [Screen::Node, Screen::Wallet, Screen::Send, Screen::Log] {
+        let mut s = sim(offline_model(from));
+        s.inject_event(key(KeyCode::BackTab));
+        assert_eq!(s.model().screen, Screen::from_index(from.index() + 3));
+    }
+}
+
+/// The two documented exceptions, and **only** two: a built transaction and a typed password are
+/// the two states where "go somewhere else" must be an explicit discard (§7a.1).
+#[test]
+fn the_create_wallet_modal_consumes_tab_and_says_so() {
+    let mut s = sim(offline_model(Screen::Wallet));
+    s.inject_event(key(KeyCode::Char('c')));
+    type_str(&mut s, "secret-ish");
+    let before = s.model().screen;
+    s.inject_event(key(KeyCode::Tab));
+    assert_eq!(s.model().screen, before, "the create modal holds Tab");
+    assert_eq!(s.model().note, "Esc to discard first");
+    // And it is documented IN the modal, not only in this document.
+    let text = sim_text(&s, 110, 34);
+    assert!(text.contains("Esc to discard first"), "{text}");
+}
+
+#[test]
+fn the_send_confirm_consumes_tab() {
+    let w = World::new("tab-confirm");
+    let mut s = ProgramSimulator::new(model(&w.ctx, Screen::Send));
+    s.init();
+    type_str(&mut s, DEST);
+    s.inject_event(key(KeyCode::Down));
+    type_str(&mut s, "0.1");
+    s.inject_event(key(KeyCode::Enter));
+    run_action(&mut s);
+    assert!(matches!(s.model().send.stage, Stage::Built(_)));
+    s.inject_event(key(KeyCode::Tab));
+    assert_eq!(s.model().screen, Screen::Send, "a built plan holds Tab");
+    assert!(
+        matches!(s.model().send.stage, Stage::Built(_)),
+        "not dropped"
+    );
+}
+
+/// A focused filter is **committed** by `Tab`, not discarded: coming back with `Shift+Tab` must
+/// find the filter the user built, which is what makes leaving safe enough to be the default.
+#[test]
+fn tab_out_of_a_filter_keeps_what_was_typed() {
+    let mut s = sim(offline_model(Screen::Wallet));
+    s.inject_event(key(KeyCode::Char('/')));
+    type_str(&mut s, "abc");
+    s.inject_event(key(KeyCode::Tab));
+    assert_eq!(s.model().screen, Screen::Send);
+    assert!(!s.model().wallet.filter_open, "the field lost focus");
+    assert_eq!(
+        s.model().wallet.filter.value(),
+        "abc",
+        "Tab commits the filter — Esc is what discards"
+    );
+    s.inject_event(key(KeyCode::BackTab));
+    assert_eq!(s.model().screen, Screen::Wallet);
+    assert_eq!(s.model().wallet.filter.value(), "abc");
+}
+
+#[test]
+fn a_click_on_each_tab_switches_to_it() {
+    for (i, want) in [
+        (0, Screen::Node),
+        (1, Screen::Wallet),
+        (2, Screen::Send),
+        (3, Screen::Log),
+    ] {
+        for (w, h) in [(120u16, 40u16), (56, 24)] {
+            let mut s = sim(offline_model(Screen::Log));
+            let at = find(s.model(), w, h, |t| t == Target::Tab(i))
+                .unwrap_or_else(|| panic!("tab {i} must be a hit target at {w}x{h}"));
+            s.inject_event(click(at.0, at.1));
+            assert_eq!(s.model().screen, want, "a click on tab {i} at {w}x{h}");
+        }
+    }
+}
+
+/// `TableState`'s own rule, reused: the second click on the already-selected row is an
+/// activation, so "click to select, click again to open" replaces double-click detection
+/// entirely and there is no interval to get wrong on a slow terminal.
+#[test]
+fn a_click_selects_a_row_and_a_second_click_activates_it() {
+    let w = World::new("click-row");
+    let mut s = sim(model(&w.ctx, Screen::Wallet));
+    let at = find(s.model(), 120, 40, |t| {
+        matches!(
+            t,
+            Target::Row {
+                pane: HitPane::History,
+                ..
+            }
+        )
+    });
+    let Some((x, y)) = at else {
+        return; // no history rows in this fixture world: the picker case below covers the rule
+    };
+    // Clear whatever the screen had selected: the rule under test is "a click on a row that is
+    // NOT selected selects it; a click on the one that IS selected activates it", and starting
+    // from a pre-selected row 0 would test only the second half.
+    s.model().wallet.list.borrow_mut().selected = None;
+    s.inject_event(click(x, y));
+    let selected = s.model().wallet.list.borrow().selected;
+    assert!(selected.is_some(), "the first click selects");
+    assert!(!s.model().wallet.detail, "and does NOT open");
+    let _ = render(s.model(), 120, 40);
+    s.inject_event(click(x, y));
+    assert!(
+        s.model().wallet.detail || s.model().selected_transfer().is_none(),
+        "the second click on the same row activates it"
+    );
+}
+
+#[test]
+fn a_wheel_scrolls_the_list_under_the_cursor_and_never_the_tab_strip() {
+    let w = World::new("wheel");
+    let mut s = sim(model(&w.ctx, Screen::Wallet));
+    let over_tabs = find(s.model(), 120, 40, |t| t == Target::Tab(0)).expect("a tab");
+    let before = s.model().screen;
+    s.inject_event(mouse(MouseEventKind::ScrollDown, over_tabs.0, over_tabs.1));
+    assert_eq!(
+        s.model().screen,
+        before,
+        "a wheel over the tab strip must do nothing: it would change screens while someone \
+         scrolls a list near the top edge"
+    );
+}
+
+#[test]
+fn a_click_on_the_overlay_closes_it_and_does_not_switch_screens() {
+    let mut s = sim(offline_model(Screen::Node));
+    s.inject_event(key(KeyCode::Char('?')));
+    assert!(s.model().show_help);
+    // The overlay is priority 1: a click on a TAB closes the overlay and changes nothing else.
+    let at = find(s.model(), 120, 40, |t| t == Target::Button(Button::Help)).expect("a hit");
+    s.inject_event(click(at.0, at.1));
+    assert!(!s.model().show_help, "the overlay closed");
+    assert_eq!(
+        s.model().screen,
+        Screen::Node,
+        "and the screen did not move"
+    );
+}
+
+/// §7a.2: "cancellation and money are untouched by the mouse". A misplaced click must never
+/// discard a built transaction.
+#[test]
+fn a_backdrop_click_does_not_discard_a_built_transaction() {
+    let w = World::new("backdrop");
+    let mut s = ProgramSimulator::new(model(&w.ctx, Screen::Send));
+    s.init();
+    type_str(&mut s, DEST);
+    s.inject_event(key(KeyCode::Down));
+    type_str(&mut s, "0.1");
+    s.inject_event(key(KeyCode::Enter));
+    run_action(&mut s);
+    assert!(matches!(s.model().send.stage, Stage::Built(_)));
+    let _ = render(s.model(), 110, 34);
+    // The top-left cell is outside every modal box this program draws.
+    s.inject_event(click(0, 2));
+    assert!(
+        matches!(s.model().send.stage, Stage::Built(_)),
+        "the plan survives a stray click: {}",
+        s.model().note
+    );
+}
+
+/// Revision 6: every control the keymap reaches with `←→` renders its two arrows as targets.
+/// Without this a mouse-only user could not change the fee priority or the sending account.
+#[test]
+fn the_priority_chips_and_the_account_arrows_are_clickable() {
+    let w = World::new("send-chips");
+    let mut s = sim(model(&w.ctx, Screen::Send));
+    let at = find(s.model(), 120, 40, |t| t == Target::Priority(4)).expect("a priority chip");
+    s.inject_event(click(at.0, at.1));
+    assert_eq!(
+        s.model().send.priority,
+        4,
+        "a click SELECTS that priority rather than cycling"
+    );
+    let arrow = find(s.model(), 120, 40, |t| {
+        matches!(
+            t,
+            Target::Arrow {
+                which: super::hit::Selector::Account,
+                delta: 1
+            }
+        )
+    });
+    assert!(arrow.is_some(), "the account selector's ▸ must be a target");
+}
+
+/// §7a.2's rule that if a screen tells the user to press a key, that text is the button — and it
+/// does what the key does, through **one** code path.
+#[test]
+fn every_wallet_empty_state_chip_is_a_hit_target_and_acts() {
+    let mut s = sim(offline_model(Screen::Wallet));
+    for (b, check) in [
+        (Button::OpenWallet, "Open a wallet"),
+        (Button::CreateWallet, "Create a wallet"),
+    ] {
+        let at = find(s.model(), 120, 40, |t| t == Target::Button(b))
+            .unwrap_or_else(|| panic!("{b:?} must be a hit target"));
+        s.inject_event(click(at.0, at.1));
+        let text = sim_text(&s, 120, 40);
+        assert!(
+            text.contains(check),
+            "clicking {b:?} must open its modal:\n{text}"
+        );
+        s.inject_event(key(KeyCode::Escape));
+    }
+    // `[W]` is there too, and it is the only bare "start the daemon" affordance in the product.
+    assert!(
+        find(s.model(), 120, 40, |t| t
+            == Target::Button(Button::WalletDaemon))
+        .is_some(),
+        "[W] Start the wallet daemon must be clickable"
+    );
+}
+
+/// §7a.5's empty state, at the **Narrow** tier too: a screen whose whole content is three
+/// buttons has nothing to drop, and the tier where a user is most likely to be stuck is not the
+/// tier to hide the way out.
+#[test]
+fn the_wallet_empty_state_keeps_all_three_chips_at_every_tier() {
+    let m = offline_model(Screen::Wallet);
+    let s = sim(m);
+    for (w, h) in [(120u16, 40u16), (70, 24), (56, 22)] {
+        let text = sim_text(&s, w, h);
+        for want in [
+            "[o] Open wallet",
+            "[c] Create wallet",
+            "[W] Start the wallet daemon",
+        ] {
+            assert!(text.contains(want), "{want} missing at {w}x{h}:\n{text}");
+        }
+    }
+}
+
+// ---- §7a.4 the picker ----------------------------------------------------------------
+
+/// Write a cache the picker can render, with no network and no `curl` (§2n.6).
+fn seed_cache(ctx: &Context, rows: &[(&str, bool)]) {
+    let nodes: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|(addr, probed)| {
+            serde_json::json!({
+                "url": format!("http://{addr}"), "address": addr, "scheme": "http",
+                "web_compatible": false, "custom": false,
+                "health_available": true, "health_ratio": 0.5, "health_checks": 18,
+                "health_last_height": 3_765_000u64,
+                "health_checked_at_text": "Fri, 18 Sep 2026 05:12:02 GMT",
+                "health_checked_at": fmonero_core::now_unix() - 600,
+                "probe": probed.then(|| serde_json::json!({
+                    "reachable": true, "height": 3_765_100u64, "synchronized": true,
+                    "restricted": true, "nettype": "mainnet", "version": null,
+                    "latency_ms": 42, "reason": null, "probed_at": fmonero_core::now_unix()
+                })),
+            })
+        })
+        .collect();
+    std::fs::create_dir_all(&ctx.paths.cache_dir).expect("cache dir");
+    std::fs::write(
+        ctx.paths.public_nodes(),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema": 1, "fetched_at": fmonero_core::now_unix(), "source": "https://monero.fail",
+            "skipped_no_port": 37, "skipped_invalid": 0, "notice_ack": fmonero_core::now_unix(),
+            "nodes": nodes
+        }))
+        .expect("json"),
+    )
+    .expect("write the cache");
+}
+
+#[test]
+fn the_picker_renders_the_cache_on_entry_and_shows_both_column_groups() {
+    let w = World::new("picker-render");
+    seed_cache(
+        &w.ctx,
+        &[("a.example:18081", true), ("b.example:18081", false)],
+    );
+    let s = sim(model(&w.ctx, Screen::Node));
+    let text = sim_text(&s, 120, 44);
+    assert!(text.contains("Public nodes"), "{text}");
+    assert!(text.contains("a.example:18081"), "{text}");
+    // The ratio WITH its sample size: 100 % of 3 and 72 % of 94 are not comparable (§2n.1).
+    assert!(text.contains("50% of 18"), "{text}");
+    // The probed row carries this machine's own measurement; the unprobed one carries `—`.
+    assert!(
+        text.contains("42"),
+        "the latency of the probed row:\n{text}"
+    );
+    assert!(
+        text.contains("skipped (no port)"),
+        "the footer surfaces it:\n{text}"
+    );
+}
+
+/// Revision 4, both guards: nothing is selected on entry, and the configured row refuses
+/// activation. Either alone still leaves a shape where one click costs the user something.
+#[test]
+fn the_picker_selects_nothing_on_entry_and_refuses_the_configured_node() {
+    let w = World::new("picker-guards");
+    let mut ctx = w.ctx.clone();
+    ctx.settings.node.mode = fmonero_core::NodeMode::Remote;
+    ctx.settings.node.remote = "mine.example:18089".into();
+    seed_cache(
+        &ctx,
+        &[
+            ("mine.example:18089", false),
+            ("other.example:18081", false),
+        ],
+    );
+    let mut s = sim(model(&ctx, Screen::Node));
+    assert_eq!(
+        s.model().picker.table.borrow().selected,
+        None,
+        "no row is selected on entry, so a first click can only select"
+    );
+    // `Enter` with nothing selected does not open a confirm either.
+    s.inject_event(key(KeyCode::Enter));
+    assert!(s.model().modal.is_none(), "{}", s.model().note);
+    // The configured node sorts first and refuses activation with a toast.
+    s.inject_event(key(KeyCode::Down));
+    assert_eq!(s.model().picker.table.borrow().selected, Some(0));
+    s.inject_event(key(KeyCode::Enter));
+    assert!(
+        s.model().modal.is_none(),
+        "activating the node already in use must not open the confirm"
+    );
+    assert_eq!(s.model().note, "this is the node you are using");
+    // The next row DOES open it, with all three consequences named.
+    s.inject_event(key(KeyCode::Down));
+    s.inject_event(key(KeyCode::Enter));
+    let text = sim_text(&s, 120, 44);
+    assert!(text.contains("other.example:18081"), "{text}");
+    assert!(text.contains("untrusted"), "{text}");
+    assert!(text.contains("re-rendered and restarted"), "{text}");
+    assert!(text.contains("IP address"), "{text}");
+}
+
+/// Revision 8: the no-cache state is a panel with a focused `[f]` chip and the disclosure — not
+/// an empty table under a footer rendered against a `fetched_at` that does not exist.
+#[test]
+fn the_picker_with_no_cache_offers_the_fetch_chip_and_prints_no_broken_footer() {
+    let w = World::new("picker-empty");
+    let s = sim(model(&w.ctx, Screen::Node));
+    let text = sim_text(&s, 120, 44);
+    assert!(text.contains("No public-node list yet."), "{text}");
+    assert!(text.contains("[f] Fetch the list"), "{text}");
+    assert!(text.contains("tells monero.fail your IP address"), "{text}");
+    assert!(
+        !text.contains("list  old") && !text.contains("0 nodes ·"),
+        "the footer must be suppressed, not rendered with empty fields:\n{text}"
+    );
+    assert!(
+        find(s.model(), 120, 44, |t| t
+            == Target::Button(Button::RefreshList))
+        .is_some(),
+        "the chip is a hit target too"
+    );
+}
+
+/// §2n.5 rule 2 with revision 7's record: the notice comes up before the first fetch **or** the
+/// first probe while `notice_ack` is unset, and nothing is contacted until it is answered.
+#[test]
+fn the_privacy_notice_stands_in_front_of_the_first_fetch_and_the_first_probe() {
+    for (keypress, what) in [(KeyCode::Char('f'), "fetch"), (KeyCode::Char('p'), "probe")] {
+        let w = World::new(&format!("notice-{what}"));
+        let mut s = sim(model(&w.ctx, Screen::Node));
+        s.inject_event(key(keypress));
+        let text = sim_text(&s, 120, 44);
+        assert!(
+            text.contains("Fetching the list tells monero.fail your IP address"),
+            "the notice must precede the first {what}:\n{text}"
+        );
+        assert!(s.model().action.is_none(), "and nothing may be armed yet");
+        // Esc contacts nobody and writes no record.
+        s.inject_event(key(KeyCode::Escape));
+        assert!(!fmonero_core::nodes::notice_acknowledged(&w.ctx));
+    }
+}
+
+// ---- §7a.5 create --------------------------------------------------------------------
+
+/// Revision 1, and it is the test the blocker asked for: **all four controls filled from the
+/// keyboard alone.** Without a field key this modal is a trap, because it is one of the two that
+/// consume `Tab`.
+#[test]
+fn the_create_modal_is_fillable_from_the_keyboard_alone() {
+    let w = World::new("create-keyboard");
+    let mut s = sim(model(&w.ctx, Screen::Wallet));
+    s.inject_event(key(KeyCode::Char('c')));
+    type_str(&mut s, "fresh");
+    s.inject_event(key(KeyCode::Down));
+    type_str(&mut s, "hunter2");
+    s.inject_event(key(KeyCode::Down));
+    type_str(&mut s, "hunter2");
+    s.inject_event(key(KeyCode::Down));
+    // The language selector, reached and changed with `←→`.
+    s.inject_event(key(KeyCode::Right));
+    let text = sim_text(&s, 110, 34);
+    assert!(text.contains("fresh"), "the name is still there:\n{text}");
+    assert!(
+        !text.contains("hunter2"),
+        "both password fields are masked (§2b.4):\n{text}"
+    );
+    s.inject_event(key(KeyCode::Enter));
+    assert!(
+        s.model().action.is_some(),
+        "Enter on the last control creates: {}",
+        s.model().note
+    );
+    let armed = format!("{:?}", s.model().action.as_ref().map(|a| a.label.clone()));
+    assert!(armed.contains("creating fresh"), "{armed}");
+}
+
+/// Every local refusal §7a.5 names, and **nothing is sent** for any of them.
+#[test]
+fn the_create_modal_refuses_a_slash_a_mismatch_and_an_empty_password() {
+    let w = World::new("create-refusals");
+    for (name, p1, p2, want) in [
+        ("a/b", "x", "x", "may not contain"),
+        ("ok", "one", "two", "do not match"),
+        ("ok", "", "", "unencrypted"),
+        ("main", "x", "x", "already exists"),
+    ] {
+        let mut s = sim(model(&w.ctx, Screen::Wallet));
+        s.inject_event(key(KeyCode::Char('c')));
+        type_str(&mut s, name);
+        s.inject_event(key(KeyCode::Down));
+        type_str(&mut s, p1);
+        s.inject_event(key(KeyCode::Down));
+        type_str(&mut s, p2);
+        s.inject_event(key(KeyCode::Down));
+        s.inject_event(key(KeyCode::Enter));
+        assert!(
+            s.model().action.is_none(),
+            "'{name}' must not start a create"
+        );
+        assert_eq!(w.count("create_wallet"), 0, "nothing may be sent");
+        let text = sim_text(&s, 110, 34);
+        assert!(text.contains(want), "expected '{want}' in:\n{text}");
+    }
+}
+
+/// §7a.5, and the assertion is by **word count against the rendered buffer**, because "we never
+/// print the seed" has to be a test and not a habit.
+#[test]
+fn the_seed_backup_modal_names_the_command_and_contains_no_seed() {
+    let w = World::new("seed-modal");
+    let mut s = sim(model(&w.ctx, Screen::Wallet));
+    s.send(Msg::ActionDone(Box::new(Ok(subs::Outcome::Created {
+        name: "fresh".into(),
+        hint: fmonero_core::wallet_session::seed_backup_hint(&w.ctx, "fresh"),
+    }))));
+    let text = sim_text(&s, 110, 34);
+    assert!(text.contains("monero-wallet-cli"), "{text}");
+    assert!(text.contains("--offline"), "{text}");
+    // Revision 11: the close step, because `create_wallet` leaves the wallet OPEN in the daemon.
+    assert!(text.contains("fmonero wallet close"), "{text}");
+    assert!(text.contains("never displays a seed"), "{text}");
+    // No line of the modal is 25 words long, which is what a seed would be.
+    for line in render(s.model(), 110, 34) {
+        let words = line.split_whitespace().count();
+        assert!(words < 20, "a 25-word line would be a seed: {line}");
+    }
+}
