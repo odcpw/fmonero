@@ -490,6 +490,16 @@ const ENV: &[EnvVar] = &[
         default: "~/.config/systemd/user",
         test_only: true,
     },
+    // v5.5, §2n.7. The fourth test seam, and the one that makes the whole of §2n testable with no
+    // internet: it replaces the `https://monero.fail` base of argv shape 1 so the fetch reads a
+    // local fixture server. With it set the list fetch's `--proto` becomes `=http,https` and
+    // nothing else changes, because a seam that cannot be reached is not a seam.
+    EnvVar {
+        name: "FMONERO_NODES_URL",
+        purpose: "fetch nodes.json and health.json from this base instead of https://monero.fail, for the §2n parser fixtures; read in nodes.rs and nowhere else",
+        default: "https://monero.fail",
+        test_only: true,
+    },
 ];
 
 /// The machine contract (§5b).
