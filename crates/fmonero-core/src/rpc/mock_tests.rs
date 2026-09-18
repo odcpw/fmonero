@@ -1014,7 +1014,7 @@ fn a_restricted_nodes_poisoned_fields_render_as_null() {
         .iter()
         .find(|x| x.id == "node_restricted")
         .expect("node_restricted");
-    assert!(w2.text.contains("LOWER BOUND"), "{}", w2.text);
+    assert!(w2.text.contains("is a minimum"), "{}", w2.text);
     // And `node_no_peers` must NOT fire: a restricted node reports 0 by construction (§5).
     assert!(!s.warnings.iter().any(|x| x.id == "node_no_peers"));
 }
@@ -1280,7 +1280,7 @@ fn a_pool_failure_is_retried_once_without_pool() {
     };
     let e = crate::history::query(&w.ctx, Some(&client), &mut q).unwrap_err();
     assert_eq!(e.exit_code(), 5);
-    assert!(e.to_string().contains("cannot reach the daemon"), "{e}");
+    assert!(e.to_string().contains("cannot reach the node"), "{e}");
     let bodies = w.bodies(&w.wallet_log, "get_transfers");
     assert_eq!(bodies.len(), 2, "exactly one retry (§4.1)");
     assert_eq!(bodies[0]["pool"], true);

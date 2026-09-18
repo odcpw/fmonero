@@ -93,9 +93,9 @@ pub mod wallet_session {
     /// would not write if the concurrency were stated out loud.
     pub fn seed_backup_hint(ctx: &Context, name: &str) -> String {
         format!(
-            "Back up your seed BEFORE funding this wallet:\n  \
-             # close it first — the wallet daemon has it open:  fmonero wallet close\n  \
-             monero-wallet-cli --wallet-file {}/{name} --offline\n  # then type: seed",
+            "Back up your seed before you put money in this wallet. fmonero never shows \
+             it.\nWith the wallet closed, in a terminal:\n  \
+             monero-wallet-cli --wallet-file {}/{name} --offline\n  then type: seed",
             ctx.settings.wallet.dir.display()
         )
     }
@@ -424,20 +424,20 @@ pub mod node_session {
     ) -> Result<(), Error> {
         match layout {
             crate::units::Layout::UserUnit => Ok(()),
-            crate::units::Layout::SystemUnit => Err(Error::safety(
-                "this monerod is Arch's system unit, which fmonero uses read-only and never fights",
-            )
-            .with_reason("foreign_node")
-            .with_hint("sudo systemctl start monerod   # fmonero does not use sudo")),
+            crate::units::Layout::SystemUnit => Err(Error::safety(crate::FOREIGN_NODE_READ_ONLY)
+                .with_reason("foreign_node")
+                .with_hint("sudo systemctl start monerod   # fmonero does not use sudo")),
             // v5.2, §2m.3: exit **4**, not 2. The arguments are correct; the backend is
             // somewhere else, and an agent's reflex on exit 2 (re-read `--help`) leads nowhere.
             // The message is built where every other remote refusal is (§2a.3).
             crate::units::Layout::Remote => Err(crate::units::remote_node_error(ctx, verb)),
-            crate::units::Layout::None => Err(Error::backend("no fmonero node unit is installed")
-                .with_reason("unit_missing")
-                // `--yes`, because the hint is run, not read: `fmonero setup --units` alone exits
-                // 3 `needs_yes`, which is a second round trip for the agent this hint is for.
-                .with_hint("fmonero setup --units --yes")),
+            crate::units::Layout::None => Err(Error::backend(
+                "fmonero has not set up the node service yet.",
+            )
+            .with_reason("unit_missing")
+            // `--yes`, because the hint is run, not read: `fmonero setup --units` alone exits
+            // 3 `needs_yes`, which is a second round trip for the agent this hint is for.
+            .with_hint("fmonero setup --units --yes")),
         }
     }
 

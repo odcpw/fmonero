@@ -448,7 +448,7 @@ pub fn add_custom(ctx: &Context, address: &str) -> Result<PublicNode, Error> {
 pub fn parse_nodes_json(bytes: &[u8]) -> Result<ParsedNodes, Error> {
     let v: serde_json::Value = serde_json::from_slice(bytes).map_err(bad_doc)?;
     let monero = v.get("monero").and_then(|m| m.as_object()).ok_or_else(|| {
-        Error::upstream("monero.fail's nodes.json has no `monero` object")
+        Error::upstream("monero.fail's list is not in the shape fmonero expects.")
             .with_reason("rpc_error")
             .with_hint("fmonero node list   # the cached list still works")
     })?;
@@ -456,7 +456,7 @@ pub fn parse_nodes_json(bytes: &[u8]) -> Result<ParsedNodes, Error> {
         .get("clear")
         .and_then(|c| c.as_array())
         .ok_or_else(|| {
-            Error::upstream("monero.fail's nodes.json has no `monero.clear` array")
+            Error::upstream("monero.fail's list is not in the shape fmonero expects.")
                 .with_reason("rpc_error")
                 .with_hint("fmonero node list   # the cached list still works")
         })?;
@@ -618,7 +618,7 @@ fn require_curl() -> Result<(), Error> {
         return Ok(());
     }
     Err(
-        Error::backend("curl is not installed, and public node discovery needs it")
+        Error::backend("curl is not installed. fmonero needs it to get the node list.")
             .with_reason("curl_missing")
             .with_hint("omarchy pkg add curl"),
     )
@@ -686,7 +686,7 @@ fn fetch_doc(name: &str, cancel: &CancelToken) -> Result<Vec<u8>, Error> {
     // connection and a 503 are all the second, and the cached list still works in every one of
     // them — which is what the hint says.
     let unreachable = |detail: String| {
-        Error::backend(format!("cannot fetch {url}: {detail}"))
+        Error::backend(format!("Could not reach {url}: {detail}"))
             .with_reason("unreachable")
             .with_hint("fmonero node list   # the cached list still works")
     };

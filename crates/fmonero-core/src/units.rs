@@ -153,13 +153,24 @@ pub fn detect_layout(ctx: &Context) -> Result<Layout, Error> {
 /// **4 `backend`** rather than 2 `usage`: the arguments are correct, the backend is somewhere
 /// else, and an agent's reflex on exit 2 (re-read `--help`) leads nowhere. `reason` and `hint`
 /// are identical either way, and §4 says an agent branches on those.
+/// Which of the two background services a unit name refers to, as a person names it
+/// (§2o.2): `node service` or `wallet service`. The unit's file name never reaches a
+/// user-facing string — it stays in `--json`, in the doctor's fields and in the code.
+fn service_phrase(ctx: &Context, unit: &str) -> &'static str {
+    if unit == ctx.settings.wallet.unit {
+        "wallet service"
+    } else {
+        "node service"
+    }
+}
+
 pub fn remote_node_error(ctx: &Context, verb: Option<&str>) -> Error {
     let subject = match verb {
         Some(v) => format!("fmonero node {v} needs"),
         None => "fmonero node commands need".to_string(),
     };
     Error::backend(format!(
-        "{subject} the local monerod; node.mode is remote ({})",
+        "{subject} your own node. You are using the public node {}.",
         ctx.settings.node.remote
     ))
     .with_reason("remote_node")
@@ -266,7 +277,8 @@ fn run_unit_verb(ctx: &Context, verb: &str, unit: &str, cancel: &CancelToken) ->
     )?;
     if out.timed_out {
         return Err(Error::timeout(format!(
-            "systemctl --user {verb} {unit} did not finish in time"
+            "The {} did not answer in time.",
+            service_phrase(ctx, unit)
         ))
         .with_hint("fmonero status --json"));
     }
@@ -274,7 +286,8 @@ fn run_unit_verb(ctx: &Context, verb: &str, unit: &str, cancel: &CancelToken) ->
         return Ok(());
     }
     Err(Error::backend(format!(
-        "systemctl --user {verb} {unit} failed: {}",
+        "Could not {verb} the {}: {}",
+        service_phrase(ctx, unit),
         one_line(&out.stderr_tail())
     ))
     .with_reason("unit_missing")
@@ -304,16 +317,17 @@ fn run_unit_verb(ctx: &Context, verb: &str, unit: &str, cancel: &CancelToken) ->
 /// exempt from being tested.
 pub fn preflight(ctx: &Context, unit: &str, binary: &str) -> Result<(), Error> {
     if !unit_file_exists(ctx, unit)? {
-        return Err(Error::backend(format!("{unit} is not installed in {}", {
-            ctx.paths.systemd_user_dir.display()
-        }))
+        return Err(Error::backend(format!(
+            "fmonero has not set up the {} yet.",
+            service_phrase(ctx, unit)
+        ))
         .with_reason("unit_missing")
         .with_hint("fmonero setup --units --yes"));
     }
     if matches!(ctx.systemctl, Systemctl::Real) && proc::which(binary).is_none() {
         return Err(Error::backend(format!(
-            "{binary} is not installed, so {unit} would exit 203/EXEC and be restarted every \
-             {RESTART_SEC}s without ever answering"
+            "Monero is not installed, so the {} cannot start.",
+            service_phrase(ctx, unit)
         ))
         // §4a's hint for exit 4, and it is the whole fix. The follow-up is deliberately "this
         // command" rather than a named one: `node up`, `node restart`, `wallet open` and
@@ -372,7 +386,8 @@ pub fn ensure_running(
             // `Restart=on-failure` loop behind a command that has already failed (v5.1).
             let stopped = stop_after_failed_start(ctx, unit, cancel);
             return Err(Error::timeout(format!(
-                "{unit} started but did not answer within {}s{stopped}",
+                "The {} started but never answered ({}s).{stopped}",
+                service_phrase(ctx, unit),
                 deadline.as_secs()
             ))
             .with_hint("fmonero doctor --only units"));
@@ -726,7 +741,7 @@ fn install_with(ctx: &Context, dry_run: bool, rotate: bool) -> Result<Vec<FileAc
         // ([`Error::retarget_sandbox_hint`]), so the refusal prescribes the safe half of the
         // command the user ran rather than a different command that happens to be safe.
         return Err(Error::safety(
-            "units::install refuses to write a real systemd unit while FMONERO_STATE_DIR is set",
+            "Refusing to change this machine's setup while FMONERO_STATE_DIR is set.",
         )
         .with_reason("sandboxed_units")
         .with_hint("fmonero setup --units --dry-run"));
@@ -1432,7 +1447,7 @@ mod tests {
         assert_eq!(e.hint(), "fmonero node local --yes");
         assert!(
             e.to_string()
-                .contains("fmonero node peers needs the local monerod")
+                .contains("fmonero node peers needs your own node")
                 && e.to_string().contains("node.example.com:18089"),
             "{e}"
         );
@@ -1780,7 +1795,7 @@ mod tests {
         assert_eq!(e.exit_code(), 4, "{e}");
         assert_eq!(e.reason(), Some("not_installed"));
         assert!(e.hint().contains("omarchy pkg add monero"), "{}", e.hint());
-        assert!(e.to_string().contains("203/EXEC"), "{e}");
+        assert!(e.to_string().contains("Monero is not installed"), "{e}");
 
         // (3) Both present: nothing to say. `sh` stands in for the daemon binary because it is
         // on every PATH this code can run on.

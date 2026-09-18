@@ -172,9 +172,14 @@ pub struct Address {
     pub kind: AddrKind,
 }
 
+/// §2o rule 10: name the thing the user typed, then what a good one looks like. `why` is a
+/// whole sentence, so the two read as two sentences rather than as a field and its value.
 fn invalid(text: &str, why: impl AsRef<str>) -> Error {
-    Error::invalid_address(format!("{text} is not a Monero address: {}", why.as_ref()))
-        .with_hint("fmonero wallet validate <address>")
+    Error::invalid_address(format!(
+        "\"{text}\" is not a Monero address. {}",
+        why.as_ref()
+    ))
+    .with_hint("fmonero wallet validate <address>")
 }
 
 /// Decode Monero's block-wise base58. `None` when a character is outside the alphabet,
@@ -225,13 +230,13 @@ fn read_varint(bytes: &[u8]) -> Option<u64> {
 /// `WalletClient::validate_address` (§2a.6), which is the answer that decides.
 pub fn parse(s: &str) -> Result<Address, Error> {
     if s.is_empty() {
-        return Err(invalid("''", "it is empty"));
+        return Err(invalid("", "You typed nothing."));
     }
     if s.len() != LEN_STANDARD && s.len() != LEN_INTEGRATED {
         return Err(invalid(
             s,
             format!(
-                "it is {} characters; a Monero address is {LEN_STANDARD} (or {LEN_INTEGRATED} with a payment id)",
+                "Addresses are {LEN_STANDARD} characters and start with 4 or 8; this one is {}.",
                 s.len()
             ),
         ));
@@ -242,7 +247,7 @@ pub fn parse(s: &str) -> Result<Address, Error> {
     {
         return Err(invalid(
             s,
-            format!("'{c}' is not a base58 character (0 O I l are not in the alphabet)"),
+            format!("\"{c}\" is not a character Monero addresses use. 0, O, I and l never are."),
         ));
     }
     // The fast reject of §1b.8: the first character is the base58 digit of the whole
@@ -262,19 +267,21 @@ pub fn parse(s: &str) -> Result<Address, Error> {
             ),
         ));
     }
-    let decoded = base58_decode(s).ok_or_else(|| invalid(s, "it is not valid Monero base58"))?;
-    let prefix = read_varint(&decoded).ok_or_else(|| invalid(s, "its prefix is not a varint"))?;
+    let decoded = base58_decode(s)
+        .ok_or_else(|| invalid(s, "Those characters do not decode to an address."))?;
+    let prefix =
+        read_varint(&decoded).ok_or_else(|| invalid(s, "It does not decode to an address."))?;
     let Some(form) = PREFIXES.iter().find(|f| f.prefix == prefix) else {
         return Err(invalid(
             s,
-            format!("prefix {prefix} is not a Monero address prefix"),
+            format!("It does not start like a Monero address (prefix {prefix})."),
         ));
     };
     if form.len != s.len() {
         return Err(invalid(
             s,
             format!(
-                "prefix {prefix} is a {} {} address, which is {} characters, not {}",
+                "That start means a {} {} address, which is {} characters, not {}.",
                 form.net,
                 form.kind,
                 form.len,

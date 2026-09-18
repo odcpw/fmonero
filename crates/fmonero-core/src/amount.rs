@@ -36,27 +36,26 @@ impl Piconero {
     pub fn parse(s: &str) -> Result<Piconero, Error> {
         if s.eq_ignore_ascii_case("all") {
             return Err(Error::usage(
-                "'all' is not an amount; `wallet sweep` moves the whole account and takes no amount",
+                "\"all\" is not an amount. To send everything: fmonero wallet sweep <address> \
+                 --dry-run",
             )
             .with_reason("bad_amount")
             .with_hint("fmonero wallet sweep <address> --dry-run   # to move everything"));
         }
         let bad = |why: &str| {
-            Error::usage(format!("'{s}' is not an amount: {why}"))
+            Error::usage(format!("\"{s}\" is not an amount. {why}"))
                 .with_reason("bad_amount")
                 .with_hint("fmonero wallet send <address> 0.01 --dry-run   # XMR, or 10000000000p")
         };
         if s.is_empty() {
-            return Err(bad("it is empty"));
+            return Err(bad("You typed nothing."));
         }
         // Raw piconero: an integer followed by `p`.
         if let Some(digits) = s.strip_suffix('p') {
             if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
-                return Err(bad("a `p` amount is an integer number of piconero"));
+                return Err(bad("A p amount is a whole number of piconero."));
             }
-            let value: u64 = digits
-                .parse()
-                .map_err(|_| bad("it does not fit in 64 bits of piconero"))?;
+            let value: u64 = digits.parse().map_err(|_| bad("It is too large."))?;
             return Ok(Piconero(value));
         }
         // Decimal XMR.
@@ -65,27 +64,25 @@ impl Piconero {
             None => (s, ""),
         };
         if int_part.is_empty() && frac_part.is_empty() {
-            return Err(bad("a bare '.' is not a number"));
+            return Err(bad("A lone dot is not a number."));
         }
         if !int_part.bytes().all(|b| b.is_ascii_digit()) {
             return Err(bad(
-                "only digits and one '.' are allowed (no separators, no sign, no exponent)",
+                "Use digits and at most one dot, like 0.5 for XMR or 250000000000p for piconero.",
             ));
         }
         if !frac_part.bytes().all(|b| b.is_ascii_digit()) {
             return Err(bad(
-                "only digits and one '.' are allowed (no separators, no sign, no exponent)",
+                "Use digits and at most one dot, like 0.5 for XMR or 250000000000p for piconero.",
             ));
         }
         if frac_part.len() > DECIMALS {
-            return Err(bad("Monero has 12 decimal places"));
+            return Err(bad("Monero has 12 decimal places."));
         }
         let whole: u64 = if int_part.is_empty() {
             0
         } else {
-            int_part
-                .parse()
-                .map_err(|_| bad("it does not fit in 64 bits of piconero"))?
+            int_part.parse().map_err(|_| bad("It is too large."))?
         };
         let mut frac: u64 = 0;
         for i in 0..DECIMALS {
@@ -99,7 +96,7 @@ impl Piconero {
         let value = whole
             .checked_mul(Self::PER_XMR)
             .and_then(|v| v.checked_add(frac))
-            .ok_or_else(|| bad("it does not fit in 64 bits of piconero"))?;
+            .ok_or_else(|| bad("It is too large."))?;
         Ok(Piconero(value))
     }
 

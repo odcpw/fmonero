@@ -491,7 +491,8 @@ impl Error {
             // ordinary answer when wallet-rpc cannot reach the daemon (§1b.4). A verbatim
             // empty message would be an error report that reports nothing (§2j).
             0 => Error::upstream(
-                "monero-wallet-rpc failed without a message (usually: it cannot reach the daemon)",
+                "The wallet service failed without saying why. It probably cannot reach the \
+                 node.",
             )
             .with_reason("rpc_error")
             .with_hint("fmonero status --json"),
@@ -509,7 +510,7 @@ impl Error {
     pub fn from_node_rpc(code: i32, message: &str) -> Error {
         if code == -32601 {
             return Error::upstream(format!(
-                "this monerod is running with restricted RPC, so the method is not available ({message})"
+                "This node only answers basic questions and refused that ({message})."
             ))
             .with_reason("restricted")
             .with_hint("fmonero doctor --only node");
@@ -643,7 +644,7 @@ mod tests {
         let catch_all = Error::from_wallet_rpc(0, "");
         assert_eq!(catch_all.exit_code(), 5);
         assert_eq!(catch_all.reason(), Some("rpc_error"));
-        assert!(catch_all.to_string().contains("cannot reach the daemon"));
+        assert!(catch_all.to_string().contains("cannot reach the node"));
         assert_eq!(
             Error::from_wallet_rpc(-18, "Transaction would be too large.").reason(),
             Some("too_large")
@@ -655,7 +656,7 @@ mod tests {
         let e = Error::from_node_rpc(-32601, "Method not found");
         assert_eq!(e.exit_code(), 5);
         assert_eq!(e.reason(), Some("restricted"));
-        assert!(e.to_string().contains("restricted RPC"));
+        assert!(e.to_string().contains("only answers basic questions"));
         assert_eq!(
             Error::from_node_rpc(-32000, "boom").reason(),
             Some("rpc_error")

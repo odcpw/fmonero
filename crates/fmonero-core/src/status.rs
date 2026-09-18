@@ -196,7 +196,13 @@ pub struct Warning {
     pub id: String,
     pub severity: Severity,
     pub text: String,
+    /// The CLI's runnable command, one per warning (§9). **Unchanged by v5.6**: agents and a
+    /// person reading `fmonero status` in a terminal keep exactly what they had.
     pub hint: String,
+    /// **v5.6, §2o.1: the in-app sentence** the TUI and the bar widget render where they used
+    /// to render `hint`. `None` where nothing can be done from inside the app, and both
+    /// surfaces then show the text alone.
+    pub action: Option<String>,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -732,6 +738,12 @@ fn cold_pass(
 }
 
 /// The §5 warning table, in its order. Every id here is in [`WARNING_IDS`].
+///
+/// **Every `text` and every `action` here is plain language (§2o), and every `id` is
+/// unchanged** (`--json` is the agent contract, §5). `hint` stays the CLI's runnable command
+/// (§9); `action` is the in-app sentence the TUI and the widget render in its place (§2o.1),
+/// and it is `None` where there is nothing the user can do from inside the app — a key
+/// invented to fill the field would be worse than a sentence that stops.
 fn warnings(
     ctx: &Context,
     s: &Status,
@@ -739,17 +751,20 @@ fn warnings(
     state: &crate::state::StateDoc,
 ) -> Vec<Warning> {
     let mut out = Vec::new();
-    let mut add = |id: &str, severity: Severity, text: String, hint: &str| {
+    let mut add = |id: &str, severity: Severity, text: String, hint: &str, action: Option<&str>| {
         out.push(Warning {
             id: id.to_string(),
             severity,
             text,
             hint: hint.to_string(),
+            action: action.map(str::to_string),
         });
     };
     // **Which binary is missing depends on the mode** (§2m.3): remote mode needs no `monerod`
     // at all, and raising an error about a binary the configuration does not use is the alarm a
-    // user learns to ignore. The text names the one it looked for.
+    // user learns to ignore. The text no longer names which of the two programs it looked for:
+    // both come out of one package, the answer is the same either way, and the name was an
+    // implementation detail standing where the user's next step belongs (§2o rule 6).
     let needed = if ctx.settings.node.mode.is_remote() {
         "monero-wallet-rpc"
     } else {
@@ -759,24 +774,25 @@ fn warnings(
         add(
             "monero_not_installed",
             Severity::Error,
-            format!("{needed} is not installed"),
+            "Monero is not installed on this machine.".into(),
             "omarchy pkg add monero",
+            Some("In a terminal: omarchy pkg add monero"),
         );
     }
-    // v5.2, §2m. `remote_node` is INFO: it is a configuration, not a fault. Its text says what
-    // the node learns and what cannot be seen from here, because `status` is where a user looks
-    // when they wonder why the node fields are null.
+    // v5.2, §2m. `remote_node` is INFO: it is a configuration, not a fault. v5.6 drops the
+    // clause about the node's own sync state not being visible from here — it is true, it is
+    // an architecture fact, and §7a.3's pane now answers the question it was apologising for.
     if ctx.settings.node.mode.is_remote() {
         add(
             "remote_node",
             Severity::Info,
             format!(
-                "monero-wallet-rpc talks to the remote node {}; it learns this machine's IP \
-                 address and the timing of every request, and its own sync state cannot be seen \
-                 from here",
+                "You are using the public node {}. It sees your IP address and when you ask it \
+                 anything.",
                 s.node.url
             ),
             "fmonero node local --yes",
+            Some("Press f on the Node screen to choose another."),
         );
         // A trusted daemon receives the wallet's own unspent amounts INSIDE a request
         // (`wallet2.cpp:12281-12282`, §1b.9 item 4). A private literal is the case the flag
@@ -789,11 +805,11 @@ fn warnings(
                 "remote_node_trusted",
                 Severity::Warn,
                 format!(
-                    "{} is marked trusted, so this wallet sends its own unspent amounts inside \
-                     requests to it",
+                    "{} is set as trusted, so this wallet tells it which amounts it holds.",
                     s.node.url
                 ),
                 "fmonero node remote <addr> --yes   # re-set it without --trusted",
+                Some("Choose the node again on the Node screen to clear that."),
             );
         }
     }
@@ -806,19 +822,20 @@ fn warnings(
         add(
             "node_down",
             Severity::Warn,
-            "the node is not answering".into(),
+            "Your node is not answering.".into(),
             "fmonero node up",
+            Some("Press u on the Node screen to start it."),
         );
     }
     if s.node.restricted == Some(true) {
         add(
             "node_restricted",
             Severity::Warn,
-            "this monerod runs with restricted RPC: sync_info, connections, the peer list, bans, \
-             net stats and the rate limits have no source, and tx_pool_size is a LOWER BOUND \
-             because non-relayed and local transactions are left out"
+            "This node only answers basic questions. Peers, traffic and bans are not shown, and \
+             the count of waiting transactions is a minimum."
                 .into(),
             "fmonero doctor --only node",
+            None,
         );
     }
     if s.node.synchronized == Some(false) {
@@ -826,16 +843,18 @@ fn warnings(
         add(
             "node_syncing",
             Severity::Info,
-            format!("the node is at {pct:.1}% and still synchronizing"),
+            format!("Your node is {pct:.0}% synced."),
             "fmonero node up --wait --wait-timeout 86400",
+            Some("It keeps going on its own."),
         );
     }
     if s.node.offline == Some(true) {
         add(
             "node_offline",
             Severity::Warn,
-            "the node was started with --offline".into(),
+            "Your node is set to stay offline.".into(),
             "fmonero setup --units --yes",
+            None,
         );
     }
     if s.node.outgoing_connections_count == Some(0)
@@ -845,8 +864,9 @@ fn warnings(
         add(
             "node_no_peers",
             Severity::Warn,
-            "the node has no outgoing connections".into(),
+            "Your node has no peers yet.".into(),
             "fmonero node limit --out-peers 16",
+            None,
         );
     }
     if let Some(free) = s.node.free_space {
@@ -855,10 +875,12 @@ fn warnings(
                 "node_low_disk",
                 Severity::Warn,
                 format!(
-                    "the node reports {free} bytes free, under the 120 GB floor for a pruned \
-                     chain — a figure that is an ESTIMATE, not measured on this machine"
+                    "Only {} free on the disk your node uses. A pruned copy of the chain needs \
+                     about 120 GB, which is an estimate.",
+                    gigabytes(free)
                 ),
                 "fmonero doctor --only storage",
+                None,
             );
         }
     }
@@ -866,26 +888,26 @@ fn warnings(
         add(
             "node_update_available",
             Severity::Info,
-            "the node reports that an update is available".into(),
+            "Your node says a newer version is out.".into(),
             "omarchy pkg upgrade",
+            Some("In a terminal: omarchy pkg upgrade"),
         );
     }
     if s.node.layout == units::Layout::SystemUnit {
         add(
             "foreign_node_running",
             Severity::Info,
-            "this monerod is Arch's system unit: fmonero uses it read-only and will not start, \
-             stop or reconfigure it"
-                .into(),
+            crate::FOREIGN_NODE_INFO.into(),
             "sudo systemctl status monerod",
+            None,
         );
     }
     if !s.wallet.unit_active && !s.wallet.reachable {
         // **Narrowed in v5.5.** In remote mode with no wallet recorded open this is
-        // `wallet_idle`, severity **info**: the wallet daemon is *designed* to be down until a
+        // `wallet_idle`, severity **info**: the wallet service is *designed* to be down until a
         // wallet is opened, and a warning that fires on every correct fresh install is the
         // warning a user learns to ignore — which is precisely what the owner met (the bar icon
-        // was urgent about a daemon that was behaving correctly). In local mode, and in remote
+        // was urgent about a service that was behaving correctly). In local mode, and in remote
         // mode with a wallet recorded open, the warning is unchanged: an inactive unit under an
         // open wallet is a real fault, the wallet went away behind us.
         let idle = s.node.layout == units::Layout::Remote && s.wallet.name.is_none();
@@ -893,16 +915,17 @@ fn warnings(
             add(
                 "wallet_idle",
                 Severity::Info,
-                "the wallet daemon is not running; it starts when you open or create a wallet"
-                    .into(),
+                "No wallet is open. The wallet service starts when you open or create one.".into(),
                 "fmonero wallet open <name>   # or: fmonero wallet create <name> --yes",
+                Some("Press o to open a wallet, or c to create one."),
             );
         } else {
             add(
                 "wallet_down",
                 Severity::Warn,
-                "monero-wallet-rpc is not running".into(),
+                "The wallet service is not running.".into(),
                 "fmonero wallet open <name>",
+                Some("Press o on the Wallet screen to open a wallet."),
             );
         }
     }
@@ -910,8 +933,9 @@ fn warnings(
         add(
             "wallet_closed",
             Severity::Info,
-            "monero-wallet-rpc is running with no wallet open".into(),
+            "No wallet is open.".into(),
             "fmonero wallet open <name>",
+            Some("Press o to open one."),
         );
     }
     if s.wallet
@@ -922,21 +946,34 @@ fn warnings(
             "wallet_behind",
             Severity::Warn,
             format!(
-                "the wallet is {} blocks behind the node",
+                "This wallet has {} blocks to go.",
                 s.wallet.blocks_behind.unwrap_or(0)
             ),
             "fmonero wallet refresh",
+            // Decision 7, and the whole of it: the scanning happens inside the wallet service,
+            // so closing the TUI does not stop it. Nothing on either surface said so before.
+            Some("It keeps going in the background, even after you close this window."),
         );
     }
     if s.wallet.blocks_to_unlock.is_some_and(|b| b > 0) {
+        let blocks = s.wallet.blocks_to_unlock.unwrap_or(0);
+        // Minutes are the answer, blocks are the mechanism (§2o rule 9's sibling). The
+        // amount comes with it, because "some funds" is not a figure anyone can act on.
+        let mins = s
+            .wallet
+            .time_to_unlock_sec
+            .map(|sec| sec.div_ceil(60))
+            .unwrap_or(blocks * 2);
+        let locked = match (s.wallet.balance_pico, s.wallet.unlocked_pico) {
+            (Some(b), Some(u)) => Piconero(b.0.saturating_sub(u.0)).to_xmr_string(),
+            _ => "some".to_string(),
+        };
         add(
             "wallet_locked_funds",
             Severity::Info,
-            format!(
-                "some funds unlock in {} blocks",
-                s.wallet.blocks_to_unlock.unwrap_or(0)
-            ),
+            format!("{locked} XMR unlocks in about {mins} min."),
             "fmonero wallet balance",
+            None,
         );
     }
     let in_flight = s
@@ -953,8 +990,9 @@ fn warnings(
         add(
             "send_may_be_in_flight",
             Severity::Error,
-            format!("a send was built and may have been broadcast: {txid}"),
+            format!("A payment was prepared and may already have gone out: {txid}."),
             "fmonero wallet history --limit 5   # then: fmonero wallet clear-pending --yes",
+            Some("Press 2 to look at your payments."),
         );
     }
     for (who, id) in [
@@ -964,14 +1002,18 @@ fn warnings(
         if let Some(stall) = state.stalls.get(who.key()) {
             let left = stall.backoff_until - crate::now_unix();
             if left > 0 {
+                let subject = match who {
+                    crate::state::Daemon::Node => "Your node",
+                    crate::state::Daemon::Wallet => "The wallet service",
+                };
                 add(
                     id,
                     Severity::Error,
                     format!(
-                        "a {} call was killed at its deadline; {left}s of backoff left",
-                        who.key()
+                        "{subject} took too long to answer. fmonero will try again in {left}s."
                     ),
                     "fmonero doctor   # or re-run the command with --force",
+                    None,
                 );
             }
         }
@@ -980,8 +1022,9 @@ fn warnings(
         add(
             "auth_missing",
             Severity::Warn,
-            "the node accepted fmonero with no credential at all".into(),
+            "Your node accepted fmonero without asking for a password.".into(),
             "fmonero setup --units --yes",
+            None,
         );
     }
     if let Some((_, net)) = state.last_open.as_ref() {
@@ -990,12 +1033,13 @@ fn warnings(
                 "nettype_mismatch",
                 Severity::Warn,
                 format!(
-                    "the open wallet is {} while node.network is {}: the send path follows the \
-                     WALLET, never the setting",
+                    "This wallet is a {} wallet and your settings say {}. Sending follows the \
+                     wallet.",
                     net.as_str(),
                     ctx.settings.node.network
                 ),
                 "fmonero doctor --only wallet",
+                None,
             );
         }
     }
@@ -1005,18 +1049,15 @@ fn warnings(
                 // **A high water of 0 is an EMPTY snapshot, not one 3.7 million blocks
                 // stale**, and the arithmetic cannot tell the two apart: `high_water` is the
                 // greatest height any recorded transfer sits at, so a wallet with no
-                // transfers at all has 0 there and "stops 3 764 638 blocks behind the wallet"
-                // is true subtraction and a false sentence (§2j). The warning still fires —
-                // an empty snapshot against a wallet at the tip is exactly as worth
-                // rebuilding — it just says what it found.
+                // transfers at all has 0 there and "3 764 638 blocks behind" is true
+                // subtraction and a false sentence (§2j). The warning still fires — an empty
+                // snapshot against a wallet at the tip is exactly as worth rebuilding — it
+                // just says what it found.
                 let detail = if h.high_water == 0 {
-                    format!(
-                        "the history snapshot is empty while the wallet is at block {wh}; it \
-                         holds no transfers to serve from"
-                    )
+                    "The saved copy of your payments is empty.".to_string()
                 } else {
                     format!(
-                        "the history snapshot stops {} blocks behind the wallet",
+                        "The saved copy of your payments is {} blocks behind.",
                         wh - h.high_water
                     )
                 };
@@ -1025,11 +1066,19 @@ fn warnings(
                     Severity::Info,
                     detail,
                     "fmonero wallet history --limit 1   # rebuilds the snapshot",
+                    Some("Press R to rebuild it."),
                 );
             }
         }
     }
     out
+}
+
+/// Free space as a person reads it, for the one warning that quotes it. Whole GB, because
+/// the figure it is compared against is itself an estimate (§1.3) and a decimal place on an
+/// estimate is false precision.
+fn gigabytes(bytes: u64) -> String {
+    format!("{} GB", bytes / 1_000_000_000)
 }
 
 /// §1.3's floor for a pruned chain plus headroom, as bytes. **An estimate, not measured on

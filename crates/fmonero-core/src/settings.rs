@@ -49,7 +49,7 @@ pub fn validate_seed_language(language: &str) -> Result<(), Error> {
     }
     let english: Vec<&str> = SEED_LANGUAGES.iter().map(|(_, e)| *e).collect();
     Err(Error::usage(format!(
-        "'{language}' is not a Monero seed language; known: {}",
+        "\"{language}\" is not a seed language. Choose one of: {}",
         english.join(", ")
     ))
     .with_reason("bad_args")
@@ -536,7 +536,7 @@ fn parse_bool(key: &str, value: &str) -> Result<bool, Error> {
         "true" | "on" | "yes" | "1" => Ok(true),
         "false" | "off" | "no" | "0" => Ok(false),
         other => Err(
-            Error::usage(format!("'{other}' is not true/false for {key}"))
+            Error::usage(format!("{key} takes true or false, not \"{other}\"."))
                 .with_reason("bad_args")
                 .with_hint(format!("fmonero settings set {key} true")),
         ),
@@ -559,7 +559,7 @@ where
             .map(|(_, default, _)| (*default).to_string())
             .unwrap_or_else(|| lo.to_string());
         Error::usage(format!(
-            "'{value}' is not a number in {lo}..={hi} for {key}"
+            "{key} takes a number from {lo} to {hi}, not \"{value}\"."
         ))
         .with_reason("bad_args")
         .with_hint(format!("fmonero settings set {key} {suggested}"))
@@ -573,11 +573,11 @@ where
 
 fn parse_unit(key: &str, value: &str) -> Result<String, Error> {
     if value.is_empty() || value.contains('/') || !value.ends_with(".service") {
-        return Err(
-            Error::usage(format!("'{value}' is not a systemd unit name for {key}"))
-                .with_reason("bad_args")
-                .with_hint(format!("fmonero settings set {key} {NODE_UNIT}")),
-        );
+        return Err(Error::usage(format!(
+            "{key} takes a service file name ending in .service, not \"{value}\"."
+        ))
+        .with_reason("bad_args")
+        .with_hint(format!("fmonero settings set {key} {NODE_UNIT}")));
     }
     Ok(value.to_string())
 }
@@ -869,7 +869,7 @@ impl Settings {
                 let mode: NodeMode = value.parse()?;
                 if mode.is_remote() && self.node.remote.trim().is_empty() {
                     return Err(Error::usage(
-                        "node.mode = remote needs node.remote to be set first",
+                        "Set node.remote to an address before you switch node.mode to remote.",
                     )
                     .with_reason("remote_unset")
                     .with_hint("fmonero node remote <host>:18089 --yes"));
@@ -885,9 +885,11 @@ impl Settings {
                     // key whose "fix" is the value it already holds would be a fixer that
                     // cannot succeed (§7.1).
                     if self.node.mode.is_remote() && !self.node.remote.is_empty() {
-                        return Err(Error::usage("node.remote is in use by node.mode = remote")
-                            .with_reason("remote_unset")
-                            .with_hint("fmonero node local --yes   # then clear node.remote"));
+                        return Err(Error::usage(
+                            "node.remote cannot be cleared while node.mode is remote.",
+                        )
+                        .with_reason("remote_unset")
+                        .with_hint("fmonero node local --yes   # then clear node.remote"));
                     }
                     self.node.remote = String::new();
                 } else {
@@ -1113,7 +1115,10 @@ mod tests {
         let e = s.set("node.mode", "remote").unwrap_err();
         assert_eq!(e.exit_code(), 2);
         assert_eq!(e.reason(), Some("remote_unset"));
-        assert!(e.to_string().contains("needs node.remote"), "{e}");
+        assert!(
+            e.to_string().contains("Set node.remote to an address"),
+            "{e}"
+        );
         assert_eq!(e.hint(), "fmonero node remote <host>:18089 --yes");
         assert_eq!(s.node.mode, NodeMode::Local, "nothing was written");
 
@@ -1124,7 +1129,10 @@ mod tests {
         let e = s.set("node.remote", "").unwrap_err();
         assert_eq!(e.exit_code(), 2);
         assert_eq!(e.reason(), Some("remote_unset"));
-        assert!(e.to_string().contains("in use by node.mode"), "{e}");
+        assert!(
+            e.to_string().contains("cannot be cleared while node.mode"),
+            "{e}"
+        );
         assert_eq!(
             e.hint(),
             "fmonero node local --yes   # then clear node.remote"

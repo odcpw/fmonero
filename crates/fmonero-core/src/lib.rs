@@ -64,6 +64,17 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// The machine contract's version, independent of the tool version.
 pub const CONTRACT_VERSION: &str = "1.0.0";
 
+/// The one sentence fmonero uses when another program on this machine owns the node
+/// (§2i's `system_unit` layout). **Core and the TUI share the literal so the two cannot
+/// drift** (§2o): it is the refusal for `node up`, `node down` and the log-level key, and it
+/// is what the Node screen's hero says.
+pub const FOREIGN_NODE_READ_ONLY: &str =
+    "Another program on this machine runs this node. fmonero can read it but not change it.";
+/// The same fact stated as an observation rather than a refusal — the `foreign_node_running`
+/// warning (§5) and the doctor's `node_layout` detail (§7).
+pub const FOREIGN_NODE_INFO: &str =
+    "Another program on this machine runs this node. fmonero reads it and never changes it.";
+
 /// The whole of §5, without starting anything (see [`status::status`]).
 pub fn status(ctx: &Context) -> Result<Status, Error> {
     status::status(ctx)

@@ -249,7 +249,7 @@ pub fn build(
     // 1. amount rules (§2a.5). `Piconero::parse` has already run in the caller; what is left
     //    is the one value it cannot reject, because it is a perfectly good number.
     if req.amount.0 == 0 {
-        return Err(Error::usage("0 is not an amount to send")
+        return Err(Error::usage("0 XMR is not an amount.")
             .with_reason("bad_amount")
             .with_hint("fmonero wallet sweep <address> --dry-run   # to move everything"));
     }
@@ -393,7 +393,8 @@ pub fn relay(
                 // §2a.9: the entry is NOT marked relayed, and this is the one exit-1 path
                 // where retrying is the wrong reflex.
                 return Err(Error::failure(format!(
-                    "relay_tx returned {hash} for the transaction fmonero built as {}",
+                    "The node reported a different payment id ({hash}) than the one fmonero \
+                     prepared ({}).",
                     tx.txid
                 ))
                 .with_reason("txid_mismatch")
@@ -470,7 +471,8 @@ fn preflight(
         // block; every other failure leaves the record and does NOT block (§2a.4).
         if let Some(missing) = resolve_record(ctx, w)? {
             return Err(Error::safety(format!(
-                "the wallet has no record of {missing}, which fmonero relayed, so a send may still be in flight"
+                "This wallet has no record of {missing}, which fmonero sent. That payment may \
+                 still be on its way."
             ))
             .with_reason("pending_send")
             .with_hint(format!(
@@ -528,7 +530,7 @@ fn resolve_dest(w: &WalletClient, dest: &str) -> Result<String, Error> {
         .collect();
     match matches.len() {
         0 => Err(
-            Error::not_found(format!("no address-book entry is described '{label}'"))
+            Error::not_found(format!("No address book entry is named \"{label}\"."))
                 .with_hint("fmonero wallet book list"),
         ),
         1 => {
@@ -538,7 +540,7 @@ fn resolve_dest(w: &WalletClient, dest: &str) -> Result<String, Error> {
             Ok(address)
         }
         n => Err(Error::ambiguous(format!(
-            "'{label}' matches {n} address-book entries: {}",
+            "\"{label}\" matches {n} address book entries: {}",
             matches
                 .iter()
                 .map(|e| format!("{} ({})", e.index, short(&e.address)))
@@ -555,11 +557,10 @@ fn resolve_dest(w: &WalletClient, dest: &str) -> Result<String, Error> {
 fn check_recipient(ctx: &Context, w: &WalletClient, dest: &str) -> Result<(), Error> {
     let check = w.validate_address(dest)?;
     if !check.valid {
-        return Err(Error::invalid_address(format!(
-            "monero-wallet-rpc says {} is not a valid address",
-            short(dest)
-        ))
-        .with_hint(format!("fmonero wallet validate {dest}")));
+        return Err(
+            Error::invalid_address(format!("{} is not a valid address.", short(dest)))
+                .with_hint(format!("fmonero wallet validate {dest}")),
+        );
     }
     // The wallet's own nettype, recorded by `wallet_session::open` from its primary address,
     // so this costs no second RPC on the normal path (§2a.6).
@@ -569,7 +570,7 @@ fn check_recipient(ctx: &Context, w: &WalletClient, dest: &str) -> Result<(), Er
     };
     if !check.nettype.is_empty() && check.nettype != wallet_net.as_str() {
         return Err(Error::invalid_address(format!(
-            "{} is a {} address; this wallet is {}",
+            "{} is a {} address. This wallet is {}.",
             short(dest),
             check.nettype,
             wallet_net.as_str()
@@ -611,7 +612,7 @@ fn require_node_current(
         NodeGate::Local(n) => n,
         NodeGate::Unreachable => {
             return Err(Error::backend(
-                "the node is not reachable, so a transaction cannot be built safely",
+                "Your node is not answering, so fmonero will not prepare a payment.",
             )
             .with_reason("unreachable")
             .with_hint("fmonero node up"))
@@ -640,8 +641,8 @@ fn require_node_current(
                 // discriminator, is `null` in remote mode (§2d, §2m.3).
                 Err(e) if e.reason() == Some("killed_at_deadline") => {
                     Err(Error::node_syncing(format!(
-                        "the wallet did not finish a refresh against {} within {} s, \
-                         so a transaction built now may be rejected",
+                        "The wallet did not finish checking against {} within {}s. A payment \
+                         prepared now could be refused.",
                         ctx.settings.node.remote,
                         ctx.timeouts.refresh.as_secs()
                     ))
@@ -662,7 +663,7 @@ fn require_node_current(
         100
     };
     Err(Error::node_syncing(format!(
-        "the node is at {}% and not synchronized, so a transaction built now may be rejected",
+        "Your node is {}% synced. A payment prepared now could be refused.",
         pct
     ))
     .with_reason("node_not_synchronized")
@@ -696,8 +697,8 @@ fn relay_failure(e: Error, detail: &str, total: usize) -> Error {
             .with_hint(hint);
     }
     let text = format!(
-        "{e}; {detail}; the daemon never answered relay_tx, so whether it received the \
-         transaction is unknown"
+        "{e}; {detail}; the node never answered, so it is not known whether it received the \
+         payment."
     );
     let out = if e.exit_code() == 4 {
         Error::backend(text)
@@ -725,7 +726,7 @@ pub fn check_max_fee(plan: &Plan) -> Result<(), Error> {
         return Ok(());
     }
     Err(Error::safety(format!(
-        "the built fee is {} XMR, above the --max-fee of {} XMR",
+        "The fee came to {} XMR, above the --max-fee of {} XMR.",
         plan.total_fee.to_xmr_string(),
         max.to_xmr_string()
     ))
@@ -873,7 +874,7 @@ pub fn take_send_lock(ctx: &Context) -> Result<std::fs::File, Error> {
                 // message carries no pid; the holder is identified through `status`'s
                 // `pending` record, which is what the hint points at (§2a.11).
                 return Err(
-                    Error::safety("another fmonero send is building or relaying")
+                    Error::safety("Another fmonero send is already in progress.")
                         .with_reason("send_in_progress")
                         .with_hint(
                             "fmonero status --json   # wait for pending to clear, then retry",
@@ -972,7 +973,7 @@ mod tests {
             assert_eq!(out.exit_code(), code, "{reason}");
             assert_eq!(out.reason(), Some(reason));
             assert!(
-                out.to_string().contains("unknown"),
+                out.to_string().contains("it is not known whether"),
                 "{reason}: the report must not assert a rejection that may not have happened"
             );
             assert!(out.hint().contains("wallet history"), "{reason}");

@@ -536,6 +536,6 @@ mod tests {
                 message: String::new(),
             },
         );
-        assert!(e.to_string().contains("cannot reach the daemon"), "{e}");
+        assert!(e.to_string().contains("cannot reach the node"), "{e}");
     }
 }
