@@ -250,7 +250,8 @@ pub fn human(out: &Out, report: &Report) {
     if !s.next.is_empty() {
         out.line("");
         for cmd in &s.next {
-            out.line(format!("  next: {cmd}"));
+            // §2o rule 11: `Try:` is an instruction; `next:` labelled a field.
+            out.line(format!("  Try: {cmd}"));
         }
     }
 }

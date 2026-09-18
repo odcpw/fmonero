@@ -221,7 +221,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Binaries,
         class: Class::D,
         severity: Severity::Error,
-        title: "monerod is installed and answers --version",
+        title: "Monero's node program is installed",
         detect: monerod_installed,
     },
     CheckDef {
@@ -229,7 +229,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Binaries,
         class: Class::D,
         severity: Severity::Error,
-        title: "monero-wallet-rpc is installed and answers --version",
+        title: "Monero's wallet program is installed",
         detect: wallet_rpc_installed,
     },
     CheckDef {
@@ -237,7 +237,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Binaries,
         class: Class::D,
         severity: Severity::Warn,
-        title: "monerod is a 0.18.x build",
+        title: "The installed Monero is version 0.18",
         detect: version_supported,
     },
     // ---- node ---------------------------------------------------------------
@@ -246,7 +246,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Node,
         class: Class::D,
         severity: Severity::Info,
-        title: "which monerod fmonero is talking to (§2i)",
+        title: "Which node fmonero uses",
         detect: node_layout,
     },
     CheckDef {
@@ -254,7 +254,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Node,
         class: Class::D,
         severity: Severity::Error,
-        title: "the node answers get_info",
+        title: "Your node answers",
         detect: node_reachable,
     },
     CheckDef {
@@ -262,7 +262,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Node,
         class: Class::D,
         severity: Severity::Warn,
-        title: "a remote node is not marked trusted unless it is private (§2m.6)",
+        title: "Public nodes are not set as trusted",
         detect: remote_node_untrusted,
     },
     CheckDef {
@@ -270,7 +270,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Node,
         class: Class::D,
         severity: Severity::Warn,
-        title: "the node is not in restricted-RPC mode",
+        title: "Your node answers more than basic questions",
         detect: node_unrestricted,
     },
     CheckDef {
@@ -278,7 +278,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Node,
         class: Class::D,
         severity: Severity::Warn,
-        title: "the node is synchronized",
+        title: "Your node is synced",
         detect: node_synced,
     },
     CheckDef {
@@ -286,7 +286,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Node,
         class: Class::D,
         severity: Severity::Warn,
-        title: "the node has outgoing peers",
+        title: "Your node has peers",
         detect: node_peers,
     },
     CheckDef {
@@ -294,7 +294,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Node,
         class: Class::D,
         severity: Severity::Error,
-        title: "this machine's clock agrees with the daemon's",
+        title: "This machine's clock agrees with the node's",
         detect: node_clock,
     },
     CheckDef {
@@ -302,7 +302,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Node,
         class: Class::D,
         severity: Severity::Error,
-        title: "at most one monerod holds the data directory",
+        title: "Only one program is using the chain folder",
         detect: node_data_dir_single_writer,
     },
     // ---- wallet -------------------------------------------------------------
@@ -311,7 +311,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Wallet,
         class: Class::D,
         severity: Severity::Warn,
-        title: "monero-wallet-rpc answers get_version",
+        title: "The wallet service answers",
         detect: wallet_rpc_reachable,
     },
     CheckDef {
@@ -319,7 +319,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Wallet,
         class: Class::D,
         severity: Severity::Error,
-        title: "the wallet daemon's login file is owner-only and works",
+        title: "The wallet service's password file is private and works",
         detect: wallet_rpc_auth,
     },
     CheckDef {
@@ -327,7 +327,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Wallet,
         class: Class::D,
         severity: Severity::Warn,
-        title: "the open wallet is close to the node's height",
+        title: "The open wallet is close to the node's block",
         detect: wallet_daemon_link,
     },
     CheckDef {
@@ -335,7 +335,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Wallet,
         class: Class::D,
         severity: Severity::Error,
-        title: "the wallet has the node's rpc-login credential",
+        title: "The wallet can sign in to your node",
         detect: wallet_daemon_auth,
     },
     CheckDef {
@@ -343,7 +343,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Wallet,
         class: Class::D,
         severity: Severity::Warn,
-        title: "the open wallet's network is the configured one",
+        title: "The open wallet is on the network your settings name",
         detect: wallet_nettype_matches,
     },
     CheckDef {
@@ -351,7 +351,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Wallet,
         class: Class::B,
         severity: Severity::Warn,
-        title: "wallet.dir and every ancestor exist at 0700",
+        title: "Your wallet folder exists and is private",
         detect: wallet_dir_exists,
     },
     CheckDef {
@@ -359,7 +359,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Wallet,
         class: Class::D,
         severity: Severity::Error,
-        title: "no send is recorded as possibly in flight",
+        title: "No payment is left unaccounted for",
         detect: pending_send,
     },
     // ---- units --------------------------------------------------------------
@@ -368,7 +368,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Units,
         class: Class::B,
         severity: Severity::Warn,
-        title: "both unit files exist and match units::render_*",
+        title: "fmonero's two background services are set up",
         detect: units_present,
     },
     CheckDef {
@@ -376,7 +376,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Units,
         class: Class::B,
         severity: Severity::Error,
-        title: "both units bind 127.0.0.1 only",
+        title: "Both services listen only on this machine",
         detect: unit_loopback,
     },
     CheckDef {
@@ -384,7 +384,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Units,
         class: Class::D,
         severity: Severity::Error,
-        title: "no credential flag in either ExecStart, and --log-level 0",
+        title: "No password appears in either service's command line",
         detect: unit_no_password_in_argv,
     },
     CheckDef {
@@ -392,7 +392,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Units,
         class: Class::B,
         severity: Severity::Error,
-        title: "no unit Wants= a monerod around the single-writer check",
+        title: "Neither service starts a second node behind fmonero's back",
         detect: unit_no_node_wants,
     },
     CheckDef {
@@ -400,7 +400,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Units,
         class: Class::B,
         severity: Severity::Info,
-        title: "both units are disabled (they are started on demand)",
+        title: "Neither service starts on its own; fmonero starts them when needed",
         detect: unit_enabled_state,
     },
     CheckDef {
@@ -408,7 +408,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Units,
         class: Class::B,
         severity: Severity::Error,
-        title: "the unit's --wallet-dir is settings.wallet.dir, byte for byte",
+        title: "The wallet service uses your wallet folder",
         detect: wallet_dir_matches_unit,
     },
     CheckDef {
@@ -416,7 +416,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Units,
         class: Class::B,
         severity: Severity::Error,
-        title: "the unit's --daemon-address, trust flag and --daemon-ssl are the ones in force",
+        title: "The wallet service points at the node you chose",
         detect: wallet_daemon_matches_unit,
     },
     CheckDef {
@@ -424,7 +424,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Units,
         class: Class::B,
         severity: Severity::Error,
-        title: "wallet.port, wallet.url and the unit's --rpc-bind-port agree",
+        title: "The wallet service's port matches your settings",
         detect: wallet_port_consistent,
     },
     // ---- storage ------------------------------------------------------------
@@ -433,7 +433,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Storage,
         class: Class::D,
         severity: Severity::Warn,
-        title: "the data directory's filesystem has room for a pruned chain",
+        title: "The chain folder's disk has room",
         detect: disk_space,
     },
     CheckDef {
@@ -441,7 +441,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Storage,
         class: Class::D,
         severity: Severity::Info,
-        title: "monerod.conf prunes when settings.node.prune says so",
+        title: "Your node keeps a pruned chain when you asked it to",
         detect: prune_configured,
     },
     // ---- install ------------------------------------------------------------
@@ -458,7 +458,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Install,
         class: Class::A,
         severity: Severity::Warn,
-        title: "state.json parses",
+        title: "fmonero's own saved state is readable",
         detect: state_valid,
     },
     CheckDef {
@@ -466,7 +466,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Install,
         class: Class::A,
         severity: Severity::Warn,
-        title: "config.toml parses and every key is in the §4 table",
+        title: "Your settings file is readable and holds only known keys",
         detect: settings_valid,
     },
     CheckDef {
@@ -474,7 +474,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Install,
         class: Class::D,
         severity: Severity::Info,
-        title: "the history snapshot's header matches this wallet and this build",
+        title: "The saved copy of your payments belongs to this wallet",
         detect: history_cache_fresh,
     },
     CheckDef {
@@ -482,7 +482,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Install,
         class: Class::D,
         severity: Severity::Info,
-        title: "the public-node list is present and not a day old",
+        title: "The list of public nodes is less than a day old",
         detect: public_node_cache,
     },
     CheckDef {
@@ -490,7 +490,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Install,
         class: Class::B,
         severity: Severity::Warn,
-        title: "the bar widget is linked into ~/.config/omarchy/plugins",
+        title: "The bar widget is installed",
         detect: plugin_linked,
     },
     CheckDef {
@@ -498,7 +498,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Install,
         class: Class::B,
         severity: Severity::Warn,
-        title: "the bar widget is enabled in shell.json",
+        title: "The bar widget is switched on",
         detect: plugin_enabled,
     },
     CheckDef {
@@ -523,7 +523,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Security,
         class: Class::D,
         severity: Severity::Warn,
-        title: "the node required and accepted a credential",
+        title: "Your node asked fmonero for a password",
         detect: node_auth,
     },
     CheckDef {
@@ -531,7 +531,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Security,
         class: Class::A,
         severity: Severity::Error,
-        title: "everything fmonero writes is 0600, every directory 0700",
+        title: "Everything fmonero writes is private to you",
         detect: state_perms,
     },
     CheckDef {
@@ -539,7 +539,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Security,
         class: Class::D,
         severity: Severity::Warn,
-        title: "who listens on the node and wallet ports",
+        title: "Who is listening on the node and wallet ports",
         detect: ports_owned,
     },
 ];
@@ -553,7 +553,7 @@ fn need_monerod(p: &Probes) -> Option<Verdict> {
     p.which_monerod.is_none().then(|| {
         Verdict::skip(
             "monerod_not_installed",
-            "monerod is not installed, so there is nothing to ask",
+            "Monero is not installed, so there is nothing to check.",
         )
         .cmd("omarchy pkg add monero")
     })
@@ -563,7 +563,7 @@ fn need_wallet_rpc(p: &Probes) -> Option<Verdict> {
     p.which_wallet_rpc.is_none().then(|| {
         Verdict::skip(
             "wallet_rpc_not_installed",
-            "monero-wallet-rpc is not installed, so there is nothing to ask",
+            "Monero is not installed, so there is nothing to check.",
         )
         .cmd("omarchy pkg add monero")
     })
@@ -584,9 +584,10 @@ fn need_local_node(p: &Probes) -> Option<Verdict> {
     (p.node_mode == "remote").then(|| {
         Verdict::skip(
             "remote_node",
+            // **The single highest-volume string in the program**: it appears twelve times in
+            // one public-node `doctor` run, and it was 28 words of architecture (§2o rule 2).
             format!(
-                "node.mode is remote ({}): there is no local monerod to ask, and no wallet-RPC \
-                 method reports a remote daemon's own state (§1b.9 item 5)",
+                "You are using the public node {}, so there is nothing of your own to check here.",
                 p.daemon_address
             ),
         )
@@ -599,12 +600,8 @@ fn need_units(p: &Probes) -> Option<Verdict> {
         Verdict::skip(
             "unit_missing",
             format!(
-                "{} is not written yet",
-                if p.node_unit.exists {
-                    &p.wallet_unit_name
-                } else {
-                    &p.node_unit_name
-                }
+                "fmonero has not set up the {} service yet.",
+                if p.node_unit.exists { "wallet" } else { "node" }
             ),
         )
         .cmd("fmonero setup --units --yes")
@@ -621,12 +618,11 @@ fn monerod_installed(p: &Probes) -> Verdict {
         if p.node_mode == "remote" {
             return Verdict::warn(
                 "not_needed_in_remote_mode",
-                "monerod is not on PATH, and node.mode is remote, so nothing needs it; \
-                 `fmonero node local --yes` is what would",
+                "You are using a public node, so this machine needs no node program.",
             )
             .cmd("omarchy pkg add monero");
         }
-        return Verdict::fail("not_installed", "monerod is not on PATH")
+        return Verdict::fail("not_installed", "Monero's node program is not installed.")
             .cmd("omarchy pkg add monero");
     };
     if !p.monerod_version.success() {
@@ -644,7 +640,7 @@ fn monerod_installed(p: &Probes) -> Verdict {
 
 fn wallet_rpc_installed(p: &Probes) -> Verdict {
     let Some(path) = &p.which_wallet_rpc else {
-        return Verdict::fail("not_installed", "monero-wallet-rpc is not on PATH")
+        return Verdict::fail("not_installed", "Monero's wallet program is not installed.")
             .cmd("omarchy pkg add monero");
     };
     if !p.wallet_rpc_version_cmd.success() {
@@ -669,17 +665,20 @@ fn version_supported(p: &Probes) -> Verdict {
     }
     let line = p.monerod_version.first_line();
     if line.is_empty() {
-        return Verdict::skip("no_version_line", "monerod --version printed nothing");
+        return Verdict::skip(
+            "no_version_line",
+            "Monero's node program printed no version.",
+        );
     }
     match version_of(&line) {
         Some(v) if v == SUPPORTED_MONERO => Verdict::pass(format!("{line} (0.18.x)")),
         Some(v) => Verdict::warn(
             "unsupported_version",
-            format!("{line} is {v}.x; fmonero was built against {SUPPORTED_MONERO}.x (§1b)"),
+            format!("This is Monero {v}. fmonero is built for {SUPPORTED_MONERO}."),
         ),
         None => Verdict::warn(
             "unparsable_version",
-            format!("cannot read a version out of '{line}'"),
+            format!("Could not read a version from \"{line}\"."),
         ),
     }
 }
@@ -707,43 +706,33 @@ fn node_layout(p: &Probes) -> Verdict {
     if let Some(e) = &p.layout_error {
         return Verdict::warn(
             "layout_probe_failed",
-            format!("cannot detect a layout: {e}"),
+            format!("Could not work out which node fmonero uses: {e}"),
         );
     }
     match p.layout.as_str() {
-        "user_unit" => Verdict::pass(format!(
-            "user_unit — fmonero's own {} at {}",
-            p.node_unit_name, p.node_url
-        )),
+        "user_unit" => Verdict::pass(format!("fmonero runs your node at {}.", p.node_url)),
         // §0: Arch's node is "detected, used read-only, never fought". That is a healthy
         // layout, not a defect — the node mutators are simply not ours to call (§2i).
-        "system_unit" => Verdict::pass(
-            "system_unit — Arch's monerod.service owns the node; fmonero uses it read-only, \
-             never mutates it, and `node up`/`down`/`restart` exit 3 here (§2i)",
-        )
-        .cmd("sudo systemctl status monerod"),
+        "system_unit" => {
+            Verdict::pass(fmonero_core::FOREIGN_NODE_INFO).cmd("sudo systemctl status monerod")
+        }
         // v5.2, §2m.3: **the one `node` check that still runs in remote mode, and it passes**
         // — the group's only remaining source of truth, so that `doctor --only node` is never
         // an empty table. It was a `warn:non_loopback_url` while the layout was keyed on a
         // non-loopback `node.url`, which `settings set` refuses to store: a warning about a
         // state the tool could not enter. Now the mode is a supported configuration and the
         // detail names what is in force.
+        // **v5.6 drops the trust flag and the ssl mode from this detail** (§2o.2 deletes both
+        // words everywhere): they are `--json` fields, `remote_node_untrusted` is the check that
+        // exists to judge the first, and a detail repeating a value no reader can act on is what
+        // made this row three clauses long.
         "remote" => Verdict::pass(format!(
-            "remote — monero-wallet-rpc talks to {} ({}, ssl {}); fmonero itself never does (§2c)",
-            p.daemon_address,
-            if p.daemon_trusted {
-                "trusted"
-            } else {
-                "untrusted"
-            },
-            p.daemon_ssl
+            "You are using the public node {}.",
+            p.daemon_address
         ))
         .cmd("fmonero node local --yes"),
-        _ => Verdict::warn(
-            "no_layout",
-            "none — no fmonero unit and no system monerod.service: run `fmonero setup --units`",
-        )
-        .cmd("fmonero setup --units --yes"),
+        _ => Verdict::warn("no_layout", "No node is set up on this machine.")
+            .cmd("fmonero setup --units --yes"),
     }
 }
 
@@ -782,22 +771,17 @@ fn node_unrestricted(p: &Probes) -> Verdict {
         return v;
     }
     if !p.node_reachable {
-        return Verdict::skip("node_unreachable", "the node did not answer get_info");
+        return Verdict::skip("node_unreachable", "Your node did not answer.");
     }
     match p.node_restricted {
-        Some(true) => Verdict::warn(
-            "node_restricted",
-            "restricted RPC: sync_info, get_connections, get_peer_list, get_bans, get_net_stats \
-             and set_limit are not registered at all, so the peers, bans, spans and net-rate \
-             panes have no data source (§1b.2)",
-        )
-        .cmd(if p.layout == "user_unit" {
-            "fmonero setup --units --yes"
-        } else {
-            "sudo systemctl status monerod   # a restricted node is not ours to reconfigure"
-        }),
-        Some(false) => Verdict::pass("unrestricted: every node pane has a data source"),
-        None => Verdict::skip("no_get_info", "get_info carried no `restricted` field"),
+        Some(true) => Verdict::warn("node_restricted", "This node only answers basic questions.")
+            .cmd(if p.layout == "user_unit" {
+                "fmonero setup --units --yes"
+            } else {
+                "sudo systemctl status monerod   # a restricted node is not ours to reconfigure"
+            }),
+        Some(false) => Verdict::pass("Your node answers everything fmonero asks."),
+        None => Verdict::skip("no_get_info", "Your node did not say."),
     }
 }
 
@@ -810,12 +794,12 @@ fn node_synced(p: &Probes) -> Verdict {
         return v;
     }
     if !p.node_reachable {
-        return Verdict::skip("node_unreachable", "the node did not answer get_info");
+        return Verdict::skip("node_unreachable", "Your node did not answer.");
     }
     let height = p.node_height.unwrap_or_default();
     let target = p.node_target_height.unwrap_or_default();
     match p.node_synchronized {
-        Some(true) => Verdict::pass(format!("synchronized at height {height}")),
+        Some(true) => Verdict::pass(format!("Synced at block {height}.")),
         Some(false) => {
             // target_height is 0 when synced, so the percentage special-cases it (§1b.3).
             let denom = target.max(height).max(1);
@@ -839,7 +823,7 @@ fn node_peers(p: &Probes) -> Verdict {
         return v;
     }
     if !p.node_reachable {
-        return Verdict::skip("node_unreachable", "the node did not answer get_info");
+        return Verdict::skip("node_unreachable", "Your node did not answer.");
     }
     // A restricted node reports 0 by construction (§1b.3), so a `warn` here would be a
     // false alarm on a perfectly healthy machine.
@@ -869,7 +853,7 @@ fn node_clock(p: &Probes) -> Verdict {
         return v;
     }
     let Some(adjusted) = p.node_adjusted_time else {
-        return Verdict::skip("node_unreachable", "the node did not answer get_info");
+        return Verdict::skip("node_unreachable", "Your node did not answer.");
     };
     let skew = adjusted - p.now_unix;
     if skew.abs() <= CLOCK_SKEW_SEC {
@@ -966,7 +950,7 @@ fn wallet_rpc_auth(p: &Probes) -> Verdict {
         return Verdict::skip(
             "wallet_daemon_down",
             format!(
-                "{} is absent, which is what it means for monero-wallet-rpc not to be running (§2c)",
+                "The wallet service is not running, so its password file ({}) is absent.",
                 p.wallet_login_file.path
             ),
         )
@@ -1094,7 +1078,7 @@ fn wallet_nettype_matches(p: &Probes) -> Verdict {
     let Some(net) = &p.last_open_nettype else {
         return Verdict::skip(
             "wallet_closed",
-            "no wallet is open, so there is no nettype to read",
+            "No wallet is open, so there is no network to read.",
         );
     };
     if *net == p.network {
@@ -1212,7 +1196,7 @@ fn units_present(p: &Probes) -> Verdict {
         ),
     ] {
         if !exists {
-            bad.push(format!("{name} is absent: run `fmonero setup --units`"));
+            bad.push(format!("the {name} service is not set up yet"));
         } else if !matches {
             bad.push(format!(
                 "{name} has drifted from what `setup --units` renders"
@@ -1652,7 +1636,7 @@ fn state_valid(p: &Probes) -> Verdict {
         return Verdict::pass("state.json does not exist yet, which is a valid empty state");
     }
     match &p.state_parse_error {
-        None => Verdict::pass(format!("{} parses", p.state_file.path)),
+        None => Verdict::pass(format!("{} is readable.", p.state_file.path)),
         Some(e) => Verdict::warn(
             "unparsable",
             format!("{} does not parse: {e}", p.state_file.path),
@@ -1684,7 +1668,7 @@ fn settings_valid(p: &Probes) -> Verdict {
     }
     if problems.is_empty() {
         return Verdict::pass(format!(
-            "{} parses and every key is in the §4 table",
+            "{} is readable and holds only known keys.",
             p.settings_file.path
         ));
     }
@@ -1715,12 +1699,14 @@ fn public_node_cache(p: &Probes) -> Verdict {
         ))
         .cmd("fmonero node list --refresh   # rebuilds the cache (this contacts monero.fail, §2n.5)");
     }
-    Verdict::pass(format!("{count} nodes, {} min old", age / 60))
+    Verdict::pass(format!("{count} nodes, checked {} min ago.", age / 60))
 }
 
 fn history_cache_fresh(p: &Probes) -> Verdict {
     if !p.cache_present {
-        return Verdict::pass("no history snapshot yet; `wallet history` builds one");
+        return Verdict::pass(
+            "No saved copy of your payments yet. One is written the first time you look.",
+        );
     }
     let Some(c) = &p.cache else {
         return Verdict::warn(
@@ -1859,7 +1845,7 @@ fn plugin_enabled(p: &Probes) -> Verdict {
         .contains(super::probes::PLUGIN_ID)
     {
         return Verdict::pass(format!(
-            "{} is listed by `omarchy plugin list`",
+            "The bar widget is switched on ({}).",
             super::probes::PLUGIN_ID
         ));
     }
@@ -1875,7 +1861,7 @@ fn plugin_enabled(p: &Probes) -> Verdict {
 
 fn menu_entries(p: &Probes) -> Verdict {
     if p.menu_missing_ids.is_empty() {
-        return Verdict::pass("every fmonero menu id is present");
+        return Verdict::pass("Every fmonero menu entry is present.");
     }
     Verdict::warn(
         "missing_ids",
@@ -1961,7 +1947,12 @@ fn state_perms(p: &Probes) -> Verdict {
     let ours: Vec<String> = bad
         .iter()
         .filter(|x| !x.daemon_owned)
-        .map(|x| format!("{} is {:04o}, want {:04o}", x.path, x.mode, x.want))
+        .map(|x| {
+            format!(
+                "{} can be read by others ({:04o}). It should be {:04o}.",
+                x.path, x.mode, x.want
+            )
+        })
         .collect();
     if ours.is_empty() {
         // Never chmod'ed: the daemon recreates them on every start and

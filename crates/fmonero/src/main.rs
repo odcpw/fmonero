@@ -38,11 +38,11 @@ Bare `fmonero` opens the TUI on a terminal; without a TTY it prints `status --js
 Every command accepts --json, and a non-TTY stdout implies it. Agents: start with
 `fmonero robot-docs` and `fmonero capabilities`, and branch on code_name + reason.
 
-`status` never starts a daemon and never calls a wallet mutator, so it answers even while
-monerod is syncing or monero-wallet-rpc is busy.
+`status` starts nothing and changes nothing, so it answers even while the node is syncing
+or the wallet service is busy.
 
-Money safety: `wallet send` and `wallet sweep` build the transaction with do_not_relay
-first, print the REAL fee, and broadcast only with --yes.";
+Money safety: `wallet send` and `wallet sweep` prepare the payment without sending it,
+print the real fee, and send only with --yes.";
 
 const AFTER_HELP: &str =
     "Exit codes: 0 ok · 1 failure · 2 usage · 3 safety (needs --yes) · 4 backend ·
@@ -148,8 +148,8 @@ at once. This call is not made fresher by it; the next one is."
 enum NodeCmd {
     /// Start the node's systemd user unit and wait for it to answer
     #[command(
-        after_help = "Refuses (exit 3) when another monerod already holds the data dir, and
-when Arch's system monerod.service owns the node: two monerod on one LMDB corrupt it.
+        after_help = "Refuses (exit 3) when another program is already using the chain folder,
+and when another program on this machine runs the node: two of them on one chain corrupt it.
 Without --wait a still-syncing node is exit 0 plus the node_syncing warning."
     )]
     Up {
@@ -207,9 +207,9 @@ Without --wait a still-syncing node is exit 0 plus the node_syncing warning."
     },
     /// Point monero-wallet-rpc at a REMOTE node and keep it there (§2m)
     #[command(
-        after_help = "Writes node.mode, node.remote and node.remote_trusted, re-renders both
-units and restarts monero-wallet-rpc if it was running. fmonero itself never talks to the
-remote node: monero-wallet-rpc does.
+        after_help = "Writes node.mode, node.remote and node.remote_trusted, then sets up both
+background services again and restarts the wallet service if it was running. fmonero itself
+never talks to the public node; the wallet service does.
 
 A public node sees this machine's IP address and the timing of every request, supplies the
 decoys every transaction is built from, and can lie about the chain tip and the fee — so
@@ -230,8 +230,8 @@ unauthenticated, and Tor is not in v0.1.
     Local,
     /// Public nodes from monero.fail, cached — and, with --probe, measured from here (§2n)
     #[command(
-        after_help = "Serves cache_dir/public-nodes.json and fetches only when --refresh is
-given or the cache is absent or older than 24 h. --probe then asks the top --limit candidates
+        after_help = "Uses the saved list and fetches a new one only when --refresh is
+given or the saved list is absent or older than 24 h. --probe then asks the top --limit candidates
 for get_info itself, 8 at a time with a 5 s deadline each.
 
 Fetching the list tells monero.fail this machine's IP address. Probing tells each node you
@@ -300,8 +300,8 @@ then a TTY prompt with echo off. It never reaches argv (fmonero's or the daemon'
     Close,
     /// Create a new wallet. Does NOT print the seed
     #[command(
-        after_help = "On a TTY the password is asked for twice and compared; an empty one is
-refused without --allow-empty-password. The seed is never printed: back it up with
+        after_help = "In a terminal the password is asked for twice and compared. An empty one
+is refused without --allow-empty-password. The seed is never printed: back it up with
 `monero-wallet-cli --wallet-file <wallet.dir>/<name> --offline`, then type `seed`."
     )]
     Create {
@@ -384,8 +384,8 @@ RPC and a live confirmation count are mutually exclusive."
     },
     /// Send an exact amount to one recipient
     #[command(
-        after_help = "Builds with do_not_relay and prints the REAL fee first. Without --yes it
-prints that fee and exits 3. --dry-run beats --yes: it never relays. --max-fee refuses the
+        after_help = "Prepares the payment without sending it and prints the real fee first.
+Without --yes it prints that fee and exits 3. --dry-run beats --yes: it never sends. --max-fee refuses the
 relay when the built fee exceeds it. v0.1 builds exactly ONE transaction; when the wallet
 needs more the daemon answers TX_TOO_LARGE and the hint names `wallet sweep`.
 
@@ -411,8 +411,8 @@ Verified against fmonero-mock only: no send has ever been broadcast from this bu
     },
     /// Sweep an account to one recipient
     #[command(
-        after_help = "Sweeps the whole account (bounded by --below) and may build SEVERAL
-transactions; each is relayed in order under one crash-safe record. There is no amount
+        after_help = "Sweeps the whole account (bounded by --below) and may need several
+transactions; each is sent in order under one crash-safe record. There is no amount
 argument and no subaddress selector — every subaddress of the account is included.
 
 Verified against fmonero-mock only: no sweep has ever been broadcast from this build (§4b)."
@@ -462,8 +462,8 @@ the record itself, so if you find yourself typing this after every send, somethi
     },
     /// Point the open wallet at another daemon
     #[command(
-        after_help = "This is the only way a remote node enters the picture: monero-wallet-rpc
-reaches it, not fmonero, whose own HTTP client is loopback-plaintext-only."
+        after_help = "This is the only way a public node enters the picture: the wallet service
+reaches it, not fmonero, whose own HTTP client only ever speaks to this machine."
     )]
     SetDaemon {
         /// host:port
