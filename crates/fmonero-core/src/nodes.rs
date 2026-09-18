@@ -960,6 +960,29 @@ pub fn configured_address(ctx: &Context) -> Option<String> {
     }
 }
 
+/// Write a batch of probe results into the cache, matched by `address` (§2n.6).
+///
+/// The TUI's `p` needs this because its probes run in an `ActionSub` and the cache is the only
+/// place a measurement survives the screen being left. A probe of an address that is no longer
+/// in the cache — a `custom` row the user removed by hand — is dropped rather than re-added: the
+/// cache's candidate set is the list's, not the probe's.
+pub fn record_probes(ctx: &Context, probes: &[(String, Probe)]) -> Result<(), Error> {
+    let Some(mut doc) = cached(ctx)? else {
+        return Ok(());
+    };
+    let mut touched = false;
+    for (address, probe) in probes {
+        if let Some(row) = doc.nodes.iter_mut().find(|n| &n.address == address) {
+            row.probe = Some(probe.clone());
+            touched = true;
+        }
+    }
+    if touched {
+        save(ctx, &doc)?;
+    }
+    Ok(())
+}
+
 /// The display order of §2n.6: the configured address first, then descending health, then
 /// ascending latency among probed. Exposed because the CLI and the TUI both need it and two
 /// sorts that must agree are two sorts that will not (§2a.3).

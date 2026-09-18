@@ -18,6 +18,8 @@ use ftui::widgets::paragraph::Paragraph;
 use ftui::widgets::Widget;
 use ftui::{Event, KeyCode, KeyEvent, Style};
 
+use unicode_width::UnicodeWidthStr;
+
 use fmonero_core::rpc::wallet::BookEntry;
 use fmonero_core::{address, send::Plan, Piconero, SendRequest};
 
@@ -198,6 +200,19 @@ impl SendScreen {
             note: (!note.is_empty()).then(|| note.to_string()),
             max_fee,
         })
+    }
+
+    /// Focus the form field a click landed on (§7a.2), by its index in [`FIELDS`] order.
+    pub fn focus_index(&mut self, index: usize) {
+        let field = match index {
+            0 => Field::To,
+            1 => Field::Amount,
+            2 => Field::Note,
+            3 => Field::Priority,
+            _ => Field::Account,
+        };
+        self.editing = true;
+        self.focus(field);
     }
 
     /// The form, its picker and its confirm modal own every key while they are focused.
@@ -433,13 +448,12 @@ pub(super) fn view(m: &Tui, area: Rect, frame: &mut ftui::Frame, tier: Tier) {
         )])))
         .wrap(WrapMode::None)
         .render(row, frame);
-        super::screens::hinted_input(
-            th,
-            input,
-            hint,
-            Rect::new(row.x + 8, row.y, row.width.saturating_sub(8).max(1), 1),
-            frame,
-        );
+        let box_ = Rect::new(row.x + 8, row.y, row.width.saturating_sub(8).max(1), 1);
+        super::screens::hinted_input(th, input, hint, box_, frame);
+        // §7a.2: a click focuses the field. The whole row is the target, label included, because
+        // a user clicking "Amount" means the amount.
+        m.hits.field(i, Rect::new(row.x, row.y, row.width, 1));
+        let _ = box_;
     }
     // The priority chips carry the node's own `fees[]` for each level — no local multiplier
     // table (§1b.4); `0` is drawn as an alias of the lowest chip.
@@ -456,6 +470,10 @@ pub(super) fn view(m: &Tui, area: Rect, frame: &mut ftui::Frame, tier: Tier) {
             th.dimmed()
         },
     )];
+    // Each chip is **individually** clickable, and a click **selects that priority** rather than
+    // cycling (§7a.2, revision 6) — which is also more discoverable than four presses of `p`.
+    // Without this a mouse-only user could not change the fee on the money screen.
+    let mut x = rows[3].x + "Priority".width() as u16;
     for level in 0..5u32 {
         let fee = fees.get(level.saturating_sub(1).min(3) as usize);
         let label = match (level, fee) {
@@ -463,6 +481,11 @@ pub(super) fn view(m: &Tui, area: Rect, frame: &mut ftui::Frame, tier: Tier) {
             (l, Some(f)) => format!(" {l} {} ", f.to_xmr_string()),
             (l, None) => format!(" {l} — "),
         };
+        let w = label.width() as u16;
+        if x + w <= rows[3].right() {
+            m.hits.priority(level, Rect::new(x, rows[3].y, w, 1));
+        }
+        x += w;
         chips.push(Span::styled(
             label,
             if level == s.priority {
@@ -476,9 +499,11 @@ pub(super) fn view(m: &Tui, area: Rect, frame: &mut ftui::Frame, tier: Tier) {
     // The Account field lives on its OWN line. On one line with five fee chips the row ran past
     // the form's width at every tier, and what fell off the end was the focus highlight, the
     // value and the `←→` affordance for the field that decides which balance is spent.
+    // `◂ n ▸` with **both arrows as hit rects** (§7a.2, revision 6): the account decides which
+    // balance is spent, and a mouse-only user could not change it while it was `←→` only.
     let account = Line::from_spans([
         Span::styled(
-            format!("Account {} ", s.account),
+            format!("Account ◂ {} ▸ ", s.account),
             if s.field == Field::Account {
                 th.selected()
             } else {
@@ -487,6 +512,21 @@ pub(super) fn view(m: &Tui, area: Rect, frame: &mut ftui::Frame, tier: Tier) {
         ),
         Span::styled("←→ changes it".to_string(), th.dimmed()),
     ]);
+    if rows[3].height > 1 {
+        let y = rows[3].y + 1;
+        let lead = "Account ".width() as u16;
+        m.hits.arrow(
+            super::hit::Selector::Account,
+            -1,
+            Rect::new(rows[3].x + lead, y, 1, 1),
+        );
+        let value_w = format!("{}", s.account).width() as u16;
+        m.hits.arrow(
+            super::hit::Selector::Account,
+            1,
+            Rect::new(rows[3].x + lead + 2 + value_w + 1, y, 1, 1),
+        );
+    }
     Paragraph::new(Text::from_lines([Line::from_spans(chips), account]))
         .wrap(WrapMode::None)
         .render(rows[3], frame);
@@ -508,7 +548,7 @@ pub(super) fn view(m: &Tui, area: Rect, frame: &mut ftui::Frame, tier: Tier) {
     let mut lines = vec![line];
     lines.push(Line::styled(
         format!(
-            "account {} · Tab moves · @ picks from the address book · {}",
+            "account {} · ↑↓ fields · ⇥ screens · @ picks from the address book · {}",
             s.account,
             if s.editing {
                 "Esc leaves the form"

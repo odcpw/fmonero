@@ -292,10 +292,14 @@ fn the_offline_node_screen_says_what_to_press_and_never_shows_a_zero_height() {
 #[test]
 fn the_offline_wallet_screen_offers_the_open_key() {
     let text = sim_text(&sim(offline_model(Screen::Wallet)), 120, 40);
-    assert!(
-        text.contains("Wallet daemon is not running") || text.contains("No wallet open"),
-        "{text}"
-    );
+    // v5.5 replaced two dead ends with §7a.5's panel: three chips and a daemon status line.
+    // The old text was true and useless — `o` listed an empty directory, `c` was close not
+    // create, and there was no create flow at all.
+    assert!(text.contains("No wallet is open."), "{text}");
+    assert!(text.contains("[o] Open wallet…"), "{text}");
+    assert!(text.contains("[c] Create wallet…"), "{text}");
+    assert!(text.contains("[W] Start the wallet daemon"), "{text}");
+    assert!(text.contains("wallet daemon:"), "{text}");
 }
 
 /// §7a: the keymap table "is also the exact content of the `?` overlay — one
@@ -490,7 +494,9 @@ fn the_send_screen_refuses_all_inline_and_never_reaches_the_daemon() {
     let mut sim = ProgramSimulator::new(model(&w.ctx, Screen::Send));
     sim.init();
     type_str(&mut sim, DEST);
-    sim.inject_event(key(KeyCode::Tab));
+    // v5.5: fields move with `↑↓`. `Tab` switches screens now, on every screen and in every
+    // focus state (§7a.1, and §5b.4 row 10 records the binding this takes away).
+    sim.inject_event(key(KeyCode::Down));
     type_str(&mut sim, "all");
     sim.inject_event(key(KeyCode::Enter));
     assert!(
@@ -516,7 +522,9 @@ fn a_refused_start_returns_the_send_screen_to_its_form() {
     let mut sim = ProgramSimulator::new(model(&w.ctx, Screen::Send));
     sim.init();
     type_str(&mut sim, DEST);
-    sim.inject_event(key(KeyCode::Tab));
+    // v5.5: fields move with `↑↓`. `Tab` switches screens now, on every screen and in every
+    // focus state (§7a.1, and §5b.4 row 10 records the binding this takes away).
+    sim.inject_event(key(KeyCode::Down));
     type_str(&mut sim, "0.1");
     let req = sim.model().send.request(None).expect("a valid form");
 
@@ -546,7 +554,9 @@ fn an_armed_breaker_does_not_refuse_the_relay_of_a_built_plan() {
     let mut sim = ProgramSimulator::new(model(&w.ctx, Screen::Send));
     sim.init();
     type_str(&mut sim, DEST);
-    sim.inject_event(key(KeyCode::Tab));
+    // v5.5: fields move with `↑↓`. `Tab` switches screens now, on every screen and in every
+    // focus state (§7a.1, and §5b.4 row 10 records the binding this takes away).
+    sim.inject_event(key(KeyCode::Down));
     type_str(&mut sim, "0.1");
     sim.inject_event(key(KeyCode::Enter));
     run_action(&mut sim);
@@ -585,7 +595,9 @@ fn the_send_screen_builds_once_and_relays_that_exact_transaction() {
 
     // 1. Form — every keystroke is local (§7a step 1).
     type_str(&mut sim, DEST);
-    sim.inject_event(key(KeyCode::Tab));
+    // v5.5: fields move with `↑↓`. `Tab` switches screens now, on every screen and in every
+    // focus state (§7a.1, and §5b.4 row 10 records the binding this takes away).
+    sim.inject_event(key(KeyCode::Down));
     type_str(&mut sim, "0.1");
     assert_eq!(w.count("transfer"), 0, "the form must send nothing");
 
@@ -775,7 +787,9 @@ fn the_confirm_modal_owns_the_keys_even_on_another_screen() {
     let mut sim = ProgramSimulator::new(model(&w.ctx, Screen::Send));
     sim.init();
     type_str(&mut sim, DEST);
-    sim.inject_event(key(KeyCode::Tab));
+    // v5.5: fields move with `↑↓`. `Tab` switches screens now, on every screen and in every
+    // focus state (§7a.1, and §5b.4 row 10 records the binding this takes away).
+    sim.inject_event(key(KeyCode::Down));
     type_str(&mut sim, "0.1");
     sim.inject_event(key(KeyCode::Enter));
     // While the build runs the form holds no keys, so the user can walk away.
@@ -864,10 +878,17 @@ fn the_node_screen_in_remote_mode_shows_the_address_and_no_gauge() {
         "the one dim line §7a asks for, verbatim:\n{text}"
     );
     // Every pane that needs a gated method says so, with `remote node` as the reason (§7a).
+    // v5.5: the picker takes the peers table's place in remote mode (§7a.3), so Net and
+    // Mempool·fees are the two panes left that need a gated method — the third pane is now the
+    // one thing a remote node CAN be asked, which is the point of the change.
     assert_eq!(
         text.matches("not available with a remote node").count(),
-        3,
-        "Peers, Net and Mempool·fees each say it:\n{text}"
+        2,
+        "Net and Mempool·fees each say it:\n{text}"
+    );
+    assert!(
+        text.contains("Public nodes"),
+        "the picker replaces the peers table in remote mode (§7a.3):\n{text}"
     );
     // No gauge, and none of the phrases that would need a number remote mode has not got.
     for absent in [

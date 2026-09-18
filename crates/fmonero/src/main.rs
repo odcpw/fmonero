@@ -1574,39 +1574,35 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                 // three failed AFTER the wallet file existed (§4.2).
                 let ctx = ctx.clone().with_wallet_probe_at_refresh();
                 let w = WalletClient::from_ctx(&ctx)?;
-                let hint = format!(
-                    "Back up your seed BEFORE funding this wallet:\n  monero-wallet-cli --wallet-file {}/{name} --offline\n  # then type: seed",
-                    ctx.settings.wallet.dir.display()
-                );
-                units::ensure_running(
+                // **v5.5: one sequence, in core, for both callers** (§2a.3). The TUI creates
+                // wallets too now (§7a.5), and two implementations of "ensure_running,
+                // create_wallet, then the last three steps of open" are two places that can each
+                // forget the `set_daemon` step whose absence means the wallet can never sync.
+                //
+                // `announce` is why it is a parameter and not a return value: from the moment
+                // `create_wallet` returns the wallet file exists and every later step can still
+                // fail — the first `wallet create` against a real public node exited 5 on
+                // `set_daemon`, because wallet-rpc held its daemon mutex across the new wallet's
+                // first refresh. Emitting "back up your seed before funding this wallet" only on
+                // the success path would make the one output that protects money conditional on
+                // a step that has nothing to do with it (§2a). It goes to stderr, so the §4 data
+                // stream is untouched in both modes and the payload still carries the key.
+                let created = wallet_session::create(
                     &ctx,
-                    &ctx.settings.wallet.unit,
-                    &|| w.get_version().is_ok(),
-                    ctx.timeouts.unit_probe,
+                    &w,
+                    &name,
+                    password,
+                    &language,
+                    &|line| out.note(line),
                     &cancel,
                 )?;
-                w.create_wallet(&name, &password, &language)?;
-                // **The hint is printed here, before the daemon step, and not only in the
-                // payload** (v5.3). From this line on the wallet file exists, and every later
-                // step can still fail — the first `wallet create` against a real public node
-                // exited 5 on `set_daemon` because wallet-rpc held its daemon mutex across the
-                // new wallet's first refresh. Emitting "back up your seed before funding this
-                // wallet" only on the success path made the one output that protects money
-                // conditional on a step that has nothing to do with it; §2a's rule is that a
-                // money-visibility fact is not a footnote. It goes to stderr, so the §4 data
-                // stream is untouched in both modes and the JSON payload still carries the key.
-                out.note(&hint);
-                // `on_create_wallet` leaves the new wallet OPEN, so the last three steps of
-                // `wallet_session::open` must still run on it: without them the wallet has no
-                // daemon credential and no recorded name (§4.1).
-                let opened = wallet_session::open(&ctx, &w, &name, password, &cancel)?;
                 out.emit(
                     "wallet create",
                     ok(serde_json::json!({
-                        "name": opened.name,
+                        "name": created.name,
                         "open": true,
-                        "unit_started": opened.unit_started,
-                        "seed_backup_hint": hint,
+                        "unit_started": created.unit_started,
+                        "seed_backup_hint": created.seed_backup_hint,
                     })),
                 );
                 Ok(0)

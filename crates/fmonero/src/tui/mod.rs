@@ -12,6 +12,7 @@
 //! `wallet_session` (§5b), so the §2i single-writer precondition and the `set_daemon` step
 //! exist in exactly one place.
 
+mod hit;
 mod screens;
 mod send;
 mod subs;
@@ -33,13 +34,18 @@ use ftui::widgets::modal::{Dialog, DialogState};
 use ftui::widgets::table::TableState;
 use ftui::widgets::virtualized::VirtualizedListState;
 use ftui::widgets::{LogViewer, LogViewerState, LogWrapMode, TabsState};
-use ftui::{App, Cmd, Event, KeyCode, KeyEvent, KeyEventKind, Model, Modifiers, Style};
+use ftui::{
+    App, Cmd, Event, KeyCode, KeyEvent, KeyEventKind, Model, Modifiers, MouseButton, MouseEvent,
+    MouseEventKind, Style,
+};
 
+use fmonero_core::nodes::{self, ProbeTarget};
 use fmonero_core::rpc::node::{Ban, Connection, TxpoolStats};
 use fmonero_core::rpc::wallet::{AddressSet, Balance, BookEntry};
 use fmonero_core::{
-    history, log as corelog, proc, state, status as corestatus, units, wallet_dir, Context, Error,
-    HistoryQuery, NodeClient, SendRequest, Status, Transfer, TransferKind, WalletClient,
+    history, log as corelog, proc, settings as coresettings, state, status as corestatus, units,
+    wallet_dir, Context, Error, HistoryQuery, NodeClient, SendRequest, Status, Transfer,
+    TransferKind, WalletClient,
 };
 
 use send::{SendCmd, SendScreen, Stage};
@@ -123,18 +129,45 @@ pub(super) enum Pane {
 
 /// The help overlay and the behaviour share this one table, so they cannot drift (§7a).
 pub const KEYS: &[(&str, &str)] = &[
+    // **The first row is §7a.1's rule**, and it is the one row whose text has to be true
+    // everywhere: `Tab` is resolved above every screen, focus state and modal branch.
+    (
+        "Tab  ⇧Tab  1 2 3 4",
+        "screens — always, even inside a field or a modal",
+    ),
     (
         "q  Ctrl+C",
         "quit (twice while an action runs: cancel, then quit)",
     ),
     ("?", "this help"),
-    ("Tab  ⇧Tab  1 2 3 4", "Node · Wallet · Send · Log"),
     ("r", "refresh now"),
-    ("Esc", "close this overlay, else cancel the running action"),
-    ("u  d", "Node: start · stop the node (confirm modal)"),
+    (
+        "Esc",
+        "close this overlay, else unfocus the field, else cancel the running action",
+    ),
+    (
+        "mouse",
+        "click tabs, rows, fields and every [key] chip · wheel scrolls the list under the          cursor · right-click is Esc",
+    ),
+    ("u  d", "Node: start · stop the node (confirm modal; remote mode: disabled)"),
     ("b", "Node: peers ⇄ bans"),
     ("L", "cycle the daemon log level (confirm modal)"),
-    ("o  c", "Wallet: open (modal) · close"),
+    (
+        "p  f",
+        "Node: probe the listed nodes · refresh the list from monero.fail",
+    ),
+    (
+        "Enter  a  H",
+        "Node: use the selected node (confirm) · add an address · back to the previous node",
+    ),
+    (
+        "o  c  x",
+        "Wallet: open a wallet (modal) · create a wallet (modal) · close the open wallet",
+    ),
+    (
+        "W",
+        "Wallet: start the wallet daemon (or stop it when idle and nothing is open)",
+    ),
     ("a  l", "Wallet: new subaddress · label the selected one"),
     ("n", "Wallet: edit the selected transfer's note"),
     ("R  Q", "Wallet: refresh · show the address as a QR"),
@@ -144,8 +177,12 @@ pub const KEYS: &[(&str, &str)] = &[
         "Wallet: swap panes · copy an address · open a row",
     ),
     (
-        "Send: Tab  Enter",
-        "next field · build  (Esc leaves the form, Enter returns to it)",
+        "Send: ↑↓  Enter",
+        "next/previous field · build  (Tab no longer moves between fields; Esc unfocuses,          Enter from outside returns to the form)",
+    ),
+    (
+        "modals: ↑↓  Enter",
+        "move between a modal's controls · advance, then submit on the last one",
     ),
     (
         "Send: p  Ctrl+P  @",
@@ -217,6 +254,29 @@ pub(super) struct WalletUi {
     pub detail: bool,
 }
 
+/// The public-node picker's own state (§7a.4, v5.5).
+#[derive(Default)]
+pub(super) struct PickerUi {
+    /// The cache as `nodes::cached` read it — `None` means no cache, which renders §7a.4's
+    /// no-cache panel and not an empty table with a broken footer (revision 8).
+    pub list: Option<fmonero_core::NodeList>,
+    /// **No row is selected on entry** (revision 4): with row 0 selected and the configured
+    /// node sorted first, a mouse user's first click here would activate the node they are
+    /// already using and §2m.5 step 9 would close an open wallet for a change of nothing.
+    pub table: RefCell<TableState>,
+    pub filter: TextInput,
+    pub filter_open: bool,
+    pub err: Option<String>,
+    /// `fetching…` / `probing 7/20 · Esc to stop`, so the thing that contacts strangers is
+    /// visible while it happens (§2n.5).
+    pub progress: Option<String>,
+    /// `H`: the address configured before the last switch, for the session only. A "previous
+    /// node" that survived a restart would be a fourth piece of node state nobody asked for.
+    pub prev: Option<String>,
+    /// When the configured node was last probed on the §2n.4 cadence.
+    pub probed_at: Option<Instant>,
+}
+
 pub(super) struct LogUi {
     pub viewer: RefCell<LogViewer>,
     pub state: RefCell<LogViewerState>,
@@ -258,6 +318,60 @@ pub(super) enum Modal {
     Qr {
         address: String,
     },
+    /// v5.5, §7a.5. Four controls — name, password, password again, language — moving with
+    /// `Up`/`Down`, `Enter` advancing from every one but the last where it submits (§7a.1,
+    /// revision 1). Without a field key this modal is a trap: it is one of the exactly two that
+    /// consume `Tab`, so a keyboard-only user would type a name and be stuck, which is the
+    /// complaint (4) flow made unreachable by the fix for complaint (1).
+    CreateWallet(Box<CreateForm>),
+    /// v5.5, §7a.5. Dismiss-only, carrying `seed_backup_hint` verbatim from core — the same
+    /// string the CLI prints, not a second wording. **fmonero never displays a seed.**
+    SeedBackup {
+        lines: Vec<String>,
+    },
+    /// v5.5, §7a.4. The picker's safety surface: the full address, `untrusted` as a fact, and
+    /// the three consequences before the fact.
+    UseNode {
+        address: String,
+        /// The wallet that is open and will be closed by the restart, named when there is one.
+        wallet_open: Option<String>,
+    },
+    /// v5.5, §7a.4. One field, validated live by `Settings::parse_remote_address` — the same
+    /// function the CLI uses, so the TUI cannot accept a string the CLI refuses. **No
+    /// `--trusted` toggle**: `fmonero node remote <addr> --trusted --yes` is the documented
+    /// place, and a path to request trusted from this screen would make the confirm modal's
+    /// rendered `untrusted` line an untruth (revision 5).
+    AddNode {
+        input: TextInput,
+    },
+    /// v5.5, §2n.5 rule 2. Shown before the first fetch **or** the first probe while the
+    /// cache's `notice_ack` is unset, and `Enter` writes that field.
+    Notice {
+        /// What the user was trying to do, resumed on `Enter`.
+        then: NoticeThen,
+    },
+}
+
+/// §7a.5's create-wallet form. **Boxed** in [`Modal`]: four `TextInput`s beside a one-word
+/// `Confirm` variant is the size difference clippy objects to, and the box costs one allocation
+/// per modal open.
+pub(super) struct CreateForm {
+    pub name: TextInput,
+    /// Masked (§2b.4): both buffers are overwritten with zeroes when the modal closes.
+    pub pass: TextInput,
+    pub again: TextInput,
+    /// An index into `settings::SEED_LANGUAGES`, rendered `◂ English ▸`.
+    pub lang: usize,
+    /// 0 name · 1 password · 2 password again · 3 language.
+    pub field: usize,
+    pub err: Option<String>,
+}
+
+/// What §2n.5's notice was standing in front of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum NoticeThen {
+    Fetch,
+    Probe,
 }
 
 #[derive(Clone, Copy)]
@@ -324,6 +438,8 @@ pub struct Tui {
     status_err: Option<String>,
     poll_inflight: bool,
     node: NodeUi,
+    /// v5.5, §7a.4.
+    picker: PickerUi,
     wallet: WalletUi,
     logs: LogUi,
     send: SendScreen,
@@ -337,14 +453,34 @@ pub struct Tui {
     note: String,
     note_err: bool,
     note_at: Instant,
+    /// v5.5, §7a.2: the rects `view()` laid out, as `update()` needs them.
+    hits: hit::Map,
+    /// The wallets in `wallet.dir`, re-read on entry to the Wallet screen so the empty state
+    /// can say `0 wallets` — a real count, so a user can see why `o` will not help before
+    /// pressing it (§7a.5).
+    wallets: Vec<String>,
 }
 
 /// Run the TUI. `Ok(0)` on a clean quit, the §4a code of the session's last failed action
 /// otherwise, `Ok(130)` on Ctrl+C — the TUI never invents an exit code (§7a).
 pub fn run(args: TuiArgs, ctx: Context) -> anyhow::Result<i32> {
     let exit = Arc::new(AtomicI32::new(0));
+    // §7a.2. `MouseCapturePolicy::Auto` already resolves to *on* in `AltScreen`, which is what
+    // `App::fullscreen` uses — so a fullscreen ftui app arguably had capture all along and simply
+    // threw the events away. `.with_mouse()` is written explicitly because relying on `Auto` would
+    // make the behaviour a consequence of the screen mode rather than a decision, and
+    // `tui.mouse = false` has to be able to turn it off: mouse capture takes the terminal's own
+    // selection and scrollback away for as long as the TUI runs, and which modifier gives them
+    // back differs per terminal.
+    let mouse = ctx.settings.tui.mouse;
     let app = Tui::new(args.screen(), ctx, exit.clone());
-    App::fullscreen(app).run()?;
+    let builder = App::fullscreen(app);
+    let builder = if mouse {
+        builder.with_mouse()
+    } else {
+        builder.with_mouse_enabled(false)
+    };
+    builder.run()?;
     Ok(exit.load(Ordering::SeqCst))
 }
 
@@ -364,6 +500,10 @@ impl Tui {
                 .and_then(|m| m.modified())
                 .ok(),
             node: NodeUi::default(),
+            picker: PickerUi {
+                filter: text_input(&theme),
+                ..PickerUi::default()
+            },
             wallet: WalletUi {
                 filter: text_input(&theme),
                 ..WalletUi::default()
@@ -400,6 +540,8 @@ impl Tui {
             note: String::new(),
             note_err: false,
             note_at: Instant::now(),
+            hits: hit::Map::default(),
+            wallets: Vec::new(),
         }
     }
 
@@ -751,6 +893,162 @@ impl Tui {
         Cmd::none()
     }
 
+    // ------------------------------------------------------- the public-node picker (§7a.4)
+
+    /// Re-read the cache. **Spawns nothing** (`nodes::cached`), which is what lets the Node
+    /// screen draw the table on entry and on every change without a fetch on the render path.
+    fn reload_picker(&mut self) {
+        match nodes::cached(&self.ctx) {
+            Ok(list) => {
+                self.picker.list = list;
+                self.sort_picker();
+                self.picker.err = None;
+            }
+            Err(e) => self.picker.err = Some(e.to_string()),
+        }
+    }
+
+    /// §2n.6's display order, applied wherever the list changes so one sort serves the whole
+    /// screen (`nodes::sort_for_display`, §2a.3).
+    fn sort_picker(&mut self) {
+        let configured = nodes::configured_address(&self.ctx);
+        if let Some(list) = self.picker.list.as_mut() {
+            nodes::sort_for_display(&mut list.nodes, configured.as_deref());
+        }
+    }
+
+    /// The rows the picker is showing, after the filter — the set `p` probes and `Enter` picks
+    /// from, so what is on screen and what is acted on cannot differ.
+    fn picker_rows(&self) -> Vec<&fmonero_core::PublicNode> {
+        let needle = self.picker.filter.value().trim().to_ascii_lowercase();
+        self.picker
+            .list
+            .as_ref()
+            .map(|l| {
+                l.nodes
+                    .iter()
+                    .filter(|n| {
+                        needle.is_empty() || n.address.to_ascii_lowercase().contains(&needle)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// `f`. The §2n.5 notice comes first while the cache's `notice_ack` is unset — before the
+    /// first fetch **or** the first probe, because they disclose to different parties.
+    fn start_fetch(&mut self, refresh: bool) -> Cmd<Msg> {
+        if !nodes::notice_acknowledged(&self.ctx) {
+            self.modal = Some(Modal::Notice {
+                then: NoticeThen::Fetch,
+            });
+            return Cmd::none();
+        }
+        self.picker.progress = Some("fetching the list from monero.fail…".into());
+        self.start(Action::NodeListFetch { refresh })
+    }
+
+    /// `p`. Probes the rows **visible after the filter**, capped at `nodes::DEFAULT_LIMIT`.
+    ///
+    /// The cap is on the screen as well as on the CLI because a filter matching 150 rows plus one
+    /// keypress is otherwise 150 strangers learning this machine's IP address from one `p`
+    /// (§2n.5). Probing is the only thing on this screen that contacts a node the user has not
+    /// chosen, which is why the progress row exists.
+    fn start_probe(&mut self) -> Cmd<Msg> {
+        if !nodes::notice_acknowledged(&self.ctx) {
+            self.modal = Some(Modal::Notice {
+                then: NoticeThen::Probe,
+            });
+            return Cmd::none();
+        }
+        let targets: Vec<ProbeTarget> = self
+            .picker_rows()
+            .iter()
+            .take(nodes::DEFAULT_LIMIT)
+            .map(|n| ProbeTarget::from_node(n))
+            .collect();
+        if targets.is_empty() {
+            self.note("no nodes to probe — press f to fetch the list", true);
+            return Cmd::none();
+        }
+        self.picker.progress = Some(format!("probing {} nodes · Esc to stop", targets.len()));
+        self.start(Action::NodeProbe { targets })
+    }
+
+    /// `Enter` on the picker. Two guards, because either alone leaves a bad shape (revision 4):
+    /// nothing is selected on entry, so a first click can only select; and the row already
+    /// configured is refused with a toast rather than opening the confirm — otherwise a stray
+    /// click would restart the wallet unit and close an open wallet for a change of nothing.
+    fn use_selected_node(&mut self) -> Cmd<Msg> {
+        let Some(sel) = self.picker.table.borrow().selected else {
+            self.note("select a node first (↑↓ or click), then Enter", true);
+            return Cmd::none();
+        };
+        let Some(address) = self.picker_rows().get(sel).map(|n| n.address.clone()) else {
+            return Cmd::none();
+        };
+        if nodes::configured_address(&self.ctx).as_deref() == Some(address.as_str()) {
+            self.note("this is the node you are using", false);
+            return Cmd::none();
+        }
+        let wallet_open = self
+            .status
+            .as_ref()
+            .and_then(|s| s.wallet.name.clone())
+            .filter(|_| self.status.as_ref().is_some_and(|s| s.wallet.open));
+        self.modal = Some(Modal::UseNode {
+            address,
+            wallet_open,
+        });
+        Cmd::none()
+    }
+
+    /// `H` — re-apply the address configured before the last switch, through the same confirm
+    /// modal. It is deliberately **not** `node local`: the recovery the v5.4 objection asked for
+    /// is a one-key undo of the switch just made, not a mode change (§7a.3).
+    fn previous_node(&mut self) -> Cmd<Msg> {
+        let Some(address) = self.picker.prev.clone() else {
+            self.note("no previous node in this session", true);
+            return Cmd::none();
+        };
+        let wallet_open = self.status.as_ref().and_then(|s| s.wallet.name.clone());
+        self.modal = Some(Modal::UseNode {
+            address,
+            wallet_open,
+        });
+        Cmd::none()
+    }
+
+    /// The §2n.4 cadence: probe **the configured node** on entering the Node screen and every
+    /// `node.remote_probe_sec` seconds **while that screen is showing**. It is the only automatic
+    /// probe in this design, and it never needs the §2n.5 notice: it is the node already in use.
+    fn maybe_probe_configured(&mut self) -> Cmd<Msg> {
+        if self.screen != Screen::Node || self.action.is_some() {
+            return Cmd::none();
+        }
+        let every = self.ctx.settings.node.remote_probe_sec;
+        if every == 0 {
+            return Cmd::none();
+        }
+        let Some(address) = nodes::configured_address(&self.ctx) else {
+            return Cmd::none();
+        };
+        let due = match self.picker.probed_at {
+            None => true,
+            Some(at) => at.elapsed() >= Duration::from_secs(u64::from(every)),
+        };
+        if !due {
+            return Cmd::none();
+        }
+        let Ok(target) = ProbeTarget::parse(&address) else {
+            return Cmd::none();
+        };
+        self.picker.probed_at = Some(Instant::now());
+        self.start(Action::NodeProbe {
+            targets: vec![target],
+        })
+    }
+
     fn note(&mut self, text: impl Into<String>, err: bool) {
         self.note = text.into();
         self.note_err = err;
@@ -770,6 +1068,45 @@ impl Tui {
         }
     }
 
+    /// §7a.1's one implementation of "`Tab` always switches screens".
+    ///
+    /// Two documented exceptions, and only two: the **send confirm** modal holds a built
+    /// transaction and the §2a.11 `send.lock`, and the **create-wallet** modal holds a typed
+    /// password. Those are the two states where "go somewhere else" must be an explicit
+    /// discard, so they consume the key and say so on their own last line. Everything else a
+    /// modal holds is a selection that costs a keypress to rebuild, so it closes.
+    ///
+    /// A focused filter or search is **committed**, not discarded — `Enter`'s effect, not
+    /// `Esc`'s — because coming back with `Shift+Tab` must find the filter the user built, and
+    /// that is what makes leaving safe enough to be the default.
+    fn switch_screen(&mut self, forward: bool) -> Cmd<Msg> {
+        if self.send.confirming() || matches!(self.modal, Some(Modal::CreateWallet(_))) {
+            self.note("Esc to discard first", true);
+            return Cmd::none();
+        }
+        self.show_help = false;
+        if self.modal.is_some() {
+            self.close_modal();
+        }
+        let mut commit = None;
+        if self.wallet.filter_open || self.logs.search_open {
+            let was_log = self.logs.search_open && self.screen == Screen::Log;
+            self.wallet.filter_open = false;
+            self.logs.search_open = false;
+            self.wallet.filter.set_focused(false);
+            self.logs.search.set_focused(false);
+            if was_log {
+                commit = Some(self.apply_search());
+            }
+        }
+        let delta = if forward { 1 } else { 3 };
+        let moved = self.set_screen(Screen::from_index(self.screen.index() + delta));
+        match commit {
+            Some(c) => Cmd::batch(vec![c, moved]),
+            None => moved,
+        }
+    }
+
     fn set_screen(&mut self, s: Screen) -> Cmd<Msg> {
         self.screen = s;
         self.tabs.borrow_mut().active = s.index();
@@ -780,9 +1117,27 @@ impl Tui {
             self.send.editing = false;
         }
         match s {
-            Screen::Node if self.node.extras.is_none() => self.load_extras(),
-            Screen::Wallet if self.wallet.addresses.is_none() => {
-                Cmd::batch(vec![self.load_wallet(), self.load_history()])
+            Screen::Node => {
+                // Entry reads the cache and probes **only the configured node**, on the §2n.4
+                // schedule. A picker that measured 158 nodes because someone pressed `1` would be
+                // the automatic behaviour §2n.5 rule 1 forbids.
+                self.reload_picker();
+                let probe = self.maybe_probe_configured();
+                if self.node.extras.is_none() {
+                    Cmd::batch(vec![self.load_extras(), probe])
+                } else {
+                    probe
+                }
+            }
+            Screen::Wallet => {
+                // A real count, so the empty state can say `0 wallets` and a user can see why `o`
+                // will not help before pressing it (§7a.5).
+                self.wallets = wallet_dir::list(&self.ctx).unwrap_or_default();
+                if self.wallet.addresses.is_none() {
+                    Cmd::batch(vec![self.load_wallet(), self.load_history()])
+                } else {
+                    Cmd::none()
+                }
             }
             Screen::Log if self.logs.empty => self.load_log(),
             _ => Cmd::none(),
@@ -832,6 +1187,16 @@ impl Tui {
         let ctrl_c = k.code == KeyCode::Char('c') && k.modifiers.contains(Modifiers::CTRL);
         if ctrl_c {
             return self.quit(130);
+        }
+        // **§7a.1: `Tab` and `Shift+Tab` are resolved HERE and nowhere else.** Above the modal
+        // branch, above the Send branch, above the filter/search branch, above the per-screen
+        // dispatch — because "never captured" is a property only when one arm, checked first,
+        // owns the key. The v5.4 code dispatched `Tab` per screen and two branches ahead of
+        // those ate it (the filter's `TextInput` and `send.rs`'s `Tab | Down`), which silently
+        // removed the only advertised way to change screens on a machine with no usable mouse:
+        // the owner's first report, and two locally reasonable rules combining into a trap.
+        if matches!(k.code, KeyCode::Tab | KeyCode::BackTab) {
+            return self.switch_screen(k.code == KeyCode::Tab);
         }
         if self.modal.is_some() {
             return self.on_modal_key(k);
@@ -893,9 +1258,6 @@ impl Tui {
             KeyCode::Char('2') => return self.set_screen(Screen::Wallet),
             KeyCode::Char('3') => return self.set_screen(Screen::Send),
             KeyCode::Char('4') => return self.set_screen(Screen::Log),
-            KeyCode::BackTab => {
-                return self.set_screen(Screen::from_index(self.screen.index() + 3))
-            }
             KeyCode::Char('r') => {
                 let mut cmds = vec![self.poll()];
                 match self.screen {
@@ -918,22 +1280,302 @@ impl Tui {
             Screen::Wallet => self.on_wallet_key(k),
             Screen::Log => self.on_log_key(k),
             Screen::Send => {
-                // The form is unfocused: Enter returns to it, Tab moves on.
-                match k.code {
-                    KeyCode::Enter => {
-                        self.send.resume();
-                        Cmd::none()
-                    }
-                    KeyCode::Tab => self.set_screen(Screen::from_index(self.screen.index() + 1)),
-                    _ => Cmd::none(),
+                // The form is unfocused: Enter returns to it. `Tab` never reaches here (§7a.1).
+                if k.code == KeyCode::Enter {
+                    self.send.resume();
                 }
+                Cmd::none()
             }
         }
     }
 
+    // ------------------------------------------------------------ mouse (§7a.2)
+
+    /// One entry point, resolving through [`hit::Map::at`]'s priority chain.
+    ///
+    /// **Semantics chosen so nothing needs a timer**: left down selects (a row, a field, a tab) or
+    /// activates (a button); left down on an **already-selected** row activates it, which is
+    /// `TableState::handle_mouse`'s own rule and replaces double-click detection entirely — there
+    /// is no interval to get wrong on a slow terminal, and a real double click produces exactly
+    /// that sequence. Right click is `Esc` for the current context, one meaning everywhere.
+    /// Middle click, `Drag`, `Moved` and horizontal scroll are ignored, and **no hover state is
+    /// ever set**: a highlight a keyboard cannot produce is a difference between the two input
+    /// methods, and §7a's premise is that they are peers.
+    fn on_mouse(&mut self, ev: MouseEvent) -> Cmd<Msg> {
+        use MouseEventKind as K;
+        let scroll = match ev.kind {
+            K::ScrollUp => Some(true),
+            K::ScrollDown => Some(false),
+            K::Down(MouseButton::Right) => return self.mouse_escape(),
+            K::Down(MouseButton::Left) => None,
+            // Drag, Moved, Up, Middle and horizontal scroll: ignored, deliberately.
+            _ => return Cmd::none(),
+        };
+        let Some(target) = self.hits.at(ev.x, ev.y, scroll) else {
+            // A click that hits no target is discarded **silently** — no beep, no toast, no focus
+            // change. A click that does something arbitrary is worse than one that does nothing.
+            return Cmd::none();
+        };
+        // **Money is untouched by the mouse**: while a relay is in flight the only reachable
+        // target is the status line's own help (§7a.2).
+        if self.action.as_ref().is_some_and(|a| !a.cancellable)
+            && target != hit::Target::Button(hit::Button::Help)
+        {
+            return Cmd::none();
+        }
+        match target {
+            hit::Target::Tab(i) => self.set_screen(Screen::from_index(i)),
+            hit::Target::Scroll { pane, up } => {
+                self.scroll_pane(pane, up);
+                Cmd::none()
+            }
+            hit::Target::Row { pane, row } => self.click_row(pane, row),
+            hit::Target::Field(i) => self.click_field(i),
+            hit::Target::Priority(level) => {
+                self.send.priority = level;
+                Cmd::none()
+            }
+            hit::Target::Arrow { which, delta } => self.click_arrow(which, delta),
+            hit::Target::Button(b) => self.click_button(b),
+            hit::Target::ModalButton(_) => {
+                // Every modal fmonero draws has one primary button, and it does what `Enter`
+                // does — the key path and the click path are the same code (§7a.2).
+                self.on_modal_key(KeyEvent::new(KeyCode::Enter))
+            }
+            hit::Target::Backdrop => self.mouse_escape(),
+        }
+    }
+
+    /// Right click, and a backdrop click: `Esc` for the current context — close the overlay, else
+    /// close the modal, else unfocus a field, else cancel the running action.
+    ///
+    /// **The two modals §7a.1 protects are protected here too**: a misplaced click must never
+    /// discard a built transaction or a half-typed password.
+    fn mouse_escape(&mut self) -> Cmd<Msg> {
+        if self.show_help {
+            self.show_help = false;
+            return Cmd::none();
+        }
+        if self.send.confirming() || matches!(self.modal, Some(Modal::CreateWallet(_))) {
+            self.note("Esc to discard first", true);
+            return Cmd::none();
+        }
+        if self.modal.is_some() {
+            self.close_modal();
+            return Cmd::none();
+        }
+        if self.wallet.filter_open || self.logs.search_open || self.send.editing {
+            self.wallet.filter_open = false;
+            self.logs.search_open = false;
+            self.wallet.filter.set_focused(false);
+            self.logs.search.set_focused(false);
+            self.send.editing = false;
+            return Cmd::none();
+        }
+        self.cancel_action()
+    }
+
+    fn scroll_pane(&mut self, pane: hit::HitPane, up: bool) {
+        let rows = 3;
+        match pane {
+            hit::HitPane::Picker => {
+                let n = self.picker_rows().len();
+                let mut st = self.picker.table.borrow_mut();
+                if up {
+                    st.scroll_up(rows);
+                } else {
+                    st.scroll_down(rows, n);
+                }
+            }
+            hit::HitPane::NodeList => {
+                let mut st = self.node.table.borrow_mut();
+                if up {
+                    st.scroll_up(rows);
+                } else {
+                    st.scroll_down(rows, usize::MAX / 2);
+                }
+            }
+            hit::HitPane::Subaddresses => {
+                let mut st = self.wallet.table.borrow_mut();
+                if up {
+                    st.scroll_up(rows);
+                } else {
+                    st.scroll_down(rows, usize::MAX / 2);
+                }
+            }
+            hit::HitPane::History => {
+                let n = self.wallet.rows.len() as i32;
+                let delta = if up { -(rows as i32) } else { rows as i32 };
+                self.wallet
+                    .list
+                    .borrow_mut()
+                    .scroll(delta, n.max(0) as usize);
+            }
+            hit::HitPane::Log => {
+                let mut v = self.logs.viewer.borrow_mut();
+                if up {
+                    v.scroll_up(rows);
+                } else {
+                    v.scroll_down(rows);
+                }
+            }
+            hit::HitPane::ModalList => {}
+        }
+    }
+
+    /// A click on a row: select it, or — when it is already selected — activate it, which is what
+    /// `Enter` does on that pane.
+    fn click_row(&mut self, pane: hit::HitPane, row: usize) -> Cmd<Msg> {
+        match pane {
+            hit::HitPane::Picker => {
+                let n = self.picker_rows().len();
+                if row >= n {
+                    return Cmd::none();
+                }
+                let already = self.picker.table.borrow().selected == Some(row);
+                self.picker.table.borrow_mut().select(Some(row));
+                if already {
+                    return self.use_selected_node();
+                }
+                Cmd::none()
+            }
+            hit::HitPane::Subaddresses => {
+                let already = self.wallet.table.borrow().selected == Some(row);
+                self.wallet.table.borrow_mut().select(Some(row));
+                self.wallet.pane = Pane::Subaddresses;
+                if already {
+                    if let Some(a) = self.selected_address() {
+                        self.copy(&a);
+                    }
+                }
+                Cmd::none()
+            }
+            hit::HitPane::History => {
+                let already = self.wallet.list.borrow().selected == Some(row);
+                self.wallet.list.borrow_mut().selected = Some(row);
+                self.wallet.pane = Pane::History;
+                if already {
+                    self.wallet.detail = self.selected_transfer().is_some();
+                }
+                Cmd::none()
+            }
+            hit::HitPane::NodeList => {
+                self.node.table.borrow_mut().select(Some(row));
+                Cmd::none()
+            }
+            hit::HitPane::Log | hit::HitPane::ModalList => Cmd::none(),
+        }
+    }
+
+    /// A click on an input: focus it. On the Send screen that is a form field; inside a modal it
+    /// is that modal's nth control.
+    fn click_field(&mut self, index: usize) -> Cmd<Msg> {
+        match &mut self.modal {
+            Some(Modal::CreateWallet(form)) => {
+                form.field = index.min(3);
+                form.name.set_focused(index == 0);
+                form.pass.set_focused(index == 1);
+                form.again.set_focused(index == 2);
+            }
+            Some(Modal::AddNode { input }) => input.set_focused(true),
+            _ => {
+                self.send.focus_index(index);
+                self.screen = Screen::Send;
+                self.tabs.borrow_mut().active = Screen::Send.index();
+            }
+        }
+        Cmd::none()
+    }
+
+    fn click_arrow(&mut self, which: hit::Selector, delta: i32) -> Cmd<Msg> {
+        match which {
+            hit::Selector::Language => {
+                if let Some(Modal::CreateWallet(form)) = &mut self.modal {
+                    let n = coresettings::SEED_LANGUAGES.len();
+                    form.lang = if delta < 0 {
+                        (form.lang + n - 1) % n
+                    } else {
+                        (form.lang + 1) % n
+                    };
+                }
+            }
+            hit::Selector::Account => {
+                let n = self
+                    .status
+                    .as_ref()
+                    .and_then(|s| s.wallet.accounts)
+                    .unwrap_or(1)
+                    .max(1);
+                self.send.account = if delta < 0 {
+                    (self.send.account + n - 1) % n
+                } else {
+                    (self.send.account + 1) % n
+                };
+            }
+        }
+        Cmd::none()
+    }
+
+    /// A rendered chip does exactly what its key does — **one** code path, which is what makes
+    /// "two affordances, one label" true rather than a promise the two halves make separately.
+    fn click_button(&mut self, b: hit::Button) -> Cmd<Msg> {
+        match b {
+            hit::Button::Help => {
+                self.show_help = !self.show_help;
+                Cmd::none()
+            }
+            hit::Button::NextScreen => self.switch_screen(true),
+            hit::Button::OpenWallet => self.open_wallet_modal(),
+            hit::Button::CreateWallet => self.create_wallet_modal(),
+            hit::Button::CloseWallet => self.close_wallet(),
+            hit::Button::WalletDaemon => self.toggle_wallet_daemon(),
+            hit::Button::RefreshWallet => self.start(Action::WalletRefresh { start_height: 0 }),
+            hit::Button::Qr => {
+                match self.selected_address() {
+                    Some(address) => self.modal = Some(Modal::Qr { address }),
+                    None => self.note("no address to show yet", true),
+                }
+                Cmd::none()
+            }
+            hit::Button::NodeUp => self.confirm(Confirm::NodeUp),
+            hit::Button::NodeDown => self.confirm(Confirm::NodeDown),
+            hit::Button::Probe => self.start_probe(),
+            hit::Button::RefreshList => self.start_fetch(true),
+            hit::Button::AddNode => self.add_node_modal(),
+            hit::Button::UseNode => self.use_selected_node(),
+            hit::Button::PrevNode => self.previous_node(),
+        }
+    }
+
     fn on_node_key(&mut self, k: KeyEvent) -> Cmd<Msg> {
+        // The picker's filter is a focused input: it keeps every printable character and loses
+        // only `Tab`, which §7a.1 resolved above this function.
+        if self.picker.filter_open {
+            match k.code {
+                KeyCode::Escape | KeyCode::Enter | KeyCode::Down | KeyCode::Up => {
+                    self.picker.filter_open = false;
+                    self.picker.filter.set_focused(false);
+                }
+                _ => {
+                    self.picker.filter.handle_event(&Event::Key(k));
+                    // A filter that moved cannot keep a selection made against the old rows.
+                    self.picker.table.borrow_mut().select(None);
+                }
+            }
+            return Cmd::none();
+        }
         match k.code {
-            KeyCode::Tab => return self.set_screen(Screen::from_index(self.screen.index() + 1)),
+            // ---- the public-node picker (§7a.4) ----------------------------------
+            KeyCode::Char('p') => return self.start_probe(),
+            KeyCode::Char('f') => return self.start_fetch(true),
+            KeyCode::Enter => return self.use_selected_node(),
+            KeyCode::Char('a') => return self.add_node_modal(),
+            KeyCode::Char('H') => return self.previous_node(),
+            KeyCode::Char('/') => {
+                self.picker.filter_open = true;
+                self.picker.filter.set_focused(true);
+                return Cmd::none();
+            }
             KeyCode::Char('u') => return self.confirm(Confirm::NodeUp),
             KeyCode::Char('d') => return self.confirm(Confirm::NodeDown),
             KeyCode::Char('L') => {
@@ -947,20 +1589,34 @@ impl Tui {
                 };
                 return self.load_extras();
             }
-            KeyCode::Down | KeyCode::Char('j') => self.move_table(1),
-            KeyCode::Up | KeyCode::Char('k') => self.move_table(-1),
+            // `↑↓` move the **picker** on this screen: it is the pane a user acts on, and the
+            // peers table is a read-only display whose selection nothing consumes.
+            KeyCode::Down | KeyCode::Char('j') => self.move_picker(1),
+            KeyCode::Up | KeyCode::Char('k') => self.move_picker(-1),
             _ => {}
         }
         Cmd::none()
     }
 
+    /// `↑↓` on the picker. From **no** selection the first press selects row 0, which is how a
+    /// keyboard user reaches the table that deliberately opens with nothing selected (revision 4).
+    fn move_picker(&mut self, delta: i32) {
+        let n = self.picker_rows().len();
+        if n == 0 {
+            return;
+        }
+        let mut st = self.picker.table.borrow_mut();
+        let next = match st.selected {
+            None => 0,
+            Some(i) => (i as i32 + delta).clamp(0, n as i32 - 1) as usize,
+        };
+        st.select(Some(next));
+    }
+
     fn on_wallet_key(&mut self, k: KeyEvent) -> Cmd<Msg> {
         match k.code {
-            // KEYS says `Tab` is the next screen on every screen and `←→` swaps the Wallet's
-            // panes — and it is also the `?` overlay, so both halves have to be true. `Tab` used
-            // to swap panes here, which made the Wallet the one screen `Tab` could not leave,
-            // and `←→` did nothing at all.
-            KeyCode::Tab => return self.set_screen(Screen::from_index(self.screen.index() + 1)),
+            // `←→` swaps the Wallet's panes. `Tab` never reaches here: §7a.1 resolves it in
+            // `on_key`'s first arm, on every screen and in every focus state.
             KeyCode::Left | KeyCode::Right => {
                 self.wallet.pane = match self.wallet.pane {
                     Pane::Subaddresses => Pane::History,
@@ -968,13 +1624,12 @@ impl Tui {
                 };
             }
             KeyCode::Char('o') => return self.open_wallet_modal(),
-            KeyCode::Char('c') => {
-                return self.task("close", |ctx| {
-                    let w = WalletClient::from_ctx(ctx)?;
-                    fmonero_core::wallet_session::close(ctx, &w)?;
-                    Ok("wallet closed".into())
-                })
-            }
+            // **`c` is create and `x` closes** (§7a.5). The old binding was the collision that
+            // made the one key that looks like "create" do nothing visible on a machine with no
+            // wallets — half of the owner's complaint (4).
+            KeyCode::Char('c') => return self.create_wallet_modal(),
+            KeyCode::Char('x') => return self.close_wallet(),
+            KeyCode::Char('W') => return self.toggle_wallet_daemon(),
             KeyCode::Char('a') => {
                 let account = self.account_index();
                 return self.task("new address", move |ctx| {
@@ -1029,7 +1684,6 @@ impl Tui {
 
     fn on_log_key(&mut self, k: KeyEvent) -> Cmd<Msg> {
         match k.code {
-            KeyCode::Tab => return self.set_screen(Screen::from_index(self.screen.index() + 1)),
             KeyCode::Char('/') => {
                 self.logs.search_open = true;
                 self.logs.search.set_focused(true);
@@ -1212,7 +1866,222 @@ impl Tui {
                 });
                 Cmd::none()
             }
+            // ---- v5.5 --------------------------------------------------------------
+            Modal::SeedBackup { lines } => match k.code {
+                KeyCode::Enter | KeyCode::Escape => Cmd::none(),
+                _ => {
+                    self.modal = Some(Modal::SeedBackup { lines });
+                    Cmd::none()
+                }
+            },
+            Modal::CreateWallet(form) => {
+                let CreateForm {
+                    mut name,
+                    mut pass,
+                    mut again,
+                    mut lang,
+                    mut field,
+                    err,
+                } = *form;
+                // §7a.1, revision 1: `Up`/`Down` move, `Enter` advances from every control but
+                // the last where it submits, `Esc` unfocuses and then discards. This modal
+                // consumes `Tab` (it holds a typed password), so without a field key the flow
+                // complaint (4) asked for would be unreachable from a keyboard.
+                const LAST: usize = 3;
+                let refocus = |name: &mut TextInput,
+                               pass: &mut TextInput,
+                               again: &mut TextInput,
+                               field: usize| {
+                    name.set_focused(field == 0);
+                    pass.set_focused(field == 1);
+                    again.set_focused(field == 2);
+                };
+                match k.code {
+                    KeyCode::Escape => {
+                        zero(&mut pass);
+                        zero(&mut again);
+                        return Cmd::none();
+                    }
+                    KeyCode::Down => field = (field + 1).min(LAST),
+                    KeyCode::Up => field = field.saturating_sub(1),
+                    KeyCode::Enter if field < LAST => field += 1,
+                    KeyCode::Enter => {
+                        let want = name.value().trim().to_string();
+                        let p1 = pass.value().to_string();
+                        let p2 = again.value().to_string();
+                        let language = coresettings::SEED_LANGUAGES[lang].1.to_string();
+                        match self.create_wallet_refusal(&want, &p1, &p2) {
+                            Some(why) => {
+                                // Refused inline; nothing is sent, and the typed password stays
+                                // so the user can fix the other field.
+                                self.modal = Some(Modal::CreateWallet(Box::new(CreateForm {
+                                    name,
+                                    pass,
+                                    again,
+                                    lang,
+                                    field,
+                                    err: Some(why),
+                                })));
+                                return Cmd::none();
+                            }
+                            None => {
+                                zero(&mut again);
+                                zero(&mut pass);
+                                return self.start(Action::WalletCreate {
+                                    name: want,
+                                    password: p1,
+                                    language,
+                                });
+                            }
+                        }
+                    }
+                    KeyCode::Left if field == LAST => {
+                        lang = (lang + coresettings::SEED_LANGUAGES.len() - 1)
+                            % coresettings::SEED_LANGUAGES.len();
+                    }
+                    KeyCode::Right if field == LAST => {
+                        lang = (lang + 1) % coresettings::SEED_LANGUAGES.len();
+                    }
+                    _ => {
+                        match field {
+                            0 => name.handle_event(&Event::Key(k)),
+                            1 => pass.handle_event(&Event::Key(k)),
+                            2 => again.handle_event(&Event::Key(k)),
+                            _ => false,
+                        };
+                    }
+                }
+                refocus(&mut name, &mut pass, &mut again, field);
+                self.modal = Some(Modal::CreateWallet(Box::new(CreateForm {
+                    name,
+                    pass,
+                    again,
+                    lang,
+                    field,
+                    err,
+                })));
+                Cmd::none()
+            }
+            Modal::UseNode {
+                address,
+                wallet_open,
+            } => match k.code {
+                KeyCode::Char('y') | KeyCode::Enter => {
+                    self.picker.prev = fmonero_core::nodes::configured_address(&self.ctx);
+                    self.start(Action::NodeUseRemote {
+                        address,
+                        trusted: false,
+                    })
+                }
+                KeyCode::Escape => {
+                    self.note("cancelled — the node was not changed", false);
+                    Cmd::none()
+                }
+                _ => {
+                    self.modal = Some(Modal::UseNode {
+                        address,
+                        wallet_open,
+                    });
+                    Cmd::none()
+                }
+            },
+            Modal::AddNode { mut input } => match k.code {
+                KeyCode::Escape => Cmd::none(),
+                KeyCode::Enter => {
+                    let typed = input.value().trim().to_string();
+                    match fmonero_core::nodes::add_custom(&self.ctx, &typed) {
+                        Ok(node) => {
+                            self.note(format!("added {}", node.address), false);
+                            self.reload_picker();
+                        }
+                        // The SAME function the CLI validates with, so the TUI cannot accept a
+                        // string the CLI refuses — and the message is §2m.2's own (§5b).
+                        Err(e) => {
+                            self.modal = Some(Modal::AddNode { input });
+                            self.note(e.to_string(), true);
+                        }
+                    }
+                    Cmd::none()
+                }
+                _ => {
+                    input.handle_event(&Event::Key(k));
+                    self.modal = Some(Modal::AddNode { input });
+                    Cmd::none()
+                }
+            },
+            Modal::Notice { then } => match k.code {
+                KeyCode::Enter => {
+                    // `Enter` is the consent record, written to the cache's `notice_ack` — not
+                    // the cache's existence, which a bare `node list` can create while printing
+                    // nothing (§2n.5 rule 2, revision 7).
+                    if let Err(e) = fmonero_core::nodes::ack_notice(&self.ctx) {
+                        self.note(e.to_string(), true);
+                        return Cmd::none();
+                    }
+                    match then {
+                        NoticeThen::Fetch => self.start_fetch(true),
+                        NoticeThen::Probe => self.start_probe(),
+                    }
+                }
+                KeyCode::Escape => {
+                    self.note("nothing was contacted", false);
+                    Cmd::none()
+                }
+                _ => {
+                    self.modal = Some(Modal::Notice { then });
+                    Cmd::none()
+                }
+            },
         }
+    }
+
+    /// Close whatever modal is open, zeroing every password buffer it held (§2b.4). Used by
+    /// §7a.1's `Tab` (which closes every modal but the two that hold something undroppable) and
+    /// by a backdrop click (§7a.2).
+    fn close_modal(&mut self) {
+        match self.modal.take() {
+            Some(Modal::OpenWallet { mut pass, .. }) => zero(&mut pass),
+            Some(Modal::CreateWallet(mut form)) => {
+                zero(&mut form.pass);
+                zero(&mut form.again);
+            }
+            _ => {}
+        }
+    }
+
+    /// Every local refusal §7a.5 names, in the order a user meets them, so nothing is sent for
+    /// a mistake fmonero can see: a `/` in the name (§1b.5), a wallet that already exists, a
+    /// mismatched pair, and an empty password — for which there is deliberately **no** TUI
+    /// equivalent of `--allow-empty-password` (§4.1: an unencrypted wallet is a choice, and the
+    /// deliberate place to make it is a command line).
+    fn create_wallet_refusal(&self, name: &str, p1: &str, p2: &str) -> Option<String> {
+        if name.is_empty() {
+            return Some("a wallet name is required".into());
+        }
+        if name.contains('/') {
+            return Some("a wallet name may not contain `/` — the daemon refuses it".into());
+        }
+        if self
+            .ctx
+            .settings
+            .wallet
+            .dir
+            .join(format!("{name}.keys"))
+            .exists()
+        {
+            return Some(format!("{name} already exists in wallet.dir"));
+        }
+        if p1 != p2 {
+            return Some("the two passwords do not match".into());
+        }
+        if p1.is_empty() {
+            return Some(
+                "an empty password would leave the wallet unencrypted — run: \
+                 fmonero wallet create <name> --allow-empty-password --yes"
+                    .into(),
+            );
+        }
+        None
     }
 
     // ------------------------------------------------------------ modal builders
@@ -1274,6 +2143,74 @@ impl Tui {
             asking: false,
         });
         Cmd::none()
+    }
+
+    /// §7a.5's create-wallet modal. `c` is **create** now, and `x` closes: `c` for "close"
+    /// against `c` for "create" was a collision the old keymap resolved the wrong way — closing a
+    /// wallet is rare, reversible and reachable from a screen showing an open wallet, while
+    /// creating one is the thing a new user needs and the thing `c` universally suggests.
+    fn create_wallet_modal(&mut self) -> Cmd<Msg> {
+        let masked = |th: &Theme| {
+            TextInput::new()
+                .with_mask('•')
+                .with_style(th.text())
+                .with_cursor_style(Style::new().bg(th.accent).fg(th.selection))
+        };
+        let mut name = text_input(&self.theme);
+        name.set_focused(true);
+        // `English` is the default, and it is index 1 of `SEED_LANGUAGES` (upstream's order).
+        let lang = coresettings::SEED_LANGUAGES
+            .iter()
+            .position(|(_, en)| *en == coresettings::DEFAULT_SEED_LANGUAGE)
+            .unwrap_or(0);
+        self.modal = Some(Modal::CreateWallet(Box::new(CreateForm {
+            name,
+            pass: masked(&self.theme),
+            again: masked(&self.theme),
+            lang,
+            field: 0,
+            err: None,
+        })));
+        Cmd::none()
+    }
+
+    fn add_node_modal(&mut self) -> Cmd<Msg> {
+        let mut input = text_input(&self.theme);
+        input.set_focused(true);
+        self.modal = Some(Modal::AddNode { input });
+        Cmd::none()
+    }
+
+    /// `x` — close the open wallet.
+    fn close_wallet(&mut self) -> Cmd<Msg> {
+        self.task("close", |ctx| {
+            let w = WalletClient::from_ctx(ctx)?;
+            fmonero_core::wallet_session::close(ctx, &w)?;
+            Ok("wallet closed".into())
+        })
+    }
+
+    /// `W` — start the wallet daemon, or stop it when it is idle.
+    ///
+    /// **The same key stops it, and only when the unit is active, no wallet is open and nothing is
+    /// in flight** (§7a.5): stopping a daemon holding an open wallet is a thing the user will not
+    /// have meant, and `x` then `W` is the explicit two-step.
+    fn toggle_wallet_daemon(&mut self) -> Cmd<Msg> {
+        let Some(s) = self.status.as_ref() else {
+            return self.start(Action::WalletDaemonStart);
+        };
+        if !s.wallet.unit_active {
+            return self.start(Action::WalletDaemonStart);
+        }
+        if s.wallet.open || s.wallet.name.is_some() {
+            self.note("a wallet is open — press x to close it first", true);
+            return Cmd::none();
+        }
+        if self.action.is_some() {
+            self.note("something is already running", true);
+            return Cmd::none();
+        }
+        self.start(Action::WalletDaemonStop)
     }
 
     fn prompt_label(&mut self) -> Cmd<Msg> {
@@ -1422,6 +2359,10 @@ impl Model for Tui {
 
     fn init(&mut self) -> Cmd<Msg> {
         let mut cmds = vec![self.poll(), self.load_log()];
+        // The picker reads the **cache** on entry (`nodes::cached`, which cannot spawn), so a fetch
+        // is never on the render path and launching the TUI contacts nobody (§2n.5 rule 1, §2n.6).
+        self.reload_picker();
+        self.wallets = wallet_dir::list(&self.ctx).unwrap_or_default();
         match self.screen {
             Screen::Wallet => {
                 cmds.push(self.load_wallet());
@@ -1429,6 +2370,13 @@ impl Model for Tui {
             }
             Screen::Node => cmds.push(self.load_extras()),
             _ => {}
+        }
+        // `wallet.autostart` (§7a.5), default **false**: the owner's problem was finding the
+        // switch, not that a program had failed to guess, and a tool that starts a daemon on launch
+        // has done something the user did not ask for. This is its **one** reader — `status` must
+        // never start anything (§2e), and neither may the widget or the doctor.
+        if self.ctx.settings.wallet.autostart && self.action.is_none() {
+            cmds.push(self.start(Action::WalletDaemonStart));
         }
         Cmd::batch(cmds)
     }
@@ -1461,6 +2409,7 @@ impl Model for Tui {
     fn update(&mut self, msg: Msg) -> Cmd<Msg> {
         match msg {
             Msg::Raw(Event::Key(k)) => self.on_key(k),
+            Msg::Raw(Event::Mouse(ev)) => self.on_mouse(ev),
             Msg::Raw(_) => Cmd::none(),
             Msg::Poll => {
                 self.maybe_reload_theme();
@@ -1468,6 +2417,10 @@ impl Model for Tui {
                 if self.logs.follow && self.screen == Screen::Log {
                     cmds.push(self.load_log());
                 }
+                // §2n.4's cadence, and it is the **only** automatic probe in this design: the node
+                // already in use, only while the Node screen is showing, only every
+                // `node.remote_probe_sec` seconds, and never from `status`.
+                cmds.push(self.maybe_probe_configured());
                 Cmd::batch(cmds)
             }
             Msg::Tick => {
@@ -1648,8 +2601,80 @@ impl Model for Tui {
                         self.wallet.pane = Pane::History;
                         self.wallet.list.borrow_mut().selected = Some(0);
                     }
+                    // ---- v5.5 -------------------------------------------------------
+                    Ok(Outcome::Created { name, hint }) => {
+                        self.exit.store(0, Ordering::SeqCst);
+                        self.note(format!("{name} created and open"), false);
+                        // The seed-backup modal carries `seed_backup_hint` verbatim from core —
+                        // the same string the CLI prints. **fmonero never displays a seed**
+                        // (§2b, §0): showing one would put it into a terminal scrollback, a tmux
+                        // buffer and possibly a screen recording, for a value whose disclosure is
+                        // total and irreversible loss. The modal says so, so the omission reads
+                        // as a decision.
+                        let mut lines: Vec<String> = hint.lines().map(str::to_string).collect();
+                        lines.push(String::new());
+                        lines.push(
+                            "fmonero never displays a seed — a scrollback is not a safe place \
+                             for one."
+                                .into(),
+                        );
+                        if self.ctx.settings.node.mode.is_remote() {
+                            // §2m.3: the NODE chose where this wallet starts scanning, and this
+                            // modal is the last moment before the first refresh.
+                            lines.push(
+                                "remote mode: the node decided this wallet's restore height — \
+                                 keep it answering until the first refresh finishes."
+                                    .into(),
+                            );
+                        }
+                        self.modal = Some(Modal::SeedBackup { lines });
+                        self.wallets = wallet_dir::list(&self.ctx).unwrap_or_default();
+                    }
+                    Ok(Outcome::NodeList(list)) => {
+                        self.exit.store(0, Ordering::SeqCst);
+                        self.picker.progress = None;
+                        self.picker.err = None;
+                        self.note(format!("{} public nodes", list.nodes.len()), false);
+                        self.picker.list = Some(*list);
+                        self.sort_picker();
+                    }
+                    Ok(Outcome::Probes(pairs)) => {
+                        self.exit.store(0, Ordering::SeqCst);
+                        self.picker.progress = None;
+                        let reached = pairs.iter().filter(|(_, p)| p.reachable).count();
+                        self.note(
+                            format!("probed {} · {reached} answered", pairs.len()),
+                            false,
+                        );
+                        // The cache is the authority (`nodes::record_probes` wrote it), so the
+                        // screen re-reads rather than patching its own copy: one place decides
+                        // what a row holds.
+                        self.reload_picker();
+                    }
+                    Ok(Outcome::NodeSwitched {
+                        address,
+                        must_reopen,
+                    }) => {
+                        self.exit.store(0, Ordering::SeqCst);
+                        self.picker.probed_at = None;
+                        self.reload_picker();
+                        match must_reopen {
+                            // The reopen is offered **by name, at the moment it is needed** —
+                            // the recovery v5.4's objection to a TUI mode switch asked for
+                            // (§7a.3, §2m.5 step 9).
+                            Some(name) => {
+                                self.note(
+                                    format!("now on {address} · {name} was closed — reopen it"),
+                                    true,
+                                );
+                                return self.open_wallet_modal();
+                            }
+                            None => self.note(format!("now on {address}"), false),
+                        }
+                    }
                     Err(e) => {
                         self.exit.store(e.code, Ordering::SeqCst);
+                        self.picker.progress = None;
                         if matches!(self.send.stage, Stage::Building | Stage::Relaying) {
                             self.send.back_to_form();
                         }

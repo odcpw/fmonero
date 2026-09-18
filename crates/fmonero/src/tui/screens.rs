@@ -22,6 +22,7 @@ use unicode_width::UnicodeWidthStr;
 
 use fmonero_core::{history, units::Layout, Severity, Transfer};
 
+use super::hit::{Button, HitPane, Selector};
 use super::theme::Theme;
 use super::{Modal, NodeView, Pane, Screen, Tui, KEYS, SPINNER};
 
@@ -52,6 +53,10 @@ pub(super) fn tier_of(b: Rect) -> Tier {
 
 pub(super) fn view(m: &Tui, frame: &mut Frame) {
     let b = frame.bounds();
+    // §7a.2: the hit map is the layout of **this** frame and nothing else. A screen that stops
+    // drawing a chip must stop accepting clicks on it, so the map is cleared here and rebuilt by
+    // the same code that draws.
+    m.hits.begin();
     if b.width == 0 || b.height == 0 {
         return;
     }
@@ -123,6 +128,14 @@ pub(super) fn view(m: &Tui, frame: &mut Frame) {
             list_modal(m, title, &[], usize::MAX, Some((input, "")), frame);
         }
         Some(Modal::Qr { address }) => qr_modal(m, address, frame),
+        Some(Modal::CreateWallet(form)) => create_modal(m, form, frame),
+        Some(Modal::SeedBackup { lines }) => seed_modal(m, lines, frame),
+        Some(Modal::UseNode {
+            address,
+            wallet_open,
+        }) => use_node_modal(m, address, wallet_open.as_deref(), frame),
+        Some(Modal::AddNode { input }) => add_node_modal(m, input, frame),
+        Some(Modal::Notice { .. }) => notice_modal(m, frame),
         None => {}
     }
     if let super::send::Stage::Built(plan) = &m.send.stage {
@@ -132,6 +145,9 @@ pub(super) fn view(m: &Tui, frame: &mut Frame) {
         detail_modal(m, frame);
     }
     if m.show_help {
+        // Any click closes it (§7a.2 priority 1): an overlay that covers the screen and ignores
+        // clicks is a screen the user cannot leave with the device that opened it.
+        m.hits.overlay();
         help(m, frame);
     }
 }
@@ -142,9 +158,11 @@ fn tab_strip(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
     let th = &m.theme;
     if tier == Tier::Narrow {
         let mut spans = Vec::new();
+        let mut x = area.x;
         for (i, label) in ["1", "2", "3", "4"].iter().enumerate() {
             if i > 0 {
                 spans.push(Span::styled("·", th.dimmed()));
+                x += 1;
             }
             let style = if i == m.screen.index() {
                 th.accented()
@@ -152,6 +170,10 @@ fn tab_strip(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
                 th.dimmed()
             };
             spans.push(Span::styled((*label).to_string(), style));
+            // Even collapsed to `1·2·3·4`, each digit is a hit target: the tier where a user is
+            // most likely to be stuck is not the tier to take the way out away (§7a resize).
+            m.hits.tab(i, Rect::new(x, area.y, 1, 1));
+            x += 1;
         }
         spans.push(Span::styled(format!("  {}", m.screen.name()), th.title()));
         line_at(spans, area, frame);
@@ -170,6 +192,21 @@ fn tab_strip(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
     .active_style(th.selected())
     .separator("");
     StatefulWidget::render(&tabs, cols[0], frame, &mut m.tabs.borrow_mut());
+    // The fix for "the tabs look clickable and are not" (§7a.2). The labels' widths are the
+    // literals above, so the rects are computed from the same source as the text — `Tabs` does
+    // not report where it drew, and `register_hit` does nothing under `App::fullscreen` (§1.4).
+    let mut x = cols[0].x;
+    for (i, label) in [" 1 Node ", " 2 Wallet ", " 3 Send ", " 4 Log "]
+        .iter()
+        .enumerate()
+    {
+        let w = label.width() as u16;
+        if x + w > cols[0].right() {
+            break;
+        }
+        m.hits.tab(i, Rect::new(x, cols[0].y, w, 1));
+        x += w;
+    }
 
     let mut right = String::new();
     if m.poll_inflight || m.action.is_some() {
@@ -221,10 +258,25 @@ fn pending_banner(m: &Tui, area: Rect, frame: &mut Frame) {
 
 fn status_line(m: &Tui, area: Rect, frame: &mut Frame) {
     let th = &m.theme;
-    StatusLine::new()
-        .style(th.dimmed())
-        .right(StatusItem::key_hint("?", "help"))
-        .render(area, frame);
+    // **`⇥ screens` is §7a.1's rule, stated on every screen and in every focus state** (v5.5).
+    // The rule's whole value is that it is true everywhere, and a user who has just been trapped
+    // in a field needs to read it from where they are. Both segments are hit targets, because
+    // they are the two things on this line already labelled like controls (§7a.2).
+    let right = "⇥ screens  ? help";
+    let rw = right.width() as u16;
+    if area.width > rw {
+        let x = area.right() - rw;
+        para(right.to_string(), th.dimmed(), false).render(Rect::new(x, area.y, rw, 1), frame);
+        m.hits.status(
+            Rect::new(x + rw - 6, area.y, 6, 1),
+            Rect::new(x, area.y, 9, 1),
+        );
+    } else {
+        StatusLine::new()
+            .style(th.dimmed())
+            .right(StatusItem::key_hint("?", "help"))
+            .render(area, frame);
+    }
     let (node, wallet) = (m.node_badge(), m.wallet_badge());
     let mut spans = vec![
         Span::styled("●", th.badge(node)),
@@ -267,7 +319,7 @@ fn status_line(m: &Tui, area: Rect, frame: &mut Frame) {
     }
     line_at(
         spans,
-        Rect::new(area.x, area.y, area.width.saturating_sub(8), 1),
+        Rect::new(area.x, area.y, area.width.saturating_sub(19), 1),
         frame,
     );
 }
@@ -278,6 +330,11 @@ fn node_screen(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
     if area.height < 4 {
         return;
     }
+    // **v5.5: the picker is on this screen in both modes** (§7a.3). In remote mode it is the main
+    // pane and fills the space the peers table occupies locally — every pane that needs a gated
+    // method is unavailable there, which was four fifths of the owner's dead end. In local mode it
+    // sits below the peers table and is how someone finds an address to switch to.
+    let remote = m.status.as_ref().map(|s| s.node.layout) == Some(Layout::Remote);
     match tier {
         Tier::Wide => {
             // The peers table needs its own full width for the pruning seed and the rates
@@ -297,8 +354,16 @@ fn node_screen(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
             let bottom = Flex::horizontal()
                 .constraints([Constraint::Percentage(62.0), Constraint::Fill])
                 .split(rows[1]);
-            list_pane(m, bottom[0], frame, bottom[0].width >= 70);
             warnings_pane(m, bottom[1], frame);
+            if remote {
+                picker_pane(m, bottom[0], frame, tier);
+            } else {
+                let left = Flex::vertical()
+                    .constraints([Constraint::Percentage(45.0), Constraint::Fill])
+                    .split(bottom[0]);
+                list_pane(m, left[0], frame, left[0].width >= 70);
+                picker_pane(m, left[1], frame, tier);
+            }
         }
         Tier::Medium => {
             // The panes DEGRADE in priority order instead of overflowing. Fixed(10) + Fixed(6)
@@ -324,31 +389,262 @@ fn node_screen(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
                     ])
                     .split(area);
                 node_hero(m, rows[0], frame);
-                list_pane(m, rows[1], frame, false);
+                if remote {
+                    picker_pane(m, rows[1], frame, tier);
+                } else {
+                    list_pane(m, rows[1], frame, false);
+                }
                 warnings_pane(m, rows[2], frame);
             } else {
                 let rows = Flex::vertical()
                     .constraints([
                         Constraint::Fixed(10),
-                        Constraint::Fixed(6),
+                        Constraint::Fill,
                         Constraint::Fill,
                         Constraint::Fixed(5),
                     ])
                     .split(area);
                 node_hero(m, rows[0], frame);
-                pool_pane(m, rows[1], frame);
-                list_pane(m, rows[2], frame, false);
+                if remote {
+                    pool_pane(m, rows[1], frame);
+                } else {
+                    list_pane(m, rows[1], frame, false);
+                }
+                picker_pane(m, rows[2], frame, tier);
                 warnings_pane(m, rows[3], frame);
             }
         }
         _ => {
+            // Narrow keeps the hero, the picker (address, health and — when probed — `ms`) and
+            // the warnings pane. **Warnings are never the pane that goes** (§7a), and the picker
+            // stays because the tier where a user is most likely to be stuck is not the tier to
+            // hide the way out.
             let rows = Flex::vertical()
-                .constraints([Constraint::Fixed(9), Constraint::Fill])
+                .constraints([Constraint::Fixed(9), Constraint::Fill, Constraint::Fixed(4)])
                 .split(area);
             node_hero(m, rows[0], frame);
-            warnings_pane(m, rows[1], frame);
+            picker_pane(m, rows[1], frame, tier);
+            warnings_pane(m, rows[2], frame);
         }
     }
+}
+
+/// The public-node picker (§7a.4, v5.5) — the Node screen's lower pane, in both modes.
+///
+/// It answers the owner's *"fetch a list of public nodes so I can choose one"* and nothing more:
+/// it lists, it probes, it switches. **Two column groups**, headed, so the table itself states
+/// §2n.2's distinction — what monero.fail says, from monero.fail's vantage point, and what this
+/// machine measured — and the two are never combined into a score fmonero would have to defend.
+fn picker_pane(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
+    let th = &m.theme;
+    let Some(inner) = framed(area, th, " Public nodes ", false, frame) else {
+        return;
+    };
+    if inner.height == 0 {
+        return;
+    }
+    // **The no-cache state** (revision 8). This is the screen `tui --node` and the bar widget's
+    // `Choose node…` button land a first-time user on, so it gets §7a.5's treatment rather than an
+    // empty table under a footer rendered against a `fetched_at` that does not exist.
+    if m.picker.list.is_none() {
+        let rows = Flex::vertical()
+            .constraints([Constraint::Fixed(1), Constraint::Fixed(1), Constraint::Fill])
+            .split(inner);
+        para("No public-node list yet.".to_string(), th.text(), false).render(rows[0], frame);
+        chips(
+            m,
+            rows[1],
+            &[(Button::RefreshList, "f", "Fetch the list")],
+            frame,
+        );
+        lines_at(
+            vec![
+                Line::styled(
+                    "Fetching tells monero.fail your IP address. Nothing else is contacted.",
+                    th.dimmed(),
+                ),
+                Line::styled(m.picker.err.clone().unwrap_or_default(), th.err()),
+            ],
+            rows[2],
+            true,
+            frame,
+        );
+        return;
+    }
+    let configured = fmonero_core::nodes::configured_address(&m.ctx);
+    let rows_data = m.picker_rows();
+    let probed_any = rows_data.iter().any(|n| n.probe.is_some());
+    // Columns drop from the RIGHT at the narrower tiers, and **the address is never elided at any
+    // tier** (§7a.4) — for the reason the send confirm never elides one.
+    let (health, checked, probe_cols) = match tier {
+        Tier::Wide => (true, true, true),
+        Tier::Medium => (true, false, true),
+        _ => (true, false, probed_any),
+    };
+    let mut header: Vec<&'static str> = vec!["address"];
+    if health {
+        header.push("health");
+        header.push("height");
+    }
+    if checked {
+        header.push("checked");
+    }
+    if probe_cols {
+        header.push("ms");
+        header.push("node height");
+        header.push("synced");
+    }
+    let now = fmonero_core::now_unix();
+    let table_rows: Vec<TableRow> = rows_data
+        .iter()
+        .map(|n| {
+            let mark = if configured.as_deref() == Some(n.address.as_str()) {
+                "● "
+            } else {
+                "  "
+            };
+            let tag = if n.custom {
+                " own"
+            } else if n.web_compatible {
+                " web"
+            } else {
+                ""
+            };
+            let mut cells = vec![format!("{mark}{}{tag}", n.address)];
+            if health {
+                // The ratio **with its sample size**: 100 % of 3 and 72 % of 94 are not
+                // comparable, and a bare percent invites the comparison (§2n.1). A `custom` row
+                // renders `—` here because monero.fail has never heard of it.
+                cells.push(match (n.health_ratio, n.health_checks) {
+                    (Some(r), Some(c)) => format!("{}% of {c}", (r * 100.0).round() as i64),
+                    _ => "—".into(),
+                });
+                cells.push(
+                    n.health_last_height
+                        .map(|h| h.to_string())
+                        .unwrap_or_else(|| "—".into()),
+                );
+            }
+            if checked {
+                cells.push(match (n.health_checked_at, &n.health_checked_at_text) {
+                    (Some(t), _) => age((now - t).max(0) as u64),
+                    (None, Some(text)) => fit(text, 16),
+                    _ => "—".into(),
+                });
+            }
+            if probe_cols {
+                match &n.probe {
+                    None => {
+                        cells.push("—".into());
+                        cells.push("—".into());
+                        cells.push("—".into());
+                    }
+                    Some(p) if p.reachable => {
+                        cells.push(opt(p.latency_ms));
+                        cells.push(opt(p.height));
+                        cells.push(match p.synchronized {
+                            Some(true) => "yes".into(),
+                            Some(false) => "no".into(),
+                            None => "—".into(),
+                        });
+                    }
+                    // A failure is a result, and its reason is the useful half (§2n.4): the five
+                    // hosts that timed out from this machine are the most useful rows in a table
+                    // monero.fail rated fine.
+                    Some(p) => {
+                        cells.push(p.reason.unwrap_or("no").to_string());
+                        cells.push("—".into());
+                        cells.push("—".into());
+                    }
+                }
+            }
+            TableRow::new(cells)
+        })
+        .collect();
+    let body = if m.picker.filter_open {
+        let split = Flex::vertical()
+            .constraints([Constraint::Fixed(1), Constraint::Fill])
+            .split(inner);
+        search_row(
+            &m.picker.filter,
+            "filter by address",
+            true,
+            th,
+            split[0],
+            frame,
+        );
+        split[1]
+    } else {
+        inner
+    };
+    let rows = Flex::vertical()
+        .constraints([Constraint::Fill, Constraint::Fixed(1), Constraint::Fixed(1)])
+        .split(body);
+    let mut widths: Vec<Constraint> = vec![Constraint::Fill];
+    for _ in 1..header.len() {
+        widths.push(Constraint::Fixed(12));
+    }
+    let t = Table::new(table_rows, widths)
+        .header(TableRow::new(header.clone()).style(th.dimmed()))
+        .style(th.text())
+        .highlight_style(th.selected());
+    let mut state = m.picker.table.borrow_mut();
+    StatefulWidget::render(&t, rows[0], frame, &mut state);
+    // One place computes a row index, and it is `hit.rs` — given the geometry recorded here
+    // (§7a.2). `+1` for the header row the table draws above its first data row.
+    m.hits.pane(
+        HitPane::Picker,
+        rows[0],
+        rows[0].y + 1,
+        rows[0].height.saturating_sub(1),
+        state.offset,
+    );
+    drop(state);
+    // The footer, which is where `skipped_no_port` and `skipped_invalid` surface — a list that
+    // silently showed 158 of 195 would look like a truncated fetch (§2n.1).
+    if let Some(list) = m.picker.list.as_ref() {
+        let footer = match &m.picker.progress {
+            Some(p) => p.clone(),
+            None => format!(
+                "{} nodes · list {} old · {} skipped (no port) · {} skipped (bad address) · source {}",
+                rows_data.len(),
+                list.cache_age_sec.map(age).unwrap_or_else(|| "—".into()),
+                list.skipped_no_port,
+                list.skipped_invalid,
+                list.source,
+            ),
+        };
+        para(
+            fit(&footer, rows[1].width as usize),
+            if m.picker.progress.is_some() {
+                th.warn()
+            } else {
+                th.dimmed()
+            },
+            false,
+        )
+        .render(rows[1], frame);
+    }
+    chip_row(
+        m,
+        rows[2],
+        &[
+            (Button::Probe, "p", "Probe"),
+            (
+                Button::RefreshList,
+                "f",
+                if m.picker.list.is_some() {
+                    "Refresh list"
+                } else {
+                    "Fetch the list"
+                },
+            ),
+            (Button::UseNode, "Enter", "Use this node"),
+            (Button::AddNode, "a", "Add a node"),
+            (Button::PrevNode, "H", "Previous node"),
+        ],
+        frame,
+    );
 }
 
 fn node_hero(m: &Tui, area: Rect, frame: &mut Frame) {
@@ -480,6 +776,23 @@ fn node_hero(m: &Tui, area: Rect, frame: &mut Frame) {
         }
     } else {
         lines.push(Line::styled("reading status…", th.dimmed()));
+    }
+    // The `u`/`d` chips, **in local mode only** (§7a.2's rule that a key hint is a button, and
+    // §6.5's rule that a control which can never be enabled here teaches the user the app is
+    // broken): in remote mode both commands exit 4 `remote_node`, and `Choose node…` — the picker
+    // below — is what stands in their place.
+    let local = m.status.as_ref().map(|s| s.node.layout) != Some(Layout::Remote);
+    let used = lines.len() as u16;
+    if local && inner.height > used {
+        chip_row(
+            m,
+            Rect::new(inner.x, inner.y + used, inner.width, 1),
+            &[
+                (Button::NodeUp, "u", "Start node"),
+                (Button::NodeDown, "d", "Stop node"),
+            ],
+            frame,
+        );
     }
     lines_at(lines, inner, false, frame);
     if let Some((row, value)) = gauge {
@@ -742,45 +1055,167 @@ fn wallet_screen(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
     if area.height < 4 {
         return;
     }
-    let th = &m.theme;
     let rows = Flex::vertical()
         .constraints([Constraint::Fixed(3), Constraint::Fill])
         .split(area);
     wallet_header(m, rows[0], frame);
     let open = m.status.as_ref().is_some_and(|s| s.wallet.open);
     if !open {
-        let Some(inner) = framed(rows[1], th, " Wallet ", true, frame) else {
-            return;
-        };
-        let text = match m.status.as_ref() {
-            Some(s) if !s.wallet.reachable => {
-                "Wallet daemon is not running (press o to start it and open a wallet)"
-            }
-            Some(_) => "No wallet open — press o",
-            None => "reading status…",
-        };
-        para(text.to_string(), th.dimmed(), true).render(inner, frame);
+        wallet_empty(m, rows[1], frame);
         return;
     }
+    // Every key hint on an open wallet is a chip too (§7a.2): a hint that is not clickable is half
+    // of what the owner asked for.
+    let body = Flex::vertical()
+        .constraints([Constraint::Fill, Constraint::Fixed(1)])
+        .split(rows[1]);
+    chip_row(
+        m,
+        body[1],
+        &[
+            (Button::RefreshWallet, "R", "Refresh"),
+            (Button::Qr, "Q", "QR"),
+            (Button::CloseWallet, "x", "Close"),
+        ],
+        frame,
+    );
     match tier {
         Tier::Wide => {
             let cols = Flex::horizontal()
                 .constraints([Constraint::Percentage(42.0), Constraint::Fill])
-                .split(rows[1]);
+                .split(body[0]);
             subaddress_pane(m, cols[0], frame);
             history_pane(m, cols[1], frame, true);
         }
         Tier::Medium => {
             let split = Flex::vertical()
                 .constraints([Constraint::Fixed(8), Constraint::Fill])
-                .split(rows[1]);
+                .split(body[0]);
             subaddress_pane(m, split[0], frame);
             history_pane(m, split[1], frame, false);
         }
         _ => match m.wallet.pane {
-            Pane::Subaddresses => subaddress_pane(m, rows[1], frame),
-            Pane::History => history_pane(m, rows[1], frame, false),
+            Pane::Subaddresses => subaddress_pane(m, body[0], frame),
+            Pane::History => history_pane(m, body[0], frame, false),
         },
+    }
+}
+
+/// §7a.5's empty state: **a panel, not an empty table.**
+///
+/// Read against v5.4, the owner's confusion was entirely earned. On a fresh remote-mode machine
+/// this screen said *"Wallet daemon is not running (press o to start it and open a wallet)"* —
+/// true and useless, because `o` lists the wallets in `wallet.dir` and there were none; `c` was
+/// **close**, not create, so the one key that looks like "create" did nothing visible; and there
+/// was no create flow in the TUI at all. Three dead ends. This is three buttons and two status
+/// lines instead, and the wallet count is **real** (`wallet_dir::list`), so `Open wallet…` reads
+/// `0 wallets` and the user can see *why* `o` will not help before pressing it.
+fn wallet_empty(m: &Tui, area: Rect, frame: &mut Frame) {
+    let th = &m.theme;
+    let Some(inner) = framed(area, th, " Wallet ", true, frame) else {
+        return;
+    };
+    if inner.height == 0 {
+        return;
+    }
+    let n = m.wallets.len();
+    let dir = m.ctx.settings.wallet.dir.display().to_string();
+    let open_label = format!("Open wallet…      pick one of the {n} wallets in {dir}");
+    let rows = Flex::vertical()
+        .constraints([
+            Constraint::Fixed(1),
+            Constraint::Fixed(1),
+            Constraint::Fixed(3),
+            Constraint::Fixed(1),
+            Constraint::Fill,
+        ])
+        .split(inner);
+    para("No wallet is open.".to_string(), th.text(), false).render(rows[0], frame);
+    // Every bracketed chip is a hit target (§7a.2), and the stacked form is kept at **every**
+    // tier: a screen whose whole content is three buttons has nothing to drop.
+    chips(
+        m,
+        rows[2],
+        &[
+            (Button::OpenWallet, "o", open_label.as_str()),
+            (
+                Button::CreateWallet,
+                "c",
+                "Create wallet…    a new wallet, on this machine, in that directory",
+            ),
+            (
+                Button::WalletDaemon,
+                "W",
+                "Start the wallet daemon   (not needed first — opening or creating one starts it)",
+            ),
+        ],
+        frame,
+    );
+    // The daemon line is one of exactly four strings, and the node line is there because "which
+    // node" and "is the daemon up" were the two questions the old screen answered in two
+    // different places, one of them a refusal.
+    lines_at(
+        vec![
+            Line::styled(
+                format!("wallet daemon: {}", wallet_daemon_phrase(m)),
+                th.dimmed(),
+            ),
+            Line::styled(format!("node: {}", node_phrase(m)), th.dimmed()),
+        ],
+        rows[4],
+        true,
+        frame,
+    );
+    let _ = (rows[1], rows[3]);
+}
+
+/// The four strings §7a.5 allows, and no fifth.
+fn wallet_daemon_phrase(m: &Tui) -> String {
+    if m.action
+        .as_ref()
+        .is_some_and(|a| a.label.contains("wallet daemon"))
+    {
+        return "starting…".into();
+    }
+    let Some(s) = m.status.as_ref() else {
+        return "reading status…".into();
+    };
+    if s.wallet.unit_active {
+        return "up".into();
+    }
+    // `idle` rather than `not running` in remote mode with nothing open: the daemon is DESIGNED to
+    // be down until a wallet is opened (§4.2 writes both units disabled), which is the same fact
+    // §5's `wallet_idle` takes out of the alarm channel.
+    if s.node.layout == Layout::Remote && s.wallet.name.is_none() {
+        "idle · starts when you open a wallet".into()
+    } else {
+        "not running".into()
+    }
+}
+
+fn node_phrase(m: &Tui) -> String {
+    let Some(s) = m.status.as_ref() else {
+        return "—".into();
+    };
+    match s.node.layout {
+        Layout::Remote => format!(
+            "remote · {} · {}",
+            s.node.url,
+            if s.node.trusted {
+                "trusted"
+            } else {
+                "untrusted"
+            }
+        ),
+        _ => format!(
+            "local · {} · {}",
+            s.node.url,
+            match s.node.reachable {
+                Some(true) => "up",
+                Some(false) => "down",
+                None => "—",
+            }
+        ),
     }
 }
 
@@ -1002,7 +1437,16 @@ fn history_pane(m: &Tui, area: Rect, frame: &mut Frame, wide: bool) {
         .style(th.text())
         .highlight_style(th.selected())
         .fixed_height(1);
-    StatefulWidget::render(&list, rows[2], frame, &mut m.wallet.list.borrow_mut());
+    let mut lst = m.wallet.list.borrow_mut();
+    StatefulWidget::render(&list, rows[2], frame, &mut lst);
+    m.hits.pane(
+        HitPane::History,
+        rows[2],
+        rows[2].y,
+        rows[2].height,
+        lst.scroll_offset(),
+    );
+    drop(lst);
     if m.wallet.wh.is_none() && rows[2].height > 0 {
         // §4.1: `—` rather than 0, and a footer saying which guarantee was given up.
         para(
@@ -1149,6 +1593,9 @@ fn log_screen(m: &Tui, area: Rect, frame: &mut Frame) {
         frame,
         &mut m.logs.state.borrow_mut(),
     );
+    // The wheel scrolls the log under the cursor (§7a.2). Its rows are not click targets: a log
+    // line is not a control, and a click that selected one would do nothing a user asked for.
+    m.hits.pane(HitPane::Log, rows[1], rows[1].bottom(), 0, 0);
 }
 
 // ---------------------------------------------------------------- modals
@@ -1205,6 +1652,296 @@ pub(super) fn list_modal(
             frame,
         );
     }
+}
+
+/// A row of `[key] Label` chips, each with a hit rect (§7a.2).
+///
+/// **The design rule, in one function**: *if a screen tells the user to press a key, that text is
+/// the button.* Two affordances, one label, no divergence possible — a hint that is not clickable
+/// and a button that does not name its key are the two ways this drifts, and both are impossible
+/// when one call renders the text and records the rect.
+fn chips(m: &Tui, area: Rect, items: &[(Button, &str, &str)], frame: &mut Frame) {
+    let th = &m.theme;
+    for (i, (button, key, label)) in items.iter().enumerate() {
+        let y = area.y + i as u16;
+        if y >= area.bottom() {
+            return;
+        }
+        let text = format!("[{key}] {label}");
+        let w = (text.width() as u16).min(area.width);
+        let rect = Rect::new(area.x, y, w, 1);
+        para(text, th.selected(), false).render(rect, frame);
+        m.hits.button(*button, rect);
+    }
+}
+
+/// The chips of a key row, laid out horizontally — for the picker's footer, where they sit on one
+/// line beside each other rather than stacked.
+fn chip_row(m: &Tui, area: Rect, items: &[(Button, &str, &str)], frame: &mut Frame) {
+    let th = &m.theme;
+    let mut x = area.x;
+    for (button, key, label) in items {
+        let text = format!("[{key}] {label}");
+        let w = text.width() as u16 + 1;
+        if x + w > area.right() {
+            return;
+        }
+        let rect = Rect::new(x, area.y, w - 1, 1);
+        para(text, th.selected(), false).render(rect, frame);
+        m.hits.button(*button, rect);
+        x += w;
+    }
+}
+
+/// A `◂ value ▸` selector with both arrows as hit rects (§7a.2, revision 6).
+///
+/// Every control the keymap reaches with `←→` renders its two arrows as targets — the omission
+/// that would otherwise have left a mouse-only user unable to change the fee priority, the sending
+/// account or the seed language.
+fn selector(
+    m: &Tui,
+    area: Rect,
+    which: Selector,
+    label: &str,
+    value: &str,
+    focused: bool,
+    frame: &mut Frame,
+) {
+    let th = &m.theme;
+    let style = if focused { th.selected() } else { th.text() };
+    let text = format!("{label} ◂ {value} ▸");
+    para(text.clone(), style, false).render(area, frame);
+    let lead = label.width() as u16 + 1;
+    if area.width > lead + 2 {
+        m.hits
+            .arrow(which, -1, Rect::new(area.x + lead, area.y, 1, 1));
+        let tail = text.width() as u16;
+        if tail <= area.width {
+            m.hits
+                .arrow(which, 1, Rect::new(area.x + tail - 1, area.y, 1, 1));
+        }
+    }
+}
+
+/// §7a.5's create-wallet modal: four controls, `Up`/`Down` between them, `Enter` advancing from
+/// every one but the last where it submits, and the field key stated **in the modal** because
+/// this is one of the exactly two that consume `Tab` (§7a.1, revision 1).
+fn create_modal(m: &Tui, form: &super::CreateForm, frame: &mut Frame) {
+    let th = &m.theme;
+    let (name, pass, again) = (&form.name, &form.pass, &form.again);
+    let (lang, field, err) = (form.lang, form.field, form.err.as_deref());
+    let Some(inner) = overlay(m, frame, 66, 13, " Create a wallet ") else {
+        return;
+    };
+    m.hits.modal(inner);
+    let bg = th.selection;
+    let rows = Flex::vertical()
+        .constraints([
+            Constraint::Fixed(1),
+            Constraint::Fixed(1),
+            Constraint::Fixed(1),
+            Constraint::Fixed(1),
+            Constraint::Fixed(1),
+            Constraint::Fixed(1),
+            Constraint::Fill,
+        ])
+        .split(inner);
+    for (i, (label, input)) in [
+        ("name      ", name),
+        ("password  ", pass),
+        ("again     ", again),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let off = label.width() as u16;
+        para((*label).to_string(), th.dimmed().bg(bg), false)
+            .render(Rect::new(rows[i].x, rows[i].y, off, 1), frame);
+        let box_ = Rect::new(
+            rows[i].x + off,
+            rows[i].y,
+            rows[i].width.saturating_sub(off).max(1),
+            1,
+        );
+        input.render(box_, frame);
+        m.hits.field(i, box_);
+    }
+    selector(
+        m,
+        rows[3],
+        Selector::Language,
+        "language  ",
+        fmonero_core::settings::SEED_LANGUAGES[lang].1,
+        field == 3,
+        frame,
+    );
+    if let Some(why) = err {
+        para(why.to_string(), th.err().bg(bg), true).render(rows[4], frame);
+    }
+    lines_at(
+        vec![
+            Line::styled(
+                "↑↓ fields · Enter next, then create · Esc discards",
+                th.dimmed().bg(bg),
+            ),
+            // The one documented `Tab` exception, documented IN the modal (§7a.1).
+            Line::styled("Tab is held here — Esc to discard first", th.warn().bg(bg)),
+        ],
+        rows[5],
+        false,
+        frame,
+    );
+    let _ = rows[6];
+}
+
+/// §7a.5's seed-backup modal — dismiss-only, and it renders `seed_backup_hint` verbatim from
+/// core. **fmonero never displays a seed**, in the TUI or anywhere else.
+fn seed_modal(m: &Tui, lines: &[String], frame: &mut Frame) {
+    let th = &m.theme;
+    let h = lines.len() as u16 + 6;
+    let Some(inner) = overlay(m, frame, 76, h, " Back up your seed ") else {
+        return;
+    };
+    m.hits.modal(inner);
+    let bg = th.selection;
+    let mut out: Vec<Line> = lines
+        .iter()
+        .map(|l| Line::styled(l.clone(), th.text().bg(bg)))
+        .collect();
+    out.push(Line::styled(String::new(), th.text().bg(bg)));
+    out.push(Line::styled("Enter to close", th.dimmed().bg(bg)));
+    lines_at(out, inner, true, frame);
+    let button = Rect::new(inner.x, inner.bottom().saturating_sub(1), 14, 1);
+    m.hits.modal_button(button);
+}
+
+/// §7a.4's use-this-node confirm — the safety surface of the picker, so it is spelled out: the
+/// **full address** (never elided, for the reason the send confirm never elides one), `untrusted`
+/// as a **fact and not a checkbox**, then the three consequences in order.
+fn use_node_modal(m: &Tui, address: &str, wallet_open: Option<&str>, frame: &mut Frame) {
+    let th = &m.theme;
+    let Some(inner) = overlay(m, frame, 74, 13, " Use this node ") else {
+        return;
+    };
+    m.hits.modal(inner);
+    let bg = th.selection;
+    let mut lines = vec![
+        Line::styled(address.to_string(), th.accented().bg(bg)),
+        Line::styled(
+            "untrusted — a public node is never trusted (it would receive this wallet's own \
+             unspent amounts inside a request)",
+            th.warn().bg(bg),
+        ),
+        Line::styled(String::new(), th.text().bg(bg)),
+        Line::styled(
+            "· the wallet unit will be re-rendered and restarted",
+            th.text().bg(bg),
+        ),
+    ];
+    if let Some(name) = wallet_open {
+        lines.push(Line::styled(
+            format!("· {name} is open and will be closed — you must reopen it"),
+            th.text().bg(bg),
+        ));
+    }
+    lines.push(Line::styled(
+        "· this node will see this machine's IP address and the timing of every request",
+        th.text().bg(bg),
+    ));
+    lines.push(Line::styled(String::new(), th.text().bg(bg)));
+    lines.push(Line::styled(
+        "y to confirm · Esc cancels",
+        th.dimmed().bg(bg),
+    ));
+    lines_at(lines, inner, true, frame);
+    m.hits
+        .modal_button(Rect::new(inner.x, inner.bottom().saturating_sub(1), 12, 1));
+}
+
+/// §7a.4's `a` modal: **one** field, validated by the same function the CLI validates with.
+///
+/// There is deliberately no `--trusted` toggle (revision 5): nothing in the schema supported one,
+/// and a path to request trusted from this screen would make the confirm modal's rendered
+/// `untrusted` line an untruth. The footer names the command that is the documented place.
+fn add_node_modal(m: &Tui, input: &TextInput, frame: &mut Frame) {
+    let th = &m.theme;
+    let Some(inner) = overlay(m, frame, 70, 8, " Add a node ") else {
+        return;
+    };
+    m.hits.modal(inner);
+    let bg = th.selection;
+    let rows = Flex::vertical()
+        .constraints([Constraint::Fixed(1), Constraint::Fixed(1), Constraint::Fill])
+        .split(inner);
+    let label = "address  ";
+    let off = label.width() as u16;
+    para(label.to_string(), th.dimmed().bg(bg), false)
+        .render(Rect::new(rows[0].x, rows[0].y, off, 1), frame);
+    let box_ = Rect::new(
+        rows[0].x + off,
+        rows[0].y,
+        rows[0].width.saturating_sub(off).max(1),
+        1,
+    );
+    input.render(box_, frame);
+    m.hits.field(0, box_);
+    lines_at(
+        vec![
+            Line::styled(
+                "[http[s]://]host:port — the port is required".to_string(),
+                th.dimmed().bg(bg),
+            ),
+            Line::styled(
+                "for a node you run yourself: fmonero node remote <addr> --trusted --yes"
+                    .to_string(),
+                th.dimmed().bg(bg),
+            ),
+            Line::styled(
+                "Enter adds it · Esc cancels".to_string(),
+                th.dimmed().bg(bg),
+            ),
+        ],
+        rows[2],
+        true,
+        frame,
+    );
+    let _ = rows[1];
+}
+
+/// §2n.5 rule 2's notice, shown before the first fetch **or** the first probe while the cache's
+/// `notice_ack` is unset — and `Enter` writes that field, which is the consent record.
+fn notice_modal(m: &Tui, frame: &mut Frame) {
+    let th = &m.theme;
+    let Some(inner) = overlay(m, frame, 72, 10, " Before contacting anyone ") else {
+        return;
+    };
+    m.hits.modal(inner);
+    let bg = th.selection;
+    lines_at(
+        vec![
+            Line::styled(
+                "Fetching the list tells monero.fail your IP address.",
+                th.text().bg(bg),
+            ),
+            Line::styled(
+                "Probing tells each node you probe. Nothing else is contacted.",
+                th.text().bg(bg),
+            ),
+            Line::styled(String::new(), th.text().bg(bg)),
+            Line::styled(
+                "monero.fail's health figures are its measurements from its own vantage point — \
+                 not a recommendation, and not this machine's.",
+                th.dimmed().bg(bg),
+            ),
+            Line::styled(String::new(), th.text().bg(bg)),
+            Line::styled("Enter continues · Esc cancels", th.dimmed().bg(bg)),
+        ],
+        inner,
+        true,
+        frame,
+    );
+    m.hits
+        .modal_button(Rect::new(inner.x, inner.bottom().saturating_sub(1), 16, 1));
 }
 
 /// The receive QR: the address painted onto an `ftui_extras` `Canvas` in **half-block** mode,
@@ -1329,8 +2066,13 @@ fn help(m: &Tui, frame: &mut Frame) {
         .iter()
         .map(|(k, a)| {
             let disabled = remote && matches!(*k, "u  d" | "L" | "b");
+            // The mouse row reads its own setting rather than a copy of it, so the overlay's text
+            // cannot drift from the policy actually in force (§7a.2's reason for making it a
+            // setting and not a flag).
             let action = if disabled {
                 format!("{a}  (remote mode: disabled)")
+            } else if *k == "mouse" && !m.ctx.settings.tui.mouse {
+                "off — fmonero settings set tui.mouse true".to_string()
             } else {
                 (*a).to_string()
             };
@@ -1458,12 +2200,24 @@ fn table(
         .block(panel(th, title, false))
         .style(th.text())
         .highlight_style(th.selected());
-    let state = if m.screen == Screen::Wallet {
-        &m.wallet.table
+    let (state, pane) = if m.screen == Screen::Wallet {
+        (&m.wallet.table, HitPane::Subaddresses)
     } else {
-        &m.node.table
+        (&m.node.table, HitPane::NodeList)
     };
-    StatefulWidget::render(&t, area, frame, &mut state.borrow_mut());
+    let mut st = state.borrow_mut();
+    StatefulWidget::render(&t, area, frame, &mut st);
+    // §7a.2: the geometry, so `hit.rs` can turn a y back into a row. `+2` skips the panel's top
+    // border and the header row; the last row is inside the bottom border.
+    if area.height > 3 {
+        m.hits.pane(
+            pane,
+            area,
+            area.y + 2,
+            area.height.saturating_sub(3),
+            st.offset,
+        );
+    }
 }
 
 fn search_row(

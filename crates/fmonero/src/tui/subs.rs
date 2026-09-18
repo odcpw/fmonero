@@ -20,8 +20,10 @@ use std::time::Duration;
 
 use ftui::runtime::{StopSignal, SubId, Subscription};
 
+use fmonero_core::nodes::{self, NodeList, Probe, ProbeTarget};
 use fmonero_core::{
-    node_session, send, wallet_session, CancelToken, Context, Error, SendRequest, WalletClient,
+    node_mode, node_session, send, units, wallet_session, CancelToken, Context, Error, SendRequest,
+    WalletClient,
 };
 
 use super::Msg;
@@ -51,6 +53,41 @@ pub enum Action {
     BuildTx(SendRequest),
     /// → `send::relay`, with the **same** plan that was displayed (§2a.3).
     Relay(send::Plan),
+    // ---- v5.5 -----------------------------------------------------------------
+    /// → `units::ensure_running` + `create_wallet` + the last three steps of
+    /// `wallet_session::open` on the wallet `create_wallet` left open (§4.1, §7a.5). The TUI
+    /// adds no step and skips none. Carries a password, so the hand-written `Debug` below
+    /// redacts it and the `String` is zeroed when the subscription takes it, exactly as
+    /// `WalletOpen`'s is.
+    WalletCreate {
+        name: String,
+        password: String,
+        language: String,
+    },
+    /// → `units::ensure_running(wallet.unit)` (§7a.5) — the same function `wallet open` uses,
+    /// so it probes first, then runs §2i's preflight, and only then starts.
+    WalletDaemonStart,
+    /// → `units::stop(wallet.unit)`. Refused by the model unless the unit is active, nothing is
+    /// open and nothing is in flight: stopping a daemon holding an open wallet is a thing the
+    /// user will not have meant.
+    WalletDaemonStop,
+    /// → `nodes::list` (§2n) — spawns `curl`, bounded, cancellable.
+    NodeListFetch {
+        refresh: bool,
+    },
+    /// → `nodes::probe_many` (§2n.4), 8 concurrent, cancellable. **Targets and never URLs**, so
+    /// monero.fail's own bytes cannot reach a `curl` argv (§2n.1, revision 2).
+    NodeProbe {
+        targets: Vec<ProbeTarget>,
+    },
+    /// → `node_mode::set_remote(ctx, &address, trusted, false, cancel)` — the identical core
+    /// call `fmonero node remote <addr> --yes` makes, so the `send.lock`, the `pending_send`
+    /// check, the single `Settings::save`, the unit render and the conditional restart all
+    /// happen exactly once and in one implementation (§2a.3, §2m.5).
+    NodeUseRemote {
+        address: String,
+        trusted: bool,
+    },
 }
 
 impl std::fmt::Debug for Action {
@@ -69,6 +106,27 @@ impl std::fmt::Debug for Action {
                 .finish(),
             Action::BuildTx(_) => f.write_str("BuildTx"),
             Action::Relay(_) => f.write_str("Relay"),
+            Action::WalletCreate { name, language, .. } => f
+                .debug_struct("WalletCreate")
+                .field("name", name)
+                .field("password", &"<redacted>")
+                .field("language", language)
+                .finish(),
+            Action::WalletDaemonStart => f.write_str("WalletDaemonStart"),
+            Action::WalletDaemonStop => f.write_str("WalletDaemonStop"),
+            Action::NodeListFetch { refresh } => f
+                .debug_struct("NodeListFetch")
+                .field("refresh", refresh)
+                .finish(),
+            Action::NodeProbe { targets } => f
+                .debug_struct("NodeProbe")
+                .field("targets", &targets.len())
+                .finish(),
+            Action::NodeUseRemote { address, trusted } => f
+                .debug_struct("NodeUseRemote")
+                .field("address", address)
+                .field("trusted", trusted)
+                .finish(),
         }
     }
 }
@@ -83,6 +141,12 @@ impl Action {
             Action::WalletRefresh { .. } => "refreshing the wallet".into(),
             Action::BuildTx(_) => "building the transaction".into(),
             Action::Relay(_) => "broadcasting".into(),
+            Action::WalletCreate { name, .. } => format!("creating {name}"),
+            Action::WalletDaemonStart => "starting the wallet daemon".into(),
+            Action::WalletDaemonStop => "stopping the wallet daemon".into(),
+            Action::NodeListFetch { .. } => "fetching the node list".into(),
+            Action::NodeProbe { targets } => format!("probing {} nodes", targets.len()),
+            Action::NodeUseRemote { address, .. } => format!("switching to {address}"),
         }
     }
 
@@ -94,6 +158,19 @@ impl Action {
             Action::WalletRefresh { .. } => ctx.timeouts.refresh.as_secs(),
             Action::BuildTx(_) => ctx.timeouts.transfer.as_secs(),
             Action::Relay(_) => ctx.timeouts.relay.as_secs(),
+            // A create waits on the new wallet's first `set_daemon`/`auto_refresh`, which in
+            // remote mode is over the internet — the same deadline `wallet open` uses (§5b.2).
+            Action::WalletCreate { .. } => ctx.timeouts.open.as_secs(),
+            Action::WalletDaemonStart | Action::WalletDaemonStop => {
+                ctx.timeouts.unit_probe.as_secs()
+            }
+            // Both curl paths bound themselves (§2n.3): a list fetch is two 20 s documents, and
+            // a probe sweep is `ceil(n / 8)` rounds of 5 s.
+            Action::NodeListFetch { .. } => 45,
+            Action::NodeProbe { targets } => {
+                7 * (targets.len().div_ceil(nodes::PROBE_CONCURRENCY)).max(1) as u64
+            }
+            Action::NodeUseRemote { .. } => ctx.timeouts.systemctl.as_secs() * 3,
         }
     }
 
@@ -115,6 +192,19 @@ pub enum Outcome {
     Built(Box<send::Plan>),
     /// The relayed txids, in relay order.
     Relayed(Vec<String>),
+    // ---- v5.5 -----------------------------------------------------------------
+    /// The wallet that was created, and the `seed_backup_hint` core printed with it — the SAME
+    /// string the CLI prints, so the modal is not a second wording (§2b.2, §7a.5).
+    Created { name: String, hint: String },
+    /// A refreshed list, for the picker to render.
+    NodeList(Box<NodeList>),
+    /// The probes, in the order the targets were given.
+    Probes(Vec<(String, Probe)>),
+    /// A node switch, with the wallet that must be reopened when one was open (§2m.5 step 9).
+    NodeSwitched {
+        address: String,
+        must_reopen: Option<String>,
+    },
 }
 
 /// A failed action, reduced to what the TUI shows and exits with (§4a).
@@ -212,6 +302,83 @@ pub fn execute(
                 let w = WalletClient::from_ctx(ctx)?;
                 let txids = send::relay(ctx, &w, plan, &say, cancel)?;
                 Ok(Outcome::Relayed(txids))
+            }
+            // ---- v5.5 ---------------------------------------------------------
+            Action::WalletCreate {
+                name,
+                password,
+                language,
+            } => {
+                let w = WalletClient::from_ctx(ctx)?;
+                // **The same sequence `wallet create` calls** (§4.1): `ensure_running`, then
+                // `create_wallet`, then the last three steps of `wallet_session::open` on the
+                // wallet `create_wallet` left open (`wallet_rpc_server.cpp:3639`). The TUI adds
+                // no step and skips none, which is why this is one core call and not four.
+                let created =
+                    wallet_session::create(ctx, &w, &name, password, &language, &say, cancel)?;
+                Ok(Outcome::Created {
+                    name: created.name,
+                    hint: created.seed_backup_hint,
+                })
+            }
+            Action::WalletDaemonStart => {
+                let w = WalletClient::from_ctx(ctx)?;
+                // The SAME function `wallet open` uses (§7a.5), so it probes first, then runs
+                // §2i's preflight — which is what turns a missing unit or a missing binary into
+                // a millisecond `unit_missing` / `not_installed` with a runnable hint instead of
+                // a 30 s wait — and only then starts.
+                let started = units::ensure_running(
+                    ctx,
+                    &ctx.settings.wallet.unit,
+                    &|| w.get_version().is_ok(),
+                    ctx.timeouts.unit_probe,
+                    cancel,
+                )?;
+                Ok(Outcome::Note(if started {
+                    "the wallet daemon is up".into()
+                } else {
+                    "the wallet daemon was already up".into()
+                }))
+            }
+            Action::WalletDaemonStop => {
+                units::stop(ctx, &ctx.settings.wallet.unit, cancel)?;
+                Ok(Outcome::Note("the wallet daemon is stopped".into()))
+            }
+            Action::NodeListFetch { refresh } => {
+                let list = nodes::list(
+                    ctx,
+                    nodes::ListOpts {
+                        refresh,
+                        ..Default::default()
+                    },
+                    cancel,
+                )?;
+                Ok(Outcome::NodeList(Box::new(list)))
+            }
+            Action::NodeProbe { targets } => {
+                let probes = nodes::probe_many(ctx, &targets, cancel);
+                let paired: Vec<(String, Probe)> = targets
+                    .iter()
+                    .map(|t| t.address.clone())
+                    .zip(probes)
+                    .collect();
+                // The configured node's probe is ALSO cached in `state.json`, so `status --json`
+                // and the bar widget can render a remote height without spawning (§2n.4, §2e) —
+                // and only when the address still matches the one in force (§2j).
+                if let Some(configured) = nodes::configured_address(ctx) {
+                    if let Some((_, p)) = paired.iter().find(|(a, _)| *a == configured) {
+                        let _ = fmonero_core::state::note_remote_probe(ctx, &configured, p);
+                    }
+                }
+                nodes::record_probes(ctx, &paired)?;
+                Ok(Outcome::Probes(paired))
+            }
+            Action::NodeUseRemote { address, trusted } => {
+                let change = node_mode::set_remote(ctx, &address, trusted, false, cancel)?;
+                Ok(Outcome::NodeSwitched {
+                    address: change.address,
+                    must_reopen: change.wallet_must_reopen,
+                })
             }
         }
     };

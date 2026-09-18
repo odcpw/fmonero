@@ -69,6 +69,87 @@ pub mod wallet_session {
         })
     }
 
+    /// What a create produced (v5.5). It carries [`seed_backup_hint`] so the CLI's footer and
+    /// §7a.5's seed-backup modal render **one** string from core and not two wordings.
+    #[derive(Clone, Debug)]
+    pub struct Created {
+        pub unit_started: bool,
+        pub name: String,
+        pub net: NetType,
+        pub seed_backup_hint: String,
+    }
+
+    /// The one text that tells a user how to back up a seed (§2b.2), so the CLI's footer, the
+    /// `wallet create` payload and §7a.5's modal cannot drift.
+    ///
+    /// **The close line is v5.5, revision 11, and it is what makes the instruction correct.**
+    /// `on_create_wallet` leaves the new wallet **open** in `monero-wallet-rpc`
+    /// (`wallet_rpc_server.cpp:3639`) and `create` below then runs the last three steps of
+    /// [`open`] on it — so this text, delivered the moment a create finishes, was telling the
+    /// user to open the same wallet file in a **second** wallet2 process while the daemon holds
+    /// it open and will write its cache later. Stakes are low for a fresh empty wallet (the seed
+    /// lives in the `.keys` file either way), but the same string is printed for wallets that
+    /// will be funded, and "run this now" with no close step is an instruction this codebase
+    /// would not write if the concurrency were stated out loud.
+    pub fn seed_backup_hint(ctx: &Context, name: &str) -> String {
+        format!(
+            "Back up your seed BEFORE funding this wallet:\n  \
+             # close it first — the wallet daemon has it open:  fmonero wallet close\n  \
+             monero-wallet-cli --wallet-file {}/{name} --offline\n  # then type: seed",
+            ctx.settings.wallet.dir.display()
+        )
+    }
+
+    /// `units::ensure_running`, `create_wallet`, then **the last three steps of [`open`]** on the
+    /// wallet `create_wallet` left open (§4.1). v5.5 moved this sequence into core because the
+    /// TUI now creates wallets too (§7a.5), and §2a.3's rule is that a sequence with two callers
+    /// has one implementation — the alternative is two places that can each forget the
+    /// `set_daemon` step whose absence means the wallet can never sync (§4.2).
+    ///
+    /// `announce` exists for one reason, and it is v5.3's: **from the moment `create_wallet`
+    /// returns the wallet file exists, and every later step can still fail.** The first
+    /// `wallet create` against a real public node exited 5 on `set_daemon`, because wallet-rpc
+    /// held its daemon mutex across the new wallet's first refresh — so emitting "back up your
+    /// seed before funding this wallet" only on the success path would make the one output that
+    /// protects money conditional on a step that has nothing to do with it. Core is silent
+    /// (§2g), so the sink belongs to the caller: the CLI's is stderr, the TUI's is the Log pane.
+    ///
+    /// Every **local** refusal — a `/` in the name, an existing wallet, an empty password — is
+    /// the caller's, before this is called: they differ per surface (the CLI has
+    /// `--allow-empty-password`, the TUI deliberately has no equivalent, §7a.5).
+    pub fn create(
+        ctx: &Context,
+        w: &WalletClient,
+        name: &str,
+        password: String,
+        language: &str,
+        announce: &dyn Fn(&str),
+        cancel: &CancelToken,
+    ) -> Result<Created, Error> {
+        crate::settings::validate_seed_language(language)?;
+        let unit_started = crate::units::ensure_running(
+            ctx,
+            &ctx.settings.wallet.unit,
+            &|| w.get_version().is_ok(),
+            ctx.timeouts.unit_probe,
+            cancel,
+        )?;
+        w.create_wallet(name, &password, language)?;
+        let hint = seed_backup_hint(ctx, name);
+        announce(&hint);
+        // `on_create_wallet` left the wallet OPEN, so the last three steps still have to run:
+        // without them the wallet has no daemon credential and no recorded name, `status` would
+        // report `wallet.open: true` with `wallet.name: null`, and every wallet→daemon call
+        // would 401 (§4.1).
+        let net = open_already_running(ctx, w, name, password)?;
+        Ok(Created {
+            unit_started,
+            name: name.to_string(),
+            net,
+            seed_backup_hint: hint,
+        })
+    }
+
     /// `open_wallet`, then the three steps that must follow it.
     ///
     /// `wallet create` reaches the same three through [`open`] — `on_create_wallet` ends
