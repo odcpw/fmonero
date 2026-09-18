@@ -25,7 +25,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const USAGE: &str = "usage: fmonero-mock --role node|wallet --port N --fixtures DIR --log FILE \
 [--restricted] [--auth USER:PASS] [--delay-ms N] [--rotate-nonce-after N] [--scenario NAME] \
-[--fail METHOD=CODE:MESSAGE]...";
+[--fail METHOD=CODE:MESSAGE]...
+   or: fmonero-mock --static DIR --port N [--log FILE]      # v5.5, §2n.7";
 
 /// json_rpc methods `monerod` does not REGISTER under `--restricted-rpc`
 /// (`MAP_JON_RPC_WE_IF(..., !m_restricted)`, src/rpc/core_rpc_server.h:166, :169, :170, :179); they
@@ -56,6 +57,11 @@ struct Routes {
     rotate_after: u32,
     scenario: Option<String>,
     fails: BTreeMap<String, (i64, String)>,
+    /// v5.5, §2n.7: serve `DIR/<path>` for a GET as `application/json`, 404 otherwise. It is
+    /// what points `FMONERO_NODES_URL` at the captured monero.fail fixtures, so nothing in §2n
+    /// needs the internet to be tested — and it keeps the suite to **one** mock binary instead
+    /// of adding `python3 -m http.server` to `tests/e2e.sh`.
+    static_dir: Option<PathBuf>,
     log: Mutex<File>,
     seq: AtomicU64,
     conns: AtomicU64,
@@ -84,6 +90,7 @@ fn die(msg: &str) -> ! {
 fn parse_args(args: Vec<String>) -> Result<Routes, String> {
     let (mut role, mut port, mut fix, mut logp) = (None, None, None, None);
     let (mut restricted, mut auth, mut ms, mut rot, mut scen) = (false, None, 0u64, 0u32, None);
+    let mut static_dir: Option<PathBuf> = None;
     let mut fails = BTreeMap::new();
     let mut it = args.into_iter();
     let num = |v: String| v.parse::<u64>().map_err(|e| e.to_string());
@@ -96,6 +103,7 @@ fn parse_args(args: Vec<String>) -> Result<Routes, String> {
             "--log" => logp = Some(PathBuf::from(val()?)),
             "--scenario" => scen = Some(val()?),
             "--restricted" => restricted = true,
+            "--static" => static_dir = Some(PathBuf::from(val()?)),
             "--delay-ms" => ms = num(val()?)?,
             "--rotate-nonce-after" => rot = num(val()?)? as u32,
             "--auth" => auth = Some(split2(&val()?, ':', "--auth wants USER:PASS")?),
@@ -113,6 +121,32 @@ fn parse_args(args: Vec<String>) -> Result<Routes, String> {
             "-h" | "--help" => die(""),
             other => return Err(format!("unknown argument {other}")),
         }
+    }
+    // `--static` is its own mode: no role, no fixture directory, no Digest, no dispatcher.
+    // Refusing the combination beats ignoring half of it (the same rule `--restricted` follows
+    // below): a `--static` that also accepted `--role` would read as coverage it does not give.
+    if static_dir.is_some() {
+        if role.is_some() || fix.is_some() || restricted || auth.is_some() {
+            return Err("--static takes only --port and --log".into());
+        }
+        let logp = logp.unwrap_or_else(|| PathBuf::from("/dev/null"));
+        let log = File::create(&logp).map_err(|e| format!("{}: {e}", logp.display()))?;
+        return Ok(Routes {
+            role: "static".into(),
+            port: port.ok_or("--port is required")?,
+            dir: PathBuf::new(),
+            restricted: false,
+            auth: None,
+            delay: Duration::from_millis(ms),
+            rotate_after: 0,
+            scenario: None,
+            fails,
+            static_dir,
+            log: Mutex::new(log),
+            seq: AtomicU64::new(0),
+            conns: AtomicU64::new(0),
+            nonces: AtomicU64::new(0),
+        });
     }
     let role = role.ok_or("--role is required")?;
     if role != "node" && role != "wallet" {
@@ -135,6 +169,7 @@ fn parse_args(args: Vec<String>) -> Result<Routes, String> {
         rotate_after: rot,
         scenario: scen,
         fails,
+        static_dir: None,
         log: Mutex::new(log),
         seq: AtomicU64::new(0),
         conns: AtomicU64::new(0),
@@ -223,6 +258,10 @@ fn connection(mut out: TcpStream, r: &Routes) -> std::io::Result<()> {
             .and_then(|a| check_auth(r, &mut sess, a, &verb, &head));
         let (code, extra, payload) = match chal {
             Some(c) => (401u16, c, b"<h1>401 Unauthorized</h1>".to_vec()),
+            None if r.static_dir.is_some() => {
+                let (c, b) = serve_static(r, &verb, &path);
+                (c, String::new(), b)
+            }
             None => {
                 let (c, b) = dispatch(r, &path, &body);
                 (c, String::new(), b)
@@ -249,6 +288,32 @@ fn connection(mut out: TcpStream, r: &Routes) -> std::io::Result<()> {
         out.flush()?;
     }
     Ok(())
+}
+
+/// `--static` (v5.5, §2n.7). One path segment, no traversal, no directory listing: the fixture
+/// server exists to answer `GET /nodes.json` and `GET /health.json` and nothing else, and a
+/// test server that can be talked into reading `../../` is a test server that teaches the wrong
+/// habit even where it cannot be reached.
+fn serve_static(r: &Routes, verb: &str, path: &str) -> (u16, Vec<u8>) {
+    let not_found = || (404u16, b"<h1>404 Not Found</h1>".to_vec());
+    if verb != "GET" {
+        return not_found();
+    }
+    let Some(dir) = r.static_dir.as_ref() else {
+        return not_found();
+    };
+    let name = path
+        .trim_start_matches('/')
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("");
+    if name.is_empty() || name.contains('/') || name.contains("..") {
+        return not_found();
+    }
+    match std::fs::read(dir.join(name)) {
+        Ok(bytes) => (200, bytes),
+        Err(_) => not_found(),
+    }
 }
 
 type Headers = Vec<(String, String)>;

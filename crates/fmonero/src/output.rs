@@ -224,6 +224,7 @@ pub fn human(out: &Out, label: &str, value: &serde_json::Value) {
         "wallet address" | "wallet new-address" => return address_human(out, value),
         "wallet list" => return list_human(out, value),
         "node peers" => return peers_human(out, value),
+        "node list" => return nodes_human(out, value),
         "node log" => return log_human(out, value),
         "settings list" => return settings_human(out, value),
         "setup" => return setup_human(out, value),
@@ -597,6 +598,102 @@ fn peers_human(out: &Out, v: &serde_json::Value) {
             None => out.line(format!("{title}   — (not available on a restricted node)")),
         }
     }
+}
+
+/// `fmonero node list` (§2n, §5c). Two column groups, headed so the table itself states
+/// §2n.2's distinction: what **monero.fail says** and what was **probed here**. They are never
+/// combined into a score — a single number mixing a measurement with a third party's claim is a
+/// number nobody can check.
+fn nodes_human(out: &Out, v: &serde_json::Value) {
+    let rows = v["nodes"].as_array().map(Vec::as_slice).unwrap_or_default();
+    if rows.is_empty() {
+        out.line("no public nodes cached yet");
+        out.note("fmonero node list --refresh   # fetch the list from monero.fail");
+        return;
+    }
+    let probed_any = rows.iter().any(|r| !r["probe"].is_null());
+    if probed_any {
+        out.line(format!(
+            "{}  {}   {}",
+            pad("", 47),
+            out.paint("monero.fail says", Paint::Dim),
+            out.paint("probed here", Paint::Dim),
+        ));
+    }
+    out.line(format!(
+        "  {}  {}  {}  {}{}",
+        pad("address", 44),
+        pad("health", 12),
+        pad("height", 10),
+        pad("checked", 10),
+        if probed_any {
+            format!("  {}  {}  {}", pad("ms", 6), pad("height", 10), "synced")
+        } else {
+            String::new()
+        },
+    ));
+    for r in rows {
+        let configured = r["configured"] == serde_json::Value::Bool(true);
+        let mark = if configured { "●" } else { " " };
+        // A `custom` row renders `—` in every monero.fail column: monero.fail has never heard of
+        // it, and a blank there would read as "not measured yet" (§7a.4).
+        let custom = r["custom"] == serde_json::Value::Bool(true);
+        let health = match (r["health_ratio"].as_f64(), r["health_checks"].as_u64()) {
+            (Some(ratio), Some(n)) => format!("{}% of {n}", (ratio * 100.0).round() as i64),
+            _ => "—".to_string(),
+        };
+        let probe = &r["probe"];
+        let probed = if probe.is_null() {
+            if probed_any {
+                format!("  {}  {}  {}", pad("—", 6), pad("—", 10), "—")
+            } else {
+                String::new()
+            }
+        } else if probe["reachable"] == serde_json::Value::Bool(true) {
+            format!(
+                "  {}  {}  {}",
+                pad(&cell(&probe["latency_ms"]), 6),
+                pad(&cell(&probe["height"]), 10),
+                cell(&probe["synchronized"]),
+            )
+        } else {
+            // A failure is a result, and its reason is the useful half (§2n.4).
+            format!("  {}", out.paint(&cell(&probe["reason"]), Paint::Yellow))
+        };
+        out.line(format!(
+            "{mark} {}  {}  {}  {}{}{}",
+            pad(&cell(&r["address"]), 44),
+            pad(&health, 12),
+            pad(&cell(&r["health_last_height"]), 10),
+            pad(
+                &r["health_checked_at"]
+                    .as_i64()
+                    .map(|t| human_uptime(fmonero_core::now_unix() - t))
+                    .unwrap_or_else(|| "—".to_string()),
+                10
+            ),
+            probed,
+            if custom {
+                out.paint(" own", Paint::Dim)
+            } else if r["web_compatible"] == serde_json::Value::Bool(true) {
+                out.paint(" web", Paint::Dim)
+            } else {
+                String::new()
+            },
+        ));
+    }
+    let age = v["cache_age_sec"]
+        .as_u64()
+        .map(|s| human_uptime(s as i64))
+        .unwrap_or_else(|| "—".to_string());
+    out.line(format!(
+        "{} of {} nodes · list {age} old · {} skipped (no port) · {} skipped (bad address) · source {}",
+        rows.len(),
+        cell(&v["total"]),
+        cell(&v["skipped_no_port"]),
+        cell(&v["skipped_invalid"]),
+        cell(&v["source"]),
+    ));
 }
 
 fn log_human(out: &Out, v: &serde_json::Value) {

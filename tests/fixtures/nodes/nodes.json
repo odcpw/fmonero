@@ -1,0 +1,30 @@
+{
+ "_provenance": "captured from https://monero.fail/nodes.json on 2026-09-18 UTC with curl 8.22.0 \u2014 NOT derived from source (DESIGN.md \u00a71.1, \u00a72n.7). Trimmed by SELECTION ONLY: 10 of monero.clear's 195 entries and 2 of web_compatible's 42 are kept, every kept string byte-for-byte as published; the onion, i2p, ipv6 and wownero buckets are dropped whole. No value was edited or invented. tests/fixtures/README.md says which and why.",
+ "monero": {
+  "clear": [
+   "http://xmr-node.cakewallet.com:18081",
+   "https://xmr-node.cakewallet.com:18081",
+   "https://node.sethforprivacy.com:443",
+   "https://node.xmr.pub:443",
+   "https://monero-rpc.cheems.de.box.skhron.com.ua:18089",
+   "https://kowalski.fiatfaucet.com",
+   "https://node.sethforprivacy.com",
+   "http://nodes.hashvault.pro:18081",
+   "http://node1.xmr-tw.org:18081",
+   "http://xmr-de-2.boldsuck.org:18081"
+  ],
+  "web_compatible": [
+   "https://xmr-node.cakewallet.com:18081",
+   "https://node.sethforprivacy.com:443",
+   "https://monero-rpc.cheems.de.box.skhron.com.ua:18089",
+   "https://kowalski.fiatfaucet.com",
+   "https://node.sethforprivacy.com"
+  ],
+  "onion": [],
+  "i2p": [],
+  "ipv6": []
+ },
+ "wownero": {
+  "clear": []
+ }
+}

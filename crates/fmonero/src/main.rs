@@ -24,8 +24,8 @@ use fmonero_core::send::{self, Plan, SendRequest, SweepRequest};
 use fmonero_core::state;
 use fmonero_core::status::PendingStatus;
 use fmonero_core::{
-    address, agent, log as corelog, node_mode, node_session, settings as coresettings, units,
-    wallet_dir, wallet_session, CancelToken, Context, Error, Piconero,
+    address, agent, log as corelog, node_mode, node_session, nodes, settings as coresettings,
+    units, wallet_dir, wallet_session, CancelToken, Context, Error, Piconero,
 };
 
 use output::{Out, Paint};
@@ -220,6 +220,37 @@ unauthenticated, and Tor is not in v0.1.
     },
     /// Go back to fmonero's own local monerod (§2m)
     Local,
+    /// Public nodes from monero.fail, cached — and, with --probe, measured from here (§2n)
+    #[command(
+        after_help = "Serves cache_dir/public-nodes.json and fetches only when --refresh is
+given or the cache is absent or older than 24 h. --probe then asks the top --limit candidates
+for get_info itself, 8 at a time with a 5 s deadline each.
+
+Fetching the list tells monero.fail this machine's IP address. Probing tells each node you
+probe. Nothing is contacted automatically except the node already configured, and that only
+while the TUI's Node screen is showing. monero.fail's health figures are monero.fail's
+measurements from monero.fail's vantage point — not a recommendation, and not this machine's.
+
+Needs curl, as a child process: fmonero's own HTTP client stays loopback-only.
+
+  fmonero node list                       # the cache, instantly
+  fmonero node list --refresh --probe     # refetch, then measure the top 20 from here
+  fmonero node remote <host:port> --yes   # use one"
+    )]
+    List {
+        /// Refetch nodes.json and health.json from monero.fail now
+        #[arg(long)]
+        refresh: bool,
+        /// Ask each listed node for get_info from THIS machine (each learns your IP)
+        #[arg(long)]
+        probe: bool,
+        /// How many rows to print, and to probe
+        #[arg(long, value_name = "N", default_value_t = fmonero_core::nodes::DEFAULT_LIMIT)]
+        limit: usize,
+        /// Every usable candidate, not just --limit of them
+        #[arg(long, conflicts_with = "limit")]
+        all: bool,
+    },
     /// Read or set the node's rate limits and peer counts
     #[command(
         after_help = "With no arguments this only reads (out_peers/in_peers are queried with
@@ -796,6 +827,7 @@ fn command_path(cmd: &Cmd) -> String {
                 NodeCmd::Limit { .. } => "limit",
                 NodeCmd::Remote { .. } => "remote",
                 NodeCmd::Local => "local",
+                NodeCmd::List { .. } => "list",
             }
         ),
         Cmd::Wallet { cmd } => format!(
@@ -1025,7 +1057,13 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                     NodeCmd::Ban { .. } => Some("ban"),
                     NodeCmd::Unban { .. } => Some("unban"),
                     NodeCmd::Limit { .. } => Some("limit"),
-                    NodeCmd::Info | NodeCmd::Remote { .. } | NodeCmd::Local => None,
+                    // `node list` is mode-independent: a list of remote nodes is exactly as
+                    // meaningful in local mode, where it is how someone decides to switch, and
+                    // it touches no local `monerod` at all (§4.1, §2n).
+                    NodeCmd::Info
+                    | NodeCmd::Remote { .. }
+                    | NodeCmd::Local
+                    | NodeCmd::List { .. } => None,
                 };
                 if let Some(verb) = verb {
                     return Err(units::remote_node_error(&ctx, Some(verb)));
@@ -1340,6 +1378,87 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                             e.retarget_sandbox_hint(dry_run_form("fmonero node remote", &own))
                         })?;
                     out.emit("node remote", ok(serde_json::to_value(&change)?));
+                    Ok(0)
+                }
+                NodeCmd::List {
+                    refresh,
+                    probe,
+                    limit,
+                    all,
+                } => {
+                    let opts = nodes::ListOpts {
+                        refresh,
+                        probe,
+                        limit,
+                        all,
+                    };
+                    // The §2n.5 disclosure, on the surface that performs the act (revision 7).
+                    // It is computed BEFORE the call, because a fetch the user did not ask for —
+                    // an absent or day-old cache under a bare `node list` — is exactly the case a
+                    // flag-shaped consent record misses, and README's own first quickstart line
+                    // is `node list --probe`. `--json` stays silent: the envelope carries
+                    // `refreshed` and `probed`.
+                    let before = nodes::cached(&ctx)?;
+                    let will_fetch = refresh
+                        || before
+                            .as_ref()
+                            .map(nodes::NodeList::is_stale)
+                            .unwrap_or(true);
+                    let printable = before.as_ref().map(|d| d.nodes.len()).unwrap_or(0);
+                    if !ctx.json {
+                        if will_fetch {
+                            out.note("contacting monero.fail — this tells it your IP address");
+                        }
+                        if probe {
+                            let n = nodes::effective_limit(&opts, printable.max(1));
+                            out.note(format!(
+                                "probing up to {n} nodes — each learns your IP address"
+                            ));
+                        }
+                    }
+                    let mut doc = nodes::list(&ctx, opts, &cancel)?;
+                    let total = doc.nodes.len();
+                    let configured = nodes::configured_address(&ctx);
+                    nodes::sort_for_display(&mut doc.nodes, configured.as_deref());
+                    let shown = nodes::effective_limit(&opts, total);
+                    let probed = doc
+                        .nodes
+                        .iter()
+                        .take(shown)
+                        .filter(|n| n.probe.is_some())
+                        .count();
+                    let rows: Vec<serde_json::Value> = doc
+                        .nodes
+                        .iter()
+                        .take(shown)
+                        .map(|n| {
+                            let mut row =
+                                serde_json::to_value(n).unwrap_or(serde_json::Value::Null);
+                            if let Some(obj) = row.as_object_mut() {
+                                obj.insert(
+                                    "configured".into(),
+                                    serde_json::Value::Bool(
+                                        configured.as_deref() == Some(n.address.as_str()),
+                                    ),
+                                );
+                            }
+                            row
+                        })
+                        .collect();
+                    out.emit(
+                        "node list",
+                        ok(serde_json::json!({
+                            "nodes": rows,
+                            "source": doc.source,
+                            "fetched_at": doc.fetched_at,
+                            "cache_age_sec": doc.cache_age_sec,
+                            "skipped_no_port": doc.skipped_no_port,
+                            "skipped_invalid": doc.skipped_invalid,
+                            "probed": probed,
+                            "total": total,
+                            "refreshed": will_fetch,
+                        })),
+                    );
                     Ok(0)
                 }
                 NodeCmd::Local => {

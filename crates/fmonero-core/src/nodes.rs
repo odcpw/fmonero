@@ -676,21 +676,26 @@ fn fetch_doc(name: &str, cancel: &CancelToken) -> Result<Vec<u8>, Error> {
         Duration::from_secs(FETCH_MAX_TIME_SEC + DEADLINE_SLACK_SEC),
         Some(cancel),
     )?;
+    // **A fetch that did not happen is exit 4 `unreachable`, not exit 5 `upstream`.** The two
+    // exits mean different things in §4a: 5 is "it answered and the answer was an error", 4 is
+    // "the thing we needed is not usable from here". monero.fail being down, a dropped
+    // connection and a 503 are all the second, and the cached list still works in every one of
+    // them — which is what the hint says.
+    let unreachable = |detail: String| {
+        Error::backend(format!("cannot fetch {url}: {detail}"))
+            .with_reason("unreachable")
+            .with_hint("fmonero node list   # the cached list still works")
+    };
     if out.timed_out {
-        return Err(Error::upstream(format!("{url} did not answer in time"))
-            .with_reason("killed_at_deadline")
-            .with_hint("fmonero node list   # the cached list still works"));
+        return Err(unreachable("no answer before the deadline".to_string()));
     }
     if !out.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        let detail = if stderr.is_empty() {
+        return Err(unreachable(if stderr.is_empty() {
             format!("curl exited {:?}", out.code)
         } else {
             stderr
-        };
-        return Err(Error::upstream(format!("cannot fetch {url}: {detail}"))
-            .with_reason("rpc_error")
-            .with_hint("fmonero node list   # the cached list still works"));
+        }));
     }
     // The byte cap fmonero enforces itself, independent of the curl on PATH (§2n.3).
     if out.stdout.len() > LIST_MAX_BYTES {
@@ -1207,6 +1212,136 @@ mod tests {
         let t = ProbeTarget::parse("https://h.example:18089").expect("valid");
         assert_eq!(t.scheme, "https");
         assert_eq!(t.address, "h.example:18089");
+    }
+
+    /// The captured fixtures (§2n.7) — the repo's only CAPTURED files, real documents from the
+    /// 2026-09-18 fetch trimmed by selection only. They drive the two parsers with no process at
+    /// all, which is what makes every claim in §2n.1 checkable offline.
+    fn fixture(name: &str) -> Vec<u8> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/nodes")
+            .join(name);
+        std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    }
+
+    #[test]
+    fn the_captured_nodes_json_parses_the_way_2n1_says_it_does() {
+        let parsed = parse_nodes_json(&fixture("nodes.json")).expect("parses");
+        // 10 candidates: 2 portless (dropped and counted) and 2 spellings of one host:port
+        // (http:// and https://xmr-node.cakewallet.com:18081) that collapse to ONE row, because
+        // `address` is the identity — the picker, the confirm modal and `node remote` all speak
+        // host:port and two rows for one node would be two ways to choose the same thing.
+        assert_eq!(parsed.skipped_no_port, 2, "the two portless entries");
+        assert_eq!(parsed.skipped_invalid, 0, "nothing else was refused");
+        assert_eq!(
+            parsed.nodes.len(),
+            7,
+            "10 - 2 portless - 1 duplicate address"
+        );
+        let by = |addr: &str| {
+            parsed
+                .nodes
+                .iter()
+                .find(|n| n.address == addr)
+                .unwrap_or_else(|| panic!("{addr} missing"))
+        };
+        // `clear` means "not onion and not i2p", NOT "plaintext": both schemes are present.
+        assert_eq!(by("xmr-node.cakewallet.com:18081").scheme, "http");
+        assert_eq!(by("node.sethforprivacy.com:443").scheme, "https");
+        // `web_compatible` is a FLAG on a row and not a second list.
+        assert!(by("monero-rpc.cheems.de.box.skhron.com.ua:18089").web_compatible);
+        assert!(!by("nodes.hashvault.pro:18081").web_compatible);
+        // The `_provenance` string and the empty onion/i2p/ipv6 buckets are ignored, not read.
+        assert!(!parsed.nodes.iter().any(|n| n.url.contains("captured from")));
+    }
+
+    #[test]
+    fn the_captured_health_json_is_an_exact_url_lookup() {
+        let health = parse_health_json(&fixture("health.json")).expect("parses");
+        // `checks` has no fixed length: 4 and 86 in this capture. A hard-coded 32 would report
+        // 269 % for the long one (§2n.1).
+        assert_eq!(health["https://node.xmr.pub:443"].checks, Some(4));
+        assert_eq!(
+            health["https://node.sethforprivacy.com:443"].checks,
+            Some(86)
+        );
+        for (url, h) in &health {
+            if let (Some(r), Some(_)) = (h.ratio, h.checks) {
+                assert!((0.0..=1.0).contains(&r), "{url} ratio {r} out of range");
+            }
+        }
+        // A real `available: false` row, read as a boolean and not as a presence test.
+        assert_eq!(health["http://116.202.196.52:18081"].available, Some(false));
+        // The HTTP-dates parse (they are RFC 2822, not RFC 3339).
+        assert!(health["http://xmr-node.cakewallet.com:18081"]
+            .checked_at
+            .is_some());
+    }
+
+    #[test]
+    fn a_candidate_absent_from_health_json_renders_nulls_and_is_not_an_error() {
+        let parsed = parse_nodes_json(&fixture("nodes.json")).expect("parses");
+        let health = parse_health_json(&fixture("health.json")).expect("parses");
+        let list = merge(parsed, &health);
+        let orphan = list
+            .nodes
+            .iter()
+            .find(|n| n.address == "xmr-de-2.boldsuck.org:18081")
+            .expect("the candidate whose health entry the fixture drops");
+        assert_eq!(orphan.health_available, None);
+        assert_eq!(orphan.health_ratio, None, "None, never 0.0 (§2n.1)");
+        assert_eq!(orphan.health_checks, None);
+        assert_eq!(orphan.health_last_height, None);
+        assert_eq!(orphan.health_checked_at_text, None);
+        assert_eq!(orphan.health_checked_at, None);
+        // And a candidate that IS in health.json carries all six.
+        let known = list
+            .nodes
+            .iter()
+            .find(|n| n.address == "xmr-node.cakewallet.com:18081")
+            .unwrap();
+        assert_eq!(known.health_available, Some(true));
+        assert!(known.health_ratio.is_some());
+        assert!(known.health_checked_at_text.is_some());
+    }
+
+    #[test]
+    fn a_custom_row_survives_a_refresh_and_a_probe_does_too() {
+        let fresh = || {
+            let parsed = parse_nodes_json(&fixture("nodes.json")).expect("parses");
+            merge(parsed, &HealthMap::new())
+        };
+        let mut old = fresh();
+        // A node the user typed by hand, which monero.fail has never heard of.
+        old.nodes.push(PublicNode {
+            url: "http://lan.example:18081".into(),
+            address: "lan.example:18081".into(),
+            scheme: "http".into(),
+            web_compatible: false,
+            custom: true,
+            health_available: None,
+            health_ratio: None,
+            health_checks: None,
+            health_last_height: None,
+            health_checked_at_text: None,
+            health_checked_at: None,
+            probe: None,
+        });
+        // And a measurement of a listed one.
+        old.nodes[0].probe = Some(Probe::answered(Some(42)));
+        let carried = carry_forward(fresh(), Some(&old));
+        assert!(
+            carried
+                .nodes
+                .iter()
+                .any(|n| n.address == "lan.example:18081" && n.custom),
+            "the hand-typed node must not vanish on the next `f` (§2n.6)"
+        );
+        assert_eq!(
+            carried.nodes[0].probe.as_ref().and_then(|p| p.latency_ms),
+            Some(42),
+            "re-probing 158 nodes because the list moved would make `f` cost what `p` costs"
+        );
     }
 
     #[test]
