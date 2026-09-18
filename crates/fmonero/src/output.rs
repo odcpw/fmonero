@@ -133,6 +133,13 @@ impl Out {
             if let Some(reason) = e.reason() {
                 eprintln!("  reason: {reason}");
             }
+            // v5.6, §2o: the technical text — a transport error, an RPC method name, a serde
+            // message — is no longer in the sentence, and this is one of its two homes (the
+            // other is `--json`'s `detail`). Behind `-v`, because the person who did not ask
+            // for it is the person §2o is about.
+            if let Some(detail) = e.detail() {
+                self.verbose_note(format!("  detail: {detail}"));
+            }
             // §2o rule 11: `hint:` labelled a field; `Try:` is an instruction. The command
             // itself is unchanged — the CLI's own hints are the point of §9.
             eprintln!("  Try: {}", e.hint());

@@ -460,6 +460,22 @@ esac
 fm --timeout 3 wallet send "$DEST" 0.1 --dry-run --yes --json
 expect_rc 4 "--dry-run --yes with no daemon is the same, which is proof the pair cannot relay"
 
+# V8, on the most frequently hit error path in the tool. It used to read
+# `monero-wallet-rpc is not answering: io: Connection refused (os error 111)` and it reached the
+# CLI, the TUI's status bar and the bar widget's panel from one function. §2o: the sentence is the
+# user's, and the wire's own words move to `detail`, which `--json` and `-v` keep verbatim.
+fm --timeout 3 wallet refresh --json
+expect_rc 4 "wallet refresh with the wallet service down"
+expect_json '.error' '"The wallet service is not answering."' \
+  "§2o: the message names no binary, no method and no socket (V8)"
+expect_json '.action' '"Press o on the Wallet screen to open a wallet."' \
+  "  and it carries the in-app route the TUI renders (§2o.1)"
+DETAIL="$(printf '%s' "$OUT" | jq -r '.detail // ""')"
+case "$DETAIL" in
+  *"refresh: "*"Connection refused"*) ok "  while detail keeps the call and the transport verbatim" ;;
+  *) bad "  detail lost the technical half an agent needs" "$DETAIL" ;;
+esac
+
 # ---- the unit is there and the DAEMON is not: exit 4 not_installed (§2i, §4b) --------------
 #
 # Finding 1 of the Phase 4 verification, and the state `scripts/install.sh --yes` leaves on a
@@ -986,7 +1002,7 @@ expect_json '.relayed' 'false' "nothing was relayed"
 fm --timeout 3 wallet send "$DEST" 0.1 --json
 expect_rc 3 "wallet send without --yes is exit 3 (§2a.1 step 10)"
 expect_reason needs_yes "needs_yes"
-expect_keys "wallet send (the no---yes refusal)" "ok schema code code_name error hint reason $SEND_KEYS"
+expect_keys "wallet send (the no---yes refusal)" "ok schema code code_name error hint reason detail action $SEND_KEYS"
 expect_json '.ok' 'false' "ok is false"
 expect_json '.fee_pico' '30720000' "§5c: the refusal carries the BUILT fee, machine-readable"
 expect_contains "--yes" "and the hint is the user's own command with --yes appended (§4)"
@@ -998,7 +1014,7 @@ expect_reason fee_above_max "fee_above_max"
 # §5c's money exception names BOTH refusals — step 9 `fee_above_max` and step 10 `needs_yes` —
 # and the whole point is the BUILT fee being machine-readable: an agent that set --max-fee and
 # got only prose has no number to choose a new bound with, and §4 forbids parsing the prose.
-expect_keys "wallet send (the --max-fee refusal)" "ok schema code code_name error hint reason $SEND_KEYS"
+expect_keys "wallet send (the --max-fee refusal)" "ok schema code code_name error hint reason detail action $SEND_KEYS"
 expect_json '.fee_pico' '30720000' "§5c: the fee_above_max refusal carries the BUILT fee"
 expect_json '.relayed' 'false' "and says nothing was relayed"
 expect_json '.txids | length' '0' "with no txids"

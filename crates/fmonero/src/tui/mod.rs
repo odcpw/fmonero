@@ -2782,7 +2782,8 @@ impl Model for Tui {
                     }
                     Err(e) => {
                         self.exit.store(e.code, Ordering::SeqCst);
-                        self.note(format!("{label}: {}", e.text), true);
+                        // v5.6, §2o.1: the situation, then the in-app key — never the CLI's hint.
+                        self.note(format!("{label}: {}", e.toast()), true);
                     }
                 }
                 Cmd::none()
@@ -2905,8 +2906,8 @@ impl Model for Tui {
                             self.note("Cancelled.", true);
                         } else {
                             // §2o rule 5 and §2o.1: neither the `code_name` nor the CLI's hint.
-                            // The text alone.
-                            self.note(e.text.clone(), true);
+                            // The sentence, and the in-app action when the error carries one.
+                            self.note(e.toast(), true);
                         }
                     }
                 }

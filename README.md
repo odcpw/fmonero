@@ -314,9 +314,11 @@ first time with nothing at stake. `fmonero settings set node.network stagenet` a
 
 Every command takes `--json` and prints one JSON object; a non-TTY stdout implies `--json`.
 Failures are
-`{"ok":false,"schema":1,"code":N,"code_name":"…","error":"…","hint":"<runnable command>","reason":"…"}`
+`{"ok":false,"schema":1,"code":N,"code_name":"…","error":"…","hint":"<runnable command>","reason":"…",
+"detail":"…"|null,"action":"…"|null}`
 with the same exit code, and every human-mode error ends in a `Try:` line naming a runnable
-command.
+command. `error` is one plain sentence; `detail` is the technical half of it — the transport's own
+words, the name of the call — and it is printed in human mode only with `-v`.
 
 ```
 fmonero                       TUI on a terminal; `status --json` when stdout is not a TTY

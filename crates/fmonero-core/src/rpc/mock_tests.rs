@@ -1037,7 +1037,9 @@ fn a_busy_block_header_renders_null_and_status_still_succeeds() {
     // The client's own answer is an error, not a zeroed header.
     let e = w.node().get_last_block_header().unwrap_err();
     assert_eq!(e.exit_code(), 5);
-    assert!(e.to_string().contains("BUSY"), "{e}");
+    // v5.6, §2o: the sentence is plain and the wire word is the `detail`.
+    assert!(e.to_string().contains("still catching up"), "{e}");
+    assert!(e.detail().unwrap_or_default().contains("BUSY"), "{e:?}");
 }
 
 /// §5's hot path with a wallet open: three calls closed, five open — and the whole document

@@ -343,21 +343,71 @@ fn check_status(result: &Value) -> Result<(), RpcError> {
 }
 
 /// Deserialize a payload, turning a shape mismatch into a message that names the call.
+///
+/// The message is the user's (§2o) and the serde text — which names Rust types and JSON paths —
+/// is the `detail` an agent and `-v` get.
 pub fn typed<T: DeserializeOwned>(what: &str, v: Value) -> Result<T, Error> {
-    serde_json::from_value(v)
-        .map_err(|e| Error::failure(format!("{what}: the daemon's answer did not fit: {e}")))
+    serde_json::from_value(v).map_err(|e| {
+        Error::failure("fmonero could not read the answer it was given.")
+            .with_detail(format!("{what}: {e}"))
+    })
+}
+
+/// Which side of the wire an error came from, in the **user's** words (§2o.2): `monerod` is
+/// *the node*, `monero-wallet-rpc` is *the wallet service*, and neither binary is ever named in
+/// a sentence a person reads.
+///
+/// The enum exists because the message, the hint and the in-app action all differ between the
+/// two, and passing the binary name as a string — which is what v5.5 did — is how `monerod` and
+/// `monero-wallet-rpc` got into the TUI's status bar, the CLI's stderr and the bar widget's
+/// panel from one function (DECISIONS, V8).
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum Side {
+    Node,
+    Wallet,
+}
+
+impl Side {
+    /// The subject of every sentence below, capitalised because it starts one.
+    fn subject(self) -> &'static str {
+        match self {
+            Side::Node => "The node",
+            Side::Wallet => "The wallet service",
+        }
+    }
+
+    /// The CLI's runnable command (§9, §2o's exemption for the CLI's own hints).
+    fn hint(self) -> &'static str {
+        match self {
+            Side::Node => "fmonero node up",
+            Side::Wallet => "fmonero wallet open <name>   # starts the service, then opens",
+        }
+    }
+
+    /// The in-app route, for the TUI and the widget (§2o.1). Both are keys on the screen the
+    /// user is already looking at.
+    fn action(self) -> &'static str {
+        match self {
+            Side::Node => "Press u on the Node screen to start your node.",
+            Side::Wallet => "Press o on the Wallet screen to open a wallet.",
+        }
+    }
 }
 
 /// Map a **node** [`RpcError`] to the §4a error it means (§1b.2, §2d).
 pub fn node_error(what: &str, e: RpcError) -> Error {
     match e {
         RpcError::Rpc { code, message } => Error::from_node_rpc(code, &message),
-        RpcError::NotRegistered(path) => Error::upstream(format!(
-            "this monerod is running with restricted RPC, so {path} is not available"
-        ))
-        .with_reason("restricted")
-        .with_hint("fmonero doctor --only node"),
-        other => shared_error("monerod", what, other),
+        // §2o.2: `restricted` is never the word. What it means to the user is that this node
+        // answers the basic questions and not the rest, and the path it refused is the detail.
+        RpcError::NotRegistered(path) => {
+            Error::upstream("This node only answers basic questions, so it cannot answer that.")
+                .with_reason("restricted")
+                .with_detail(path)
+                .with_hint("fmonero doctor --only node")
+                .with_action("Press f on the Node screen to choose another node.")
+        }
+        other => shared_error(Side::Node, what, other),
     }
 }
 
@@ -365,59 +415,76 @@ pub fn node_error(what: &str, e: RpcError) -> Error {
 pub fn wallet_error(what: &str, e: RpcError) -> Error {
     match e {
         RpcError::Rpc { code, message } => Error::from_wallet_rpc(code, &message),
-        RpcError::NotRegistered(path) => {
-            Error::upstream(format!("monero-wallet-rpc does not serve {path}"))
-                .with_reason("rpc_error")
-        }
-        other => shared_error("monero-wallet-rpc", what, other),
+        RpcError::NotRegistered(path) => Error::upstream("The wallet service cannot answer that.")
+            .with_reason("rpc_error")
+            .with_detail(path),
+        other => shared_error(Side::Wallet, what, other),
     }
 }
 
-fn shared_error(daemon: &str, what: &str, e: RpcError) -> Error {
+/// The five arms both clients share — **rewritten in v5.6, because this one function was the
+/// biggest single violation of §2o in the program** (DECISIONS, V8).
+///
+/// It used to interpolate the binary name (`monerod`, `monero-wallet-rpc`), the RPC method
+/// (`get_info`) and the raw transport text into one string, and that string reached all three
+/// surfaces at once: the TUI's status bar, the CLI's stderr and — through
+/// `status.last_error.text` and a failed action's stderr — the bar widget's panel. The owner's
+/// complaint, verbatim, was *"most of the text in the TUI is slop"*, and
+/// `monero-wallet-rpc is not answering: io: Connection refused (os error 111)` is the sentence
+/// that earned it. Every arm now says what happened in one short sentence, names the in-app key
+/// that fixes it, and puts the wire's own words in `detail`, where `--json` and `-v` keep them
+/// verbatim and nothing a person reads carries them.
+fn shared_error(side: Side, what: &str, e: RpcError) -> Error {
+    let subject = side.subject();
     match e {
+        // §2o.2: "synced" / "catching up", never "synchronizing", and BUSY is a wire value.
         RpcError::Busy => Error::upstream(format!(
-            "{daemon} answered BUSY to {what}: it is still synchronizing, and this call is gated until it is"
+            "{subject} is still catching up, so it cannot answer that yet."
         ))
         .with_reason("rpc_error")
-        .with_hint("fmonero status --json"),
-        RpcError::Status(s) => {
-            Error::upstream(format!("{daemon} answered {what} with status {s:?}"))
-                .with_reason("rpc_error")
-        }
+        .with_detail(format!("{what}: status BUSY"))
+        .with_hint("fmonero status --json")
+        .with_action("The Node screen shows how far along it is."),
+        RpcError::Status(s) => Error::upstream(format!("{subject} refused that request."))
+            .with_reason("rpc_error")
+            .with_detail(format!("{what}: status {s:?}")),
+        // "credential" is the program's word for it; the user's is password.
         RpcError::Unauthorized => Error::backend(format!(
-            "{daemon} refused the credential fmonero has for it"
+            "{subject} did not accept the password fmonero uses for it."
         ))
         .with_reason("auth_refused")
+        .with_detail(format!("{what}: 401 after one retry"))
         .with_hint("fmonero doctor --only security"),
-        RpcError::Killed => Error::upstream(format!(
-            "{daemon} did not answer {what} within its deadline"
-        ))
-        .with_reason("killed_at_deadline")
-        .with_hint("fmonero doctor   # or re-run with --force"),
+        RpcError::Killed => Error::upstream(format!("{subject} did not answer in time."))
+            .with_reason("killed_at_deadline")
+            .with_detail(format!("{what}: killed at its deadline"))
+            .with_hint("fmonero doctor   # or re-run with --force"),
+        // §2o rule 7 forbids "breaker", which is what this is: the §2d backoff after a kill.
         RpcError::Stalled(left) => Error::upstream(format!(
-            "{daemon} was killed at its deadline less than a minute ago; {left}s of backoff left"
+            "{subject} was too slow a moment ago. fmonero will try again in {left}s."
         ))
         .with_reason("stalled")
+        .with_detail(format!("{what}: {left}s of backoff left"))
         .with_hint("fmonero doctor   # or re-run with --force"),
         // The most frequently hit error path in the tool — every command against a stopped
-        // daemon — and the only exit-4 reason that used to carry no hint of its own, so it fell
-        // through to `Error::default_hint`'s `omarchy pkg add monero`: an install command for a
-        // daemon that is installed and merely not running. §7.1 names the right one for each of
-        // these two conditions (`node_reachable` → `fmonero node up`, `wallet_rpc_reachable` →
-        // start the unit); `omarchy pkg add monero` belongs to `reason: not_installed` alone.
-        RpcError::Transport(msg) => Error::backend(format!("{daemon} is not answering: {msg}"))
+        // service — and the one V8 quotes. The hint is per side because §7.1 names a different
+        // repair for each (`node_reachable` → `fmonero node up`, `wallet_rpc_reachable` → open a
+        // wallet, which starts the service on demand); `omarchy pkg add monero` belongs to
+        // `reason: not_installed` alone and used to answer here by falling through to the
+        // default hint.
+        RpcError::Transport(msg) => Error::backend(format!("{subject} is not answering."))
             .with_reason("unreachable")
-            .with_hint(if daemon == "monerod" {
-                "fmonero node up"
-            } else {
-                "fmonero wallet open <name>   # starts the unit on demand, then opens"
-            }),
+            .with_detail(format!("{what}: {msg}"))
+            .with_hint(side.hint())
+            .with_action(side.action()),
         RpcError::Rpc { code, message } => {
-            Error::upstream(format!("{daemon}: {message} ({code})")).with_reason("rpc_error")
+            Error::upstream(format!("{subject} reported a problem."))
+                .with_reason("rpc_error")
+                .with_detail(format!("{what}: {message} ({code})"))
         }
-        RpcError::NotRegistered(path) => {
-            Error::upstream(format!("{daemon} does not serve {path}")).with_reason("rpc_error")
-        }
+        RpcError::NotRegistered(path) => Error::upstream(format!("{subject} cannot answer that."))
+            .with_reason("rpc_error")
+            .with_detail(format!("{what}: {path}")),
     }
 }
 
@@ -448,12 +515,133 @@ mod tests {
         assert_eq!(check_status(&serde_json::json!({"height": 1})), Ok(()));
     }
 
+    /// v5.6, §2o: the **message** is the user's ("still catching up") and the wire's own word
+    /// is in `detail`, where `--json` and `-v` keep it. The exit code and reason are unchanged,
+    /// which is the half agents branch on.
     #[test]
     fn busy_maps_to_exit_five_and_never_to_a_zero() {
         let e = node_error("get_last_block_header", RpcError::Busy);
         assert_eq!(e.exit_code(), 5);
         assert_eq!(e.reason(), Some("rpc_error"));
-        assert!(e.to_string().contains("BUSY"), "{e}");
+        assert!(e.to_string().contains("still catching up"), "{e}");
+        assert!(!e.to_string().contains("BUSY"), "{e}");
+        let detail = e.detail().unwrap_or_default();
+        assert!(detail.contains("BUSY"), "{detail}");
+        assert!(detail.contains("get_last_block_header"), "{detail}");
+    }
+
+    /// **V8, as a test on the whole family.** Until v5.6 this function interpolated the binary
+    /// name, the RPC method and the transport's own words into one sentence, and that sentence
+    /// reached the TUI's status bar, the CLI's stderr and the bar widget's panel:
+    /// `monero-wallet-rpc is not answering: io: Connection refused (os error 111)`. Every arm,
+    /// both sides: nothing a person reads may carry an implementation name, a method name or a
+    /// transport string, and every one of those has to survive in `detail`.
+    #[test]
+    fn no_arm_of_the_shared_family_says_a_binary_name_a_method_or_a_transport_string() {
+        let arms = || {
+            vec![
+                RpcError::Busy,
+                RpcError::Status("Invalid parameter".into()),
+                RpcError::Unauthorized,
+                RpcError::Killed,
+                RpcError::Stalled(42),
+                RpcError::Transport("io: Connection refused (os error 111)".into()),
+                RpcError::NotRegistered("/get_peer_list".into()),
+                RpcError::Rpc {
+                    code: -32601,
+                    message: "Method not found".into(),
+                },
+            ]
+        };
+        for (side, expect) in [
+            (Side::Node, "The node"),
+            (Side::Wallet, "The wallet service"),
+        ] {
+            for e in arms() {
+                let err = shared_error(side, "get_info", e.clone());
+                let text = err.to_string();
+                for banned in [
+                    "monerod",
+                    "monero-wallet-rpc",
+                    "get_info",
+                    "daemon",
+                    "unit",
+                    "RPC",
+                    "os error",
+                    "BUSY",
+                ] {
+                    assert!(
+                        !text.contains(banned),
+                        "{e:?} on {side:?} still says {banned:?}: {text}"
+                    );
+                }
+                assert!(text.starts_with(expect), "{e:?} on {side:?}: {text}");
+                assert!(text.ends_with('.'), "one sentence, one period: {text}");
+                // The wire's own words are kept, verbatim, where only `--json` and `-v` look.
+                let detail = err.detail().unwrap_or_default();
+                assert!(
+                    detail.starts_with("get_info: "),
+                    "{e:?}: the detail must name the call: {detail}"
+                );
+            }
+        }
+        // And the one the owner met carries the in-app route as well as the CLI's command.
+        let wallet = shared_error(
+            Side::Wallet,
+            "get_balance",
+            RpcError::Transport("io".into()),
+        );
+        assert_eq!(
+            wallet.to_string(),
+            "The wallet service is not answering.",
+            "the string V8 quotes, rewritten"
+        );
+        assert_eq!(
+            wallet.action().as_deref(),
+            Some("Press o on the Wallet screen to open a wallet.")
+        );
+        assert!(wallet.hint().starts_with("fmonero wallet open"), "{wallet}");
+        let node = shared_error(Side::Node, "get_info", RpcError::Transport("io".into()));
+        assert_eq!(node.to_string(), "The node is not answering.");
+        assert_eq!(
+            node.action().as_deref(),
+            Some("Press u on the Node screen to start your node.")
+        );
+        assert_eq!(node.hint(), "fmonero node up");
+    }
+
+    /// The other two entry points, which have their own arms before the shared ones: a gated
+    /// method on a node that only answers basic questions, and a path the wallet service does
+    /// not serve. Neither may name the path in the sentence (§2o rule 5).
+    #[test]
+    fn the_two_not_registered_arms_are_plain_and_keep_the_path_in_detail() {
+        let e = node_error(
+            "get_peer_list",
+            RpcError::NotRegistered("/get_peer_list".into()),
+        );
+        assert_eq!(
+            e.to_string(),
+            "This node only answers basic questions, so it cannot answer that."
+        );
+        assert_eq!(e.reason(), Some("restricted"));
+        assert_eq!(e.detail().as_deref(), Some("/get_peer_list"));
+        let e = wallet_error("query_key", RpcError::NotRegistered("/query_key".into()));
+        assert_eq!(e.to_string(), "The wallet service cannot answer that.");
+        assert_eq!(e.detail().as_deref(), Some("/query_key"));
+    }
+
+    /// `typed`'s message named the daemon and pasted serde's own text at the user; the text is
+    /// what an agent needs and `detail` is where it belongs.
+    #[test]
+    fn a_shape_mismatch_is_plain_and_keeps_serdes_words_in_detail() {
+        let e = typed::<u64>("get_height", serde_json::json!({"height": "not a number"}))
+            .expect_err("a string is not a u64");
+        assert_eq!(
+            e.to_string(),
+            "fmonero could not read the answer it was given."
+        );
+        let detail = e.detail().unwrap_or_default();
+        assert!(detail.starts_with("get_height: "), "{detail}");
     }
 
     #[test]

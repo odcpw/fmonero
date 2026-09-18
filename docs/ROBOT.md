@@ -10,7 +10,10 @@ START HERE
   fmonero doctor --json       # the health idiom is: fmonero doctor --json >/dev/null; echo $?
 
 BRANCH ON code_name + reason, NEVER ON PROSE
-  Every failure is {ok:false, schema, code, code_name, error, hint, reason}. `reason` is a
+  Every failure is {ok:false, schema, code, code_name, error, hint, reason, detail, action}.
+  `detail` carries the technical text `error` no longer does — the transport's own words, the
+  RPC method, a serde message — and `action` is the in-app sentence the TUI renders instead of
+  `hint`. Both are null for most errors and never absent. `reason` is a
   stable discriminator WITHIN a code, because exit 3 alone covers eight unrelated conditions
   and the reflex for one of them (append --yes and retry) is wrong for the rest:
     3 needs_yes          -> re-run with --yes

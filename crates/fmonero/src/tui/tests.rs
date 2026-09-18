@@ -404,7 +404,7 @@ fn a_successful_task_clears_a_previous_failures_exit_code() {
     let _ = m.update(Msg::Task(
         "new address",
         Box::new(Err(subs::ActionErr::from(fmonero_core::Error::backend(
-            "monero-wallet-rpc is not answering",
+            "The wallet service is not answering.",
         )))),
     ));
     assert_eq!(m.exit.load(Ordering::SeqCst), 4, "the failure is recorded");

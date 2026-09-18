@@ -149,6 +149,8 @@ pub enum Error {
         msg: String,
         hint: Option<String>,
         reason: Option<&'static str>,
+        detail: Option<String>,
+        action: Option<String>,
     },
     /// 2 — bad arguments, unknown settings key, non-loopback URL, bad amount.
     #[error("{msg}")]
@@ -156,6 +158,8 @@ pub enum Error {
         msg: String,
         hint: Option<String>,
         reason: Option<&'static str>,
+        detail: Option<String>,
+        action: Option<String>,
     },
     /// 3 — refused without `--yes`, or refused for one of the other §4 reasons.
     #[error("{msg}")]
@@ -163,6 +167,8 @@ pub enum Error {
         msg: String,
         hint: Option<String>,
         reason: Option<&'static str>,
+        detail: Option<String>,
+        action: Option<String>,
     },
     /// 4 — a daemon is not installed, its unit is missing, it is unreachable or it refused auth.
     #[error("{msg}")]
@@ -170,6 +176,8 @@ pub enum Error {
         msg: String,
         hint: Option<String>,
         reason: Option<&'static str>,
+        detail: Option<String>,
+        action: Option<String>,
     },
     /// 5 — a daemon errored, or was killed at its deadline.
     #[error("{msg}")]
@@ -177,6 +185,8 @@ pub enum Error {
         msg: String,
         hint: Option<String>,
         reason: Option<&'static str>,
+        detail: Option<String>,
+        action: Option<String>,
     },
     /// 6 — unknown wallet, label, txid or settings key.
     #[error("{msg}")]
@@ -184,6 +194,8 @@ pub enum Error {
         msg: String,
         hint: Option<String>,
         reason: Option<&'static str>,
+        detail: Option<String>,
+        action: Option<String>,
     },
     /// 7 — an address-book label matched several entries.
     #[error("{msg}")]
@@ -191,6 +203,8 @@ pub enum Error {
         msg: String,
         hint: Option<String>,
         reason: Option<&'static str>,
+        detail: Option<String>,
+        action: Option<String>,
     },
     /// 8 — a bounded wait ran out; nothing is broken.
     #[error("{msg}")]
@@ -198,6 +212,8 @@ pub enum Error {
         msg: String,
         hint: Option<String>,
         reason: Option<&'static str>,
+        detail: Option<String>,
+        action: Option<String>,
     },
     /// 9 — no wallet open, a wrong password, or a background-sync wallet.
     #[error("{msg}")]
@@ -205,6 +221,8 @@ pub enum Error {
         msg: String,
         hint: Option<String>,
         reason: Option<&'static str>,
+        detail: Option<String>,
+        action: Option<String>,
     },
     /// 10 — the node is too far behind for this operation (`send`/`sweep` only, §4a).
     #[error("{msg}")]
@@ -212,6 +230,8 @@ pub enum Error {
         msg: String,
         hint: Option<String>,
         reason: Option<&'static str>,
+        detail: Option<String>,
+        action: Option<String>,
     },
     /// 11 — the doctor found failures.
     #[error("{msg}")]
@@ -219,6 +239,8 @@ pub enum Error {
         msg: String,
         hint: Option<String>,
         reason: Option<&'static str>,
+        detail: Option<String>,
+        action: Option<String>,
     },
     /// 12 — a fixer failed, or fixed only part.
     #[error("{msg}")]
@@ -226,6 +248,8 @@ pub enum Error {
         msg: String,
         hint: Option<String>,
         reason: Option<&'static str>,
+        detail: Option<String>,
+        action: Option<String>,
     },
     /// 13 — an unsafe precondition, or an undo integrity failure.
     #[error("{msg}")]
@@ -233,6 +257,8 @@ pub enum Error {
         msg: String,
         hint: Option<String>,
         reason: Option<&'static str>,
+        detail: Option<String>,
+        action: Option<String>,
     },
     /// 14 — `NOT_ENOUGH_MONEY` / `NOT_ENOUGH_UNLOCKED_MONEY` (§1b.4).
     #[error("{msg}")]
@@ -240,6 +266,8 @@ pub enum Error {
         msg: String,
         hint: Option<String>,
         reason: Option<&'static str>,
+        detail: Option<String>,
+        action: Option<String>,
     },
     /// 15 — structural failure, `validate_address` said no, or the wrong nettype.
     #[error("{msg}")]
@@ -247,6 +275,8 @@ pub enum Error {
         msg: String,
         hint: Option<String>,
         reason: Option<&'static str>,
+        detail: Option<String>,
+        action: Option<String>,
     },
     /// 16 — the transaction could not be built or was refused on relay.
     #[error("{msg}")]
@@ -254,6 +284,8 @@ pub enum Error {
         msg: String,
         hint: Option<String>,
         reason: Option<&'static str>,
+        detail: Option<String>,
+        action: Option<String>,
     },
     /// 130 — SIGINT, or a cancelled action (`CancelToken`).
     ///
@@ -292,7 +324,13 @@ macro_rules! constructors {
         $(
             #[doc = concat!("Build an `Error::", stringify!($variant), "` with no hint and no reason.")]
             pub fn $name(msg: impl Into<String>) -> Error {
-                Error::$variant { msg: msg.into(), hint: None, reason: None }
+                Error::$variant {
+                    msg: msg.into(),
+                    hint: None,
+                    reason: None,
+                    detail: None,
+                    action: None,
+                }
             }
         )*
     };
@@ -345,6 +383,48 @@ impl Error {
             *slot = Some(reason);
         }
         self
+    }
+
+    /// Attach the **raw technical detail** — a transport error, an RPC method name, a status
+    /// string, a serde message (v5.6, §2o).
+    ///
+    /// §2o's rule is that every line a person reads is plain English, and the strings this
+    /// carries are the opposite of that by nature: `io: Connection refused (os error 111)` is
+    /// exactly what an agent debugging a socket wants and exactly what the owner should never
+    /// see in a bar widget. So the message says what happened and this says how, and it is
+    /// rendered in **two places only**: `--json` (the agent contract, exempt from §2o by its
+    /// own first paragraph) and the CLI's `-v`. The TUI and the widget never show it.
+    #[must_use]
+    pub fn with_detail(mut self, detail: impl Into<String>) -> Error {
+        if let Some(slot) = per_variant!(&mut self, detail) {
+            *slot = Some(detail.into());
+        }
+        self
+    }
+
+    /// Attach the **in-app** next step — a key or a chip, never a command (v5.6, §2o.1).
+    ///
+    /// The same split §5's `Warning` already makes: `hint` is the CLI's runnable command and
+    /// stays exactly as it was for scripts, agents and a person at a prompt; `action` is the
+    /// sentence the TUI shows instead, because a panel a user cannot type into is the worst
+    /// place in the product to print a command. `None` where nothing can be done from inside
+    /// the app, and the surfaces then show the message alone.
+    #[must_use]
+    pub fn with_action(mut self, action: impl Into<String>) -> Error {
+        if let Some(slot) = per_variant!(&mut self, action) {
+            *slot = Some(action.into());
+        }
+        self
+    }
+
+    /// The raw technical detail, for `--json` and `-v` only.
+    pub fn detail(&self) -> Option<String> {
+        per_variant!(self, detail).cloned().flatten()
+    }
+
+    /// The in-app next step (§2o.1), or `None` when there is none.
+    pub fn action(&self) -> Option<String> {
+        per_variant!(self, action).cloned().flatten()
     }
 
     /// Re-point a `sandboxed_units` refusal's hint at the command the **user** typed (v5.3,
@@ -441,6 +521,13 @@ impl Error {
 
     /// The `--json` failure envelope (§4): the same keys for every command, `reason`
     /// included (`null` when this code has none).
+    ///
+    /// **v5.6 adds `detail` and `action`**, both `null` for most errors, and the envelope is a
+    /// fixed nine keys rather than seven. `detail` is where the technical text §2o took out of
+    /// the message went — an agent that used to parse `error` for `Connection refused` finds it
+    /// there verbatim — and `action` is the in-app sentence the TUI renders (§2o.1). A key that
+    /// is sometimes absent is worse for a parser than a key that is sometimes `null`, so both
+    /// are always present.
     pub fn json(&self) -> serde_json::Value {
         serde_json::json!({
             "ok": false,
@@ -450,6 +537,8 @@ impl Error {
             "error": self.to_string(),
             "hint": self.hint(),
             "reason": self.reason(),
+            "detail": self.detail(),
+            "action": self.action(),
         })
     }
 

@@ -243,7 +243,21 @@ pub struct ActionErr {
     /// here names an in-app action), and kept for the same reason as `code_name`.
     #[allow(dead_code)]
     pub hint: String,
+    /// The in-app next step, which **is** rendered — appended to `text` as its second sentence
+    /// (v5.6, §2o.1). `None` for the errors that have no in-app route, and the toast is then the
+    /// sentence alone.
+    pub action: Option<String>,
     pub interrupted: bool,
+}
+
+impl ActionErr {
+    /// What the toast says: the situation, then what to do about it (§2o rule 2).
+    pub fn toast(&self) -> String {
+        match &self.action {
+            Some(a) => format!("{} {}", self.text, a),
+            None => self.text.clone(),
+        }
+    }
 }
 
 impl From<Error> for ActionErr {
@@ -253,6 +267,7 @@ impl From<Error> for ActionErr {
             code_name: e.code_name().to_string(),
             text: e.to_string(),
             hint: e.hint(),
+            action: e.action(),
             interrupted: e.is_interrupted(),
         }
     }

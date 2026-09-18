@@ -3133,8 +3133,16 @@ normal JSON. Every command says which it is in `capabilities.commands[].output_f
 Colour is off when stdout is not a TTY, with `--no-color`, or when `NO_COLOR` or
 `CI` is set. stdout is data; progress and diagnostics go to stderr. Success carries
 `{"ok":true,"schema":1,…}`; failure carries
-`{"ok":false,"schema":1,"code":N,"code_name":"…","error":"…","hint":"<runnable command>","reason":"…"}`
-and exits with the same code. Every human-mode error ends with a `hint:` line. `capabilities` and
+`{"ok":false,"schema":1,"code":N,"code_name":"…","error":"…","hint":"<runnable command>","reason":"…",
+"detail":"…"|null,"action":"…"|null}`
+and exits with the same code. Every human-mode error ends with a `hint:` line. **`detail` and
+`action` are v5.6's two additions, and both are always present** (`null` is not the same as absent to
+a parser). `detail` is the technical text §2o took out of `error`: the transport's own words, an RPC
+method name, a serde message — `error` now reads `The wallet service is not answering.` and `detail`
+reads `get_balance: io: Connection refused (os error 111)`, which is what an agent debugging a socket
+was parsing the prose for. It is rendered in exactly two places, `--json` and the CLI's `-v`.
+`action` is the **in-app** sentence (§2o.1) the TUI shows instead of `hint`, the same split §5's
+`Warning` makes; `null` where no in-app route exists. `capabilities` and
 `robot-docs` are always machine output.
 
 **`reason` is a stable machine-readable discriminator *within* a code**, listed by `capabilities`,
@@ -4769,6 +4777,13 @@ impl Error {
     pub fn reason(&self) -> Option<&'static str>;
     #[must_use] pub fn with_hint(self, hint: impl Into<String>) -> Error;
     #[must_use] pub fn with_reason(self, reason: &'static str) -> Error;
+    /// v5.6, §2o: the raw technical text, rendered by `--json` and `-v` and by nothing else.
+    #[must_use] pub fn with_detail(self, detail: impl Into<String>) -> Error;
+    /// v5.6, §2o.1: the in-app next step — a key or a chip, never a command. The TUI renders it
+    /// where it would otherwise render nothing; `hint` stays the CLI's.
+    #[must_use] pub fn with_action(self, action: impl Into<String>) -> Error;
+    pub fn detail(&self) -> Option<String>;
+    pub fn action(&self) -> Option<String>;
     pub fn is_interrupted(&self) -> bool;
     /// Maps a wallet-RPC error code (§1b.4) to the right variant, message verbatim.
     pub fn from_wallet_rpc(code: i32, message: &str) -> Error;
@@ -5756,7 +5771,8 @@ exist yet: Phase 1b would invent a shape, the docs agent would document a differ
 here, **at top level** — no wrapper object. Every monetary value appears twice, `*_pico` (integer)
 and `*_xmr` (string). A list command puts its rows under a single plural key. Absent data is `null`,
 never a missing key (§5's shape rules apply everywhere). A failure payload is always the §4 error
-envelope — `ok`, `schema`, `code`, `code_name`, `error`, `hint`, `reason` — whatever the command.
+envelope — `ok`, `schema`, `code`, `code_name`, `error`, `hint`, `reason`, `detail`, `action`
+(the last two v5.6, always present and usually `null`) — whatever the command.
 
 **One exception, and it is exact, because it is the money surface.** `wallet send` and
 `wallet sweep` refused at §2a.1 step 9 (`reason: fee_above_max`) or step 10 (`reason: needs_yes`)
