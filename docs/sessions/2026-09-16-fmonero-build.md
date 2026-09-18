@@ -1,4 +1,4 @@
-# fmonero: the research, plan and build session (2026-09-16/17)
+# fmonero: the research, plan and build session (2026-09-16/18)
 
 Rendered from the raw transcript `4901fef8-2906-4bc0-b226-799715c2e661.jsonl` by `docs/sessions/render.py`. Only the conversation is kept; tool output, reasoning and background-task notifications are omitted. Times are local.
 
@@ -241,4 +241,61 @@ _tools: Bash×4, Agent_
 ### Claude · 2026-09-17 22:00
 
 All three defects are closed and every gate is green, including the full e2e run. Finishing up: reinstalling the binary from HEAD, switching your installation to the Cake Wallet node (reversible with one command, and nothing connects until you open a wallet), refreshing the notes and the session log, and pushing.
+
+### Claude · 2026-09-17 22:01
+
+Your installation now runs in remote node mode against `xmr-node.cakewallet.com:18081`, and the doctor passes with no failures. Nothing has connected yet: the wallet daemon starts only when you open or create a wallet.
+
+**What changed.** Remote node mode is now a first-class setting. The wallet daemon is pointed at the public node as untrusted, fmonero itself never talks to it, and the send flow gates on a wallet refresh instead of a local node. Node commands that need a local daemon refuse with a hint. Everything was verified live from a sandbox against that node with a throwaway empty wallet: create, open, refresh, balance, address, history, and a dry-run send that correctly stopped at "insufficient funds". Three defects that surfaced in that verification are fixed, including one where `doctor --fix` would have flipped you back to local mode. Full details are in [DECISIONS.md](DECISIONS.md) and the [session log](docs/sessions/2026-09-16-fmonero-build.md), all pushed.
+
+**Why that node.** It was the only well-known public node that answered from your machine; five others timed out. It is plain HTTP and restricted, which is normal for public nodes. Switching is one command:
+
+```bash
+fmonero node remote <host:port> --yes
+```
+
+and going back to a local node is `fmonero node local --yes`.
+
+**Your first wallet.** Create one or copy one from monero-gui, then open it:
+
+```bash
+fmonero wallet create main --yes
+```
+
+Write the seed down before funding it; the command tells you how to display it with `monero-wallet-cli` offline. For a GUI wallet, copy `NAME.keys` (and `NAME` if you want the cache) into `~/.local/share/fmonero/wallets/mainnet/` and run `fmonero wallet open NAME`. Then `fmonero tui` or the bar widget.
+
+**Caveats, plainly.** A public node learns your IP and request timing, can lie about the chain, and can overstate fees, so never mark one trusted. A real send of any amount has still never been run through fmonero; the first one should be small, and I'd suggest doing it together so I can read the transaction it builds before you confirm.
+
+_tools: Bash×3_
+
+### Oliver · 2026-09-18 14:51
+
+So in a sense, it's a bit stupid because tab puts me into a tabby mode and then I can't go tab between node wallet send and log and I don't have a mouse I can use so the buttons need to be mouseable as well I'd say uh, then um, uh, on node I'd like you to fetch a list of public nodes so I can choose one to connect to it in the TUI and um, and then it needs a button somehow to run the daemon or at least to make the the daemon run automatically um somewhere maybe in the drop down so you can start the node start the daemon because here i can't start the node because there's no daemon or i can't i don't understand it maybe you can uh, figure it out and fix it all
+
+### Claude · 2026-09-18 14:52
+
+Let me look at the current state of the repo first, since another session has been working on it since yesterday, then map each of your points to what the TUI does today.
+
+### Claude · 2026-09-18 15:24
+
+Understood on all four, and I've turned them into one design-review-implement-verify round (Opus agents, a few hours). What's being built:
+
+- **Tab always switches screens.** Node, Wallet, Send, Log, from anywhere, even inside the Send form or a focused filter. Fields inside the Send form move with Up and Down instead. The tab strip becomes clickable.
+- **Mouse support.** Tabs, table rows, form fields and every modal button get click targets, plus on-screen buttons wherever there is a key hint today. Keyboard stays a full peer.
+- **Public node picker on the Node screen.** The list comes from monero.fail (195 clear-net nodes plus its health data, which I checked today). It shows health, last height and, when you press `p`, a live probe with latency. Enter switches the wallet daemon to that node after a confirm. Probing is opt-in because every probed node sees your IP; only the node you already use is probed automatically.
+- **The daemon confusion.** In remote mode there is no node to start; the only daemon is the wallet daemon, and it starts when you open a wallet. The Wallet screen gets a proper empty state with Open, Create and Start-daemon buttons, a create-wallet flow with the seed-backup notice, a `wallet.autostart` setting, and the widget drop-down gets "Open wallet…" and "Choose node…". The "wallet down" warning becomes an idle notice.
+
+The verifier will exercise the whole thing on a real terminal, fetch the node list live, create and open a throwaway wallet against the Cake Wallet node, reinstall, and restart the bar. I'll report when it lands.
+
+_tools: Bash×5, mcp__ccd_directory__change_directory, ListAgents, Workflow_
+
+### Claude · 2026-09-18 19:23
+
+The UX round finished after about four hours. Let me read the implementation and verification results and check the tree.
+
+### Claude · 2026-09-18 19:24
+
+The fix agent is working on the six findings; the current state (v5.5 with Tab, mouse, the node picker and the wallet flow) is pushed. I'll reinstall and report as soon as it lands.
+
+_tools: Bash×3, Agent_
 
