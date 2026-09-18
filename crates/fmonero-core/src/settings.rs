@@ -406,104 +406,157 @@ impl Default for TuiSettings {
 /// `(key, default, one-line doc)` — the §4 table, and the thing `settings list` prints.
 /// The defaults are written as the user sees them: a leading `~` is expanded once, when
 /// the settings load (§4.2).
+///
+/// **Every description was rewritten in v5.6** (§2o, DECISIONS V9). `settings list` is a surface
+/// a person reads — the owner's own `fmonero settings list` is one command from the TUI — and the
+/// column read like the header comments of the code it came from: seven rows carried a `§`
+/// number, and the set carried daemon, unit, systemd, RPC, loopback, probe, LMDB and four
+/// command-line flags. Each row now says **what the setting does for the user and which values
+/// are valid**, in that order, and the key name is left to say the rest: a settings key is
+/// something the user types, which rule 5 exempts, and the sentence beside it is not.
 const KEY_TABLE: &[(&str, &str, &str)] = &[
     (
         "node.network",
         "mainnet",
-        "mainnet | stagenet | testnet — one at a time; changing it needs `setup --units` again",
+        "Which Monero network to use: mainnet, stagenet or testnet. mainnet is real money; \
+         the other two are for practice. Set fmonero up again after a change.",
     ),
     (
         "node.mode",
         "local",
-        "local | remote — which daemon monero-wallet-rpc is pointed at (§2m)",
+        "Where your wallet gets its blocks: local, a node on this machine, or remote, \
+         a public node someone else runs.",
     ),
     (
         "node.remote",
         "",
-        "the remote daemon address [http[s]://]host:port — no path, no credential (§2m.2)",
+        "The public node to use while node.mode is remote, written host:port. An http:// or \
+         https:// prefix is allowed; a path or a password in the address is not.",
     ),
     (
         "node.remote_trusted",
         "false",
-        "send `trusted` to a remote node; NEVER true for a public one (§2m.6)",
+        "true tells a public node more about what your wallet is asking for, which is only \
+         ever safe for a node you run yourself. Leave it false. true or false.",
     ),
     (
         "node.remote_probe_sec",
         "60",
-        "how often the TUI probes the configured remote node; 0 = off, 10 is the floor (§2n.4)",
+        "How often, in seconds, fmonero checks the public node it is using. 0 turns the \
+         checks off; anything under 10 is treated as 10.",
     ),
     (
         "node.url",
         "http://127.0.0.1:18081",
-        "the node's JSON-RPC URL; loopback http only (§2c); unused in remote mode",
+        "The address fmonero talks to your own node on. The host has to be this machine. \
+         Not used while you are on a public node.",
     ),
     (
         "node.unit",
         NODE_UNIT,
-        "the systemd user unit that runs monerod",
+        "The name of the background service that runs your own node. Change it only if you \
+         have a second one.",
     ),
     (
         "node.data_dir",
         "~/.bitmonero",
-        "monerod's LMDB data directory",
+        "The directory your own node keeps its copy of the blockchain in. It grows to tens \
+         of gigabytes.",
     ),
     (
         "node.log_file",
         "~/.bitmonero/bitmonero.log",
-        "the log `node log` tails",
+        "The file your own node writes its log to, and the file the Log screen shows.",
     ),
     (
         "node.prune",
         "true",
-        "write --prune-blockchain into monerod.conf (a full chain does not fit, §1.3)",
+        "true keeps a smaller copy of the blockchain, which is what fits on this machine. \
+         false keeps all of it. true or false.",
     ),
     (
         "wallet.url",
         "http://127.0.0.1:18083",
-        "monero-wallet-rpc's URL; loopback http only (§2c)",
+        "The address fmonero talks to the wallet service on. The host has to be this machine.",
     ),
     (
         "wallet.unit",
         WALLET_UNIT,
-        "the systemd user unit that runs monero-wallet-rpc",
+        "The name of the background service that holds your wallet open.",
     ),
     (
         "wallet.dir",
         "~/.local/share/fmonero/wallets/<network>",
-        "the --wallet-dir the daemon resolves wallet names against",
+        "The directory your wallet files are kept in. `fmonero wallet list` shows what is there.",
     ),
     (
         "wallet.port",
         "18083",
-        "the wallet RPC bind port; it names the daemon's login file (§2c)",
+        "The port on this machine the wallet service answers on. Change it only if something \
+         else is already using it.",
     ),
-    ("wallet.account", "0", "the default account index"),
+    (
+        "wallet.account",
+        "0",
+        "Which account inside the wallet to use unless you say otherwise. 0 is the first one.",
+    ),
     (
         "wallet.priority",
         "2",
-        "default fee priority 0-4 (2 = normal; 0 is an alias of the lowest tier, §1b.4)",
+        "How much fee to pay unless you say otherwise: 0 or 1 cheapest, 2 normal, 3 fast, \
+         4 fastest.",
     ),
     (
         "wallet.autostart",
         "false",
-        "start the wallet daemon when `fmonero tui` launches (TUI only, §7a.5)",
+        "true starts the wallet service as soon as `fmonero tui` opens; false waits until you \
+         open or create a wallet. Nothing but `fmonero tui` reads it.",
     ),
-    ("timeouts.node_sec", "3", "node RPC probe deadline"),
-    ("timeouts.wallet_sec", "5", "wallet RPC probe deadline"),
-    ("timeouts.refresh_sec", "120", "`wallet refresh` deadline"),
+    (
+        "timeouts.node_sec",
+        "3",
+        "How many seconds to wait for your own node to answer before giving up.",
+    ),
+    (
+        "timeouts.wallet_sec",
+        "5",
+        "How many seconds to wait for the wallet service to answer before giving up.",
+    ),
+    (
+        "timeouts.refresh_sec",
+        "120",
+        "How many seconds to allow while fmonero checks for payments.",
+    ),
     (
         "timeouts.transfer_sec",
         "120",
-        "transfer/sweep build deadline",
+        "How many seconds to allow while a payment is prepared.",
     ),
-    ("timeouts.open_sec", "300", "`open_wallet` deadline"),
-    ("timeouts.systemctl_sec", "10", "any systemctl call"),
-    ("tui.poll_ms", "1000", "the TUI's status poll interval"),
-    ("tui.tick_ms", "120", "the TUI's spinner frame interval"),
+    (
+        "timeouts.open_sec",
+        "300",
+        "How many seconds to allow while a wallet is being opened.",
+    ),
+    (
+        "timeouts.systemctl_sec",
+        "10",
+        "How many seconds to allow when a background service is started or stopped.",
+    ),
+    (
+        "tui.poll_ms",
+        "1000",
+        "How often `fmonero tui` refreshes what it shows, in milliseconds.",
+    ),
+    (
+        "tui.tick_ms",
+        "120",
+        "How often the spinner in `fmonero tui` moves, in milliseconds.",
+    ),
     (
         "tui.mouse",
         "true",
-        "click tabs, rows, fields and buttons; false gives the terminal its selection back",
+        "true lets you click tabs, rows, fields and buttons. false gives the terminal its own \
+         text selection back.",
     ),
 ];
 
@@ -580,6 +633,18 @@ fn parse_unit(key: &str, value: &str) -> Result<String, Error> {
         .with_hint(format!("fmonero settings set {key} {NODE_UNIT}")));
     }
     Ok(value.to_string())
+}
+
+/// The same refusal with **`detail: "no_port"`** attached (v5.6).
+///
+/// `nodes::parse` counts the portless rows of monero.fail's list separately, because §2n.1 quotes
+/// the figure (37 of 195) and a reader comparing 158 to 195 needs it — and until v5.6 it told them
+/// apart by `e.to_string().contains("the port is required")`, i.e. by the prose, which §4 forbids an
+/// agent from doing and which the §2o rewrite of that very sentence duly broke. `detail` is the
+/// machine half of an error (§2o), so it is what the counter now branches on: the words are free to
+/// change and the count cannot drift again.
+fn no_port(msg: &str) -> Error {
+    bad_remote(msg).with_detail("no_port")
 }
 
 /// Every §2m.2 refusal carries this hint, verbatim.
@@ -716,13 +781,15 @@ impl Settings {
     pub fn parse_remote_address(s: &str) -> Result<String, Error> {
         let s = s.trim();
         if s.is_empty() {
-            return Err(bad_remote("a remote node address is required"));
+            return Err(bad_remote(
+                "Type the node's address, like node.example.com:18089.",
+            ));
         }
         let (scheme, rest) = match s.find("://") {
             Some(i) => {
                 let scheme = s[..i].to_ascii_lowercase();
                 if scheme != "http" && scheme != "https" {
-                    return Err(bad_remote("only http:// and https:// are understood"));
+                    return Err(bad_remote("Only http:// and https:// are understood."));
                 }
                 (Some(scheme), &s[i + 3..])
             }
@@ -730,15 +797,20 @@ impl Settings {
         };
         if rest.contains('@') {
             return Err(bad_remote(
-                "a remote node address may not carry a username or password",
+                "An address cannot carry a name or a password. Use host:port, like \
+                 node.example.com:18089.",
             ));
         }
         if rest.contains(['/', '?', '#']) {
+            // §2o, and V11 is why it matters twice over: this message is what the TUI's
+            // `a` modal shows under the field as the user types, so it has to read as advice
+            // rather than as an account of what the wallet service does with a path.
             return Err(bad_remote(
-                "a remote node address is host:port with no path — monero-wallet-rpc discards everything after the port",
+                "An address is a host and a port, with nothing after it. Like \
+                 node.example.com:18089.",
             ));
         }
-        let ipv6 = || bad_remote("an IPv6 address must be bracketed: [2001:db8::1]:18089");
+        let ipv6 = || bad_remote("An IPv6 address needs brackets, like [2001:db8::1]:18089.");
         let (host, port) = if let Some(open) = rest.strip_prefix('[') {
             let close = open.find(']').ok_or_else(ipv6)?;
             let literal = &open[..close];
@@ -746,29 +818,29 @@ impl Settings {
                 return Err(ipv6());
             }
             let after = &open[close + 1..];
-            let port = after.strip_prefix(':').ok_or_else(|| {
-                bad_remote(
-                    "the port is required — monero-wallet-rpc fills a missing port with 80 or 443, never 18081",
-                )
-            })?;
+            let port = after
+                .strip_prefix(':')
+                .ok_or_else(|| no_port("The port is required, like [2001:db8::1]:18089."))?;
             (format!("[{literal}]"), port)
         } else {
             let (host, port) = rest.rsplit_once(':').ok_or_else(|| {
-                bad_remote(
-                    "the port is required — monero-wallet-rpc fills a missing port with 80 or 443, never 18081",
-                )
+                // Never guessed: §1b.9 item 1 — the wallet service fills a missing port with 80
+                // or 443 and never 18081, so a guess here would disagree with what it does with
+                // the identical string. The user sees advice; the reason lives in this comment.
+                no_port("The port is required, like node.example.com:18089.")
             })?;
             if host.contains(':') {
                 return Err(ipv6());
             }
             if host.is_empty() || !host.split('.').all(is_dns_label) {
                 return Err(bad_remote(
-                    "the host must be an IPv4 literal, a bracketed IPv6 literal or a DNS name",
+                    "The host has to be an address like 185.220.101.63, a bracketed one like \
+                     [2001:db8::1], or a name like node.example.com.",
                 ));
             }
             (host.to_string(), port)
         };
-        let bad_port = || bad_remote("port must be 1..65535");
+        let bad_port = || bad_remote("The port has to be a number from 1 to 65535.");
         if port.is_empty() || port.len() > 5 || !port.bytes().all(|b| b.is_ascii_digit()) {
             return Err(bad_port());
         }
@@ -987,7 +1059,10 @@ impl Settings {
                 bad.push((
                     "wallet.port".to_string(),
                     format!(
-                        "{} is not the {} wallet port ({expected}); `setup --units` rewrites it",
+                        // §2o: the doctor prints this one, so it says which value is wrong,
+                        // which one is right, and that its own fixer repairs it — never a flag.
+                        "{} is not the port {} wallets use ({expected}). \
+                         `fmonero doctor --fix` puts it back.",
                         self.wallet.port, self.node.network
                     ),
                 ));
@@ -1086,18 +1161,22 @@ mod tests {
                 "{input}"
             );
         }
+        // v5.6, §2o: every refusal was rewritten as advice (rule 10: say what a good one looks
+        // like), because the TUI's `a` modal shows these under the field as the user types
+        // (§7a.4, DECISIONS V11). The needles follow the new words; the exit code, the reason and
+        // the hint are unchanged, which is the half an agent branches on.
         for (input, needle) in [
-            ("", "required"),
-            ("node.example.com", "the port is required"),
-            ("http://node.example.com:18089/json_rpc", "no path"),
-            ("user:pass@node:18089", "username or password"),
-            ("ftp://node:18089", "only http:// and https://"),
-            ("tcp://node:18089", "only http:// and https://"),
-            ("node.example.com:0", "port must be 1..65535"),
-            ("node.example.com:70000", "port must be 1..65535"),
-            ("[::1:18089", "must be bracketed"),
-            ("::1:18089", "must be bracketed"),
-            ("-bad-.example.com:18089", "the host must be"),
+            ("", "Type the node's address"),
+            ("node.example.com", "The port is required"),
+            ("http://node.example.com:18089/json_rpc", "nothing after it"),
+            ("user:pass@node:18089", "cannot carry a name or a password"),
+            ("ftp://node:18089", "Only http:// and https://"),
+            ("tcp://node:18089", "Only http:// and https://"),
+            ("node.example.com:0", "a number from 1 to 65535"),
+            ("node.example.com:70000", "a number from 1 to 65535"),
+            ("[::1:18089", "needs brackets"),
+            ("::1:18089", "needs brackets"),
+            ("-bad-.example.com:18089", "The host has to be"),
         ] {
             let e = Settings::parse_remote_address(input).unwrap_err();
             assert_eq!(e.exit_code(), 2, "{input}");

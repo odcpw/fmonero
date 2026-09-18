@@ -625,9 +625,12 @@ mod tests {
         );
         assert_eq!(e.reason(), Some("restricted"));
         assert_eq!(e.detail().as_deref(), Some("/get_peer_list"));
-        let e = wallet_error("query_key", RpcError::NotRegistered("/query_key".into()));
+        let e = wallet_error(
+            "get_accounts",
+            RpcError::NotRegistered("/get_accounts".into()),
+        );
         assert_eq!(e.to_string(), "The wallet service cannot answer that.");
-        assert_eq!(e.detail().as_deref(), Some("/query_key"));
+        assert_eq!(e.detail().as_deref(), Some("/get_accounts"));
     }
 
     /// `typed`'s message named the daemon and pasted serde's own text at the user; the text is

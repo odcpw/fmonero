@@ -150,6 +150,23 @@ impl Out {
 
 // ---------------------------------------------------------------- formatters
 
+/// A block number as a person reads it: `3 765 346`, a space every three digits, the same grouping
+/// the bar widget's `Model.grouped` applies (§2o rule 9).
+///
+/// It lives here rather than in the TUI because v5.6 gave it a third caller — the doctor's details,
+/// which printed `3541122` while the pane sixty columns away printed `3 541 122` (DECISIONS, V5).
+pub fn grouped(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(' ');
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// `1.5 GB`, `842 kB` — decimal units, the way a disk meter reads.
 ///
 /// Integer arithmetic, with one decimal place carried by hand. Bytes are not money, but

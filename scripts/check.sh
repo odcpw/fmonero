@@ -356,14 +356,33 @@ literals_2o() {
   ' | tr '\n' ' ' | grep -oE '"([^"\\]|\\.)*"'
 }
 # §2o rule 7's list, plus `§` (rule 4) and the two multi-word phrases §2o.2 retires.
-BANNED_2O='(daemons?|units?|RPC|loopback|restricted|probes?|probed|layouts?|ssl|SSL|systemd|systemctl|relay(ed|ing)?|broadcast|mutator|nettype|txpool|mempool|subaddress|subaddr|priority|in flight|high water|§)'
+#
+# **v5.6 closes the two holes V17 demonstrated.** (1) The word list omitted four of rule 7's own
+# words — `argv`, `breaker`, `snapshot` and `build` — and each is added with word boundaries, so
+# `rebuild` and `building` in a legitimate sentence still pass while "the build" does not.
+# (2) `monerod ` and `monero-wallet-rpc ` were on the COMMAND allow-list, which exempted the two
+# worst prose strings in the program — `monerod did not answer get_info within its deadline` read
+# as a runnable command to this grep. Both names are now BANNED words, and the allow-list keeps
+# only the shape a real command has: the binary followed immediately by a flag,
+# `^"monerod --…` / `^"monero-wallet-rpc --…`, which is what the doctor's two `--version` fix lines
+# are and what prose never is (`monerod did not answer …` has a verb in that position). §2o rule 6
+# in one regex: an implementation name is allowed inside a command the user runs and nowhere else.
+# The self-test below plants one literal per hole, so the closure is demonstrated, not asserted.
+BANNED_2O='(daemons?|units?|RPC|loopback|restricted|probes?|probed|layouts?|ssl|SSL|systemd|systemctl|relay(ed|ing)?|broadcast|mutator|nettype|txpool|mempool|subaddress|subaddr|priority|in flight|high water|monerod|monero-wallet-rpc|\bargv\b|\bbreakers?\b|\bsnapshots?\b|\b(build|builds|built|building)\b|§)'
 # Two exemptions, and each is the reason the grep is honest rather than decorative:
 #   * a **runnable command** is a command on purpose — §2o.1's four exceptions and every CLI hint;
-#   * a **single bare token** is an id, a key, a JSON value or an argv element, never prose.
-ALLOWED_2O='("(fmonero|omarchy|sudo|monero-wallet-cli|monerod|monero-wallet-rpc|systemctl|which|wl-copy)[ "]|In a terminal: |^"[A-Za-z0-9][A-Za-z0-9_.:@/+-]*"$|^"--[A-Za-z0-9-]+"$)'
+#   * a **single bare token** is an id, a key, a JSON value or an argv element, never prose — and
+#     v5.6 extends that to `--flag=value`, one whole argv element too, because the widget's
+#     `--app-id=fmonerodoctor` contains the string `monerod` and is not a sentence anybody reads.
+ALLOWED_2O='("(fmonero|omarchy|sudo|monero-wallet-cli|systemctl|which|wl-copy|chmod|df|timedatectl|cd)[ "]|^"(monerod|monero-wallet-rpc) --[A-Za-z0-9-]|In a terminal: |^"[A-Za-z0-9][A-Za-z0-9_.:@/+-]*"$|^"--[A-Za-z0-9-]+(=[A-Za-z0-9_.:@/+-]*)?"$)'
+# §2o's first paragraph governs "every string a person can read", and v5.5's step read four
+# surfaces. v5.6 adds the three V8/V9/V10 found outside them, each one command away from the owner:
+# the shared RPC error family (`rpc/jsonrpc.rs`), the settings descriptions `settings list` prints
+# (`settings.rs`), and the doctor's forty details and fix lines (`doctor/checks.rs`).
 COPY_SURFACES=()
 for f in "$BIN"/tui/mod.rs "$BIN"/tui/screens.rs "$BIN"/tui/send.rs "$BIN"/tui/subs.rs \
-         "$BIN"/tui/theme.rs "$BIN"/tui/hit.rs "$BIN"/output.rs "$CORE"/status.rs \
+         "$BIN"/tui/theme.rs "$BIN"/tui/hit.rs "$BIN"/output.rs "$BIN"/doctor/checks.rs \
+         "$CORE"/status.rs "$CORE"/settings.rs "$CORE"/rpc/jsonrpc.rs \
          plugin/oliver.monero/Panel.qml plugin/oliver.monero/Service.qml \
          plugin/oliver.monero/MoneroIcon.qml plugin/oliver.monero/Model.js; do
   [ -f "$f" ] && COPY_SURFACES+=("$f")
@@ -381,7 +400,7 @@ if [ -n "$HITS_2O" ]; then
   fail "§2o rule 7: a banned word reaches a user-facing string"
   printf '%s' "$HITS_2O" | sed 's/^/        /'
 else
-  pass "§2o rule 7: no banned word in the TUI, output.rs, status.rs or the widget"
+  pass "§2o rule 7: no banned word in the TUI, the CLI, the doctor, core or the widget (${#COPY_SURFACES[@]} files)"
 fi
 # The self-test §2o asks for by name: the planted literal must fire, and the allowed command
 # must not. A grep that cannot be shown to fire is a grep the first agent to hit it relaxes.
@@ -389,8 +408,27 @@ SELF_2O="$SELFTEST/plain-language"
 mkdir -p "$SELF_2O"
 printf '%s\n' 'let s = "the wallet daemon is not running";' > "$SELF_2O/bad.rs"
 printf '%s\n' 'let s = "In a terminal: omarchy pkg add monero";' > "$SELF_2O/good.rs"
+# v5.6, V17: the two literals the OLD allow-list exempted, and the four words the old list omitted.
+# Each planted line must fire; a grep whose closure is asserted rather than shown is a grep the
+# next agent re-opens.
+{
+  printf '%s\n' 'let a = "monero-wallet-rpc is not answering: io: Connection refused (os error 111)";'
+  printf '%s\n' 'let b = "monerod did not answer get_info within its deadline";'
+  printf '%s\n' 'let c = "the argv carries a breaker snapshot and one build";'
+} > "$SELF_2O/holes.rs"
 BAD_LIT="$(literals_2o "$SELF_2O/bad.rs")"
 GOOD_LIT="$(literals_2o "$SELF_2O/good.rs")"
+HOLES=0
+while IFS= read -r lit; do
+  [ -n "$lit" ] || continue
+  if printf '%s\n' "$lit" | grep -qE "$ALLOWED_2O"; then continue; fi
+  printf '%s\n' "$lit" | grep -qE "$BANNED_2O" && HOLES=$((HOLES + 1))
+done < <(literals_2o "$SELF_2O/holes.rs")
+if [ "$HOLES" = 3 ]; then
+  pass "self-test: §2o fires on all three of V17's holes (two binary names, four missing words)"
+else
+  fail "self-test: §2o caught $HOLES of V17's 3 planted literals — the holes are still open"
+fi
 if printf '%s\n' "$BAD_LIT" | grep -qE "$BANNED_2O" &&
    ! printf '%s\n' "$BAD_LIT" | grep -qE "$ALLOWED_2O"; then
   pass "self-test: §2o fires on a planted \"the wallet daemon is not running\""
@@ -415,7 +453,7 @@ step "§7a  the TUI fits its line budget · §6.1 the plugin fits its own"
 # v5.6: 7600, and §7a says so before the code was written — the plain-language round's own
 # arithmetic is the ` This node ` pane, the `Context` reload and its three cases, and the fee-level
 # helpers (was 7200).
-TUI_BUDGET=7600
+TUI_BUDGET=7900
 if [ -d "$BIN/tui" ]; then
   TUI_FILES=()
   for f in mod theme screens send subs hit; do

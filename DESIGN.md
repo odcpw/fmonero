@@ -2068,15 +2068,23 @@ port           = 1*5DIGIT                  ; 1..65535
 Every refusal is exit **2 `usage`**, `reason: bad_remote_address`, and every one carries the same
 hint: `fmonero node remote <host>:18089 --yes   # host:port, no path, no credential`.
 
+**v5.6 rewrote every message in the table below** (§2o, and DECISIONS V11 is the second reason):
+the TUI's `a` modal validates the field live through this function and shows its message under the
+field as the user types, so a refusal that explained what `monero-wallet-rpc` does with a path was
+being shown to the one reader who cannot act on it. Each one now names what a good address looks
+like (rule 10). The exit code, the `reason` and the hint are untouched, and the **one place a caller
+branched on the prose** — `nodes::parse`, counting monero.fail's portless rows — now branches on
+`detail: "no_port"` instead.
+
 | Input | `error` | Why it is refused rather than accepted |
 |---|---|---|
 | `""` | `a remote node address is required` | — |
-| `node.example.com` | `the port is required — monero-wallet-rpc fills a missing port with 80 or 443, never 18081` | `abstract_http_client.cpp:139-144` (§1b.9 item 1). Guessing 18081 here would make fmonero's rendering disagree with what `monero-wallet-rpc` does with the identical string in `--daemon-address`; refusing makes the two agree by construction. |
-| `http://node.example.com:18089/json_rpc` | `a remote node address is host:port with no path — monero-wallet-rpc discards everything after the port` | `parse_url` puts it in `content.uri` and `set_server` never reads that field (`net_parse_helpers.cpp:165-169`, `abstract_http_client.cpp:146`). Accepting a path would silently do nothing, which is the §2j failure in its purest form. |
-| `user:pass@node:18089` | `a remote node address may not carry a username or password` | §0 cuts a remote-node credential. `set_daemon`'s `username`/`password` are sent **only** in local mode, from `monerod.conf` (§4.2). |
-| `ftp://node:18089`, `tcp://…` | `only http:// and https:// are understood` | **With the port mandatory the scheme has no effect at all**, so an accepted `ftp://` would be silently discarded rather than honoured — the same §2j failure as the path row. `parse_url`'s regex captures an explicit port in group 6 whatever the scheme (`net_parse_helpers.cpp:181`, `:199-203`) and `set_server` consults its 80/443 table only `if (parsed.port == 0)` (`abstract_http_client.cpp:139-144`), after which only host and port are passed on (`:146`) — §1b.9 item 1's "the scheme is discarded". fmonero refuses a scheme it would only be pretending to understand. |
-| `node.example.com:0`, `:70000` | `port must be 1..65535` | `parse_port` (`net_parse_helpers.cpp:96-99`). |
-| `[::1:18089` | `an IPv6 address must be bracketed: [2001:db8::1]:18089` | `parse_url_ipv6` (`net_parse_helpers.cpp:135-172`) requires the brackets; without them the last colon is read as the port separator. |
+| `node.example.com` | `The port is required, like node.example.com:18089.` (v5.6, §2o; `detail: "no_port"` carries the machine half, which is what `nodes::parse` counts the portless rows by) | `abstract_http_client.cpp:139-144` (§1b.9 item 1). Guessing 18081 here would make fmonero's rendering disagree with what `monero-wallet-rpc` does with the identical string in `--daemon-address`; refusing makes the two agree by construction. |
+| `http://node.example.com:18089/json_rpc` | `An address is a host and a port, with nothing after it. Like node.example.com:18089.` (v5.6, §2o) | `parse_url` puts it in `content.uri` and `set_server` never reads that field (`net_parse_helpers.cpp:165-169`, `abstract_http_client.cpp:146`). Accepting a path would silently do nothing, which is the §2j failure in its purest form. |
+| `user:pass@node:18089` | `An address cannot carry a name or a password. Use host:port, like node.example.com:18089.` (v5.6, §2o) | §0 cuts a remote-node credential. `set_daemon`'s `username`/`password` are sent **only** in local mode, from `monerod.conf` (§4.2). |
+| `ftp://node:18089`, `tcp://…` | `Only http:// and https:// are understood.` | **With the port mandatory the scheme has no effect at all**, so an accepted `ftp://` would be silently discarded rather than honoured — the same §2j failure as the path row. `parse_url`'s regex captures an explicit port in group 6 whatever the scheme (`net_parse_helpers.cpp:181`, `:199-203`) and `set_server` consults its 80/443 table only `if (parsed.port == 0)` (`abstract_http_client.cpp:139-144`), after which only host and port are passed on (`:146`) — §1b.9 item 1's "the scheme is discarded". fmonero refuses a scheme it would only be pretending to understand. |
+| `node.example.com:0`, `:70000` | `The port has to be a number from 1 to 65535.` (v5.6, §2o) | `parse_port` (`net_parse_helpers.cpp:96-99`). |
+| `[::1:18089` | `An IPv6 address needs brackets, like [2001:db8::1]:18089.` (v5.6, §2o) | `parse_url_ipv6` (`net_parse_helpers.cpp:135-172`) requires the brackets; without them the last colon is read as the port separator. |
 
 **The scheme is stored but is almost decoration.** `set_server` discards it (§1b.9 item 1): TLS is
 decided by `ssl_support` alone. fmonero keeps the user's spelling so that `status`, `node info` and
@@ -6470,7 +6478,7 @@ places to update when monero.fail changes one field.
 
 ---
 
-## 7a. TUI (`fmonero tui`) — one agent, one pass, ≤ 7 600 lines across `src/tui/{mod,theme,screens,send,subs,hit}.rs` (`tests.rs` excluded)
+## 7a. TUI (`fmonero tui`) — one agent, one pass, ≤ 7 900 lines across `src/tui/{mod,theme,screens,send,subs,hit}.rs` (`tests.rs` excluded)
 
 **The budget is the measured figure, and it is a ceiling against growth rather than a target**
 (v5.1). v5 asked for 1 800 — fproton's 1 200 plus a fourth screen, a send state machine, two modals
@@ -6549,6 +6557,32 @@ arithmetic v5.1 recorded as the cause of a dishonest trade. Itemised:
 That is 320 over 7 197 = 7 517, and the ceiling is **7 600** rather than 7 550: an estimate consuming
 99.7 % of its own ceiling is what v5.5 revision 12 identified as the arithmetic that forces the trade,
 and rounding to the next hundred is not the same as thinking about it. `TUI_BUDGET` becomes 7600.
+
+**v5.6.1 raises it to 7 900, and states the arithmetic here before the code is written — which is
+the procedure the paragraphs above set, and the reason this paragraph exists at all.** The measured
+tree at the start of the plain-language fix-up round is **7 608** across the six files (`mod` 2 948 ·
+`screens` 2 632 · `send` 854 · `subs` 534 · `hit` 436 · `theme` 204), i.e. **8 over the v5.6
+ceiling** — v5.6's own round came in at exactly 7 600 and the first two commits of the fix-up (the
+`Error` `action` slot the TUI renders, §2o's toast) pushed it over. The eighteen findings of the
+2026-09-19 verification put nine more items in these files, itemised:
+
+| item | estimate |
+|---|---|
+| **V3** — decision 7's two lines move inside the Wallet screen's pane, like the Node screen's (`framed()` + padding + the render test's own helper) | ≈ 15 |
+| **V4** — `confirm_local` gets the shape §7a.4 specifies: what restarts, the named wallet closed and offered again, and the "not running yet" sentence | ≈ 25 |
+| **V5** — the `this wallet` row through the node pane's own formatters (`grouped` + `age`) | ≈ 10 |
+| **V6** — the picker footer's `list {age} old` → `list from {age}` | ≈ 2 |
+| **V7** — the reliability cell fits, and the two `block` columns get §7a.4's two group headings | ≈ 30 |
+| **V11** — the `a` modal validates live through `Settings::parse_remote_address`, shows the refusal under the field, and keeps its `Enter adds it · Esc cancels` line at both sizes | ≈ 35 |
+| **V12** — the wallet empty state: no balance pane with nothing in it, and a chip that reads as English | ≈ 20 |
+| **V13/V14** — one fact, one phrasing: the wallet-service line against the status bar, and the hero against the node badge | ≈ 15 |
+| **V15** — one `elide()` helper, at a word boundary with `…`, and its callers (the help overlay's rows, the two toasts the verification caught mid-word) | ≈ 45 |
+
+That is **197 over 7 608 = 7 805**, and the ceiling is **7 900** rather than 7 850: v5.5 revision 12
+identified an estimate consuming 99.7 % of its own ceiling as the arithmetic that forces a dishonest
+trade, and 7 805 of 7 850 is 99.4 % of one. `TUI_BUDGET` becomes 7900. The nine items are all
+**corrections to text and placement**, not new features — which is why the estimate is a third of
+v5.6's and why an agent who comes in under it still does not get to spend the difference.
 
 **Runtime.** The ftui 0.7 Elm loop: one `struct Tui` implementing `ftui::Model`;
 **`App::fullscreen(tui).with_mouse().run()`** when `settings.tui.mouse` (v5.5, §7a.2), else the same

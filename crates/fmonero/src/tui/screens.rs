@@ -885,19 +885,11 @@ fn node_hero(m: &Tui, area: Rect, frame: &mut Frame) {
     }
 }
 
-/// A block number as a person reads it: `3 765 346`, thin spaces every three digits, the same
-/// grouping the bar widget's `Model.grouped` applies (§2o rule 9).
-pub(super) fn grouped(n: u64) -> String {
-    let digits = n.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(' ');
-        }
-        out.push(c);
-    }
-    out
-}
+/// A block number as a person reads it (§2o rule 9). **One implementation, three callers**: this
+/// screen, the doctor's details and the bar widget's `Model.grouped`, which is the JavaScript half
+/// of the same formatter — v5.6 moved the Rust half into `output.rs` when the doctor became the
+/// third caller (§2a.3: an invariant that lives in two places holds in one).
+pub(super) use crate::output::grouped;
 
 /// Decision 7's line, on both screens that render it and in the widget, from one formula.
 ///

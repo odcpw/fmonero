@@ -515,7 +515,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Security,
         class: Class::B,
         severity: Severity::Error,
-        title: "~/.config/fmonero/monerod.conf is 0600 (it carries rpc-login)",
+        title: "Only you can read the password your node asks for",
         detect: monerod_conf_mode,
     },
     CheckDef {
@@ -674,7 +674,7 @@ fn version_supported(p: &Probes) -> Verdict {
         Some(v) if v == SUPPORTED_MONERO => Verdict::pass(format!("{line} (0.18.x)")),
         Some(v) => Verdict::warn(
             "unsupported_version",
-            format!("This is Monero {v}. fmonero is built for {SUPPORTED_MONERO}."),
+            format!("This is Monero {v}. fmonero was written for {SUPPORTED_MONERO}."),
         ),
         None => Verdict::warn(
             "unparsable_version",
@@ -746,17 +746,17 @@ fn node_reachable(p: &Probes) -> Verdict {
     }
     if p.node_reachable {
         return Verdict::pass(format!(
-            "{} answered get_info at height {}",
+            "{} answered, at block {}.",
             p.node_url,
-            p.node_height.unwrap_or_default()
+            crate::output::grouped(p.node_height.unwrap_or_default())
         ));
     }
     Verdict::fail(
         "node_unreachable",
         format!(
-            "{} did not answer: {}",
+            "{} did not answer. {}",
             p.node_url,
-            p.node_error.as_deref().unwrap_or("no response")
+            p.node_error.as_deref().unwrap_or("Nothing came back.")
         ),
     )
     .cmd("fmonero node up")
@@ -799,18 +799,25 @@ fn node_synced(p: &Probes) -> Verdict {
     let height = p.node_height.unwrap_or_default();
     let target = p.node_target_height.unwrap_or_default();
     match p.node_synchronized {
-        Some(true) => Verdict::pass(format!("Synced at block {height}.")),
+        Some(true) => Verdict::pass(format!(
+            "Synced at block {}.",
+            crate::output::grouped(height)
+        )),
         Some(false) => {
             // target_height is 0 when synced, so the percentage special-cases it (§1b.3).
             let denom = target.max(height).max(1);
             let pct = (height as f64 / denom as f64) * 100.0;
             Verdict::warn(
                 "node_syncing",
-                format!("syncing: {height} of {denom} ({pct:.1}%)"),
+                format!(
+                    "Syncing: block {} of {} ({pct:.0}%).",
+                    crate::output::grouped(height),
+                    crate::output::grouped(denom)
+                ),
             )
             .cmd("fmonero node up --wait --wait-timeout 86400")
         }
-        None => Verdict::skip("no_get_info", "get_info carried no `synchronized` field"),
+        None => Verdict::skip("no_get_info", "Your node did not say how far along it is."),
     }
 }
 
@@ -830,17 +837,24 @@ fn node_peers(p: &Probes) -> Verdict {
     if p.node_restricted == Some(true) {
         return Verdict::skip(
             "node_restricted",
-            "a restricted node reports 0 connections by construction (§1b.3)",
+            "This node only answers basic questions, so it never says how many others it \
+             is connected to.",
         );
     }
     if p.node_offline == Some(true) {
-        return Verdict::skip("node_offline", "monerod was started --offline");
+        return Verdict::skip("node_offline", "Your node was started with networking off.");
     }
     match p.node_outgoing_connections {
-        Some(0) => Verdict::warn("no_peers", "no outgoing connections")
-            .cmd("fmonero node limit --out-peers 16"),
-        Some(n) => Verdict::pass(format!("{n} outgoing connections")),
-        None => Verdict::skip("no_get_info", "get_info carried no connection counts"),
+        Some(0) => Verdict::warn(
+            "no_peers",
+            "Your node is not connected to any other machine.",
+        )
+        .cmd("fmonero node limit --out-peers 16"),
+        Some(n) => Verdict::pass(format!("Connected to {n} other machines.")),
+        None => Verdict::skip(
+            "no_get_info",
+            "Your node did not say who it is connected to.",
+        ),
     }
 }
 
@@ -858,14 +872,15 @@ fn node_clock(p: &Probes) -> Verdict {
     let skew = adjusted - p.now_unix;
     if skew.abs() <= CLOCK_SKEW_SEC {
         return Verdict::pass(format!(
-            "clock within {skew}s of the daemon's adjusted time"
+            "This machine's clock is within {skew}s of the Monero network's."
         ));
     }
     Verdict::fail(
         "clock_skew",
         format!(
-            "this machine is {skew}s from the daemon's adjusted time (limit ±{CLOCK_SKEW_SEC}s); \
-             a skewed clock breaks unlock times and peer handshakes"
+            "This machine's clock is {skew}s away from the Monero network's, and \
+             ±{CLOCK_SKEW_SEC}s is the most fmonero accepts. A clock this far out gets the times \
+             your money unlocks at wrong and stops other machines talking to yours."
         ),
     )
     .cmd("timedatectl set-ntp true")
@@ -880,19 +895,23 @@ fn node_data_dir_single_writer(p: &Probes) -> Verdict {
         return v;
     }
     if let Some(e) = &p.data_dir_probe_error {
-        return Verdict::skip("probe_failed", format!("cannot probe {}: {e}", p.data_dir));
+        return Verdict::skip(
+            "probe_failed",
+            format!("Could not check {}. {e}", p.data_dir),
+        );
     }
     match p.data_dir_holder {
-        None => Verdict::pass(format!("no monerod holds {}", p.data_dir)),
+        None => Verdict::pass(format!("Nothing else is using {}.", p.data_dir)),
         // §7.1's fix column for this row IS "detail names the PID": there is no command.
         Some(pid) => Verdict::fail(
             "data_dir_in_use",
             format!(
-                "monerod pid {pid} already has {} open; two monerod on one LMDB corrupt it (§1.2)",
+                "Another Monero node is already using {} (process {pid}). Two of them on one \
+                 copy of the blockchain would damage it, so fmonero will not start a second.",
                 p.data_dir
             ),
         )
-        .cmd("fmonero status --json   # a monerod is already serving this data dir"),
+        .cmd("fmonero status --json   # the node that is already running is serving this data dir"),
     }
 }
 
@@ -904,25 +923,27 @@ fn wallet_rpc_reachable(p: &Probes) -> Verdict {
     }
     if p.wallet_reachable {
         return Verdict::pass(format!(
-            "{} answered (RPC {}{})",
+            "{} answered, version {}{}.",
             p.wallet_url,
-            p.wallet_rpc_version.as_deref().unwrap_or("?"),
+            p.wallet_rpc_version.as_deref().unwrap_or("unknown"),
             if p.wallet_open {
-                ", a wallet is open"
+                ", and a wallet is open"
             } else {
-                ", no wallet open"
+                ", with no wallet open"
             }
         ));
     }
     Verdict::warn(
         "wallet_unreachable",
         format!(
-            "{} did not answer: {}",
+            "{} did not answer. {}",
             p.wallet_url,
-            p.wallet_error.as_deref().unwrap_or("no response")
+            p.wallet_error.as_deref().unwrap_or("Nothing came back.")
         ),
     )
-    .cmd("systemctl --user start fmonero-wallet-rpc.service")
+    // V10: never `systemctl`. Opening a wallet starts the service on the way in, which is the
+    // one route fmonero has and the one the TUI's `o` takes.
+    .cmd("fmonero wallet open <name>   # starts the wallet service, then opens")
 }
 
 fn wallet_rpc_auth(p: &Probes) -> Verdict {
@@ -941,11 +962,17 @@ fn wallet_rpc_auth(p: &Probes) -> Verdict {
             return Verdict::fail(
                 "login_file_missing",
                 format!(
-                    "{} is absent while {} is active: fmonero looks for port {}, the unit binds {}",
-                    p.wallet_login_file.path, p.wallet_unit_name, p.wallet_login_port, unit_port
+                    "The wallet service is running but its password file ({}) is not there. \
+                     fmonero looks for it under port {}, and {} was set up to answer on {}.",
+                    p.wallet_login_file.path,
+                    p.wallet_login_port,
+                    p.wallet_unit_name,
+                    unit_port
                 ),
             )
-            .cmd("systemctl --user restart fmonero-wallet-rpc.service");
+            // V10: never `systemctl`. `W` on the Wallet screen stops the service; opening a
+            // wallet starts it again, and the new one writes the file under the right port.
+            .cmd("fmonero tui   # on the Wallet screen: W stops the wallet service, o starts it again");
         }
         return Verdict::skip(
             "wallet_daemon_down",
@@ -954,7 +981,7 @@ fn wallet_rpc_auth(p: &Probes) -> Verdict {
                 p.wallet_login_file.path
             ),
         )
-        .cmd("systemctl --user start fmonero-wallet-rpc.service");
+        .cmd("fmonero wallet open <name>   # starts the wallet service, then opens");
     }
     // Not a literal 0600: `private_file::create` settles the file at 0400, so §2c's rule is
     // "no group and no other bits" and stays right if upstream changes the dance.
@@ -962,30 +989,33 @@ fn wallet_rpc_auth(p: &Probes) -> Verdict {
         return Verdict::fail(
             "login_file_readable",
             format!(
-                "{} is mode {:04o}: it must carry no group and no other permission bits (§2c)",
+                "{} is {:04o}, so other people who use this machine can read it. Only you \
+                 may.",
                 p.wallet_login_file.path,
                 p.wallet_login_file.mode.unwrap_or(0)
             ),
         )
-        .cmd("systemctl --user restart fmonero-wallet-rpc.service");
+        .cmd(
+            "fmonero tui   # on the Wallet screen: W stops the wallet service, o starts it again",
+        );
     }
     match (p.wallet_reachable, p.wallet_authenticated) {
         (true, Some(true)) => Verdict::pass(format!(
-            "{} is owner-only and get_version completed a Digest handshake",
+            "Only you can read {}, and the wallet service asked fmonero for it.",
             p.wallet_login_file.path
         )),
         (true, Some(false)) => Verdict::fail(
             "no_challenge",
-            "the wallet daemon accepted an unauthenticated request: it was started with \
-             --disable-rpc-login, which §2c forbids",
+            "The wallet service answered without asking fmonero for a password. It was started \
+             with its password turned off, which fmonero never does.",
         )
         .cmd("fmonero setup --units --yes"),
-        (true, None) => Verdict::skip("no_request_completed", "no request completed this run"),
+        (true, None) => Verdict::skip("no_request_completed", "Nothing was asked of it this run."),
         (false, _) => Verdict::skip(
             "wallet_unreachable",
-            "the login file is owner-only, but the daemon did not answer",
+            "Only you can read the password file, but the wallet service did not answer.",
         )
-        .cmd("systemctl --user start fmonero-wallet-rpc.service"),
+        .cmd("fmonero wallet open <name>   # starts the wallet service, then opens"),
     }
 }
 
@@ -1000,16 +1030,25 @@ fn wallet_daemon_link(p: &Probes) -> Verdict {
     let (Some(wh), Some(nh)) = (p.wallet_height, p.node_height) else {
         return Verdict::skip(
             "no_heights",
-            "a wallet height and a node height are both needed to compare them",
+            "This needs a block number from the wallet and one from the node, and one of them \
+             is missing.",
         );
     };
     let behind = nh as i64 - wh as i64;
     if behind <= WALLET_BEHIND_BLOCKS {
-        return Verdict::pass(format!("wallet at {wh}, node at {nh} ({behind} behind)"));
+        return Verdict::pass(format!(
+            "The wallet is at block {}, the node at {}: {behind} to go.",
+            crate::output::grouped(wh),
+            crate::output::grouped(nh)
+        ));
     }
     Verdict::warn(
         "wallet_behind",
-        format!("wallet at {wh}, node at {nh}: {behind} blocks behind"),
+        format!(
+            "The wallet is at block {}, the node at {}: {behind} blocks to go.",
+            crate::output::grouped(wh),
+            crate::output::grouped(nh)
+        ),
     )
     .cmd("fmonero wallet refresh")
 }
@@ -1028,35 +1067,37 @@ fn wallet_daemon_auth(p: &Probes) -> Verdict {
     if !p.monerod_conf_has_login {
         return Verdict::skip(
             "no_node_credential",
-            "our monerod.conf carries no rpc-login, so the wallet needs none",
+            "Your node asks for no password, so the wallet needs none.",
         );
     }
     if !p.wallet_reachable || !p.node_reachable {
         return Verdict::skip(
             "daemon_unreachable",
-            "both daemons must answer before this can mean anything",
+            "Your node and the wallet service both have to answer before this means anything.",
         );
     }
     if p.node_synchronized != Some(true) {
         return Verdict::skip(
             "node_syncing",
-            "the node is not synchronized, so a wallet behind it is expected",
+            "Your node is still catching up, so a wallet behind it is expected.",
         );
     }
     let (Some(wh), Some(nh)) = (p.wallet_height, p.node_height) else {
         return Verdict::skip(
             "no_heights",
-            "no wallet is open, so there is no height to compare",
+            "No wallet is open, so there is no block number to compare.",
         );
     };
     if (wh as i64) + WALLET_BEHIND_BLOCKS < nh as i64 {
         return Verdict::fail(
             "wallet_not_syncing",
             format!(
-                "the node is synchronized at {nh} and the wallet is at {wh}. A synced node with a \
-                 wallet far behind is the signature of a missing daemon credential (§4.2) — but \
-                 this check cannot distinguish it from a wallet still catching up on a large \
-                 restore height"
+                "Your node is fully synced at block {} and the wallet is still at {}. Usually \
+                 that means the wallet has not been given the password your node asks for. It \
+                 can also mean the wallet is simply scanning a long way back, and this check \
+                 cannot tell the two apart.",
+                crate::output::grouped(nh),
+                crate::output::grouped(wh)
             ),
         )
         // Built from the CONFIGURED node, never a literal: §4's network table puts the node at
@@ -1068,7 +1109,11 @@ fn wallet_daemon_auth(p: &Probes) -> Verdict {
             fmonero_core::units::host_port(&p.node_url)
         ));
     }
-    Verdict::pass(format!("wallet at {wh}, node synchronized at {nh}"))
+    Verdict::pass(format!(
+        "The wallet is at block {} and the node is synced at {}.",
+        crate::output::grouped(wh),
+        crate::output::grouped(nh)
+    ))
 }
 
 fn wallet_nettype_matches(p: &Probes) -> Verdict {
@@ -1083,8 +1128,8 @@ fn wallet_nettype_matches(p: &Probes) -> Verdict {
     };
     if *net == p.network {
         return Verdict::pass(format!(
-            "the open wallet {} is a {net} wallet, as node.network says",
-            p.last_open_name.as_deref().unwrap_or("?")
+            "The open wallet {} belongs to the {net} network, which is the one node.network names.",
+            p.last_open_name.as_deref().unwrap_or("this one")
         ));
     }
     // A warning, not a refusal: the send path follows the WALLET (§2a.6), so this is a
@@ -1093,8 +1138,8 @@ fn wallet_nettype_matches(p: &Probes) -> Verdict {
     Verdict::warn(
         "nettype_mismatch",
         format!(
-            "the open wallet is {net} while node.network is {}; wallet.dir, both ports and \
-             monerod.conf were rendered for {}",
+            "The open wallet belongs to the {net} network while node.network says {}. Every \
+             path and port fmonero set up is the {} one.",
             p.network, p.network
         ),
     )
@@ -1114,7 +1159,7 @@ fn wallet_dir_exists(p: &Probes) -> Verdict {
         return Verdict::warn(
             "missing_ancestor",
             format!(
-                "{} does not exist ({} missing: {})",
+                "{} is not there yet. {} directories have to be made: {}.",
                 p.wallet_dir,
                 p.wallet_dir_missing.len(),
                 p.wallet_dir_missing.join(", ")
@@ -1130,11 +1175,18 @@ fn wallet_dir_exists(p: &Probes) -> Verdict {
             .collect();
         return Verdict::warn(
             "bad_mode",
-            format!("wallet directories must be 0700: {}", list.join(", ")),
+            format!(
+                "Other people who use this machine can look inside your wallet directories: {}. \
+                 Only you may.",
+                list.join(", ")
+            ),
         )
         .cmd(format!("chmod 700 {}", p.wallet_dir));
     }
-    Verdict::pass(format!("{} exists at 0700", p.wallet_dir))
+    Verdict::pass(format!(
+        "{} is there, and only you can read it.",
+        p.wallet_dir
+    ))
 }
 
 fn pending_send(p: &Probes) -> Verdict {
@@ -1142,7 +1194,7 @@ fn pending_send(p: &Probes) -> Verdict {
         return v;
     }
     let Some(rec) = &p.pending else {
-        return Verdict::pass("no send is recorded as unresolved");
+        return Verdict::pass("No payment is waiting to be accounted for.");
     };
     let unrelayed: Vec<&str> = rec
         .txs
@@ -1157,8 +1209,8 @@ fn pending_send(p: &Probes) -> Verdict {
         return Verdict::warn(
             "resolvable_record",
             format!(
-                "{} transaction(s) to {} are all relayed; the next send resolves the record by \
-                 itself (§2a.4)",
+                "{} payment(s) to {} have all gone out. fmonero clears this note by itself the \
+                 next time you send.",
                 rec.txs.len(),
                 rec.dest
             ),
@@ -1168,8 +1220,8 @@ fn pending_send(p: &Probes) -> Verdict {
     Verdict::fail(
         "send_may_be_in_flight",
         format!(
-            "{} of {} transaction(s) to {} are NOT marked relayed: {}. Only a human can decide \
-             whether they landed — the doctor never touches this record (§2a.4)",
+            "{} of {} payment(s) to {} are not marked as sent: {}. Only you can decide whether \
+             they arrived, so fmonero never clears this note on its own.",
             unrelayed.len(),
             rec.txs.len(),
             rec.dest,
@@ -1196,16 +1248,19 @@ fn units_present(p: &Probes) -> Verdict {
         ),
     ] {
         if !exists {
-            bad.push(format!("the {name} service is not set up yet"));
+            // V10: `the fmonero-monerod.service service is not set up yet` was a file name
+            // used as prose, and a stutter. The name is the value of a settings key
+            // (`node.unit`, `wallet.unit`), which rule 5 exempts; the word around it is not.
+            bad.push(format!("{name} has not been written yet"));
         } else if !matches {
             bad.push(format!(
-                "{name} has drifted from what `setup --units` renders"
+                "{name} is not the file fmonero writes: something has changed it"
             ));
         }
     }
     if bad.is_empty() {
         return Verdict::pass(format!(
-            "{} and {} match units::render_* byte for byte",
+            "{} and {} are exactly the files fmonero writes.",
             p.node_unit_name, p.wallet_unit_name
         ));
     }
@@ -1226,15 +1281,17 @@ fn unit_loopback(p: &Probes) -> Verdict {
         let argv = super::probes::exec_start_argv(text);
         if let Some(ip) = super::probes::flag_value(&argv, "--rpc-bind-ip") {
             if ip != "127.0.0.1" {
-                bad.push(format!("{name} binds {ip}"));
+                bad.push(format!("{name} opens {ip}, which is not just this machine"));
             }
         }
         if argv.iter().any(|a| a == "--confirm-external-bind") {
-            bad.push(format!("{name} carries --confirm-external-bind"));
+            bad.push(format!("{name} allows other machines to connect"));
         }
     }
     if bad.is_empty() {
-        return Verdict::pass("both units bind 127.0.0.1 and neither confirms an external bind");
+        return Verdict::pass(
+            "Both services answer on this machine only, and neither allows anything else.",
+        );
     }
     Verdict::fail("non_loopback_bind", bad.join("; "))
         .fixable(PlanKind::WriteBothUnits, "fmonero doctor --fix")
@@ -1264,7 +1321,9 @@ fn unit_no_password_in_argv(p: &Probes) -> Verdict {
                 .iter()
                 .any(|a| a == flag || a.starts_with(&format!("{flag}=")))
             {
-                bad.push(format!("{name} carries {flag}"));
+                bad.push(format!(
+                    "{name} passes {flag} where anyone on this machine can read it"
+                ));
             }
         }
         // The other half of §7.1's condition, and the half a detector forgets. An ABSENT
@@ -1272,14 +1331,17 @@ fn unit_no_password_in_argv(p: &Probes) -> Verdict {
         if let Some(level) = super::probes::flag_value(&argv, "--log-level") {
             if level != "0" {
                 bad.push(format!(
-                    "{name} carries --log-level {level}: above 0 epee logs HTTP headers and \
-                     wallet2 internals into the state dir (§4.2)"
+                    "{name} sets --log-level {level}. Above 0, Monero writes the contents of its \
+                     own requests to a log file on this machine"
                 ));
             }
         }
     }
     if bad.is_empty() {
-        return Verdict::pass("no credential flag in either ExecStart, and --log-level is 0");
+        return Verdict::pass(
+            "Neither service is started with a password on its command line, and both log the \
+             least they can.",
+        );
     }
     Verdict::fail("credential_in_argv", bad.join("; "))
         .cmd("fmonero setup --units --yes   # rewrites both units from the template")
@@ -1304,21 +1366,21 @@ fn unit_no_node_wants(p: &Probes) -> Verdict {
                 continue;
             };
             if rest.split_whitespace().any(|u| u.contains("monerod")) {
-                bad.push(format!("{name} has {t}"));
+                bad.push(format!("{name} would pull your node up with it ({t})"));
             }
         }
     }
     if bad.is_empty() {
         return Verdict::pass(
-            "neither unit Wants= or Requires= a monerod: every node start goes through \
-             `node up`, which runs the §2i single-writer check first",
+            "Neither service can start your node behind fmonero's back, so every start goes \
+             through the check that stops two nodes using one copy of the blockchain.",
         );
     }
     Verdict::fail(
         "node_wants",
         format!(
-            "{} — Wants= would start a monerod around the single-writer check, and two \
-             monerod on one LMDB corrupt it (§1.2, §4.2)",
+            "{}. That would start a node without the check that stops two of them using one \
+             copy of the blockchain, which damages it.",
             bad.join("; ")
         ),
     )
@@ -1335,12 +1397,15 @@ fn unit_enabled_state(p: &Probes) -> Verdict {
         .map(|s| s.name.as_str())
         .collect();
     if enabled.is_empty() {
-        return Verdict::pass("both units are disabled and are started on demand (§4.2)");
+        return Verdict::pass(
+            "Neither service starts by itself; fmonero starts them when you \
+             need them.",
+        );
     }
     Verdict::warn(
         "unit_enabled",
         format!(
-            "{} would start at login; fmonero's units are on-demand (§4.2)",
+            "{} would start every time you log in. fmonero starts these only when you need them.",
             enabled.join(", ")
         ),
     )
@@ -1368,7 +1433,7 @@ fn wallet_daemon_matches_unit(p: &Probes) -> Verdict {
         return Verdict::fail(
             "no_daemon_address_flag",
             format!(
-                "{}'s ExecStart carries no --daemon-address",
+                "{} does not say which node the wallet should use.",
                 p.wallet_unit_name
             ),
         )
@@ -1378,9 +1443,9 @@ fn wallet_daemon_matches_unit(p: &Probes) -> Verdict {
         return Verdict::fail(
             "daemon_address_mismatch",
             format!(
-                "the unit says --daemon-address {address} while the settings say \
-                 {}: a monero-wallet-rpc started before any `wallet open` refreshes against \
-                 its argv, so the wallet would sync from a node `status` does not name (§2m.3)",
+                "The wallet service was set up to use {address} while your settings say {}. The \
+                 service starts with the address it was given, so your wallet would scan against \
+                 a node fmonero does not show you.",
                 p.daemon_address
             ),
         )
@@ -1397,16 +1462,16 @@ fn wallet_daemon_matches_unit(p: &Probes) -> Verdict {
         return Verdict::fail(
             "daemon_trust_mismatch",
             format!(
-                "the unit's trust flag is {} while the settings say {}",
+                "The wallet service was set up to {} while your settings say it should {}.",
                 match p.unit_daemon_trusted {
-                    Some(true) => "--trusted-daemon",
-                    Some(false) => "--untrusted-daemon",
-                    None => "absent, which means neither and is not 'untrusted'",
+                    Some(true) => "tell the node what your wallet holds",
+                    Some(false) => "keep what your wallet holds to itself",
+                    None => "decide that from the address, which is neither answer",
                 },
                 if p.daemon_trusted {
-                    "--trusted-daemon"
+                    "tell it"
                 } else {
-                    "--untrusted-daemon"
+                    "keep it to itself"
                 }
             ),
         )
@@ -1416,24 +1481,35 @@ fn wallet_daemon_matches_unit(p: &Probes) -> Verdict {
         return Verdict::fail(
             "daemon_ssl_mismatch",
             format!(
-                "the unit says --daemon-ssl {} while the address asks for {}: an omitted or \
-                 wrong value means a TLS handshake attempt on every reconnect (§1b.9 item 2)",
-                p.unit_daemon_ssl
-                    .clone()
-                    .unwrap_or_else(|| "nothing".into()),
-                p.daemon_ssl
+                "The wallet service was set up for {} connections while the node's address asks \
+                 for {}. Mismatched, it retries an encrypted handshake on every reconnection.",
+                match p.unit_daemon_ssl.as_deref() {
+                    Some("enabled") => "encrypted",
+                    Some("disabled") => "plain",
+                    Some(other) => other,
+                    None => "unstated",
+                },
+                if p.daemon_ssl == "enabled" {
+                    "encrypted"
+                } else {
+                    "plain"
+                }
             ),
         )
         .fixable(PlanKind::WriteWalletUnit, "fmonero doctor --fix");
     }
     Verdict::pass(format!(
-        "--daemon-address {address} · {} · --daemon-ssl {}",
+        "The wallet service uses {address}, {}, over a {} connection.",
         if p.daemon_trusted {
-            "--trusted-daemon"
+            "and tells it what your wallet holds"
         } else {
-            "--untrusted-daemon"
+            "and keeps what your wallet holds to itself"
         },
-        p.daemon_ssl
+        if p.daemon_ssl == "enabled" {
+            "encrypted"
+        } else {
+            "plain"
+        }
     ))
 }
 
@@ -1446,16 +1522,20 @@ fn remote_node_untrusted(p: &Probes) -> Verdict {
     if p.node_mode != "remote" {
         return Verdict::skip(
             "local_mode",
-            "node.mode is local: the trust flag is fmonero's own node's, and it is trusted",
+            "You are using your own node, which fmonero trusts because it is yours.",
         );
     }
     let host = fmonero_core::settings::remote_host(&p.daemon_address);
     if !p.daemon_trusted {
-        return Verdict::pass(format!("{} is untrusted, which is the rule (§2m.6)", host));
+        return Verdict::pass(format!(
+            "fmonero does not tell {} which amounts your wallet holds.",
+            host
+        ));
     }
     if fmonero_core::settings::is_private_host(host) {
         return Verdict::pass(format!(
-            "{host} is a private literal, which is the case --trusted exists for"
+            "{host} is an address on your own network, which is the one case for trusting a node \
+             you did not start yourself."
         ));
     }
     // A DNS name is never treated as private: classifying one means resolving it, a network
@@ -1464,10 +1544,10 @@ fn remote_node_untrusted(p: &Probes) -> Verdict {
     Verdict::warn(
         "trusted_public_node",
         format!(
-            "{host} is marked trusted, so `select_available_outputs_from_histogram` puts this \
-             wallet's own unspent amounts INSIDE its requests (`wallet2.cpp:12281-12282`). If \
-             this node is yours, name it by its private address rather than by a DNS name — a \
-             name is never treated as private, because resolving one is a network call"
+            "{host} is trusted, so your wallet puts the amounts it holds inside the questions it \
+             asks that node. If the node is yours, give it by its address on your own network \
+             instead of by name: fmonero never treats a name as private, because working that \
+             out means asking the network."
         ),
     )
     .cmd("fmonero node remote <addr> --yes   # without --trusted")
@@ -1477,15 +1557,18 @@ fn wallet_dir_matches_unit(p: &Probes) -> Verdict {
     if let Some(v) = need_units(p) {
         return v;
     }
-    let Some(unit_dir) = &p.unit_wallet_dir else {
+    let Some(service_dir) = &p.unit_wallet_dir else {
         return Verdict::fail(
             "no_wallet_dir_flag",
-            format!("{}'s ExecStart carries no --wallet-dir", p.wallet_unit_name),
+            format!(
+                "{} does not say which directory your wallets are in.",
+                p.wallet_unit_name
+            ),
         )
         .fixable(PlanKind::WriteWalletUnit, "fmonero doctor --fix");
     };
-    if *unit_dir == p.wallet_dir {
-        return Verdict::pass(format!("--wallet-dir is {unit_dir}"));
+    if *service_dir == p.wallet_dir {
+        return Verdict::pass(format!("The wallet service uses {service_dir}."));
     }
     // Unbridgeable at call time: the daemon resolves <wallet-dir>/<filename> and a name may
     // not contain '/', so a one-level mismatch has `wallet create` writing into one
@@ -1493,8 +1576,8 @@ fn wallet_dir_matches_unit(p: &Probes) -> Verdict {
     Verdict::fail(
         "wallet_dir_mismatch",
         format!(
-            "the unit says {unit_dir} while settings.wallet.dir says {}: the daemon resolves \
-             <wallet-dir>/<name> and a name may not contain '/', so the two can never meet (§4.2)",
+            "The wallet service looks for wallets in {service_dir} while wallet.dir says {}. A \
+             wallet name cannot contain a '/', so nothing you type can bridge the two.",
             p.wallet_dir
         ),
     )
@@ -1511,14 +1594,16 @@ fn wallet_port_consistent(p: &Probes) -> Verdict {
     let want = p.expected_wallet_port;
     if unit == Some(want) && url == Some(want) && setting == want {
         return Verdict::pass(format!(
-            "wallet.port, wallet.url and --rpc-bind-port all say {want} ({} )",
+            "Everything agrees that the wallet service answers on port {want}, which is the {} \
+             one.",
             p.network
         ));
     }
-    let observed = format!(
-        "settings.wallet.port {setting}, wallet.url {}, unit --rpc-bind-port {}",
-        url.map(|x| x.to_string()).unwrap_or_else(|| "none".into()),
-        unit.map(|x| x.to_string()).unwrap_or_else(|| "none".into())
+    let observed =
+        format!(
+        "wallet.port says {setting}, wallet.url says {}, and the wallet service was set up for {}",
+        url.map(|x| x.to_string()).unwrap_or_else(|| "nothing".into()),
+        unit.map(|x| x.to_string()).unwrap_or_else(|| "nothing".into())
     );
     // Rebinding a live daemon's port from under it is how a running wallet becomes
     // unreachable mid-send, so the fixer is refused while the unit is active (§7.1).
@@ -1526,20 +1611,22 @@ fn wallet_port_consistent(p: &Probes) -> Verdict {
         return Verdict::skip(
             "wallet_rpc_active",
             format!(
-                "{observed}; node.network {} wants {want}. The wallet daemon is running, so \
-                 nothing is rewritten",
+                "{observed}. On the {} network it has to be {want}. The wallet service is \
+                 running, so fmonero changes nothing under it.",
                 p.network
             ),
         )
-        .cmd("systemctl --user stop fmonero-wallet-rpc.service");
+        // V10: never `systemctl`. `W` stops the service from inside the app, and `fmonero doctor
+        // --fix` then puts the port right.
+        .cmd("fmonero tui   # on the Wallet screen, W stops the wallet service");
     }
     // node.network is the authority, not either observed value: a three-way disagreement
     // with no stated authority is a coin flip inside a class-B fixer (§7.1).
     Verdict::fail(
         "port_mismatch",
         format!(
-            "{observed}; node.network {} makes {want} the only right answer, and \
-             Paths::wallet_login_file(port) looks for a file the daemon never wrote otherwise",
+            "{observed}. On the {} network {want} is the only right answer, and with the wrong \
+             one fmonero looks for a password file the wallet service never wrote.",
             p.network
         ),
     )
@@ -1561,23 +1648,23 @@ fn disk_space(p: &Probes) -> Verdict {
             "cannot_measure",
             p.free_bytes_error
                 .clone()
-                .unwrap_or_else(|| "statvfs failed".into()),
+                .unwrap_or_else(|| "Could not measure the free space on this disk.".into()),
         );
     };
     let gb = free as f64 / 1e9;
     let floor_gb = DISK_FLOOR_BYTES as f64 / 1e9;
     if free >= DISK_FLOOR_BYTES {
         return Verdict::pass(format!(
-            "{gb:.0} GB free on {}'s filesystem (floor {floor_gb:.0} GB — an ESTIMATE, AMBER: \
-             §1.3 measured no chain on this machine)",
+            "{gb:.0} GB free where {} lives. fmonero wants at least {floor_gb:.0} GB, which is an \
+             estimate rather than a measurement.",
             p.data_dir
         ));
     }
     Verdict::warn(
         "low_disk",
         format!(
-            "{gb:.0} GB free on {}'s filesystem, under the {floor_gb:.0} GB floor for a pruned \
-             chain plus headroom. The floor is an ESTIMATE (AMBER, §1.3), not a measurement",
+            "Only {gb:.0} GB free where {} lives. A smaller copy of the blockchain and room to \
+             work needs about {floor_gb:.0} GB, which is an estimate rather than a measurement.",
             p.data_dir
         ),
     )
@@ -1595,20 +1682,22 @@ fn prune_configured(p: &Probes) -> Verdict {
     if !p.prune_setting {
         return Verdict::skip(
             "prune_off",
-            "settings.node.prune is false, so monerod.conf is expected to carry no prune line",
+            "node.prune is false, so your node is meant to keep the whole blockchain.",
         );
     }
     match p.monerod_conf_prune {
-        Some(true) => Verdict::pass("monerod.conf carries prune-blockchain=1"),
+        Some(true) => {
+            Verdict::pass("Your node is set up to keep a smaller copy of the blockchain.")
+        }
         Some(false) => Verdict::warn(
             "not_pruned",
-            "settings.node.prune is true but monerod.conf has no prune-blockchain=1: a full \
-             chain does not fit this disk (§1.3)",
+            "node.prune is true, but your node was not set up to keep a smaller copy of the \
+             blockchain. The whole chain does not fit on this machine.",
         )
         .cmd("fmonero setup --units --yes"),
         None => Verdict::skip(
             "no_conf",
-            "~/.config/fmonero/monerod.conf does not exist yet",
+            "Your node has not been set up on this machine yet.",
         )
         .cmd("fmonero setup --units --yes"),
     }
@@ -1618,13 +1707,13 @@ fn prune_configured(p: &Probes) -> Verdict {
 
 fn binary_on_path(p: &Probes) -> Verdict {
     if p.local_bin_exists {
-        return Verdict::pass(format!("{} exists", p.local_bin_fmonero));
+        return Verdict::pass(format!("{} is there.", p.local_bin_fmonero));
     }
     Verdict::warn(
         "not_installed",
         format!(
-            "{} does not exist. The Omarchy shell's PATH includes ~/.local/bin but NOT \
-             ~/.cargo/bin (§1.5), so the bar widget cannot find a cargo-installed binary",
+            "{} is not there. The bar widget looks for fmonero in ~/.local/bin and nowhere \
+             else, so it cannot find one installed anywhere different.",
             p.local_bin_fmonero
         ),
     )
@@ -1633,13 +1722,16 @@ fn binary_on_path(p: &Probes) -> Verdict {
 
 fn state_valid(p: &Probes) -> Verdict {
     if !p.state_file.exists {
-        return Verdict::pass("state.json does not exist yet, which is a valid empty state");
+        return Verdict::pass("fmonero has nothing remembered yet, which is fine.");
     }
     match &p.state_parse_error {
         None => Verdict::pass(format!("{} is readable.", p.state_file.path)),
         Some(e) => Verdict::warn(
             "unparsable",
-            format!("{} does not parse: {e}", p.state_file.path),
+            format!(
+                "fmonero could not read what it remembered in {}. {e}",
+                p.state_file.path
+            ),
         )
         .fixable(PlanKind::ResetStateJson, "fmonero doctor --fix"),
     }
@@ -1647,14 +1739,17 @@ fn state_valid(p: &Probes) -> Verdict {
 
 fn settings_valid(p: &Probes) -> Verdict {
     if !p.settings_file.exists {
-        return Verdict::pass("config.toml does not exist yet; every key is at its default");
+        return Verdict::pass("You have changed no settings, so every one is at its default.");
     }
     if let Some(e) = &p.settings_parse_error {
         // The half that decides whether the one command that repairs config.toml can run at
         // all on a machine whose config.toml is broken.
         return Verdict::warn(
             "unparsable",
-            format!("{} is not valid TOML: {e}", p.settings_file.path),
+            format!(
+                "fmonero could not read your settings file {}. {e}",
+                p.settings_file.path
+            ),
         )
         .fixable(PlanKind::RepairSettings, "fmonero doctor --fix");
     }
@@ -1664,11 +1759,11 @@ fn settings_valid(p: &Probes) -> Verdict {
         .map(|(k, why)| format!("{k}: {why}"))
         .collect();
     for key in &p.settings_unknown_keys {
-        problems.push(format!("{key} is not a settings key (§4)"));
+        problems.push(format!("{key} is not one of fmonero's settings"));
     }
     if problems.is_empty() {
         return Verdict::pass(format!(
-            "{} is readable and holds only known keys.",
+            "{} is readable and every setting in it is one fmonero knows.",
             p.settings_file.path
         ));
     }
@@ -1686,7 +1781,7 @@ fn public_node_cache(p: &Probes) -> Verdict {
     let Some((age, count)) = p.public_nodes else {
         return Verdict::skip(
             "no_cache",
-            "no public-node list has been fetched; nothing needs one",
+            "You have never fetched a list of public nodes, and nothing here needs one.",
         )
         .cmd(
             "fmonero node list --refresh   # rebuilds the cache (this contacts monero.fail, §2n.5)",
@@ -1694,12 +1789,18 @@ fn public_node_cache(p: &Probes) -> Verdict {
     };
     if age > fmonero_core::nodes::CACHE_MAX_AGE_SEC {
         return Verdict::pass(format!(
-            "{count} nodes, {}h old — served with its age, and `node list` refetches on its own              past 24 h (§2n.6)",
+            "{count} public nodes, listed {}h ago. fmonero shows the age with the list and \
+             fetches a fresh one by itself after a day.",
             age / 3600
         ))
-        .cmd("fmonero node list --refresh   # rebuilds the cache (this contacts monero.fail, §2n.5)");
+        .cmd(
+            "fmonero node list --refresh   # rebuilds the cache (this contacts monero.fail, §2n.5)",
+        );
     }
-    Verdict::pass(format!("{count} nodes, checked {} min ago.", age / 60))
+    Verdict::pass(format!(
+        "{count} public nodes, listed {} min ago.",
+        age / 60
+    ))
 }
 
 fn history_cache_fresh(p: &Probes) -> Verdict {
@@ -1711,49 +1812,51 @@ fn history_cache_fresh(p: &Probes) -> Verdict {
     let Some(c) = &p.cache else {
         return Verdict::warn(
             "unreadable",
-            "history.bin exists but its header could not be read",
+            "There is a saved copy of your payments, but fmonero could not read the start of it.",
         )
-        .cmd("fmonero wallet history --limit 1   # rebuilds the snapshot");
+        .cmd("fmonero wallet history --limit 1   # writes the saved copy again");
     };
     // Which part did not match matters to a user even though §5b treats all three the same:
     // "corrupt or foreign file", "upgraded fmonero" and "this is another wallet's cache".
     if !c.magic_ok {
         return Verdict::warn(
             "bad_magic",
-            "the snapshot's magic is not FMHX: the file is corrupt or belongs to another tool. \
-             It is STALE, not an error — `wallet history` ignores it and refetches (§5b)",
+            "The saved copy of your payments does not begin the way fmonero's own files do: it \
+             is damaged, or it belongs to another program. Nothing is lost — fmonero ignores it \
+             and asks your wallet again.",
         )
-        .cmd("fmonero wallet history --limit 1   # rebuilds the snapshot");
+        .cmd("fmonero wallet history --limit 1   # writes the saved copy again");
     }
     if c.format_version != c.expected_format_version {
         return Verdict::warn(
             "format_version",
             format!(
-                "the snapshot is format {} and this build writes {}: postcard is not \
-                 self-describing, so the body's layout changed and the old bytes cannot be decoded",
+                "The saved copy of your payments was written by fmonero version {} and this one \
+                 writes version {}. The old file cannot be read, and fmonero asks your wallet \
+                 again instead.",
                 c.format_version, c.expected_format_version
             ),
         )
-        .cmd("fmonero wallet history --limit 1   # rebuilds the snapshot");
+        .cmd("fmonero wallet history --limit 1   # writes the saved copy again");
     }
     if c.fingerprint_matches == Some(false) {
         return Verdict::warn(
             "wallet_fingerprint",
             format!(
-                "the snapshot's fingerprint {} is another wallet's; without it, opening wallet B \
-                 would serve wallet A's addresses, amounts and notes (§5b)",
+                "The saved copy of your payments ({}) belongs to a different wallet. fmonero \
+                 checks that, so one wallet is never shown another's addresses, amounts and notes.",
                 &c.wallet_fp[..8.min(c.wallet_fp.len())]
             ),
         )
-        .cmd("fmonero wallet history --limit 1   # rebuilds the snapshot");
+        .cmd("fmonero wallet history --limit 1   # writes the saved copy again");
     }
     let Some(wh) = p.wallet_height else {
         return Verdict::skip(
             "no_wallet_height",
             format!(
-                "the header is valid (high water {}), but no wallet height is available to \
-                 measure staleness against",
-                c.high_water
+                "The saved copy of your payments reaches block {}, and no wallet is open to \
+                 compare it with.",
+                crate::output::grouped(c.high_water)
             ),
         );
     };
@@ -1766,11 +1869,18 @@ fn history_cache_fresh(p: &Probes) -> Verdict {
     let behind = wh.saturating_sub(c.high_water);
     if behind <= CACHE_STALE_BLOCKS {
         return Verdict::pass(if empty {
-            format!("the snapshot is empty and the wallet is at {wh}: nothing to be behind")
+            format!(
+                "The saved copy of your payments is empty and the wallet is at block {}: there \
+                 is nothing to be behind.",
+                crate::output::grouped(wh)
+            )
         } else {
             format!(
-                "high water {} against a wallet at {wh} ({behind} behind)",
-                c.high_water
+                "The saved copy of your payments reaches block {} and the wallet is at {}: {} \
+                 to go.",
+                crate::output::grouped(c.high_water),
+                crate::output::grouped(wh),
+                crate::output::grouped(behind)
             )
         });
     }
@@ -1778,18 +1888,21 @@ fn history_cache_fresh(p: &Probes) -> Verdict {
         "stale",
         if empty {
             format!(
-                "the snapshot holds no transfers (high water 0) while the wallet is at {wh}. \
-                 The next `wallet history` without --cached rebuilds it by itself (§5b)"
+                "The saved copy of your payments holds none at all, while the wallet is at block \
+                 {}. Looking at your payments fills it in by itself.",
+                crate::output::grouped(wh)
             )
         } else {
             format!(
-                "high water {}, {behind} behind the wallet's {wh}. The next `wallet history` \
-                 without --cached refetches from high_water - 720 by itself (§5b)",
-                c.high_water
+                "The saved copy of your payments reaches block {}, {} behind the wallet's {}. \
+                 Looking at your payments tops it up by itself.",
+                crate::output::grouped(c.high_water),
+                crate::output::grouped(behind),
+                crate::output::grouped(wh)
             )
         },
     )
-    .cmd("fmonero wallet history --limit 1   # rebuilds the snapshot")
+    .cmd("fmonero wallet history --limit 1   # writes the saved copy again")
 }
 
 fn plugin_linked(p: &Probes) -> Verdict {
@@ -1797,8 +1910,8 @@ fn plugin_linked(p: &Probes) -> Verdict {
     let Some(want) = &link.want_target else {
         return Verdict::skip(
             "no_checkout",
-            "cannot find this repository's plugin/oliver.monero, so there is nothing to \
-             validate the link against",
+            "fmonero cannot find its own copy of the bar widget, so there is nothing to check \
+             the link against.",
         )
         .cmd("cd ~/Projects/odcpw/fmonero && fmonero setup --plugin --yes");
     };
@@ -1808,18 +1921,18 @@ fn plugin_linked(p: &Probes) -> Verdict {
         }
         (Some(resolved), _) => Verdict::warn(
             "wrong_target",
-            format!("{} resolves to {resolved}, not to {want}", link.path),
+            format!("{} points at {resolved} instead of {want}.", link.path),
         )
         .cmd("fmonero setup --plugin --yes"),
         (None, true) => Verdict::warn(
             "dangling",
-            format!("{} exists but does not resolve", link.path),
+            format!("{} points at something that is not there.", link.path),
         )
         .cmd("fmonero setup --plugin --yes"),
         (None, false) => Verdict::warn(
             "not_linked",
             format!(
-                "{} does not exist; the bar widget is not installed",
+                "{} is not there, so the bar widget is not installed.",
                 link.path
             ),
         )
@@ -1829,13 +1942,13 @@ fn plugin_linked(p: &Probes) -> Verdict {
 
 fn plugin_enabled(p: &Probes) -> Verdict {
     if !p.omarchy_plugin_list.taken {
-        return Verdict::skip("no_omarchy", "omarchy is not on PATH");
+        return Verdict::skip("no_omarchy", "Omarchy is not installed on this machine.");
     }
     if !p.omarchy_plugin_list.success() {
         return Verdict::skip(
             "list_failed",
             format!(
-                "`omarchy plugin list` failed: {}",
+                "Omarchy could not list its widgets. {}",
                 p.omarchy_plugin_list.failure_detail()
             ),
         );
@@ -1852,7 +1965,7 @@ fn plugin_enabled(p: &Probes) -> Verdict {
     Verdict::warn(
         "not_enabled",
         format!(
-            "{} is not in shell.json: the bar widget will not load",
+            "{} is not switched on in Omarchy, so the bar widget will not appear.",
             super::probes::PLUGIN_ID
         ),
     )
@@ -1866,7 +1979,7 @@ fn menu_entries(p: &Probes) -> Verdict {
     Verdict::warn(
         "missing_ids",
         format!(
-            "missing from the Omarchy menu: {}",
+            "These fmonero entries are not in the Omarchy menu: {}.",
             p.menu_missing_ids.join(", ")
         ),
     )
@@ -1879,21 +1992,22 @@ fn monerod_conf_mode(p: &Probes) -> Verdict {
     if !p.monerod_conf.exists {
         return Verdict::skip(
             "no_conf",
-            format!("{} does not exist yet", p.monerod_conf.path),
+            format!("{} has not been written yet.", p.monerod_conf.path),
         )
         .cmd("fmonero setup --units --yes");
     }
     match p.monerod_conf.mode {
-        Some(0o600) => Verdict::pass(format!("{} is 0600", p.monerod_conf.path)),
+        Some(0o600) => Verdict::pass(format!("Only you can read {}.", p.monerod_conf.path)),
         Some(m) => Verdict::fail(
             "bad_mode",
             format!(
-                "{} is {m:04o}: it carries rpc-login and must be 0600 (§2c)",
+                "{} is {m:04o}, so other people who use this machine can read it. It holds the \
+                 password your node asks for, so only you may.",
                 p.monerod_conf.path
             ),
         )
         .fixable(PlanKind::ChmodMonerodConf, "fmonero doctor --fix"),
-        None => Verdict::skip("no_mode", "the file's mode could not be read"),
+        None => Verdict::skip("no_mode", "Who can read the file could not be worked out."),
     }
 }
 
@@ -1908,25 +2022,26 @@ fn node_auth(p: &Probes) -> Verdict {
     if !p.node_reachable {
         return Verdict::skip(
             "node_unreachable",
-            "the node did not answer, so no handshake happened",
+            "Your node did not answer, so nothing was asked of it.",
         );
     }
     // What the WIRE did, never what a config file says: inferring this from
     // `Login::from_monerod_conf` returning Some would report `authenticated: true` against
     // a node that never challenged us, which is the false claim §2j forbids.
     match p.node_authenticated {
-        Some(true) => Verdict::pass("the node challenged us and accepted the credential"),
+        Some(true) => Verdict::pass("Your node asked fmonero for its password and accepted it."),
         Some(false) if p.layout == "system_unit" => Verdict::skip(
             "foreign_node",
-            "Arch's monerod.service has no rpc-login, which is not ours to change (§2c)",
+            "The node on this machine is not fmonero's, and whether it asks for a password is \
+             not fmonero's to change.",
         ),
         Some(false) => Verdict::warn(
             "no_credential",
-            "the node accepted us with no credential at all: any web page the user visits can \
-             POST to this port (§2c)",
+            "Your node answered fmonero without asking for a password. Any web page you visit \
+             could ask it things too.",
         )
         .cmd("fmonero setup --units --yes"),
-        None => Verdict::skip("no_request_completed", "no request completed this run"),
+        None => Verdict::skip("no_request_completed", "Nothing was asked of it this run."),
     }
 }
 
@@ -1934,15 +2049,14 @@ fn state_perms(p: &Probes) -> Verdict {
     let bad: Vec<&super::probes::PermProbe> = p.perms.iter().filter(|x| !x.ok()).collect();
     if bad.is_empty() {
         return Verdict::pass(format!(
-            "{} files and directories under the state, config and cache directories are \
-             owner-only",
+            "All {} of fmonero's own files and directories can be read by you alone.",
             p.perms.len()
         ));
     }
     let daemon: Vec<String> = bad
         .iter()
         .filter(|x| x.daemon_owned)
-        .map(|x| format!("{} is {:04o}", x.path, x.mode))
+        .map(|x| format!("{} can be read by others ({:04o})", x.path, x.mode))
         .collect();
     let ours: Vec<String> = bad
         .iter()
@@ -1960,12 +2074,16 @@ fn state_perms(p: &Probes) -> Verdict {
         return Verdict::fail(
             "daemon_file_readable",
             format!(
-                "{} — the wallet daemon recreates these on every start, so restarting the unit \
-                 is the fix, not chmod (§4.2)",
+                "{}. The wallet service writes these again every time it starts, so stopping and \
+                 starting it is the fix rather than changing the files.",
                 daemon.join("; ")
             ),
         )
-        .cmd("systemctl --user restart fmonero-wallet-rpc.service");
+        // V10: never `systemctl`. `W` stops the wallet service from inside the app and opening a
+        // wallet starts it again.
+        .cmd(
+            "fmonero tui   # on the Wallet screen: W stops the wallet service, o starts it again",
+        );
     }
     let mut detail = ours.join("; ");
     if !daemon.is_empty() {
@@ -1976,13 +2094,13 @@ fn state_perms(p: &Probes) -> Verdict {
 
 fn ports_owned(p: &Probes) -> Verdict {
     if !p.ports_taken {
-        return Verdict::skip("not_taken", "the security group was not selected");
+        return Verdict::skip("not_taken", "This group of checks was not asked for.");
     }
     if p.ports.is_empty() {
         // Name what was looked at, so this is distinguishable from a run against an empty
         // /proc — which §7.1's "our unit's PID **or nothing**" also makes a `pass`.
         return Verdict::pass(format!(
-            "nothing listens on {}",
+            "Nothing is answering on {}.",
             p.ports_watched
                 .iter()
                 .map(u16::to_string)
@@ -1996,10 +2114,12 @@ fn ports_owned(p: &Probes) -> Verdict {
         .filter(|x| !x.loopback)
         .map(|x| {
             format!(
-                "port {} is bound to {} by pid {}",
+                "port {} is open to {} by process {}",
                 x.port,
                 x.address,
-                x.pid.map(|p| p.to_string()).unwrap_or_else(|| "?".into())
+                x.pid
+                    .map(|p| p.to_string())
+                    .unwrap_or_else(|| "unknown".into())
             )
         })
         .collect();
@@ -2007,7 +2127,7 @@ fn ports_owned(p: &Probes) -> Verdict {
         return Verdict::fail(
             "external_bind",
             format!(
-                "{} — fmonero's daemons bind 127.0.0.1 only (§2c)",
+                "{}. fmonero's own services answer on this machine only.",
                 external.join("; ")
             ),
         )
@@ -2019,10 +2139,12 @@ fn ports_owned(p: &Probes) -> Verdict {
         .filter(|x| !x.ours)
         .map(|x| {
             format!(
-                "port {} on {} is held by pid {}{}",
+                "port {} on {} is held by process {}{}",
                 x.port,
                 x.address,
-                x.pid.map(|p| p.to_string()).unwrap_or_else(|| "?".into()),
+                x.pid
+                    .map(|p| p.to_string())
+                    .unwrap_or_else(|| "unknown".into()),
                 x.comm
                     .as_deref()
                     .map(|c| format!(" ({c})"))
@@ -2033,7 +2155,7 @@ fn ports_owned(p: &Probes) -> Verdict {
     if !foreign.is_empty() {
         return Verdict::warn(
             "foreign_listener",
-            format!("{} — not one of fmonero's own units", foreign.join("; ")),
+            format!("{}, which is not one of fmonero's own.", foreign.join("; ")),
         )
         .cmd("fmonero status --json");
     }
@@ -2042,10 +2164,12 @@ fn ports_owned(p: &Probes) -> Verdict {
         .iter()
         .map(|x| {
             format!(
-                "port {} on {} is our pid {}",
+                "port {} on {} is fmonero's own, process {}",
                 x.port,
                 x.address,
-                x.pid.map(|p| p.to_string()).unwrap_or_else(|| "?".into())
+                x.pid
+                    .map(|p| p.to_string())
+                    .unwrap_or_else(|| "unknown".into())
             )
         })
         .collect();
@@ -2185,7 +2309,9 @@ mod tests {
         p.free_bytes = Some(DISK_FLOOR_BYTES + 1);
         let v = disk_space(&p);
         assert_eq!(v.status, CheckStatus::Pass);
-        assert!(v.detail.contains("ESTIMATE"), "{}", v.detail);
+        // v5.6, §2o: the sentence is plain, and "an estimate rather than a measurement" is the
+        // same honesty §1.3 asked for in capitals.
+        assert!(v.detail.contains("estimate"), "{}", v.detail);
         p.free_bytes = Some(DISK_FLOOR_BYTES - 1);
         assert_eq!(disk_space(&p).reason, Some("low_disk"));
 

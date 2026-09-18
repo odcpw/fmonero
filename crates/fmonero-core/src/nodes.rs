@@ -480,7 +480,9 @@ pub fn parse_nodes_json(bytes: &[u8]) -> Result<ParsedNodes, Error> {
         let normalised = match Settings::parse_remote_address(url) {
             Ok(n) => n,
             Err(e) => {
-                if e.to_string().contains("the port is required") {
+                // The machine half, never the prose (§2o, §4): `Settings::parse_remote_address`
+                // marks the portless refusal `detail: "no_port"` for exactly this caller.
+                if e.detail().as_deref() == Some("no_port") {
                     out.skipped_no_port += 1;
                 } else {
                     out.skipped_invalid += 1;
