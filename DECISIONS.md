@@ -10078,3 +10078,444 @@ moved, so §2k's manifest freeze holds.
     raised before this code was written, and it is also the first thing the next agent will hit:
     one added line fails `scripts/check.sh`. The honest options then are to delete something or to
     raise the number in DESIGN.md first, in that order — not to widen the grep's file list.
+
+## Plain-language round verification (real output)
+
+- 2026-09-19 · independent verification · **## Plain-language round verification (real output)** —
+  every gate re-run at `2670841`, then the two surfaces read as a non-technical Monero user on a
+  real tmux pty at **120x32 and 150x40**, the widget's formatters driven against **real
+  `status --json` documents**, and the stale-node fix reproduced live in both directions. All ten
+  gates pass and every number the implementer reported is reproduced. **Eighteen findings follow,
+  three of them serious**: the bar widget running on the owner's bar right now is the *pre-v5.6*
+  `Panel.qml`; the installed binary was not HEAD before this run; and decision 7's own new lines
+  render outside every frame on the Wallet screen. One README string was fixed (it named an amount
+  the formatter cannot emit); no other code was changed.
+
+  ### The gates, command by command, at `2670841` on this machine
+
+  ```
+  $ cargo fmt --all --check                                   exit 0
+  $ cargo clean -p fmonero -p fmonero-core -p fmonero-mock    Removed 4125 files, 2.0GiB
+  $ cargo clippy --all-targets --workspace -- -D warnings      exit 0   (a real re-check, not a cache hit)
+  $ cargo test --workspace
+      test result: ok. 118 passed; 0 failed        (fmonero)
+      test result: ok. 182 passed; 0 failed        (fmonero-core)
+      test result: ok. 3 passed;   0 failed        (fmonero-mock)
+      test result: ok. 0 passed;   0 failed        (doc-tests)          303 total, exit 0
+  $ scripts/check.sh --full
+      check.sh: PASS          68 ok, 0 FAIL, 1 skip (shellcheck absent; bash -n ran instead)
+      ok    §2o rule 7: no banned word in the TUI, output.rs, status.rs or the widget
+      ok    §7a: 7600 lines (budget 7600)   ok §6.1: 1522 of 1529        exit 0
+  $ tests/e2e.sh --fast          566 passed, 0 failed, 3 skipped         exit 0
+  $ tests/e2e.sh --full          600 passed, 0 failed, 3 skipped         exit 0
+  $ tests/plugin-smoke.sh        66 passed, 0 failed                     exit 0   (before and after install)
+  $ tests/tui_tmux.sh            38 passed, 0 failed                     exit 0
+  $ tests/tui_tmux.sh --capture  41 passed, 0 failed                     exit 0
+  $ scripts/install.sh --yes     all seven actions `unchanged`           exit 0
+  $ omarchy restart shell        Refusing to restart Omarchy shell while the session is locked.
+  $ omarchy-shell oliver.monero cursor   answers — see V1
+  ```
+
+  **The owner's machine, before and after everything above.** `diff`ed, not eyeballed:
+
+  ```
+  units before / after: fmonero-monerod.service    inactive disabled NRestarts=0
+                        fmonero-wallet-rpc.service inactive disabled NRestarts=0     → identical
+  sha256 before / after: both unit files, monerod.conf, config.toml, omarchy-menu.jsonc,
+                         shell.json                                                 → identical
+  ac5f2f1bda4f19063daf126912bd47a9bc379fba7a24dca6e35db8596e48d9b7  ~/.config/fmonero/config.toml
+  node.mode is still `remote`, node.remote is still 185.220.101.63:18081
+  ```
+
+  ### V1 — THE WIDGET ON THE OWNER'S BAR IS THE PRE-v5.6 PANEL, AND THE GATE CANNOT SEE IT
+
+  `omarchy-shell oliver.monero cursor`, live, after `scripts/install.sh --yes` and after
+  `omarchy-shell shell rescanPlugins`:
+
+  ```
+  {"section":"header","index":0,"active":false,"opened":false,
+   "sections":["header","warnings","footer"],"alive":true,"binaryMissing":false,
+   "nodeUp":false,"synced":false,"walletOpen":false,"remote":true,"iconCase":7,"iconColor":"#ffffff"}
+  ```
+
+  `grep -c '"warnings"' plugin/oliver.monero/Panel.qml` is **0**. The repo's `navSections` builds
+  `header · problems · wallet · pending · footer`; `"warnings"` is the section name of the panel
+  **before** `af73411`, which is also the last panel without v5.6's `walletBehind` icon case. So the
+  shell is still running the v5.5 widget: the symlink points at the repo (`ls -l` confirms), but
+  Quickshell holds the loaded QML, `rescanPlugins` did not replace it (§1.5 says symlinks do not
+  hot-reload), and `omarchy restart shell` is **refused while the session is locked** — which it was
+  for this whole run. Nothing is wrong with the code; what is wrong is that **the redesign that
+  answers the owner's first complaint has never rendered on his bar**, and neither the
+  implementer's gate nor mine could tell, because `tests/plugin-smoke.sh`'s live half asserts only
+  that `cursor` returns a JSON object:
+
+  ```
+  ok    widget is loaded (cursor: {… "sections":["header","warnings","footer"] …})
+  ```
+
+  The evidence was inside the passing assertion's own message, twice, unread. The fix is one line in
+  §6.7: assert the cursor's `sections` are the ones `Panel.qml` builds (or stamp a version token into
+  the cursor payload), so a stale shell fails the gate instead of decorating it. The owner sees v5.6
+  the first time he unlocks and the shell restarts; until then the bar is v5.5.
+
+  ### V2 — `~/.local/bin/fmonero` was not HEAD before this run
+
+  The release build on this machine is **reproducible**: `touch crates/fmonero/src/main.rs && cargo
+  build --release` twice gives the same `sha256`. So the hashes are evidence.
+
+  ```
+  installed before this run   5a69ed0abc0e78224223c73cffd779c1e1b5b1fb7214bb891139e68caa64d953
+  HEAD (2670841) builds to    0264f0cb2dba7b485046f24558360f8eb2dca9a2100a72c1988b7e11037f07ab
+  HEAD~1's tui/* builds to    228ff0fa2177199ecef9c3c7874738b86e92ce977edc85c53a496bd80925e3cf
+  installed after install.sh  0264f0cb…  = HEAD
+  ```
+
+  `2670841` changed `tui/mod.rs` and `tui/screens.rs` by 26 lines *after* the round's own install, so
+  the owner has been running a binary older than the last two code commits. It is HEAD now.
+
+  ### V3 — decision 7's own lines render outside every frame on the Wallet screen
+
+  A public node whose block is ahead of the wallet's (mock node at 3 781 122, wallet at 3 541 122),
+  120x32 and again at 150x40. The Node screen puts the two lines inside its ` Node ` pane, correctly.
+  The Wallet screen draws them **at column 0, in the gap between two framed panes**:
+
+  ```
+  ╭ Balance ─────────────────────────────────────────────────────────────────────────────────────╮
+  │ 1.234567891234 XMR   unlocked 1.234567891234 XMR                                             │
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────╯
+  Syncing 93% · 240 000 blocks left.
+  Syncing in the background. You can close this window.
+  ╭ Addresses · Enter copies · a new · l rename ───╮╭ Payments  6 · t: all ──────────────────────╮
+  ```
+
+  `screens.rs:1238` splits `rows[1]` and calls `lines_at(…, split[0], false, frame)` — a bare rect,
+  no `framed()`, no padding — so the two lines the owner asked for are the only unframed,
+  flush-left text in the program. The arithmetic behind them is right (3 541 122 of 3 781 122 is
+  93 %, 240 000 left); the placement is not.
+
+  ### V4 — `l`, the in-app route decision 6 added, opens a confirm that states nothing
+
+  §7a.4 requires the `Use your own node` modal to state three things: the wallet service will
+  restart · `{name}` will be closed, and offered again · and, when the node is not running,
+  *"Your own node is not running yet. Switching will not start it."* What renders (120x32, a public
+  node configured, `l` pressed):
+
+  ```
+  ┌─────────────────── Use your own node ────────────────────┐
+  │                 y confirms · Esc cancels                 │
+  │                                                          │
+  │                    [ OK ]  [ Cancel ]                    │
+  └──────────────────────────────────────────────────────────┘
+  ```
+
+  `mod.rs::confirm_local` builds exactly `"y confirms · Esc cancels"`, plus `"{name} will be closed."`
+  when `status.wallet.name` is `Some`. The other confirm on the same screen — `Enter`, use this node —
+  is complete and is the shape this one needs:
+
+  ```
+  ╭ Use this node ─────────────────────────────────────────────────────────╮
+  │ 127.0.0.1:18492                                                        │
+  │ fmonero will not tell this node which amounts your wallet holds.       │
+  │ · the wallet service will restart                                      │
+  │ · this node will see your IP address and when you ask it anything      │
+  │ y to confirm · Esc cancels                                             │
+  ╰────────────────────────────────────────────────────────────────────────╯
+  ```
+
+  The same capture is in `decisions/`'s own `node-remote-local.txt` from the implementer's run, where
+  the gate read it as *"l opens the confirm that acts"* and did not read what the confirm says.
+
+  ### V5 — the Node screen's `this wallet` row prints a machine timestamp and an unspaced block
+
+  With a wallet open and one real refresh recorded, 120x32:
+
+  ```
+  ╭ Node ──────────────────────────────────────────────────────╮╭ This node ───────────────────────╮
+  │ ● Public node · 127.0.0.1:18591                            ││ block 3 541 122                  │
+  │ this wallet block 3541122 · checked 2026-09-19T00:20:07+02  ││ synced                           │
+  │                                                            ││ checked 2s ago                   │
+  ```
+
+  Three things in one line: an RFC3339 timestamp as prose, **clipped mid-offset**; a block number
+  with no separators (§2o rule 9 asks for `block 3 541 122`, which the pane 60 columns to the right
+  gets right); and the word `checked`, which the same screen uses for the node's own measurement two
+  lines away. `screens.rs:760` formats `"block {} · checked {}"` from `opt(wallet.height)` and
+  `wallet.last_refresh_at`, which §5 defines as an RFC3339 string. With no refresh recorded the row
+  reads `checked —`.
+
+  ### V6 — the picker's footer is not a sentence
+
+  ```
+  │ 2 nodes from monero.fail · list 3s ago old · 37 skipped                │
+  ```
+
+  `screens.rs:687` is `"… · list {} old · …"` and `screens.rs:2581`'s `age()` already returns
+  `"3s ago"` / `"10m 04s ago"` / `"2h 05m ago"`. Every render of this footer since v5.6 reads
+  `list <n> ago old`.
+
+  ### V7 — the reliability cell is clipped to a fragment
+
+  ```
+  │ address                        │reliability │block       │last seen    │
+  │ ● 127.0.0.1:18391              │72% of 18 ch│3765172     │10m 04s ago  │
+  ```
+
+  The cell is `"{}% of {c} checks"` and the column is 12 wide, so it always ends `ch`. §7a.4's own
+  text for this cell is `72% of 18`, which fits. (Two columns are also both headed `block` at the
+  Wide tier — monero.fail's height and the probed height — without §7a.4's `monero.fail says` /
+  `probed here` group headings, which are not implemented.)
+
+  ### V8 — `monero-wallet-rpc is not answering: io: Connection refused (os error 111)` reaches all three surfaces
+
+  Live, in the TUI's status bar (120x32, no wallet service running):
+
+  ```
+  ● public node node.example.com:18089 ● wallet closed │ close: monero-wallet-rpc is not answering: io: ⇥ screens  ? help
+  ```
+
+  and in the CLI:
+
+  ```
+  $ fmonero wallet refresh
+  fmonero: error[backend]: monero-wallet-rpc is not answering: io: Connection refused (os error 111)
+    reason: unreachable
+    Try: fmonero wallet open <name>   # starts the unit on demand, then opens
+  ```
+
+  and it can reach the **bar panel**: `Service.qml:280` assigns a failed action's stderr to
+  `localError` and `:29` takes `status.last_error.text`, both of which `Panel.qml` renders.
+  One function is the source — `rpc/jsonrpc.rs:360` and `:372` pass the literal strings `"monerod"`
+  and `"monero-wallet-rpc"` into `shared_error`, whose five arms then print
+  `{daemon} is not answering: {msg}` · `{daemon} refused the credential fmonero has for it` ·
+  `{daemon} did not answer {what} within its deadline` (with `{what}` an RPC method name) ·
+  `{daemon} was killed at its deadline …` · `{daemon} does not serve {path}`. §2o.2's vocabulary
+  table names this exact string as the thing never to say, and the hint's own comment says `unit`.
+  `docs/COPY.md` §3.11 inventories thirty core error strings and **not this family**, which its own
+  code comment calls *"the most frequently hit error path in the tool"*.
+
+  ### V9 — `fmonero settings list` is an un-inventoried surface, section numbers and all
+
+  ```
+    node.mode               remote
+      local | remote — which daemon monero-wallet-rpc is pointed at (§2m)  [default local]
+    node.unit               fmonero-monerod.service
+      the systemd user unit that runs monerod  [default fmonero-monerod.service]
+    wallet.priority         2
+      default fee priority 0-4 (2 = normal; 0 is an alias of the lowest tier, §1b.4)  [default 2]
+    wallet.autostart        false
+      start the wallet daemon when `fmonero tui` launches (TUI only, §7a.5)  [default false]
+    timeouts.node_sec       3
+      node RPC probe deadline  [default 3]
+  ```
+
+  `SETTINGS_KEYS` in `settings.rs:405-510` is 24 rows; seven carry a `§` number (rule 4 forbids them
+  outright) and the set carries daemon · unit · systemd · RPC · loopback · probe · priority · LMDB ·
+  `--prune-blockchain` · `--wallet-dir` · `open_wallet` · `trusted`. `docs/COPY.md` §6 lists the
+  fourteen surfaces it inventoried and this is not one of them, and §4 does not exempt it. The
+  `wallet.priority` row is the same *priority 0-4, 0 is an alias* register the Send screen was
+  cleaned of in this round, still live one command away.
+
+  ### V10 — the doctor's titles were rewritten; most of its details were not
+
+  `docs/COPY.md` §3.12 rewrote all forty **titles** and then the **details that appeared in one live
+  capture**. Running §2o's own extractor over `doctor/checks.rs` with `scripts/check.sh`'s own
+  pattern gives **51 literals that would fire it**, among them:
+
+  ```
+  "{} and {} match units::render_* byte for byte"
+  "the unit says --daemon-address {address} while the settings say {}: a monero-wallet-rpc started …"
+  "{name} carries --log-level {level}: above 0 epee logs HTTP headers and wallet2 internals …"
+  "the snapshot is format {} and this build writes {}: postcard is not self-describing …"
+  "high water {}, {behind} behind the wallet's {wh}. The next `wallet history` … (§5b)"
+  "a restricted node reports 0 connections by construction (§1b.3)"
+  ```
+
+  Nearly all of them are reachable **only on a machine whose node runs** — which is why the capture
+  never saw them, and which is the same blind spot this round named twice about itself. One is
+  visible today: `units_present` builds `the {unit} service is not set up yet`, so a person reads
+  *"the fmonero-monerod.service service is not set up yet"* — a unit name as prose, and a stutter.
+
+  ### V11 — the `Add a node` modal shows no validation and no way to commit
+
+  120x32 and 150x40, with `nonsense` typed into it:
+
+  ```
+  ╭ Add a node ────────────────────────────────────────────────────────╮
+  │ address  nonsense                                                  │
+  │ host:port, and the port is required                                │
+  │ Nodes you add here are treated as public.                          │
+  ╰────────────────────────────────────────────────────────────────────╯
+  ```
+
+  §7a.4 says this field is *"validated live by `Settings::parse_remote_address` … showing §2m.2's
+  exact message for whatever is wrong as the user types"*: `screens.rs:2090` calls nothing of the
+  kind. And the third line the same call passes in, `Enter adds it · Esc cancels`, is **not on
+  screen at either size** — `grep -rl "Enter adds it"` over every capture of this modal returns
+  nothing — so the modal tells the user neither what is wrong nor which key commits it.
+
+  ### V12–V16 — five smaller things a first-time reader hits
+
+  - **The wallet empty state still has the two lines the round was called about.** `— XMR   unlocked
+    — XMR` renders with no wallet open, and the chip reads `[o] Open wallet…      choose one of the 1
+    in /home/oliver/.local/share/fmonero/wallets/mainnet` — *one of the 1 in* is worse English than
+    the `pick one of the 1 wallets in …` it replaced.
+  - **One screen, two answers.** With the wallet unit active and the wallet service not answering,
+    the Wallet screen says `wallet service: running` four rows above a status bar reading
+    `● wallet not running`. Both are computed correctly (`unit_active` vs `wallet.reachable`) and a
+    person cannot reconcile them. Pre-existing, not from this round.
+  - **Two phrasings for one fact.** The hero says `Your node is not running`, the status bar in the
+    same frame says `● node not answering`.
+  - **Clipping mid-word, everywhere it is tight.** `A wallet is open. Press x to close i` ·
+    `Could not read your settings: cannot read /tm` · nine rows of the `?` overlay at 120 columns
+    (`… in this help, or while so`, `… every key yo`, `fmonero wallet sweep <a`). No ellipsis marks
+    any of them, so a truncated sentence reads as a finished one.
+  - **The header's real balance is 32 characters.** `to_xmr_string` trims trailing zeros to a
+    **minimum of four** decimals, so a real balance is `1.234567891234` and the widget's header is
+    `Wallet open · 1.234567891234 XMR`, not the `Wallet open · 1.23 XMR` that DESIGN §6.4, README and
+    `docs/COPY.md` all illustrate it with — a string this formatter cannot emit. **README is fixed in
+    this commit** (`1.2300 XMR`); §6.4's mock and COPY's two rows are recorded here rather than
+    edited, and §6.4's five-word budget should be re-measured against the width a real balance takes.
+
+  ### V17 — §2o's grep has two holes, demonstrated rather than asserted
+
+  Running `scripts/check.sh`'s own `BANNED_2O` and `ALLOWED_2O` against four literals:
+
+  ```
+  "monero-wallet-rpc is not answering: {msg}"                 allowlisted=yes  banned=no   → PASSES
+  "monerod did not answer get_info within its deadline"        allowlisted=yes  banned=no   → PASSES
+  "the wallet daemon is not running"                           allowlisted=no   banned=yes  → FIRES
+  "start the wallet daemon when fmonero tui launches (§7a.5)"  allowlisted=no   banned=yes  → FIRES
+  ```
+
+  The allow-list matches any literal that **begins** `monerod ` or `monero-wallet-rpc `, so the two
+  worst prose strings in the program would pass even if their file were in the list — and their file
+  is not: the step reads `tui/*.rs`, `output.rs`, `status.rs` and the widget, which is what §2o.3
+  specifies and a proper subset of what §2o's first paragraph governs. The word list also omits three
+  of rule 7's own words (`argv`, `breaker`, `snapshot`) besides the documented `build`. Row 4 above is
+  the settings description of V9: the grep would catch it if it read that file.
+
+  ### The stale-node fix, proved live in both directions
+
+  A sandbox in public-node mode against two `fmonero-mock` nodes (A = 127.0.0.1:18491,
+  B = 127.0.0.1:18492) and a mock wallet service, with `FMONERO_SYSTEMCTL_FIXTURE` and
+  `FMONERO_SYSTEMD_USER_DIR` set so the switch completes instead of exiting 3. `tui.poll_ms` is 1000.
+
+  **Before**: hero `● Public node · 127.0.0.1:18491`, status bar `● public node 127.0.0.1:18491`,
+  picker `●` on A's row, ` This node ` showing A's check. Then `Enter` on B's row, `y`, and **1.1 s
+  later** — one poll:
+
+  ```
+  [ 1 Node ]  2 Wallet    3 Send    4 Log                                                     ⠋ omarchy
+  | ● Public node · 127.0.0.1:18492                            || Not checked yet.            |
+  |                                                            || [p] Check this node         |
+  | ● 127.0.0.1:18492              │91% of 44 ch│3765180     │5m 07s ago                      |
+  |   127.0.0.1:18491              │72% of 18 ch│3765172     │10m 07s ago                     |
+  ● public node 127.0.0.1:18492 ● wallet open 1.234567891234 XMR │ checked 1 · 1 answered
+  ```
+
+  All four surfaces moved together, and the old node's cached check was dropped rather than shown for
+  the new address (§7a.7 part 3's address match). **Three polls later** the new node's own check had
+  landed, so the pane is never left on `Not checked yet.` for `remote_probe_sec`:
+
+  ```
+  ╭ This node ─────────────────────────────────────────────╮
+  │ block 3 541 122                                        │
+  │ synced                                                 │
+  │ answered in 20 ms                                      │
+  │ checked 2s ago                                         │
+  ```
+
+  **From another shell**, against the same sandbox, `fmonero node local --yes` → exit 0. **1.1 s
+  later** the TUI had reloaded and changed layout, with no keypress:
+
+  ```
+  │ ● Your node is not running                                 ││ ↓ ↑         —   —            │
+  │ Your node is not running. Press u to start it.             ││ The graph fills in as it …   │
+  ● node not answering ● wallet open 1.234567891234 XMR │ checked 1 · 1 answered
+  ```
+
+  **And the failure path**: `chmod 000 config.toml` mid-session leaves every value on screen, raises
+  **one** toast — `Could not read your settings: cannot read /tm…` — does not panic, and `q` still
+  exits 0.
+
+  ### `status --json --check-node`, against a node that really answers
+
+  In a sandbox with a public node configured at a mock node's address, the flag's detached `curl`
+  really ran and the **next** call harvested it:
+
+  ```
+  "remote_probe": {"age_sec": 0, "height": 3541122, "latency_ms": 2, "nettype": "mainnet",
+                   "probed_at": 1789770993, "reachable": true, "reason": null,
+                   "restricted": false, "synchronized": true, "version": "0.18.5.1-release"}
+  ```
+
+  A plain `status --json` in the same sandbox leaves `remote_probe` at `null`, which is the half §2e
+  rests on.
+
+  ### The widget's formatters, against REAL `status --json` documents
+
+  `Model.js` driven under `node` against four documents this machine's binary produced (not
+  hand-written fixtures; the fourth is the third with its two heights moved, which is stated because
+  no mock here serves a wallet behind its node):
+
+  | document | `headerLine` | `nodeLabel` | `checkedLabel` | `walletSyncLabel` |
+  |---|---|---|---|---|
+  | public node, wallet closed | `Public node · synced · wallet closed` | `public node 127.0.0.1:18691` | `block 3 541 122 · synced · checked 0s ago` | — |
+  | public node, wallet open | `Wallet open · 1.234567891234 XMR` | same | same | — |
+  | your own node, wallet open | `Wallet open · 1.234567891234 XMR` | `your own node` | (row hidden) | — |
+  | derived: wallet 240 000 behind | `Wallet syncing 63%` | `public node 127.0.0.1:18691` | `block 650 000 · synced · checked 0s ago` | `Syncing 63% · 240 000 blocks left` |
+
+  Every row §6.5 asks for is right, the `Checked` row is correctly gated on `svc.remote`, `worst`
+  severity for a closed wallet is `info` so the bar stays calm, and no rendered row contains
+  `daemon`, `unit`, `probe`, `restricted`, `trusted`, `ssl` or `not available`. The only note is
+  V16's: the real balance makes the header six characters longer than every illustration of it.
+  Worth recording for the next round: on the owner's own machine the two warnings he will meet most
+  (`node_low_disk`, `auth_missing`) carry `action: null`, so the panel shows him a problem with no
+  in-app route — which §2o.1 allows, and which is nonetheless the shape decision 6 exists to remove.
+
+  ### V18 — a side effect of my own, disclosed in full
+
+  One of my CLI sweeps set `FMONERO_STATE_DIR` but **not** `FMONERO_SYSTEMCTL_FIXTURE`, and the
+  `fmonero node up` in it therefore ran `systemctl --user start fmonero-monerod.service` against the
+  **owner's real unit**. From his journal:
+
+  ```
+  Sep 19 00:22:23 t14 monerod[3497917]: … I Synced 40536/3765450 (1%, 3724914 left)
+  Sep 19 00:22:24 t14 systemd[1033]: Stopping Monero daemon (fmonero)...
+  Sep 19 00:22:25 t14 systemd[1033]: fmonero-monerod.service: Consumed 10.684s CPU time over
+                                     30.528s wall clock time, 375.9M memory peak.
+  ```
+
+  fmonero stopped it again at its own 30 s deadline, exactly as §2d says it should, and the unit is
+  `inactive disabled NRestarts=0` with every config `sha256` unchanged. What did not go back is
+  `~/.bitmonero`: it did not exist before (§1.1) and now holds **147 MB**, every file stamped
+  00:21–00:22. It is left in place — deleting the owner's data is not mine to do — and
+  `rm -rf ~/.bitmonero` is his one-line undo if he still wants no local chain.
+
+  **The finding inside my mistake is the useful part**: `FMONERO_STATE_DIR` gates `units::install`
+  (exit 3 `sandboxed_units`) but **not** `units::start`/`stop`, so any test, agent or sandbox that
+  sets the state dir without `FMONERO_SYSTEMCTL_FIXTURE` can start and stop the owner's real units
+  under their real names. `tests/e2e.sh` and `tests/tui_tmux.sh` both set the fixture and are safe;
+  nothing in the tree states the rule where the next agent writing a sandbox will read it.
+
+  ### One documentation drift, for whoever edits §7a.4 next
+
+  §7a.4 still prints the no-cache panel as `No public-node list yet.` / `[f] Fetch the list` /
+  `Fetching tells monero.fail your IP address`. The program renders `No list of public nodes yet.` /
+  `[f] Get the list` / `Getting the list tells monero.fail your IP address.` The code is the better
+  text; the section was not updated with it.
+
+  ### What this verification does not claim
+
+  - **A real send or sweep of any amount is still RED.** Nothing was built against a real daemon and
+    nothing was relayed. The Send screen's confirm was reached against `fmonero-mock` and discarded.
+  - **The v5.6 widget has never been seen rendering** — by the implementer or by me. V1 is why: the
+    shell would not restart while the session was locked, so every widget claim in this round rests on
+    `Model.js` under `node`, on source greps, and on a `cursor` reply from the *previous* panel.
+  - **The stale-node fix is proved against `fmonero-mock` and a real `config.toml`**, in a sandbox,
+    in both directions and on the failure path — not against the owner's own node, which would mean
+    changing the node he is using.
+  - **`--check-node` has still never contacted a real public node.** It contacted a mock over real
+    `curl`, through the real detached-spawn-and-harvest path.
+  - **The eighteen findings are reported, not fixed.** The only file changed in this commit besides
+    `DECISIONS.md` is `README.md`, and only the one amount string of V16.

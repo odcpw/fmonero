@@ -440,7 +440,7 @@ the bar, coloured by node and wallet state, crossed out when your node is not an
 with a percentage while something is catching up, and badged when something is wrong.
 
 Its panel answers one question and then gets out of the way. **One header line of at most five
-words** — `Public node · synced · wallet closed`, `Wallet syncing 63%`, `Wallet open · 1.23 XMR` —
+words** — `Public node · synced · wallet closed`, `Wallet syncing 63%`, `Wallet open · 1.2300 XMR` —
 with at most one supporting fact under it, and then **only the rows that carry information for
 the state you are in**: which node, whether it is synced and when it was last checked; the balance
 and the address with a copy action when a wallet is open, or one row reading `Wallet closed` when
