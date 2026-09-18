@@ -7956,3 +7956,201 @@ dependency.
 - **A real send or sweep is still RED**, in remote mode as in local. Nothing in this entry changes
   what a broadcast proves, and none of the live rows above relayed anything.
 - **`wallet open`'s live timings were not re-measured under load**; the 2.3 s above is one sample.
+
+## DEFECT 3 proof, and the host config that was hiding it (real output)
+
+Run on 2026-09-18 in `/home/oliver/Projects/odcpw/fmonero`, on branch `main`, starting from
+`86138c8`. The brief: fix DEFECT 3 of **Remote node mode verification (real output)** — the
+`send.lock` `EWOULDBLOCK` that a sibling thread's `fork` produces — by writing §2a.11 first and
+implementing a bounded retry, then prove it with ten parallel `cargo test` runs before and after.
+Nothing was pushed, no `sudo` was run, no daemon was started, and the owner's units are inactive
+and disabled before and after. Design brief **v5.3 → v5.4**; the one amendment is §5b.3.
+
+### The retry was already in the tree, and the proof could not run
+
+Step 1 of the brief landed on 2026-09-17: `74aaa6e` wrote §2a.11's retry clause, `5f87a49`
+implemented `send::take_send_lock`'s 500 ms budget (`send::LOCK_RETRY_BUDGET`, exponential backoff
+from 200 µs, `EINTR` still retried, every other errno still exit 1) with its two unit tests, and
+**Remote mode fix-up (real output)** gated it at 5/5 parallel runs. There was nothing to
+re-implement, so this entry is the proof the brief asked for — and the first attempt at it failed
+every run, on **both** the fixed tree and the pre-fix one, with the same five tests and in about a
+second:
+
+```
+$ cargo test                       (HEAD 86138c8, ten runs)         0/10 passed
+$ cargo test                       (1cedebf = 5f87a49^, ten runs)   0/10 passed
+   Running unittests src/main.rs (target/debug/deps/fmonero-…)
+test result: FAILED. 76 passed; 5 failed
+  tui::tests::the_offline_node_screen_says_what_to_press_and_never_shows_a_zero_height
+  tui::tests::a_restricted_node_names_the_method_each_dark_pane_needs
+  tui::tests::a_syncing_node_shows_the_gauge_and_no_block_age
+  tui::tests::node_mutations_are_refused_when_fmonero_does_not_own_the_node
+  doctor::checks::tests::the_one_line_predicates_answer_as_the_table_says
+
+---- tui::tests::the_offline_node_screen_says_what_to_press_and_never_shows_a_zero_height ----
+│ ● Remote node · xmr-node.cakewallet.com:18081              ││ not available with a remote node
+---- tui::tests::node_mutations_are_refused_when_fmonero_does_not_own_the_node ----
+u: remote node mode — run: fmonero node local --yes
+---- doctor::checks::tests::the_one_line_predicates_answer_as_the_table_says ----
+assertion `left == right` failed   left: Warn   right: Fail
+```
+
+That is the owner's real node in a unit test's rendering. `cargo test --no-fail-fast` on the
+unfixed tree counts the whole damage — **34 tests**, deterministic, the same set every time:
+
+```
+fmonero       76 passed;  5 failed    4 tui::tests · 1 doctor::checks::tests
+fmonero-core 133 passed; 29 failed   24 rpc::mock_tests · 4 units::tests · 1 status::tests
+fmonero-mock   3 passed;  0 failed
+```
+
+**The mechanism is `Context::for_test`.** It started from `Context::load()` — which reads the real
+`~/.config/fmonero/config.toml` — and only then moved the paths under the sandbox, so every test
+context carried whatever `node.mode` the owner had set. The suite was green on 2026-09-17 because
+the fix-up entry's own transcript says `fmonero settings get node.mode → local (never switched)`;
+the last act of that session then ran `fmonero node remote xmr-node.cakewallet.com:18081 --yes` on
+the owner's real installation (the wallet-rpc unit's hash moved from `3915d8a0…` to `51ab51b9…`,
+and `config.toml` now says `mode = "remote"`), and from that moment 34 tests that assume the
+default `local` asserted the host instead of fmonero. Because `cargo test` stops at the first
+failing binary, the core crate — and with it the §2a.11 `send.lock` suite — never ran at all,
+which is how a defect fixed and gated one day could come back as "`cargo test` fails on this
+machine" the next.
+
+It is the v5.1 class of bug exactly: v5.1 moved `systemd_user_dir`, `local_bin` and `wallet.dir`
+under the sandbox after one real `scripts/install.sh --yes` broke five tests. The settings were
+left behind. **Fix:** `for_test` now builds its `Paths` from `Paths::discover()` with every fmonero
+directory under `dir`, then reads `Settings::load` against the **sandbox's** config dir — which
+holds no `config.toml`, so the defaults, with `wallet.dir` derived from the sandbox's own
+`wallet_dir` (§4.2) — and never the machine's file. `Systemctl::discover()` is unchanged. Signature
+unchanged; DESIGN §5b's `for_test` paragraph and the new §5b.3 row say so, and the code cites them.
+`README` needs no change: it makes no claim about the suite's independence from the host.
+
+### The proof, on the repaired suite
+
+Three ten-run loops, all `cargo test` with the default parallel test threads, all with the
+`for_test` fix applied so the only variable is the lock. Load average 2.3–4.4 throughout (the
+loops overlapped).
+
+**After — HEAD `86138c8` + the `for_test` fix, `LOCK_RETRY_BUDGET` = 500 ms:**
+
+```
+run  1: PASS  246 passed, 0 failed  14.4s        run  6: PASS  246 passed, 0 failed  14.3s
+run  2: PASS  246 passed, 0 failed  14.4s        run  7: PASS  246 passed, 0 failed  14.4s
+run  3: PASS  246 passed, 0 failed  14.3s        run  8: PASS  246 passed, 0 failed  14.4s
+run  4: PASS  246 passed, 0 failed  14.4s        run  9: PASS  246 passed, 0 failed  14.4s
+run  5: PASS  246 passed, 0 failed  14.5s        run 10: PASS  246 passed, 0 failed  14.3s
+after: 10/10 runs passed
+```
+
+**Before — `1cedebf` (the commit under `5f87a49`, no retry) + the same `for_test` fix, built in a
+scratch copy with its own target dir:**
+
+```
+run  1–9: PASS  242 passed, 0 failed  14.1–15.8s
+run 10:   FAIL  238 passed, 1 failed  14.1s  rpc::mock_tests::the_refusal_order_decides_the_exit_code
+  panicked at crates/fmonero-core/src/rpc/mock_tests.rs:801:5:
+  assertion `left == right` failed: reason=Some("send_in_progress")
+                                    msg=another fmonero send is building or relaying
+    left: 3   right: 6
+before: 9/10 runs passed
+```
+
+One in ten, and it is the brief's symptom to the letter: exit 3 where the test expected a
+different refusal. It flaked less here than the 2-in-4 and 3-in-12 the earlier entries saw, and the
+reason is fork pressure, not luck: on the pre-fix tree the only forks inside the core test process
+are a handful of `systemctl` probes and one deliberate `fork()` in `fork_holding_read_lock`, while
+the earlier verifiers ran with `tests/e2e.sh` loading the machine, which stretches every fork→exec
+window. So the fairer "before" is **HEAD's own suite with only the budget changed** — the
+2026-09-17 entry's method, byte-for-byte the old behaviour, and this time with the sibling-fork test
+acting as the fork storm the brief describes:
+
+**Before, second form — HEAD + the `for_test` fix, `LOCK_RETRY_BUDGET` = 0 ms:**
+
+```
+run  1: FAIL  126 spurious send_in_progress in 400      run  6: FAIL  106 in 400
+run  2: FAIL  393 in 400                                run  7: FAIL   75 in 400
+run  3: FAIL  230 in 400                                run  8: FAIL  142 in 400
+run  4: FAIL   70 in 400                                run  9: FAIL  123 in 400
+run  5: FAIL   79 in 400                                run 10: FAIL   50 in 400
+zero budget: 0/10 runs passed — 1 394 spurious refusals in 4 000 lock takes (35 %), every one
+             on a private lock file no other process ever opened
+```
+
+The same probe run on its own, ten times, refused 697 in 4 000 (17 %; two of the ten runs saw
+none) — the rate moves with whatever else is forking, the direction never does. With the 500 ms
+budget the identical test reports **0 in 400 on every one of the ten runs above**, and its converse
+(`a_lock_that_is_really_held_is_still_refused_after_the_budget`) still proves a genuinely held lock
+is refused, after the budget and never before it.
+
+### Why the budget stays at 500 ms and not "a few tens of milliseconds"
+
+The brief suggested tens of milliseconds. The measured collision rate per bare attempt under a
+fork storm is about 35 %, and the backoff (200 µs doubling, capped at 20 ms) fits seven retries into
+the first ~25 ms: 0.35⁸ ≈ 2×10⁻⁴ per lock take, which across the 400 takes of the probe is a ~9 %
+chance of a spurious refusal **per test run** — a flaky test replacing a flaky test. 500 ms is about
+thirty retries, 0.35³¹ ≈ 10⁻¹⁴, and it is paid **only** by a second sender that meets a lock
+somebody really holds, which then waits half a second before its exit 3. §2a.11's own argument is
+unchanged: a fork window is microseconds, a real holder holds for seconds, and the retry separates
+the two timescales without touching the interlock.
+
+### The gate, in full
+
+```
+$ systemctl --user show -p ActiveState,UnitFileState,NRestarts,Result fmonero-{monerod,wallet-rpc}.service
+before   ActiveState=inactive  UnitFileState=disabled  Result=success  NRestarts=0   (both units)
+$ uptime                                    load average: 2.12, 1.34, 0.90
+
+$ cargo fmt --check                         exit 0
+$ cargo clippy --all-targets -- -D warnings  Finished `dev` profile — no warnings, exit 0
+$ cargo test    (parallel, ten runs)        10/10 — 81 + 162 + 3 + 0 = 246 passed, 0 failed, every run
+$ scripts/check.sh --full                   check.sh: PASS (52 ok, 0 FAIL)
+$ tests/e2e.sh --fast                       533 passed, 0 failed, 3 skipped   real 0m13.685s
+$ tests/e2e.sh --full                       567 passed, 0 failed, 3 skipped   real 2m19.157s
+    §2l (a) status, both daemons absent   30ms min · 41ms mean · 59ms max   (budget 60 ms, GREEN)  ok
+    §2l (b) status against the mock       34ms min · 53ms mean · 66ms max   (budget 80 ms, AMBER)  ok
+    §2l (d) wallet history --cached        1ms min ·  1ms mean ·  2ms max   (budget 50 ms, AMBER)  ok
+    §2l (c) warm, against a real monerod                                     RED, not measured
+
+$ systemctl --user show -p ActiveState,UnitFileState,NRestarts,Result fmonero-{monerod,wallet-rpc}.service
+after    ActiveState=inactive  UnitFileState=disabled  Result=success  NRestarts=0   (both units)
+$ uptime                                    load average: 2.68, 3.07, 2.30
+```
+
+### The owner's machine, untouched
+
+```
+$ sha256sum ~/.config/systemd/user/fmonero-*.service ~/.config/fmonero/monerod.conf
+64580d70a21719503a105b67aa633d31d9c25921ffc0c8956a7fc8d5d333d82f  fmonero-monerod.service
+51ab51b9c26863bece7521f51a5e4d9904230bf1f2963abe6e54b3da80fd0a7f  fmonero-wallet-rpc.service
+bed63c9603dc9f5cbcc2d81fbab42d9c57763479c7f87b2a54a7707a74efd5ba  monerod.conf
+                            identical before and after this session
+
+$ ls -A ~/.local/share/fmonero/wallets/mainnet         empty
+$ jq -c '{last_open,last_error}' ~/.local/state/fmonero/state.json
+{"last_open":null,"last_error":null}
+$ pgrep -af 'monerod|monero-wallet-rpc'               none
+$ grep '^mode' ~/.config/fmonero/config.toml           mode = "remote"   (the owner's 2026-09-17 choice, untouched)
+```
+
+The wallet-rpc unit's hash differs from the one the two entries above record because the owner's
+installation was switched to remote mode on 2026-09-17, after that gate; nothing here changed it.
+Every `cargo test` wrote only under `std::env::temp_dir()` sandboxes named by pid, the pre-fix and
+zero-budget copies lived in the session scratchpad with their own target dirs, and no `Cargo.toml`
+moved, so §2k's manifest freeze holds.
+
+### What this entry changes in the repo
+
+- `DESIGN.md`: v5.4 — the §5b `for_test` contract says the settings are the sandbox's, and §5b.3
+  records the behaviour change under the unchanged signature.
+- `crates/fmonero-core/src/context.rs`: `Context::for_test` reads `Settings::load` against the
+  sandbox's config dir instead of starting from `Context::load()`.
+- Nothing in `send.rs`: the retry, its comment and its two tests are `5f87a49`'s, unchanged.
+
+### What it does not claim
+
+- **A real send or sweep is still RED.** Nothing here relayed anything; the lock was exercised
+  against private files and the in-process mock only.
+- The 1-in-10 on the pre-fix tree is one sample of a rate that depends on machine load; the
+  zero-budget loop is the reproducible statement of the mechanism.
+- `tests/plugin-smoke.sh` and `tests/tui_tmux.sh` were not in this brief's gate list and were not
+  run; neither touches `for_test` or `send.lock`.

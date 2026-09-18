@@ -1,4 +1,4 @@
-# fmonero — design brief v5.3 (source of truth for every agent working on this repo)
+# fmonero — design brief v5.4 (source of truth for every agent working on this repo)
 
 A fast Monero node + wallet front end for Omarchy: a Rust CLI + engine (`crates/fmonero-core`,
 `crates/fmonero`), a FrankenTUI app (`fmonero tui`), a `doctor`, and a thin Quickshell bar widget
@@ -3592,6 +3592,11 @@ pub struct Paths { pub state_dir: PathBuf, pub config_dir: PathBuf, pub cache_di
 // `Context::for_test(dir)` additionally puts `systemd_user_dir`, `local_bin` and
 // `settings.wallet.dir` under `dir`: they pointed at the real machine until v5.1, and the one
 // real `scripts/install.sh --yes` then made five unit tests fail on their own premise.
+// From v5.4 its `settings` are `Settings::load` against the SANDBOX's config dir — which holds
+// no `config.toml`, so the defaults, with `wallet.dir` derived from the sandbox's `wallet_dir` —
+// and NEVER the machine's `~/.config/fmonero/config.toml`. Until v5.4 it started from
+// `Context::load()` and only then moved the paths, so every test context carried the owner's
+// `node.mode`, and the one real `node remote … --yes` made 34 tests fail on a clean tree (§5b.3).
 impl Paths {
     /// FMONERO_STATE_DIR / FMONERO_CONFIG_DIR / FMONERO_CACHE_DIR override the XDG locations.
     pub fn discover() -> Result<Paths, Error>;
@@ -4657,6 +4662,15 @@ changes — "compile against exactly these signatures" does not warn a reader th
 | 2 | `Error::retarget_sandbox_hint(own_dry_run)` is new, and `units::install`'s sandbox refusal gains `reason: "sandboxed_units"` | The refusal is raised in core, which cannot know whether the caller was `setup --units`, `node remote` or `node local`; §4's rule is that a hint is the user's own command. The reason is also the guard that keeps the rewrite from touching any other error. |
 | 3 | `send::LOCK_RETRY_BUDGET` is new and `send::take_send_lock` keeps its signature while retrying `EWOULDBLOCK` for 500 ms | §2a.11: a `flock` survives in a forked child until it `exec`s, so a sibling thread's `Command::spawn` refused a legitimate send ~29–40 % of the time. The budget is public because a test has to assert the refusal comes **after** it. |
 | 4 | `probes::read_settings_document` and `probes::SettingsDocument` are new (crate-internal to `fmonero`, not core) and `inspect_settings` becomes a thin wrapper | §7.1: the `settings_valid` detector and the `RepairSettings` fixer replayed `config.toml` **twice**, and the two disagreed about `node.mode` — the disagreement being exactly what took a correctly configured machine out of remote mode. |
+
+### 5b.3 The v5.4 amendment
+
+One change, corrective in behaviour under an unchanged signature, recorded for the reason §5b.1
+gives: a signature that does not move is not a contract that did not move.
+
+| # | Change | Why |
+|---|---|---|
+| 1 | `Context::for_test(dir)` keeps its signature and **no longer starts from `Context::load()`**: its `settings` are `Settings::load` against the sandbox's own config dir — which holds no `config.toml`, so the defaults, with `wallet.dir` derived from the sandbox's `wallet_dir` (§4.2) — and never the machine's `~/.config/fmonero/config.toml`. Its `paths` are still `Paths::discover()` with every fmonero directory moved under `dir`, and `systemctl` is still `Systemctl::discover()` (§2i). | Until v5.4 the constructor read the owner's real settings and only then moved the paths, so every test context carried whatever `node.mode` the owner had set, and the suite was green only while that was the default `local`. The day the owner's installation switched to remote mode (§2m), 34 tests that assume the default failed on a clean tree — five in the CLI crate's TUI and doctor tests, 29 across core's mock, status and units tests — deterministically, and because `cargo test` stops at the first failing binary the `send.lock` suite (§2a.11) never ran at all, which is how a defect fixed and gated on 2026-09-17 came back as "`cargo test` fails on this machine" a day later. Same rule as v5.1's three paths: a test that a correct `node remote --yes` breaks is a test that asserts the host, and the sandbox is the fix rather than the assertions. |
 
 ## 5c. Per-command JSON payloads
 

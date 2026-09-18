@@ -132,15 +132,38 @@ impl Context {
     /// and `units::install`'s dry run saw a `wallet.dir` that already existed. A test that a
     /// correct installer breaks is a test that gets deleted, so the sandbox is the fix
     /// rather than the assertions.
+    ///
+    /// **And the settings belong to the sandbox too, never to the machine** (v5.4, §5b.3).
+    /// Until v5.4 this started from [`Context::load`], which reads the real
+    /// `~/.config/fmonero/config.toml`, and only then moved the paths — so every test context
+    /// carried whatever `node.mode` the owner had set, and the suite was green only while that
+    /// was the default `local`. The day the owner's installation switched to remote mode (§2m)
+    /// 34 tests that assume the default failed on a clean tree, deterministically, and with
+    /// `cargo test` stopping at the first failing binary the §2a.11 `send.lock` suite never
+    /// ran at all. `Settings::load` against the sandbox's config dir, which holds no
+    /// `config.toml` yet, is the defaults exactly as the binary computes them on a fresh
+    /// machine, with `wallet.dir` derived from the sandbox's own `wallet_dir` (§4.2). A test
+    /// that a correct `node remote --yes` breaks asserts the host, not fmonero.
     pub fn for_test(dir: &std::path::Path) -> Result<Context, Error> {
-        let mut ctx = Context::load()?;
-        ctx.paths.state_dir = dir.join("state");
-        ctx.paths.config_dir = dir.join("config");
-        ctx.paths.cache_dir = dir.join("cache");
-        ctx.paths.run_dir = ctx.paths.state_dir.join("run");
-        ctx.paths.systemd_user_dir = dir.join("systemd/user");
-        ctx.paths.local_bin = dir.join("bin");
-        ctx.paths.wallet_dir = dir.join("wallets");
+        let mut paths = Paths::discover()?;
+        paths.state_dir = dir.join("state");
+        paths.config_dir = dir.join("config");
+        paths.cache_dir = dir.join("cache");
+        paths.run_dir = paths.state_dir.join("run");
+        paths.systemd_user_dir = dir.join("systemd/user");
+        paths.local_bin = dir.join("bin");
+        paths.wallet_dir = dir.join("wallets");
+        let settings = Settings::load(&paths)?;
+        let timeouts = Timeouts::from_settings(&settings.timeouts);
+        let mut ctx = Context {
+            settings,
+            paths,
+            timeouts,
+            json: false,
+            verbose: 0,
+            force: false,
+            systemctl: Systemctl::discover(),
+        };
         // `settings.wallet.dir` carries the network segment, exactly as §4's default does —
         // and it deliberately does NOT exist, because `units::install`'s dry run lists one
         // `CreateDir` action per missing ancestor (§4.2) and that is what the test asserts.
