@@ -1009,9 +1009,14 @@ fn the_create_wallet_modal_consumes_tab_and_says_so() {
     s.inject_event(key(KeyCode::Tab));
     assert_eq!(s.model().screen, before, "the create modal holds Tab");
     assert_eq!(s.model().note, "Esc to discard first");
-    // And it is documented IN the modal, not only in this document.
+    // And it is documented IN the modal — on its own line under the controls, which is a
+    // rendering assertion and not a status-bar one: a one-row footer clipped that line away, so
+    // the rule was true only in DESIGN.md.
     let text = sim_text(&s, 110, 34);
-    assert!(text.contains("Esc to discard first"), "{text}");
+    assert!(
+        text.contains("Tab is held here — Esc to discard first"),
+        "{text}"
+    );
 }
 
 #[test]

@@ -1753,6 +1753,9 @@ fn create_modal(m: &Tui, form: &super::CreateForm, frame: &mut Frame) {
     };
     m.hits.modal(inner);
     let bg = th.selection;
+    // **Two rows for the footer, not one**: §7a.1 requires the `Tab` exception to be documented
+    // *in the modal*, on the line under its controls, and a one-row slot clipped that second line
+    // away — leaving the rule true only in this document, which is the drift it exists to prevent.
     let rows = Flex::vertical()
         .constraints([
             Constraint::Fixed(1),
@@ -1760,7 +1763,7 @@ fn create_modal(m: &Tui, form: &super::CreateForm, frame: &mut Frame) {
             Constraint::Fixed(1),
             Constraint::Fixed(1),
             Constraint::Fixed(1),
-            Constraint::Fixed(1),
+            Constraint::Fixed(2),
             Constraint::Fill,
         ])
         .split(inner);
