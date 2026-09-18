@@ -102,6 +102,15 @@ pub(super) fn view(m: &Tui, frame: &mut Frame) {
     }
     status_line(m, rows[3], frame);
     match &m.modal {
+        // **V4: `Use your own node` is an overlay, not a one-row `Dialog`.** §7a.4 asks it to state
+        // three things and `Dialog` draws its message as a single centred row, so a `\n` in it
+        // spilled past the border and the two sentences after the first were unreadable. The keys
+        // are unchanged — `y` confirms, anything else cancels, and a click on the button is `Enter`
+        // (§7a.2) — because only the drawing was wrong.
+        Some(Modal::Confirm {
+            what: super::Confirm::NodeLocal,
+            ..
+        }) => local_node_modal(m, frame),
         Some(Modal::Confirm { dialog, state, .. }) => {
             StatefulWidget::render(dialog.as_ref(), b, frame, &mut state.borrow_mut());
         }
@@ -332,18 +341,20 @@ fn status_line(m: &Tui, area: Rect, frame: &mut Frame) {
             th.warn(),
         ));
     }
+    // **V15: the toast is cut with an ellipsis, at a word boundary.** This line is rendered
+    // `WrapMode::None` into the width left of `⇥ screens  ? help`, so the terminal used to cut the
+    // last span wherever it happened to land: `A wallet is open. Press x to close i` is a complete
+    // sentence about a key that does not exist.
+    let avail = area.width.saturating_sub(19) as usize;
     if !m.note.is_empty() {
+        let used: usize = spans.iter().map(|s| s.content.width()).sum::<usize>() + 2;
         spans.push(Span::styled("│ ", th.dimmed()));
         spans.push(Span::styled(
-            m.note.clone(),
+            elide(&m.note, avail.saturating_sub(used)),
             if m.note_err { th.err() } else { th.ok() },
         ));
     }
-    line_at(
-        spans,
-        Rect::new(area.x, area.y, area.width.saturating_sub(19), 1),
-        frame,
-    );
+    line_at(spans, Rect::new(area.x, area.y, avail as u16, 1), frame);
 }
 
 // ---------------------------------------------------------------- Node
@@ -525,16 +536,22 @@ fn picker_pane(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
     };
     let mut header: Vec<&'static str> = vec!["address"];
 
+    // **V7: no two headers read the same.** At the Wide tier this table shows monero.fail's
+    // height and the height this machine measured itself, and both columns were headed `block` —
+    // §7a.4 asked for two group headings (`monero.fail says` / `probed here`) to say which is
+    // which, and one of those words is one §2o removes. Naming the columns instead answers the
+    // same question in the space the table already has: `their block` is what the list says,
+    // `block here` is what this machine saw. Both fit the 12-cell column.
     if health {
         header.push("reliability");
-        header.push("block");
+        header.push("their block");
     }
     if checked {
         header.push("last seen");
     }
     if probe_cols {
         header.push("ping");
-        header.push("block");
+        header.push("block here");
         header.push("synced");
     }
     let now = fmonero_core::now_unix();
@@ -554,10 +571,12 @@ fn picker_pane(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
                 // The ratio **with its sample size**: 100 % of 3 and 72 % of 94 are not
                 // comparable, and a bare percent invites the comparison (§2n.1). A `custom` row
                 // renders `—` here because monero.fail has never heard of it.
+                // **V7: `72% of 18`, which is §7a.4's own text and fits.** `"{}% of {c}
+                // checks"` is 15 cells wide in a 12-cell column, so every row this table has ever
+                // drawn ended `ch` — a ratio clipped into a fragment, in the column whose whole
+                // purpose is that the sample size travels with the percentage (§2n.1).
                 cells.push(match (n.health_ratio, n.health_checks) {
-                    (Some(r), Some(c)) => {
-                        format!("{}% of {c} checks", (r * 100.0).round() as i64)
-                    }
+                    (Some(r), Some(c)) => format!("{}% of {c}", (r * 100.0).round() as i64),
                     _ => "—".into(),
                 });
                 cells.push(
@@ -683,10 +702,14 @@ fn picker_pane(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
             Some(p) => p.clone(),
             // One total, not four numbers, two of which named parse failures: both skip
             // counts stay in `node list --json`, which is where a machine reads them (§2o).
+            // `list {age} old` put "ago" and "old" in one phrase — `list 3s ago old` (V6).
+            // `age()` already ends in "ago", so the preposition is all that was needed.
             None => format!(
-                "{} nodes from monero.fail · list {} old · {} skipped",
+                "{} nodes from monero.fail · list from {} · {} skipped",
                 rows_data.len(),
-                list.cache_age_sec.map(age).unwrap_or_else(|| "—".into()),
+                list.cache_age_sec
+                    .map(age)
+                    .unwrap_or_else(|| "an unknown time".into()),
                 list.skipped_no_port + list.skipped_invalid,
             ),
         };
@@ -755,16 +778,22 @@ fn node_hero(m: &Tui, area: Rect, frame: &mut Frame) {
         // What *is* known is in the ` This node ` pane beside it.
         if n.layout == Layout::Remote {
             if s.wallet.open {
+                // **V5: the same two formatters the ` This node ` pane sixty columns to the right
+                // uses.** This row printed `block 3541122 · checked 2026-09-19T00:20:07+02` — a
+                // block number with no grouping (§2o rule 9) beside an RFC3339 timestamp used as
+                // prose and clipped mid-offset, with `checked` doing double duty for the node's own
+                // measurement two lines away. One label per thing: the node is *checked*, a wallet
+                // is *refreshed*.
                 lines.push(kv(
                     th,
                     "this wallet",
                     format!(
-                        "block {} · checked {}",
-                        opt(s.wallet.height),
-                        s.wallet
-                            .last_refresh_at
-                            .clone()
-                            .unwrap_or_else(|| "—".into())
+                        "block {} · refreshed {}",
+                        match s.wallet.height {
+                            Some(h) => grouped(h),
+                            None => "—".into(),
+                        },
+                        refreshed_age(s).unwrap_or_else(|| "not yet".into())
                     ),
                 ));
                 // Decision 7, on the screen a user watches while it happens: the scanning is
@@ -897,6 +926,14 @@ pub(super) use crate::output::grouped;
 /// computed from a missing node height would be the rendered untruth §2j forbids. The node's
 /// height is the live `get_info` with your own node and the **cached check's** with a public
 /// one, which is the only source there is (§5's `node.remote_probe`).
+/// How long ago fmonero last checked this wallet for payments, in the node pane's own words
+/// (v5.6, V5). `None` when no refresh has been recorded, which the caller renders as `not yet`
+/// rather than as `—`: the dash means "unknown", and this is known and simply has not happened.
+fn refreshed_age(s: &Status) -> Option<String> {
+    let at = fmonero_core::unix_from_rfc3339(s.wallet.last_refresh_at.as_deref()?)?;
+    Some(age((fmonero_core::now_unix() - at).max(0) as u64))
+}
+
 pub(super) fn wallet_sync_line(s: &Status) -> Option<String> {
     let wallet = s.wallet.height?;
     let node = s.node.height.or_else(|| {
@@ -1213,41 +1250,35 @@ fn wallet_screen(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
     if area.height < 4 {
         return;
     }
-    let rows = Flex::vertical()
-        .constraints([Constraint::Fixed(3), Constraint::Fill])
-        .split(area);
-    wallet_header(m, rows[0], frame);
+    // **V12: with no wallet open there is no balance to frame.** The header rendered
+    // `— XMR   unlocked — XMR` above the empty state — two dashes where the one thing the screen
+    // is about would go — so the empty state now owns the whole screen, and it already opens with
+    // `No wallet is open.`
     let open = m.status.as_ref().is_some_and(|s| s.wallet.open);
     if !open {
-        wallet_empty(m, rows[1], frame);
+        wallet_empty(m, area, frame);
         return;
     }
     // **Decision 7, said out loud** (v5.6): while a wallet is behind, the scanning is happening
     // inside the wallet service and closing this window does not stop it — exactly as
     // fbittorrent's transfers keep running when its window closes. The program has always
     // behaved this way and never said so.
-    let sync = m.status.as_ref().and_then(wallet_sync_line);
-    let rest = match &sync {
-        Some(line) if rows[1].height > 3 => {
-            let split = Flex::vertical()
-                .constraints([Constraint::Fixed(2), Constraint::Fill])
-                .split(rows[1]);
-            lines_at(
-                vec![
-                    Line::styled(line.clone(), m.theme.warn()),
-                    Line::styled(
-                        "Syncing in the background. You can close this window.".to_string(),
-                        m.theme.dimmed(),
-                    ),
-                ],
-                split[0],
-                false,
-                frame,
-            );
-            split[1]
-        }
-        _ => rows[1],
-    };
+    //
+    // **V3: the two lines live INSIDE the ` Balance ` pane**, which is what the Node screen does
+    // with the same pair. They were drawn on a bare rect in the gap between two framed panes, at
+    // column 0 — the only unframed, flush-left text in the program, and it was decision 7's own
+    // new text.
+    let sync = m
+        .status
+        .as_ref()
+        .and_then(wallet_sync_line)
+        .filter(|_| area.height >= 8);
+    let header_h = if sync.is_some() { 5 } else { 3 };
+    let rows = Flex::vertical()
+        .constraints([Constraint::Fixed(header_h), Constraint::Fill])
+        .split(area);
+    wallet_header(m, rows[0], sync.as_deref(), frame);
+    let rest = rows[1];
     // Every key hint on an open wallet is a chip too (§7a.2): a hint that is not clickable is half
     // of what the owner asked for.
     let body = Flex::vertical()
@@ -1302,9 +1333,26 @@ fn wallet_empty(m: &Tui, area: Rect, frame: &mut Frame) {
     if inner.height == 0 {
         return;
     }
-    let n = m.wallets.len();
-    let dir = m.ctx.settings.wallet.dir.display().to_string();
-    let open_label = format!("Open wallet…      choose one of the {n} in {dir}");
+    // **V12.** `Open wallet…      choose one of the 1 in /home/…/wallets/mainnet` said the count
+    // and the path and neither in English, and *one of the 1 in* is worse than the `pick one of the
+    // 1 wallets in …` it replaced. The count is what decides whether `o` can help, the names are
+    // what the user is looking for, and the directory is one `fmonero settings get wallet.dir`
+    // away for the one reader who wants it.
+    let open_label = match m.wallets.len() {
+        0 => {
+            "Open a wallet     (no wallets on this machine yet — press c to create one)".to_string()
+        }
+        n => {
+            let names = m.wallets.join(", ");
+            let plural = if n == 1 { "wallet" } else { "wallets" };
+            let listed = format!("Open a wallet     ({n} {plural} on this machine: {names})");
+            if listed.width() <= inner.width as usize {
+                listed
+            } else {
+                format!("Open a wallet     ({n} {plural} on this machine)")
+            }
+        }
+    };
     let rows = Flex::vertical()
         .constraints([
             Constraint::Fixed(1),
@@ -1353,7 +1401,12 @@ fn wallet_empty(m: &Tui, area: Rect, frame: &mut Frame) {
     let _ = (rows[1], rows[3]);
 }
 
-/// The four strings §7a.5 allows, and no fifth.
+/// §7a.5's strings for the wallet service — **five from v5.6.1, and the fifth is V13**.
+///
+/// `wallet service: running` sat four rows above a status bar reading `wallet not running`, and a
+/// person cannot reconcile those. Both were right: one is `unit_active`, the other `reachable`. The
+/// badge now says `not answering` for that state (see [`Tui::wallet_badge`]) and this row says the
+/// same thing in its own register, so the two rows are one fact in two lengths.
 fn wallet_daemon_phrase(m: &Tui) -> String {
     if m.action
         .as_ref()
@@ -1365,7 +1418,11 @@ fn wallet_daemon_phrase(m: &Tui) -> String {
         return "checking…".into();
     };
     if s.wallet.unit_active {
-        return "running".into();
+        return if s.wallet.reachable {
+            "running".into()
+        } else {
+            "running, but not answering yet".into()
+        };
     }
     // Not `idle`, which is the program's word: the service is DESIGNED to be down until a wallet
     // is opened (§4.2 writes both units disabled), which is the same fact §5's `wallet_idle`
@@ -1398,7 +1455,7 @@ fn node_phrase(m: &Tui) -> String {
     }
 }
 
-fn wallet_header(m: &Tui, area: Rect, frame: &mut Frame) {
+fn wallet_header(m: &Tui, area: Rect, sync: Option<&str>, frame: &mut Frame) {
     let th = &m.theme;
     let Some(inner) = framed(area, th, " Balance ", false, frame) else {
         return;
@@ -1406,6 +1463,24 @@ fn wallet_header(m: &Tui, area: Rect, frame: &mut Frame) {
     let Some(w) = m.status.as_ref().map(|s| &s.wallet) else {
         return;
     };
+    // Decision 7's two lines, inside the frame (V3). The balance keeps the first row; these take
+    // the two under it, which is why the pane is five rows tall while a wallet is catching up.
+    if let Some(line) = sync {
+        if inner.height >= 3 {
+            lines_at(
+                vec![
+                    Line::styled(line.to_string(), th.warn()),
+                    Line::styled(
+                        "Syncing in the background. You can close this window.".to_string(),
+                        th.dimmed(),
+                    ),
+                ],
+                Rect::new(inner.x, inner.y + 1, inner.width, 2),
+                false,
+                frame,
+            );
+        }
+    }
     let dash = || "—".to_string();
     let mut spans = vec![
         Span::styled(
@@ -1446,7 +1521,8 @@ fn wallet_header(m: &Tui, area: Rect, frame: &mut Frame) {
             th.dimmed(),
         ));
     }
-    line_at(spans, inner, frame);
+    // The balance keeps row 0 of the pane, whatever else the pane holds (V3).
+    line_at(spans, Rect::new(inner.x, inner.y, inner.width, 1), frame);
 }
 
 fn subaddress_pane(m: &Tui, area: Rect, frame: &mut Frame) {
@@ -2066,6 +2142,79 @@ fn use_node_modal(m: &Tui, address: &str, wallet_open: Option<&str>, frame: &mut
         .modal_button(Rect::new(inner.x, inner.bottom().saturating_sub(1), 12, 1));
 }
 
+/// §7a.4's `l` confirm — the way back to your own node, and **the same shape as the picker's
+/// `Enter` confirm above** (v5.6.1, V4). Three sentences, in the order a user needs them: what
+/// restarts, which wallet closes and that it will be offered again, and — when the node is not
+/// running — that this switch will not start it, with the key that does.
+fn local_node_modal(m: &Tui, frame: &mut Frame) {
+    let th = &m.theme;
+    let wallet = m
+        .status
+        .as_ref()
+        .filter(|s| s.wallet.open)
+        .and_then(|s| s.wallet.name.clone());
+    // §7a.4: a modal that implied a running node would be the §2j failure on the one screen whose
+    // job is honesty about nodes.
+    let node_up = m
+        .status
+        .as_ref()
+        .is_some_and(|s| s.units.node.active || s.node.reachable == Some(true));
+    // Every sentence, then the height it needs: the overlay is 74 columns at most and one of these
+    // lines is 82 characters, so a height counted in sentences left the last one — the keys —
+    // under the bottom border, which is the defect V15 is about happening inside the fix for V4.
+    const WIDTH: u16 = 74;
+    let text_w = WIDTH.min(frame.bounds().width).saturating_sub(4).max(1) as usize;
+    let mut text: Vec<(String, Style)> = vec![
+        (
+            "fmonero will use the node on this machine.".to_string(),
+            th.accented(),
+        ),
+        (String::new(), th.text()),
+        ("· the wallet service will restart".to_string(), th.text()),
+    ];
+    if let Some(name) = wallet {
+        text.push((
+            format!("· {name} will be closed. You will be offered it again."),
+            th.text(),
+        ));
+    }
+    if !node_up {
+        text.push((
+            "Your own node is not running yet. Switching will not start it — press u after this."
+                .to_string(),
+            th.warn(),
+        ));
+    }
+    text.push((String::new(), th.text()));
+    text.push(("y to confirm · Esc cancels".to_string(), th.dimmed()));
+    let rows: usize = text
+        .iter()
+        .map(|(t, _)| wrap_words(t, text_w).len().max(1))
+        .sum();
+    let Some(inner) = overlay(m, frame, WIDTH, rows as u16 + 4, " Use your own node ") else {
+        return;
+    };
+    m.hits.modal(inner);
+    let bg = th.selection;
+    let lines: Vec<Line> = text
+        .into_iter()
+        .flat_map(|(t, style)| {
+            let wrapped = if t.is_empty() {
+                vec![String::new()]
+            } else {
+                wrap_words(&t, text_w)
+            };
+            wrapped
+                .into_iter()
+                .map(move |l| Line::styled(l, style.bg(bg)))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    lines_at(lines, inner, false, frame);
+    m.hits
+        .modal_button(Rect::new(inner.x, inner.bottom().saturating_sub(1), 12, 1));
+}
+
 /// §7a.4's `a` modal: **one** field, validated by the same function the CLI validates with.
 ///
 /// There is deliberately no trusted toggle (revision 5): nothing in the schema supported one,
@@ -2073,13 +2222,22 @@ fn use_node_modal(m: &Tui, address: &str, wallet_open: Option<&str>, frame: &mut
 /// untruth. The footer states the consequence instead of naming a CLI flag (§2o.1).
 fn add_node_modal(m: &Tui, input: &TextInput, frame: &mut Frame) {
     let th = &m.theme;
-    let Some(inner) = overlay(m, frame, 70, 8, " Add a node ") else {
+    // **V11: nine rows, not eight.** At eight the interior was four rows, the layout spent one of
+    // them on a spacer, and the third line the same call passed in — `Enter adds it · Esc cancels`
+    // — was off the bottom at every terminal size. A modal that tells the user neither what is
+    // wrong nor which key commits it is two thirds of a modal.
+    let Some(inner) = overlay(m, frame, 70, 9, " Add a node ") else {
         return;
     };
     m.hits.modal(inner);
     let bg = th.selection;
     let rows = Flex::vertical()
-        .constraints([Constraint::Fixed(1), Constraint::Fixed(1), Constraint::Fill])
+        .constraints([
+            Constraint::Fixed(1),
+            Constraint::Fixed(1),
+            Constraint::Fixed(1),
+            Constraint::Fill,
+        ])
         .split(inner);
     let label = "address  ";
     let off = label.width() as u16;
@@ -2093,12 +2251,25 @@ fn add_node_modal(m: &Tui, input: &TextInput, frame: &mut Frame) {
     );
     input.render(box_, frame);
     m.hits.field(0, box_);
+    // **V11: validated live by the same function the CLI validates with** (§7a.4, §5b), so the
+    // TUI cannot accept a string `fmonero node remote` refuses and the user is told what is wrong
+    // while they type rather than after they press Enter. An empty field is not an error — it is
+    // the state the modal opens in — so it gets the example instead.
+    let typed = input.value().trim();
+    let (verdict, style) = if typed.is_empty() {
+        (
+            "host:port, like node.example.com:18089".to_string(),
+            th.dimmed().bg(bg),
+        )
+    } else {
+        match fmonero_core::settings::Settings::parse_remote_address(typed) {
+            Ok(addr) => (format!("{addr} — press Enter to add it"), th.ok().bg(bg)),
+            Err(e) => (e.to_string(), th.err().bg(bg)),
+        }
+    };
+    lines_at(vec![Line::styled(verdict, style)], rows[1], true, frame);
     lines_at(
         vec![
-            Line::styled(
-                "host:port, and the port is required".to_string(),
-                th.dimmed().bg(bg),
-            ),
             Line::styled(
                 "Nodes you add here are treated as public.".to_string(),
                 th.dimmed().bg(bg),
@@ -2108,11 +2279,11 @@ fn add_node_modal(m: &Tui, input: &TextInput, frame: &mut Frame) {
                 th.dimmed().bg(bg),
             ),
         ],
-        rows[2],
+        rows[3],
         true,
         frame,
     );
-    let _ = rows[1];
+    let _ = rows[2];
 }
 
 /// §2n.5 rule 2's notice, shown before the first fetch **or** the first probe while the cache's
@@ -2285,10 +2456,13 @@ fn help(m: &Tui, frame: &mut Frame) {
             } else {
                 (*a).to_string()
             };
+            // V15: the overlay is 100 columns wide at most and the key column takes 22, so nine
+            // of these rows were cut mid-word at 120 columns — `… every key yo`, and a
+            // `fmonero wallet sweep <a` that looks like a command a user could type.
             Line::from_spans([
                 Span::styled(format!("{k:<22}"), th.key().bg(th.selection)),
                 Span::styled(
-                    action,
+                    elide(&action, (inner.width as usize).saturating_sub(22)),
                     if disabled {
                         th.dimmed().bg(th.selection)
                     } else {
@@ -2489,6 +2663,36 @@ pub(super) fn fit(s: &str, n: usize) -> String {
     }
     out.push('…');
     format!("{out:<n$}")
+}
+
+/// Cut a sentence to `n` cells **at a word boundary, with an ellipsis** (v5.6.1, V15).
+///
+/// The difference from [`fit`] is the padding (none here) and the boundary: a truncated sentence
+/// that ends mid-word reads as a finished one, which is how `A wallet is open. Press x to close i`
+/// and `Could not read your settings: cannot read /tm` reached the owner's screen. The `…` is the
+/// program's own mark for "there is more", used everywhere else a value is cut, and backing off to
+/// the last space is what keeps the fragment a phrase rather than a stump — unless the word itself
+/// is most of the budget, in which case cutting inside it and marking the cut is the honest answer.
+pub(super) fn elide(s: &str, n: usize) -> String {
+    if s.width() <= n {
+        return s.to_string();
+    }
+    if n <= 1 {
+        return "…".repeat(n.min(1));
+    }
+    let mut cut = String::new();
+    for c in s.chars() {
+        if cut.width() + 1 > n - 1 {
+            break;
+        }
+        cut.push(c);
+    }
+    if let Some(i) = cut.rfind(' ') {
+        if i * 2 >= n {
+            cut.truncate(i);
+        }
+    }
+    format!("{}…", cut.trim_end())
 }
 
 /// Hard-wrap at a width, for the one string that may never be elided: an address.

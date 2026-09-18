@@ -153,7 +153,10 @@ visit() { # visit <key> <label> <needle> [capture-file]
 }
 
 visit 1 "Node screen"   "Node"     "node.txt"
-visit 2 "Wallet screen" "Balance"  "wallet.txt"
+# v5.6.1, V12: with no wallet open there is no ` Balance ` pane to find — it rendered
+# `— XMR   unlocked — XMR` above the empty state and is gone. The pane that IS there is the empty
+# state's own, and `No wallet is open.` is its first line.
+visit 2 "Wallet screen" "No wallet is open."  "wallet.txt"
 visit 3 "Send screen"   "cheapest" "send.txt"
 # The Send form owns printable keys while it is focused (otherwise an address typed into the
 # To field would switch screens), so `Esc` leaves it first — which is what its own hint line
@@ -325,7 +328,7 @@ if [ -n "$CAPTURE" ]; then
   printf '  skip  §7a.5 the empty state: the mock is stateless, so a closed wallet still answers\n'
 else
   WTEXT="$(pane)"
-  for needle in "[o] Open wallet" "[c] Create wallet" "[W] Start the wallet service" "wallet service:"; do
+  for needle in "[o] Open a wallet" "[c] Create wallet" "[W] Start the wallet service" "wallet service:"; do
     case "$WTEXT" in
       *"$needle"*) ok "§7a.5: the empty state carries '$needle'" ;;
       *) bad "the empty state is missing '$needle'" "$(printf '%s' "$WTEXT" | sed -n '5,12p')" ;;

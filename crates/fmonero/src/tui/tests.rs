@@ -53,9 +53,19 @@ impl World {
         World::with_node(name, &[])
     }
 
+    /// The same, with argv for the **wallet** mock — `--scenario behind` is the one case that
+    /// needs it, and it is the state decision 7 exists for (v5.6.1, V3).
+    fn with_wallet(name: &str, wallet_extra: &[&str]) -> World {
+        World::with_mocks(name, &[], wallet_extra)
+    }
+
     /// A node mock and a wallet mock, and the matching login file written **before** any
     /// client is built (§2c). `node_extra` is the mock argv a scenario needs.
     fn with_node(name: &str, node_extra: &[&str]) -> World {
+        World::with_mocks(name, node_extra, &[])
+    }
+
+    fn with_mocks(name: &str, node_extra: &[&str], wallet_extra: &[&str]) -> World {
         let dir = std::env::temp_dir().join(format!(
             "fmonero-tui-{name}-{}-{:?}",
             std::process::id(),
@@ -77,18 +87,20 @@ impl World {
         ];
         node_args.extend(node_extra.iter().map(|a| (*a).to_string()));
         let node_port = spawn(&node_args.iter().map(String::as_str).collect::<Vec<_>>());
-        let wallet_port = spawn(&[
-            "--role",
-            "wallet",
-            "--port",
-            "0",
-            "--fixtures",
-            &fx,
-            "--log",
-            &wallet_log.display().to_string(),
-            "--auth",
-            AUTH,
-        ]);
+        let mut wallet_args = vec![
+            "--role".to_string(),
+            "wallet".to_string(),
+            "--port".to_string(),
+            "0".to_string(),
+            "--fixtures".to_string(),
+            fx.clone(),
+            "--log".to_string(),
+            wallet_log.display().to_string(),
+            "--auth".to_string(),
+            AUTH.to_string(),
+        ];
+        wallet_args.extend(wallet_extra.iter().map(|a| (*a).to_string()));
+        let wallet_port = spawn(&wallet_args.iter().map(String::as_str).collect::<Vec<_>>());
         ctx.settings.node.url = format!("http://127.0.0.1:{node_port}");
         ctx.settings.wallet.url = format!("http://127.0.0.1:{wallet_port}");
         // The login file is named after the BIND PORT (§2c, §4.2), so the two must agree.
@@ -298,7 +310,10 @@ fn the_offline_wallet_screen_offers_the_open_key() {
     // The old text was true and useless — `o` listed an empty directory, `c` was close not
     // create, and there was no create flow at all.
     assert!(text.contains("No wallet is open."), "{text}");
-    assert!(text.contains("[o] Open wallet…"), "{text}");
+    // v5.6.1, V12: `Open wallet…      choose one of the 0 in /home/…` became a sentence, and the
+    // balance pane that rendered `— XMR   unlocked — XMR` above this panel is gone with it.
+    assert!(text.contains("[o] Open a wallet"), "{text}");
+    assert!(!text.contains("unlocked — XMR"), "{text}");
     assert!(text.contains("[c] Create wallet…"), "{text}");
     assert!(text.contains("[W] Start the wallet service"), "{text}");
     assert!(text.contains("wallet service:"), "{text}");
@@ -1257,6 +1272,46 @@ fn the_status_bar_says_idle_when_the_daemon_is_supposed_to_be_down() {
     assert!(!text.contains("wallet not running"), "{text}");
 }
 
+/// **V3, as a render test.** Decision 7's own two lines — the ones v5.6 added so that a user who
+/// closes the window knows the scanning goes on — were drawn on a bare rect in the gap between two
+/// framed panes, at column 0, which made them the only flush-left prose in the program. The Node
+/// screen puts the same pair inside its hero pane; the Wallet screen now puts them inside
+/// ` Balance `, which is why that pane is five rows tall while a wallet is catching up.
+///
+/// The assertion is structural rather than a string match: on this screen, every row between the
+/// tab strip and the status line either belongs to a frame or is a chip row. A chip row is the one
+/// deliberate exception — `[R] Check for payments` is a button strip, not prose — so it is named
+/// here rather than silently allowed by a weaker check.
+#[test]
+fn nothing_on_the_wallet_screen_is_drawn_outside_a_frame() {
+    let w = World::with_wallet("outside-frame", &["--scenario", "behind"]);
+    let s = sim(model(&w.ctx, Screen::Wallet));
+    for (cols, rows) in [(120u16, 32u16), (150, 40)] {
+        let lines = render(s.model(), cols, rows);
+        // The fixture pair is 6 122 blocks apart, so decision 7's lines really are on screen —
+        // without this the test would pass on a screen that never rendered them.
+        let text = lines.join("\n");
+        assert!(
+            text.contains("You can close this window."),
+            "{cols}x{rows}: decision 7's lines are not on screen at all:\n{text}"
+        );
+        for (y, line) in lines.iter().enumerate() {
+            // Row 0 is the tab strip and the last row is the status bar: chrome, by design.
+            if y == 0 || y + 1 >= lines.len() {
+                continue;
+            }
+            let t = line.trim_start();
+            let Some(first) = t.chars().next() else {
+                continue;
+            };
+            assert!(
+                "╭╮╰╯│─├┤┌┐└┘".contains(first) || t.starts_with('['),
+                "{cols}x{rows}: row {y} is drawn outside every frame: {line:?}\n{text}"
+            );
+        }
+    }
+}
+
 #[test]
 fn the_wallet_empty_state_keeps_all_three_chips_at_every_tier() {
     let m = offline_model(Screen::Wallet);
@@ -1264,7 +1319,7 @@ fn the_wallet_empty_state_keeps_all_three_chips_at_every_tier() {
     for (w, h) in [(120u16, 40u16), (70, 24), (56, 22)] {
         let text = sim_text(&s, w, h);
         for want in [
-            "[o] Open wallet",
+            "[o] Open a wallet",
             "[c] Create wallet",
             "[W] Start the wallet service",
         ] {
@@ -1328,6 +1383,227 @@ fn the_picker_renders_the_cache_on_entry_and_shows_both_column_groups() {
     );
     // v5.6 collapses the two parse-failure counts into one total; both stay in `--json`.
     assert!(text.contains("skipped"), "the footer surfaces it:\n{text}");
+}
+
+/// **V6 and V7, on the strings the verification read off a real pty.** The footer said
+/// `list 3s ago old`, the reliability cell was cut to `72% of 18 ch` by its own 12-cell column, and
+/// two columns at the Wide tier were both headed `block` — monero.fail's height and the height this
+/// machine measured, with nothing to say which was which.
+#[test]
+fn the_pickers_footer_reads_as_english_and_no_two_columns_share_a_header() {
+    let w = World::new("picker-words");
+    // Public-node mode, which is where the picker is the screen's main pane and wide enough for
+    // both column groups — and the mode the verification read this table in.
+    let mut ctx = w.ctx.clone();
+    ctx.settings.node.mode = fmonero_core::NodeMode::Remote;
+    ctx.settings.node.remote = "a.example:18081".into();
+    seed_cache(
+        &ctx,
+        &[("a.example:18081", true), ("b.example:18081", false)],
+    );
+    let s = sim(model(&ctx, Screen::Node));
+    for (cols, rows) in [(120u16, 32u16), (150, 40)] {
+        let text = sim_text(&s, cols, rows);
+        assert!(
+            text.contains("list from "),
+            "{cols}x{rows}: the footer is not a sentence:\n{text}"
+        );
+        assert!(
+            !text.contains(" old ·"),
+            "{cols}x{rows}: `ago old` survives:\n{text}"
+        );
+        // The cell fits its column, so the sample size travels with the percentage (§2n.1).
+        assert!(text.contains("50% of 18"), "{cols}x{rows}:\n{text}");
+        assert!(
+            !text.contains("of 18 ch"),
+            "{cols}x{rows}: the reliability cell is still clipped:\n{text}"
+        );
+        // Two headers, two names, and neither is the bare `block` both used to be. The header row
+        // is whichever columns fit this tier, so the assertion is on the shape rather than on the
+        // set: no two cells in it may read the same, and monero.fail's height is always named.
+        let header = text
+            .lines()
+            .find(|l| l.contains("address") && l.contains("reliability"))
+            .unwrap_or_default();
+        assert!(header.contains("their block"), "{cols}x{rows}:\n{text}");
+        let names: Vec<&str> = header
+            .split('│')
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .collect();
+        let mut seen = names.clone();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(
+            seen.len(),
+            names.len(),
+            "{cols}x{rows}: two columns share a header: {names:?}"
+        );
+    }
+    // Wide enough for both groups, which is where the defect was visible: `block` twice, with
+    // nothing to say which was monero.fail's and which was ours. The picker shares its row with
+    // the Notes pane, so both groups need more than the 150 columns the verification ran at —
+    // which is itself worth pinning, because the pair is what the column names exist to separate.
+    let wide = sim_text(&s, 210, 40);
+    assert!(wide.contains("their block"), "{wide}");
+    assert!(wide.contains("block here"), "{wide}");
+}
+
+/// **V4.** `l` — the in-app route back to your own node, which v5.6 added precisely because §2o.1
+/// forbids the TUI from printing `fmonero node local --yes` — opened a confirm that stated nothing:
+/// `y confirms · Esc cancels`, plus the wallet's name when one was open. §7a.4 specifies three
+/// sentences, and the picker's own `Enter` confirm two keys away already had that shape.
+#[test]
+fn the_use_your_own_node_confirm_states_what_the_switch_does() {
+    let w = World::new("confirm-local");
+    let mut ctx = w.ctx.clone();
+    ctx.settings.node.mode = fmonero_core::NodeMode::Remote;
+    ctx.settings.node.remote = "a.example:18081".into();
+    seed_cache(&ctx, &[("a.example:18081", false)]);
+    let mut s = sim(model(&ctx, Screen::Node));
+    s.inject_event(key(KeyCode::Char('l')));
+    for (cols, rows) in [(120u16, 32u16), (150, 40)] {
+        let text = sim_text(&s, cols, rows);
+        assert!(text.contains("Use your own node"), "{cols}x{rows}:\n{text}");
+        for want in [
+            "the wallet service will restart",
+            "Your own node is not running yet",
+            "y to confirm",
+        ] {
+            assert!(
+                text.contains(want),
+                "{cols}x{rows}: the confirm does not say {want:?}:\n{text}"
+            );
+        }
+        // §7a.4: never a command, in the modal the whole feature exists to replace one with.
+        assert!(
+            !text.contains("fmonero node local"),
+            "{cols}x{rows}: the modal prints the command it replaced:\n{text}"
+        );
+    }
+    // And it claims nothing it does not know: this sandbox has no record of a wallet by name
+    // (`state.json` is empty), so the modal says nothing about closing one. §7a.4 names the wallet
+    // only when there is a name to give.
+    let named = s
+        .model()
+        .status
+        .as_ref()
+        .and_then(|st| st.wallet.name.clone())
+        .is_some();
+    let text = sim_text(&s, 150, 40);
+    assert_eq!(
+        text.contains("will be closed"),
+        named,
+        "the wallet clause must appear exactly when there is a wallet to name:\n{text}"
+    );
+}
+
+/// **V15.** Nothing is cut mid-word without saying so. The status bar is rendered with no wrap
+/// into whatever is left of its row, and the `?` overlay's action column is 74 cells wide at 120
+/// columns, so nine of its rows ended in the middle of a word — `… every key yo`, and a
+/// `fmonero wallet sweep <a` that reads like a command a user could type.
+#[test]
+fn a_cut_line_always_says_it_was_cut() {
+    let mut s = sim(offline_model(Screen::Node));
+    let long = "A wallet is open. Press x to close it, and then W stops the wallet service for good measure.";
+    s.model_mut().note_for_test(long);
+    for (cols, rows) in [(120u16, 32u16), (80, 24)] {
+        let text = sim_text(&s, cols, rows);
+        let bar = text.lines().last().unwrap_or_default();
+        assert!(bar.contains('│'), "the toast is on the status bar:\n{text}");
+        // The right-hand `⇥ screens  ? help` segment is drawn on the same row, so the toast is
+        // what lies between the last `│` and it.
+        let after = bar.rsplit('│').next().unwrap_or_default();
+        let tail = after.split('⇥').next().unwrap_or_default().trim();
+        assert!(
+            tail.ends_with('…') || long.contains(tail),
+            "{cols}x{rows}: the toast was cut without a mark: {tail:?}"
+        );
+        if tail.ends_with('…') {
+            assert!(
+                !tail.trim_end_matches('…').ends_with(char::is_alphanumeric)
+                    || long.starts_with(tail.trim_end_matches('…')),
+                "{cols}x{rows}: {tail:?} is a fragment pretending to be a sentence"
+            );
+        }
+    }
+    // The `?` overlay at 120 columns: nine of its rows used to end mid-word. Only the overlay's
+    // own rows are examined — between its title border and its closing one — because the screen
+    // behind it is still drawn and its rows are somebody else's assertion.
+    s.inject_event(key(KeyCode::Char('?')));
+    let text = sim_text(&s, 120, 40);
+    let lines: Vec<&str> = text.lines().collect();
+    let top = lines
+        .iter()
+        .position(|l| l.contains("Keys — any key closes"))
+        .expect("the overlay is open");
+
+    // The overlay is 100 columns wide, centred in 120, so its interior starts at column 12 and the
+    // action column at 12 + 22. Only those cells are the overlay's; the screen behind it is still
+    // drawn to the left and right of them.
+    const ACTION_X: usize = 12 + 22;
+    const ACTION_W: usize = 96 - 22;
+    let mut rows = 0;
+    for line in &lines[top + 1..] {
+        let action: String = line.chars().skip(ACTION_X).take(ACTION_W).collect();
+        let action = action.trim_end();
+        // The overlay's own bottom border, which is where its rows stop — the screen behind it
+        // draws borders of its own to the left and right of these columns.
+        if action.chars().all(|c| c == '─') && !action.is_empty() {
+            break;
+        }
+        if action.is_empty() {
+            continue;
+        }
+        rows += 1;
+        assert!(
+            action.chars().count() < ACTION_W || action.ends_with('…'),
+            "a help row was cut without a mark: {action:?}"
+        );
+    }
+    assert!(rows >= 10, "the overlay rendered {rows} rows:\n{text}");
+}
+
+/// **V11.** The modal showed neither what was wrong with what the user had typed nor which key
+/// commits it: `Enter adds it · Esc cancels` was the third line passed to a two-row interior, so no
+/// capture at any size has ever contained it. §7a.4 also asks for live validation through
+/// `Settings::parse_remote_address` — the same function the CLI refuses with — and the call did
+/// nothing of the kind.
+#[test]
+fn the_add_node_modal_validates_as_you_type_and_shows_the_key_that_commits() {
+    let w = World::new("add-node-modal");
+    seed_cache(&w.ctx, &[("a.example:18081", false)]);
+    let mut s = sim(model(&w.ctx, Screen::Node));
+    s.inject_event(key(KeyCode::Char('a')));
+    for (cols, rows) in [(120u16, 32u16), (150, 40)] {
+        let text = sim_text(&s, cols, rows);
+        assert!(text.contains("Add a node"), "{cols}x{rows}:\n{text}");
+        assert!(
+            text.contains("Enter adds it"),
+            "{cols}x{rows}: the key that commits is still off the bottom:\n{text}"
+        );
+        assert!(
+            text.contains("host:port, like node.example.com:18089"),
+            "{cols}x{rows}: an empty field gets the example:\n{text}"
+        );
+    }
+    // Live validation: §2m.2's own message for whatever is wrong, as the user types.
+    type_str(&mut s, "nonsense");
+    let text = sim_text(&s, 120, 32);
+    assert!(
+        text.contains("The port is required"),
+        "the refusal is not under the field:\n{text}"
+    );
+    // And a valid address says so, with the key that adds it.
+    for _ in 0..8 {
+        s.inject_event(key(KeyCode::Backspace));
+    }
+    type_str(&mut s, "node.example.com:18089");
+    let text = sim_text(&s, 120, 32);
+    assert!(
+        text.contains("node.example.com:18089 — press Enter to add it"),
+        "a valid address is not confirmed:\n{text}"
+    );
 }
 
 /// Revision 4, both guards: nothing is selected on entry, and the configured row refuses
@@ -1720,9 +1996,13 @@ fn the_keys_table_promises_always_only_for_the_keys_the_dispatcher_resolves_firs
 /// describes: nothing of ours in flight, and the poll still failing.
 #[test]
 fn the_wallet_badge_never_says_down_for_a_daemon_the_tui_is_itself_working() {
+    // v5.6.1, V13: row 2 was `(true, None, "not running")`, and that is the contradiction the
+    // verification caught — the Wallet screen said `wallet service: running` four rows above it.
+    // A service that is up and silent is `not answering`; `not running` is kept for a service that
+    // is not running.
     for (active, action, want) in [
         (false, None, "not running"),
-        (true, None, "not running"),
+        (true, None, "not answering"),
         (false, Some(subs::Action::WalletDaemonStart), "starting"),
         (
             true,

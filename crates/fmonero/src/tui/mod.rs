@@ -623,7 +623,28 @@ impl Tui {
         match (s.node.reachable, s.node.synchronized) {
             (Some(true), Some(true)) => ("synced", "up"),
             (Some(true), _) => ("syncing", "syncing"),
-            _ => ("not answering", "down"),
+            // **V14: one fact, one phrasing.** The hero said `Your node is not running` while the
+            // status bar in the same frame said `node not answering`, and a user cannot tell
+            // whether those are one problem or two. They are one, and which words are true depends
+            // on whether the service is up: a service that is not running is not running, and one
+            // that is running and silent is not answering. [`Tui::node_off_words`] decides it once
+            // and both surfaces read it.
+            _ => (self.node_off_words(), "down"),
+        }
+    }
+
+    /// The two words for a node that is not there, and the predicate that chooses between them
+    /// (v5.6.1, V14). Read by the status bar's badge and by the Node screen's hero, so the two
+    /// cannot disagree in one frame.
+    pub(super) fn node_off_words(&self) -> &'static str {
+        let up = self
+            .status
+            .as_ref()
+            .is_some_and(|s| s.units.node.active || s.node.layout == units::Layout::SystemUnit);
+        if up {
+            "not answering"
+        } else {
+            "not running"
         }
     }
 
@@ -668,6 +689,13 @@ impl Tui {
             // into `wallet_idle` (deliberately not running, above) and `wallet_down`.
             (false, _) if ours && s.wallet.unit_active => ("scanning", "syncing"),
             (false, _) if ours => ("starting", "syncing"),
+            // **V13: the service is running and it is not answering, and the screen said both.**
+            // The Wallet screen read `wallet service: running` (which is `unit_active`) four rows
+            // above a status bar reading `wallet not running` (which was `reachable`), and both
+            // were computed correctly. `not running` is now kept for the state it describes, and a
+            // service that is up without answering says so — the same split §2c makes between
+            // `unreachable` and a service that is simply not there.
+            (false, _) if s.wallet.unit_active => ("not answering", "down"),
             (false, _) => ("not running", "down"),
             (true, true) => ("open", "up"),
             (true, false) => ("catching up", "syncing"),
@@ -690,7 +718,8 @@ impl Tui {
             return format!("Public node · {}", s.node.url);
         }
         if s.node.reachable != Some(true) {
-            return "Your node is not running".into();
+            // V14: the same two words the badge uses, from the same predicate.
+            return format!("Your node is {}", self.node_off_words());
         }
         match (s.node.synchronized, s.node.sync_percent) {
             (Some(true), _) => "Synced".into(),
@@ -1157,6 +1186,13 @@ impl Tui {
         self.start(Action::NodeProbe {
             targets: vec![target],
         })
+    }
+
+    /// The toast, set from a test. §7a's tests drive the real key paths wherever they can; a long
+    /// toast is the one thing no key produces on demand, and V15 is about what happens to one.
+    #[cfg(test)]
+    pub(super) fn note_for_test(&mut self, text: &str) {
+        self.note(text, false);
     }
 
     fn note(&mut self, text: impl Into<String>, err: bool) {
@@ -2277,21 +2313,16 @@ impl Tui {
     fn confirm_local(&mut self) -> Cmd<Msg> {
         let mut state = DialogState::new();
         state.focused_button = Some(0);
-        let wallet = self
-            .status
-            .as_ref()
-            .and_then(|s| s.wallet.name.clone())
-            .filter(|_| self.status.as_ref().is_some_and(|s| s.wallet.open));
-        let message = match wallet {
-            Some(name) => format!("{name} will be closed. y confirms · Esc cancels"),
-            None => "y confirms · Esc cancels".to_string(),
-        };
+        // **V4: the words are in `screens::local_node_modal`**, which draws them as the overlay
+        // §7a.4 specifies — three sentences, and `Dialog` renders one centred row. The `Dialog`
+        // here is what the key handler and the mouse's `ModalButton` share with every other
+        // confirm; its message is never drawn.
         self.modal = Some(Modal::Confirm {
             what: Confirm::NodeLocal,
             dialog: Box::new(screens::confirm_dialog(
                 &self.theme,
                 " Use your own node ",
-                &message,
+                "",
             )),
             state: RefCell::new(state),
         });

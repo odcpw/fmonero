@@ -101,6 +101,18 @@ pub fn rfc3339_from_unix(seconds: i64) -> Option<String> {
     Some(ts.display_with_offset(offset).to_string())
 }
 
+/// The inverse of [`rfc3339_from_unix`]: a timestamp §5 renders as a string, back to a second
+/// (v5.6).
+///
+/// §5 carries `wallet.last_refresh_at` as an RFC3339 string because that is what a JSON consumer
+/// wants. The TUI wants an **age** — `refreshed 2s ago`, the same phrasing the node pane beside it
+/// uses for its own measurement (DECISIONS V5) — and printing the timestamp instead was one of the
+/// two things that row got wrong. Rather than add a second field to §5's schema for a value it
+/// already carries, the one caller converts.
+pub fn unix_from_rfc3339(s: &str) -> Option<i64> {
+    s.parse::<jiff::Timestamp>().ok().map(|t| t.as_second())
+}
+
 /// Now, as a Unix epoch second.
 pub fn now_unix() -> i64 {
     jiff::Timestamp::now().as_second()
