@@ -1158,6 +1158,19 @@ fn wallet_nettype_matches(p: &Probes) -> Verdict {
         return v;
     }
     let Some(net) = &p.last_open_nettype else {
+        // **Two rows of one screen may not disagree** (the 2026-09-19 verification's item 19):
+        // `wallet_rpc_reachable` said `and a wallet is open` two rows above this one saying
+        // `No wallet is open`, and both were right — one reads the live service, the other reads
+        // what fmonero recorded when it opened a wallet. When the service says one is open, this
+        // row says what it is actually missing.
+        if p.wallet_open {
+            return Verdict::skip(
+                "no_recorded_network",
+                "A wallet is open, and fmonero has no record of which network it belongs to. It \
+                 writes that down when it opens one itself.",
+            )
+            .cmd("fmonero wallet open <name>");
+        }
         return Verdict::skip(
             "wallet_closed",
             "No wallet is open, so there is no network to read.",

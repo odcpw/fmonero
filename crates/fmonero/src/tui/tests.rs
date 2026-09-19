@@ -464,8 +464,9 @@ fn every_screen_renders_against_the_mock() {
         assert!(!text.trim().is_empty(), "{screen:?} rendered blank");
         assert!(text.contains('●'), "{screen:?} lost its badge:\n{text}");
         match screen {
-            // The node fixture's height, so the hero is reading the mock and not a default.
-            Screen::Node => assert!(text.contains("3541122"), "{text}"),
+            // The node fixture's height, so the hero is reading the mock and not a default —
+            // grouped, because every block number on every surface is (W7).
+            Screen::Node => assert!(text.contains("3 541 122"), "{text}"),
             // The wallet fixture is open, so a balance and a subaddress table are there.
             Screen::Wallet => assert!(text.contains("XMR"), "{text}"),
             Screen::Send => assert!(text.contains("cheapest"), "{text}"),
@@ -1405,7 +1406,7 @@ fn the_picker_renders_the_cache_on_entry_and_shows_both_column_groups() {
     // wrap is asserted in two halves rather than by flowing the whole frame.
     let flat = flowed(&text);
     assert!(
-        flat.contains("37 without a port were") && flat.contains("left out"),
+        flat.contains("37 without a port") && flat.contains("left out"),
         "the footer must say what was left out:\n{text}"
     );
     assert!(
@@ -1441,7 +1442,7 @@ fn the_pickers_footer_reads_as_english_and_no_two_columns_share_a_header() {
     for (cols, rows) in [(120u16, 32u16), (150, 40)] {
         let text = sim_text(&s, cols, rows);
         assert!(
-            text.contains("list from "),
+            text.contains("list fetched "),
             "{cols}x{rows}: the footer is not a sentence:\n{text}"
         );
         assert!(

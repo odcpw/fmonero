@@ -217,9 +217,10 @@ if [ -n "$CAPTURE" ]; then
   fi
   [ "${RELAYED:-0}" = "0" ] && ok "nothing was relayed (the capture run never broadcasts)" \
     || bad "a relay_tx reached the mock during a capture run"
-  # And the Node capture is the fixture's height, not whatever the owner's node happens to say.
-  if grep -q '3541122' "$CAPTURE/node.txt" 2>/dev/null; then
-    ok "the Node capture carries the fixture height 3541122"
+  # And the Node capture is the fixture's height, not whatever the owner's node happens to say —
+  # **grouped**, because every block number on every surface is (W7).
+  if grep -q '3 541 122' "$CAPTURE/node.txt" 2>/dev/null; then
+    ok "the Node capture carries the fixture height 3 541 122"
   else
     bad "the Node capture does not show the fixture height — it is not the mock's data" \
         "$(sed -n '3,6p' "$CAPTURE/node.txt" 2>/dev/null)"

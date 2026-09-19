@@ -1,5 +1,5 @@
   1 Node    2 Wallet    3 Send  [ 4 Log ]                                                               mainnet omarchy
-╭ Log  follow on  /tmp/tmp.wjYYShYC7U/bitmonero.log ───────────────────────────────────────────────────────────────────╮
+╭ Log  follow on  /tmp/tmp.5ntAi9xM3V/bitmonero.log ───────────────────────────────────────────────────────────────────╮
 │ / search the log                                                                                                     │
 │ 2026-09-16 14:02:09.114 I Monero 'Fluorine Fermi' (v0.18.5.1-release) started                                        │
 │ 2026-09-16 14:02:10.002 I Synced 3541122/3541122                                                                     │
@@ -35,6 +35,6 @@
 │                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │
-│                                                                                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-● node synced 3541122 16↑3↓ ● wallet open 1.234567891234 XMR │ You left the form. 1-4 change…          ⇥ screens  ? help
+You left the form. 1-4 change screens, Enter goes back.
+● node synced block 3 541 122 16 out · 3 in ● wallet open 1.234567891234 XMR                           ⇥ screens  ? help

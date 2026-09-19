@@ -37,4 +37,4 @@
 │                                                                        ││                                            │
 │                                                                        ││                                            │
 ╰────────────────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────╯
-● public node node.example.com:18089 ● wallet closed │ checked 1 · 0 answered                          ⇥ screens  ? help
+● public node node.example.com:18089 ● wallet closed │ Checked 1 nodes. 0 answered.                    ⇥ screens  ? help

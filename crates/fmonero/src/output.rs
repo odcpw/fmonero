@@ -533,7 +533,9 @@ fn money_human(out: &Out, v: &serde_json::Value) {
     };
     out.line(verdict);
     for id in v["txids"].as_array().map(Vec::as_slice).unwrap_or_default() {
-        out.line(format!("txid      {}", cell(id)));
+        // §2o.2: `payment id`, never `txid` as a label (self-read, round 3). The JSON key is
+        // unchanged.
+        out.line(format!("payment id  {}", cell(id)));
     }
 }
 
@@ -563,14 +565,31 @@ fn history_human(out: &Out, v: &serde_json::Value) {
             .and_then(fmonero_core::rfc3339_from_unix)
             .map(|s| s.chars().take(16).collect::<String>())
             .unwrap_or_else(|| "—".to_string());
+        // The kind **in words** and the lock as a word, not as a JSON value: this table printed
+        // `block` for a mining reward, `pool` for one waiting to be mined and `true` under
+        // `locked` (§2o rule 5, self-read round 3). `type` and `locked` are unchanged in `--json`.
+        let kind = t["type"]
+            .as_str()
+            .and_then(|w| {
+                fmonero_core::TransferKind::ALL
+                    .iter()
+                    .find(|k| k.as_str() == w)
+                    .map(|k| k.words())
+            })
+            .unwrap_or("—");
+        let locked = match t["locked"].as_bool() {
+            Some(true) => "locked",
+            Some(false) => "",
+            None => "—",
+        };
         out.line(format!(
             "{}  {}  {}  {}  {}  {}",
             pad(&when, 16),
-            pad(&cell(&t["type"]), 7),
+            pad(kind, 7),
             pad(&cell(&t["amount_xmr"]), 18),
             pad(&cell(&t["fee_xmr"]), 12),
             pad(&cell(&t["confirmations"]), 6),
-            cell(&t["locked"])
+            locked
         ));
     }
     // `high_water` is the snapshot's own bookkeeping and stays in `--json` (§2o rule 7).
@@ -875,11 +894,11 @@ fn nodes_human(out: &Out, v: &serde_json::Value) {
             cell(&v["total"])
         ),
         format!(
-            "list from {}",
+            "list fetched {}",
             v["cache_age_sec"]
                 .as_u64()
                 .map(fmonero_core::age)
-                .unwrap_or_else(|| "an unknown time".to_string())
+                .unwrap_or_else(|| "an unknown time ago".to_string())
         ),
     ];
     let no_port = v["skipped_no_port"].as_u64().unwrap_or(0);

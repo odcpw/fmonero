@@ -3,13 +3,13 @@
 │ 1.234567891234 XMR   unlocked 1.234567891234 XMR                                                                     │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭ Addresses · Enter copies · a new · l rename ───╮╭ Payments  6 · t: all ──────────────────────────────────────────────╮
-│ #  │ADDRESS (✓ used)      │BALANCE             ││ / filter by txid, address or note                                  │
+│ #  │ADDRESS (✓ used)      │BALANCE             ││ / filter by id, address or note                                    │
 │ 0  │42ey1afD…fJJQAWDm ✓   │1.234567891234      ││ WHEN         WHAT            AMOUNT CONFIRMS LOCKED           FEE  │
-│ 1  │8AsN91rz…N1EX5Mtm ✓   │—                   ││ 09-16 14:01  pending         0.1000      0 locked         0.000030 │
+│ 1  │8AsN91rz…N1EX5Mtm ✓   │—                   ││ 09-16 14:01  sending         0.1000      0 locked         0.000030 │
 │ 2  │86kKnBKF…GRsdGfNk     │—                   ││ 09-15 13:20  failed          0.0200      0 locked         0.000030 │
 │                                                ││ 09-16 10:00  out             0.2500    122                0.000030 │
 │                                                ││ 09-15 00:40  in              0.5000   1122                0.000030 │
-│                                                ││ 09-13 15:20  block           0.6000   2122                    0.00 │
+│                                                ││ 09-13 15:20  mined           0.6000   2122                    0.00 │
 │                                                ││ 09-12 06:00  in              0.0750   3122 locked         0.000030 │
 │                                                ││                                                                    │
 │                                                ││                                                                    │
@@ -37,4 +37,4 @@
 │                                                ││                                                                    │
 ╰────────────────────────────────────────────────╯╰────────────────────────────────────────────────────────────────────╯
 [R] Check for payments [Q] QR code [x] Close wallet
-● node synced 3541122 16↑3↓ ● wallet open 1.234567891234 XMR │ wallet closed                           ⇥ screens  ? help
+● node synced block 3 541 122 16 out · 3 in ● wallet open 1.234567891234 XMR │ Wallet closed.          ⇥ screens  ? help

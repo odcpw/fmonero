@@ -331,6 +331,7 @@ fn not_checked_because(reason: &str) -> Option<&'static str> {
         "no_node_credential" => "your node asks for no password",
         "daemon_unreachable" => "one of the two did not answer",
         "wallet_closed" | "no_wallet_height" => "no wallet is open",
+        "no_recorded_network" => "the network was not recorded",
         "wallet_rpc_active" => "the wallet service is running",
         "cannot_measure" => "the free space is not measurable",
         "prune_off" => "you asked for the whole blockchain",

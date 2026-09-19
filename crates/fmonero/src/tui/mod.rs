@@ -243,7 +243,9 @@ const RX_SAMPLES: usize = 60;
 const HISTORY_LIMIT: usize = 500;
 /// Lines of the daemon log the Log screen tails.
 const LOG_LINES: usize = 2_000;
-pub(super) const FILTER_HINT: &str = "filter by txid, address or note";
+// §2o.2 says `id`, never `txid` in prose — and this hint is the one place the word survived the
+// v5.6 round, because the grep's word list did not carry it (self-read, round 3; the list does now).
+pub(super) const FILTER_HINT: &str = "filter by id, address or note";
 pub(super) const SEARCH_HINT: &str = "search the log";
 
 /// The node extras the Node screen needs beyond §5's `status` document.

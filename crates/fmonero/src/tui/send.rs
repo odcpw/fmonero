@@ -181,7 +181,10 @@ impl SendScreen {
             format!("address book: {label}")
         } else {
             match address::parse(to) {
-                Ok(a) => format!("{} {}", a.net, a.kind),
+                // `mainnet standard` was two wire words where the sentence wants one phrase
+                // (self-read, round 3). The network stays: sending to the wrong one is the
+                // mistake this line exists to catch.
+                Ok(a) => format!("{} {}", a.net, a.kind.words()),
                 Err(e) => return (e.to_string(), false),
             }
         };
@@ -620,8 +623,13 @@ fn view_preview(m: &Tui, area: Rect, frame: &mut ftui::Frame) {
     if let Some(w) = m.status.as_ref().map(|st| &st.wallet) {
         lines.push(Line::from_spans([
             Span::styled("Unlocked".to_string(), th.dimmed()),
+            // §2o rule 9: an amount carries its unit. This row read `Unlocked 1.234567891234`
+            // in the one pane whose subject is how much you can spend (self-read, round 3).
             Span::styled(
-                format!(" {}", w.unlocked_xmr.clone().unwrap_or_else(|| "—".into())),
+                format!(
+                    " {} XMR",
+                    w.unlocked_xmr.clone().unwrap_or_else(|| "—".into())
+                ),
                 th.text(),
             ),
         ]));

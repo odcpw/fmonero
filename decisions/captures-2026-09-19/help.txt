@@ -1,40 +1,40 @@
   1 Node    2 Wallet    3 Send  [ 4 Log ]                                                               mainnet omarchy
-╭ Log  follow on  /tmp/tmp.wjYYShYC7U/bitmonero.log ───────────────────────────────────────────────────────────────────╮
+╭ Log  follow on  /tmp/tmp.5ntAi9xM3V/bitmonero.log ───────────────────────────────────────────────────────────────────╮
 │ / search the log                                                                                                     │
 │ 2026-09-16 14:02:09.114 I Monero 'Fluorine Fermi' (v0.18.5.1-release) started                                        │
-│ 2026-09-16 14:02:10.002 I Synced 3541122/3541122                                                                     │
-│ 2026-09-╭ Keys — any key closes ───────────────────────────────────────────────────────────────────────────╮         │
-│         │                                                                                                  │         │
-│         │ Tab  ⇧Tab  Ctrl+C     screens · quit. Always: in a field, in a pop-up, in this help, or while…   │         │
-│         │ 1 2 3 4  q            the same two, but only when no field has focus. A field keeps every key…   │         │
-│         │ ?                     this help                                                                  │         │
-│         │ r                     check now                                                                  │         │
-│         │ Esc                   close this help, else leave the field, else stop what is running           │         │
-│         │ mouse                 click tabs, rows, fields and every [key] chip. The wheel scrolls the…      │         │
-│         │ u  d                  Node: start · stop your node. Not available while you use a public node.   │         │
-│         │ b                     Node: peers ⇄ bans                                                         │         │
-│         │ L                     change how much your node writes to its log (it asks first)                │         │
-│         │ p  f                  Node: check the listed nodes · get a fresh list                            │         │
-│         │ Enter  a  H           Node: use the selected node (it asks first) · add an address · go back…    │         │
-│         │ l                     Node: use your own node instead (it asks first)                            │         │
-│         │ o  c  x               Wallet: open a wallet · create one · close the open wallet                 │         │
-│         │ W                     Wallet: start the wallet service, or stop it when nothing is open          │         │
-│         │ a  l                  Wallet: new address · rename the selected one                              │         │
-│         │ n                     Wallet: edit the note on the selected payment                              │         │
-│         │ R  Q                  Wallet: check for payments · show the address as a QR code                 │         │
-│         │ /  t                  Wallet: filter rows · change which kinds show                              │         │
-│         │ ←→  Enter             Wallet: swap panes · copy an address · open a row                          │         │
-│         │ Send: ↑↓  Enter       next/previous field · check it. Tab leaves the form. Esc leaves the…       │         │
-│         │ modals: ↑↓  Enter     move between a pop-up's fields · next, then confirm on the last one        │         │
-│         │ Send: p  Ctrl+P  @    change the fee level (on its row, or from anywhere) · address book         │         │
-│         │ Send: ←→              on the Fee or Account row: change it                                       │         │
-│         │ Send: sweep           not in the TUI. To send everything, in a terminal: fmonero wallet sweep…   │         │
-│         │ Send: type "send"     typing the word is how you confirm. Esc discards. Once it is sent it…      │         │
-│         │ Log: /  f  n N        search · follow · next/previous match                                      │         │
-│         │                                                                                                  │         │
-│         ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯         │
-│                                                                                                                      │
+│╭ Keys · any key closes ─────────────────────────────────────────────────────────────────────────────────────────────╮│
+││                                                                                                                    ││
+││ Tab  ⇧Tab  Ctrl+C  screens · quit. Always: in a field, in a pop-up or while something runs. Quit twice to stop a   ││
+││                    job first.                                                                                      ││
+││ 1 2 3 4  q         the same two, but only when no field has focus. Esc leaves a field.                             ││
+││ ?                  this help                                                                                       ││
+││ r                  check now                                                                                       ││
+││ Esc                close this help, else leave the field, else stop what is running                                ││
+││ mouse              click tabs, rows, fields and every [key] chip. The wheel scrolls. Right-click is Esc.           ││
+││ u  d               Node: start · stop your node                                                                    ││
+││ b                  Node: peers ⇄ bans                                                                              ││
+││ L                  Node: change how much your node logs (it asks first)                                            ││
+││ p  f               Node: check the listed nodes · get a fresh list                                                 ││
+││ Enter  a  H        Node: use the selected node (it asks first) · add an address · go back to the last one          ││
+││ l                  Node: use your own node instead (it asks first)                                                 ││
+││ o  c  x            Wallet: open a wallet · create one · close the open wallet                                      ││
+││ W                  Wallet: start the wallet service, or stop it when nothing is open                               ││
+││ a  l               Wallet: new address · rename the selected one                                                   ││
+││ n                  Wallet: edit the note on the selected payment                                                   ││
+││ R  Q               Wallet: check for payments · show the address as a QR code                                      ││
+││ /  t               Wallet: filter rows · change which kinds show                                                   ││
+││ ←→  Enter          Wallet: swap panes · copy an address · open a row                                               ││
+││ Send: ↑↓  Enter    next/previous field · check it. Tab leaves the form, Esc leaves a field, Enter goes back in.    ││
+││ modals: ↑↓  Enter  move between a pop-up's fields · next, then confirm on the last one                             ││
+││ Send: p  Ctrl+P  @ change the fee level (on its row, or from anywhere) · address book                              ││
+││ Send: ←→           on the Fee or Account row: change it                                                            ││
+││ Send: sweep        to send everything, in a terminal: fmonero wallet sweep <address> --dry-run                     ││
+││ Send: type "send"  typing the word confirms. Esc discards. Once sent it cannot be taken back.                      ││
+││ Log: /  f  n N     search · follow · next/previous match                                                           ││
+││                                                                                                                    ││
+│╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯│
 │                                                                                                                      │
 │                                                                                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-● node synced 3541122 16↑3↓ ● wallet open 1.234567891234 XMR │ You left the form. 1-4 change…          ⇥ screens  ? help
+You left the form. 1-4 change screens, Enter goes back.
+● node synced block 3 541 122 16 out · 3 in ● wallet open 1.234567891234 XMR                           ⇥ screens  ? help

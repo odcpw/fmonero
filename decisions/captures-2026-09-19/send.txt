@@ -5,7 +5,7 @@
 │ Amount  0.5 XMR                                                    ││ Amount  —                                      │
 │                                                                    ││ Fee     known after the check                  │
 │ Note    optional, kept with this wallet                            ││ Account 0                                      │
-│                                                                    ││ Unlocked 1.234567891234                        │
+│                                                                    ││ Unlocked 1.234567891234 XMR                    │
 │ Fee cheapest  normal  fast  fastest  p · Ctrl+P                    ││                                                │
 │ Account ◂ 0 ▸ ←→ changes it                                        ││                                                │
 │ Enter who to pay and how much.                                     ││                                                │
@@ -37,4 +37,4 @@
 │                                                                    ││                                                │
 │                                                                    ││                                                │
 ╰────────────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────────╯
-● node synced 3541122 16↑3↓ ● wallet open 1.234567891234 XMR                                           ⇥ screens  ? help
+● node synced block 3 541 122 16 out · 3 in ● wallet open 1.234567891234 XMR                           ⇥ screens  ? help

@@ -67,6 +67,19 @@ impl AddrKind {
     }
 }
 
+impl AddrKind {
+    /// The kind as a **person** reads it (§2o.2: a subaddress is an `address`, and `standard` is
+    /// upstream's word for "not one of the other two"). `as_str` stays the wire value that
+    /// `wallet validate --json` carries; this is what the Send screen says under the field
+    /// (self-read, round 3: it read `mainnet standard`).
+    pub fn words(self) -> &'static str {
+        match self {
+            AddrKind::Standard | AddrKind::Subaddress => "address",
+            AddrKind::Integrated => "address with a payment id",
+        }
+    }
+}
+
 impl std::fmt::Display for AddrKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())

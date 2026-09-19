@@ -920,8 +920,8 @@ fn warnings(
                 "node_low_disk",
                 Severity::Warn,
                 format!(
-                    "Only {} free on the disk your node uses. A pruned copy of the chain needs \
-                     about 120 GB, which is an estimate.",
+                    "Only {} free on the disk your node uses. A smaller copy of the blockchain \
+                     needs about 120 GB, which is an estimate.",
                     gigabytes(free)
                 ),
                 "fmonero doctor --only storage",

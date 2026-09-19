@@ -1,20 +1,20 @@
-[ 1 Node ]  2 Wallet    3 Send    4 Log                                                                 mainnet omarchy
+[ 1 Node ]  2 Wallet    3 Send    4 Log                                                               ⠴ mainnet omarchy
 ╭ Node ──────────────────────────────────────────────────────╮╭ Net ───────────────────────────────────────────────────╮
 │ ● Synced                                                   ││ ↓ ↑         0 B/s   0 B/s                              │
-│ blocks     ████████████  100%  3541122 / 3541122           ││ speed limits ↑2048 ↓8192 kB/s                          │
-│ last block  60h 33m ago                                    ││                                                        │
+│ blocks     ████████████  100%  3 541 122 / 3 541 122       ││ speed limits ↑2048 ↓8192 kB/s                          │
+│ last block  62h 42m ago                                    ││                                                        │
 │ peers       16 out · 3 in                                  │╰────────────────────────────────────────────────────────╯
-│ version     0.18.5.1-release · mainnet                     │╭ Waiting to be mined · fees ────────────────────────────╮
-│                                                            ││ waiting     14 transactions · 20.9 kB · oldest 60h 36m │
-│                                                            ││ ago                                                    │
+│ version     0.18.5.1-release · mainnet                     │╭ Waiting to be mined · fees in XMR per byte ────────────╮
+│                                                            ││ waiting     14 payments · 20.9 kB · oldest 62h 45m ago │
 │                                                            ││ their fees  0.000427 XMR · 0 failing · 0 double spends │
-│                                                            ││ fee levels  cheapest 0.00000002 · normal 0.00000008 ·  │
+│                                                            ││ fee levels  cheapest 0.00000002 · normal 0.00000008    │
+│                                                            ││             fast 0.00000032 · fastest 0.000004         │
 ╰────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────────────────╯
 ╭ Peers  3 · b: bans ────────────────────────────────────────────────────╮╭ Notes ─────────────────────────────────────╮
-│ HOST                   │STATE         │BLOCK    │KEEPS │AVG ↓/↑        ││ • Only 96 GB free on the disk your node    │
-│ 203.0.113.17           │normal        │3541122  │0     │12 B/2 B       ││ uses. A pruned copy of the chain needs     │
-│ 198.51.100.42          │synchronizing │3541100  │384   │0 B/0 B        ││ about 120 GB, which is an estimate.        │
-│ 192.0.2.201            │normal        │3541122  │0     │1 B/31 B       ││ • Your node accepted fmonero without       │
+│ HOST                   │STATE         │BLOCK      │AVG ↓/↑             ││ • Only 96 GB free on the disk your node    │
+│ 203.0.113.17           │normal        │3 541 122  │12 B/2 B            ││ uses. A smaller copy of the blockchain     │
+│ 198.51.100.42          │synchronizing │3 541 100  │0 B/0 B             ││ needs about 120 GB, which is an estimate.  │
+│ 192.0.2.201            │normal        │3 541 122  │1 B/31 B            ││ • Your node accepted fmonero without       │
 │                                                                        ││ asking for a password.                     │
 │                                                                        ││                                            │
 │                                                                        ││                                            │
@@ -35,6 +35,6 @@
 │                                                                        ││                                            │
 │                                                                        ││                                            │
 │                                                                        ││                                            │
-│                                                                        ││                                            │
 ╰────────────────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────╯
-● node synced 3541122 16↑3↓ ● wallet open 1.234567891234 XMR │ You left the form. 1-4 change…          ⇥ screens  ? help
+You left the form. 1-4 change screens, Enter goes back.
+● node synced block 3 541 122 16 out · 3 in ● wallet open 1.234567891234 XMR                           ⇥ screens  ? help

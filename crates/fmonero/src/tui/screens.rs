@@ -346,8 +346,10 @@ fn status_left(m: &Tui) -> Vec<Span<'static>> {
             spans.push(Span::styled(format!("block {} ", grouped(h)), th.dimmed()));
         }
         if let Some(out) = s.node.outgoing_connections_count {
+            // The hero's own words, not `16↑3↓`: a reader takes those arrows for traffic
+            // (self-read, round 3). §2o rule 8, one vocabulary.
             let inc = s.node.incoming_connections_count.unwrap_or(0);
-            spans.push(Span::styled(format!("{out}↑{inc}↓ "), th.dimmed()));
+            spans.push(Span::styled(format!("{out} out · {inc} in "), th.dimmed()));
         }
         spans.push(Span::styled("●", th.badge(wallet_tone)));
         spans.push(Span::styled(format!(" wallet {wallet} "), th.text()));
@@ -836,10 +838,10 @@ fn picker_footer(m: &Tui, rows_data: &[&fmonero_core::PublicNode]) -> Option<Str
         // `list {age} old` put "ago" and "old" in one phrase — `list 3s ago old` (V6). `age()`
         // already ends in "ago", so the preposition is all that was needed.
         format!(
-            "list from {}",
+            "list fetched {}",
             list.cache_age_sec
                 .map(age)
-                .unwrap_or_else(|| "an unknown time".into())
+                .unwrap_or_else(|| "an unknown time ago".into())
         ),
     ];
     if list.skipped_no_port > 0 {
@@ -1236,19 +1238,19 @@ fn list_pane(m: &Tui, area: Rect, frame: &mut Frame, wide: bool) {
         .iter()
         .take(10)
         .map(|c| {
-            let mut cells = vec![fit(&c.host, 22), c.state.clone(), c.height.to_string()];
+            // W7 reaches here too: this table printed `3541122` in the same frame as the hero's
+            // `3 541 122`. · The pruning seed is **gone** from the row: `KEEPS 0` and `KEEPS 384`
+            // decide nothing a reader can act on, which is the argument `docs/COPY.md` §3.9 already
+            // made for `node peers`' own human output. It stays in `node peers --json`.
+            let mut cells = vec![fit(&c.host, 22), c.state.clone(), grouped(c.height)];
             if wide {
-                cells.push(c.pruning_seed.to_string());
                 cells.push(format!("{}/{}", bytes(c.avg_download), bytes(c.avg_upload)));
             }
             TableRow::new(cells)
         })
         .collect();
     let (header, widths): (&[&str], &[u16]) = if wide {
-        (
-            &["HOST", "STATE", "BLOCK", "KEEPS", "AVG ↓/↑"],
-            &[23, 14, 9, 6],
-        )
+        (&["HOST", "STATE", "BLOCK", "AVG ↓/↑"], &[23, 14, 11])
     } else {
         (&["HOST", "STATE", "BLOCK"], &[23, 14])
     };
@@ -1305,7 +1307,16 @@ fn net_pane(m: &Tui, area: Rect, frame: &mut Frame, sparkline: bool) {
 /// **Never rendered with a public node**, for [`net_pane`]'s reason.
 fn pool_pane(m: &Tui, area: Rect, frame: &mut Frame) {
     let th = &m.theme;
-    let Some(inner) = framed(area, th, " Waiting to be mined · fees ", false, frame) else {
+    // The unit lives in the title, once: the four fee levels are 74 cells on one row and this pane
+    // is 42, so they take two rows and repeating `XMR per byte` on the second was a label that
+    // read like a new field (self-read, round 3).
+    let Some(inner) = framed(
+        area,
+        th,
+        " Waiting to be mined · fees in XMR per byte ",
+        false,
+        frame,
+    ) else {
         return;
     };
     let mut lines = Vec::new();
@@ -1318,11 +1329,14 @@ fn pool_pane(m: &Tui, area: Rect, frame: &mut Frame) {
                     .saturating_sub(p.oldest as i64)
                     .max(0) as u64)
             };
+            // `payments`, and the count without the word `transactions`: this row is 45 cells
+            // wide in a 42-cell pane at the Wide tier, so it wrapped onto a line reading `ago`
+            // — and the row under it then fell off the pane's bottom (self-read, round 3).
             lines.push(kv(
                 th,
                 "waiting",
                 format!(
-                    "{} transactions · {} · oldest {oldest}",
+                    "{} payments · {} · oldest {oldest}",
                     p.txs_total,
                     bytes(p.bytes_total)
                 ),
@@ -1365,14 +1379,25 @@ fn pool_pane(m: &Tui, area: Rect, frame: &mut Frame) {
         // The four levels by the **names the Send screen offers**, so the two screens agree
         // (§2o): the old row labelled them by their priority index, which is a number nobody
         // chooses between.
-        let fees = f.fees_pico.as_ref().map_or("—".to_string(), |v| {
-            v.iter()
-                .enumerate()
-                .map(|(i, p)| format!("{} {}", FEE_LEVELS[i.min(3)], p.to_xmr_string()))
-                .collect::<Vec<_>>()
-                .join(" · ")
-        });
-        lines.push(kv(th, "fee levels", format!("{fees}  XMR per byte")));
+        let fees: Vec<String> = f.fees_pico.as_ref().map_or_else(
+            || vec!["—".to_string()],
+            |v| {
+                v.iter()
+                    .enumerate()
+                    .map(|(i, p)| format!("{} {}", FEE_LEVELS[i.min(3)], p.to_xmr_string()))
+                    .collect()
+            },
+        );
+        // **Two rows, so all four levels are on screen** (self-read, round 3): one row is 74
+        // cells and this pane is 42, so the third and fourth level were cut with nothing to say
+        // they existed — in the pane a user reads to choose between them.
+        let mut pairs = fees.into_iter();
+        let first: Vec<String> = pairs.by_ref().take(2).collect();
+        let rest: Vec<String> = pairs.collect();
+        lines.push(kv(th, "fee levels", first.join(" · ")));
+        if !rest.is_empty() {
+            lines.push(kv(th, "", rest.join(" · ")));
+        }
     }
     lines_at(lines, inner, true, frame);
 }
@@ -1803,7 +1828,10 @@ impl RenderItem for HistoryItem<'_> {
         let mut text = format!(
             "{:<12} {:<7} {:>14} {:>6} {}",
             short_time(t.timestamp),
-            kind,
+            // The words, never the wire value: `block` is a mining reward and `pool` is waiting
+            // to be mined (§2o rule 5, self-read round 3). The style below still keys on the wire
+            // value, which is what `--json` carries.
+            t.kind.words(),
             t.amount.to_xmr_string(),
             conf,
             locked
@@ -1946,7 +1974,7 @@ fn detail_modal(m: &Tui, frame: &mut Frame) {
             "what",
             format!(
                 "{} · block {} · {}",
-                t.kind.as_str(),
+                t.kind.words(),
                 t.height,
                 short_time(t.timestamp)
             ),

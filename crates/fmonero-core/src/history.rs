@@ -84,6 +84,21 @@ impl TransferKind {
             TransferKind::Block => "block",
         }
     }
+    /// The kind as a **person** reads it (§2o rule 5, §2o.2): `as_str` is the wire value that
+    /// `--json` carries and agents branch on, and it was printed as the `WHAT` column of both
+    /// history tables — where `block` means a mining reward and `pool` means waiting to be mined,
+    /// neither of which a reader can work out. One implementation, so the TUI's table and
+    /// `wallet history`'s cannot word one payment two ways.
+    pub fn words(self) -> &'static str {
+        match self {
+            TransferKind::In => "in",
+            TransferKind::Out => "out",
+            TransferKind::Pending => "sending",
+            TransferKind::Failed => "failed",
+            TransferKind::Pool => "waiting",
+            TransferKind::Block => "mined",
+        }
+    }
     /// Every variant, in §5c's order — the type filter of §7a cycles through these.
     pub const ALL: &'static [TransferKind] = &[
         TransferKind::In,

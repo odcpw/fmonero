@@ -368,7 +368,10 @@ literals_2o() {
 # are and what prose never is (`monerod did not answer …` has a verb in that position). §2o rule 6
 # in one regex: an implementation name is allowed inside a command the user runs and nowhere else.
 # The self-test below plants one literal per hole, so the closure is demonstrated, not asserted.
-BANNED_2O='(daemons?|units?|RPC|loopback|restricted|probes?|probed|layouts?|ssl|SSL|systemd|systemctl|relay(ed|ing)?|broadcast|mutator|nettype|txpool|mempool|subaddress|subaddr|priority|in flight|high water|monerod|monero-wallet-rpc|\bargv\b|\bbreakers?\b|\bsnapshots?\b|\b(build|builds|built|building)\b|§)'
+# **v5.6.2 adds `txid`** (W20's neighbour, found by reading): §2o.2 says say `id`, and the Wallet
+# screen's filter hint read `filter by txid, address or note` through the whole v5.6 round because
+# the word was in the vocabulary table and not in this list.
+BANNED_2O='(daemons?|units?|RPC|loopback|restricted|probes?|probed|layouts?|ssl|SSL|systemd|systemctl|relay(ed|ing)?|broadcast|mutator|nettype|txpool|mempool|subaddress|subaddr|priority|in flight|high water|txid|monerod|monero-wallet-rpc|\bargv\b|\bbreakers?\b|\bsnapshots?\b|\b(build|builds|built|building)\b|§)'
 # Two exemptions, and each is the reason the grep is honest rather than decorative:
 #   * a **runnable command** is a command on purpose — §2o.1's four exceptions and every CLI hint;
 #   * a **single bare token** is an id, a key, a JSON value or an argv element, never prose — and
@@ -387,10 +390,15 @@ for f in "$BIN"/tui/mod.rs "$BIN"/tui/screens.rs "$BIN"/tui/send.rs "$BIN"/tui/s
          plugin/oliver.monero/MoneroIcon.qml plugin/oliver.monero/Model.js; do
   [ -f "$f" ] && COPY_SURFACES+=("$f")
 done
+# **A `{field}` is a substitution, not prose** (v5.6.2): the name inside the braces is a Rust
+# variable and no reader ever sees it, so `"… · id {txid} · …"` is a sentence that says `id`. The
+# names are stripped before the word match; the text around them is checked exactly as before.
+strip_fields() { printf '%s' "$1" | sed 's/{[^}]*}/{}/g'; }
 HITS_2O=""
 for f in "${COPY_SURFACES[@]}"; do
   while IFS= read -r lit; do
     [ -n "$lit" ] || continue
+    lit="$(strip_fields "$lit")"
     if printf '%s\n' "$lit" | grep -qE "$ALLOWED_2O"; then
       # **An allow-listed command's trailing comment is still prose** (v5.6.1). `fmonero …   # …`
       # and `sudo …   # …` are printed whole, comment included, and the allow-list exempted the
@@ -498,6 +506,17 @@ printf '%s\n' 'let s = "In a terminal: omarchy pkg add monero";' > "$SELF_2O/goo
   printf '%s\n' 'let b = "monerod did not answer get_info within its deadline";'
   printf '%s\n' 'let c = "the argv carries a breaker snapshot and one build";'
 } > "$SELF_2O/holes.rs"
+# And the field-name rule, both ways: the name inside the braces is invisible, the prose is not.
+printf '%s\n' 'let s = "the payment id {txid} has gone out";' > "$SELF_2O/field.rs"
+printf '%s\n' 'let s = "the daemon {name} has gone out";' > "$SELF_2O/field-bad.rs"
+FIELD_OK="$(strip_fields "$(literals_2o "$SELF_2O/field.rs")")"
+FIELD_BAD="$(strip_fields "$(literals_2o "$SELF_2O/field-bad.rs")")"
+if ! printf '%s\n' "$FIELD_OK" | grep -qE "$BANNED_2O" &&
+   printf '%s\n' "$FIELD_BAD" | grep -qE "$BANNED_2O"; then
+  pass "self-test: §2o reads a {field} as a substitution and the prose around it as prose"
+else
+  fail "self-test: the {field} rule hides prose, or fires on a field name"
+fi
 BAD_LIT="$(literals_2o "$SELF_2O/bad.rs")"
 GOOD_LIT="$(literals_2o "$SELF_2O/good.rs")"
 HOLES=0
