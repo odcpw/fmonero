@@ -968,10 +968,20 @@ fn money_human(out: &Out, v: &serde_json::Value) {
         // fourth. The row number is what tells two rows of the same amount apart.
         out.line(format!("{} payments:", txs.len()));
         for (i, t) in txs.iter().enumerate() {
+            // **The same precision as the four rows above** (round 5's own read of its captures, M1's
+            // class): `amount_xmr` is pre-rendered with a four-decimal floor, so a two-payment sweep
+            // printed `0.8000 XMR` above `0.434506451234 XMR` — one column, two shapes, on the plan
+            // that empties an account. Rendered from the integer, like `pair` does.
+            let money = |pico: &str, xmr: &str| -> String {
+                t[pico]
+                    .as_u64()
+                    .map(|p| fmonero_core::Piconero(p).to_xmr_money())
+                    .unwrap_or_else(|| cell(&t[xmr]))
+            };
             out.line(plan_row(
                 i + 1,
-                &cell(&t["amount_xmr"]),
-                &cell(&t["fee_xmr"]),
+                &money("amount_pico", "amount_xmr"),
+                &money("fee_pico", "fee_xmr"),
                 &if t["relayed"] == serde_json::Value::Bool(true) {
                     out.paint("sent", Paint::Green)
                 } else {
@@ -1085,20 +1095,25 @@ fn history_human(out: &Out, v: &serde_json::Value) {
         // paid to be given a block reward. `none` is what he paid, and it costs no column width,
         // which a heading naming the owner of the fee would (`your fee XMR` is twelve cells against
         // a nine-cell minimum). `fee_pico` is unchanged in `--json`.
+        // The amount at the same precision as the fee beside it (round 5's own read): the column
+        // showed `0.1000` under a header the TUI's own list renders at eight decimals.
+        let money = |pico: &str, xmr: &str| -> String {
+            t[pico]
+                .as_u64()
+                .map(|p| fmonero_core::Piconero(p).to_xmr_money())
+                .unwrap_or_else(|| cell(&t[xmr]))
+        };
         let mine = !matches!(t["type"].as_str(), Some("in") | Some("block"));
         let fee = if !mine {
             "none".to_string()
         } else {
-            t["fee_pico"]
-                .as_u64()
-                .map(|p| fmonero_core::Piconero(p).to_xmr_min(fmonero_core::Piconero::FEE_DECIMALS))
-                .unwrap_or_else(|| cell(&t["fee_xmr"]))
+            money("fee_pico", "fee_xmr")
         };
         out.row(format!(
             "{}  {}  {}  {}  {}  {}  {}",
             pad(&when, w[0]),
             pad(kind, w[1]),
-            pad_right(&cell(&t["amount_xmr"]), w[2]),
+            pad_right(&money("amount_pico", "amount_xmr"), w[2]),
             pad_right(&cell(&t["confirmations"]), w[3]),
             pad(spendable, w[4]),
             fit(t["note"].as_str().unwrap_or(""), w[5]),
@@ -1944,7 +1959,20 @@ fn wallet_create_human(out: &Out, v: &serde_json::Value) {
 /// `wallet validate`.
 fn validate_human(out: &Out, v: &serde_json::Value) {
     if v["valid"] != serde_json::Value::Bool(true) {
-        out.line(out.paint("That is not a Monero address.", Paint::Red));
+        // **Rule 10: name what was typed and what a good one looks like** (round 5's own read of its
+        // captures). The verdict was `That is not a Monero address.` and nothing else — no echo of
+        // the string, no shape — on the one command whose whole job is telling a person whether an
+        // address is safe to paste. `address::parse`'s own refusal says both, and this is the same
+        // sentence.
+        let typed = cell(&v["address"]);
+        out.line(out.paint(
+            &format!(
+                "\"{typed}\" is not a Monero address. Addresses are 95 characters and start with 4 \
+                 or 8. This one is {}.",
+                typed.chars().count()
+            ),
+            Paint::Red,
+        ));
         return;
     }
     out.line(out.paint("That is a Monero address.", Paint::Green));

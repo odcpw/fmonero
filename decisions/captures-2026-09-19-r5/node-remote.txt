@@ -1,0 +1,40 @@
+[ 1 Node ]  2 Wallet    3 Send    4 Log
+╭ Node ──────────────────────────────────────────────────────╮╭ This node ─────────────────────────────────────────────╮
+│ ● Public node · nothing listening · node.example.com:18089 ││ Nothing listening when checked 2s ago.                 │
+│                                                            ││ [f] Get the list                                       │
+│                                                            ││                                                        │
+│                                                            ││                                                        │
+│                                                            ││                                                        │
+│                                                            ││                                                        │
+│                                                            ││                                                        │
+│                                                            ││                                                        │
+│                                                            ││                                                        │
+╰────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────────────────╯
+╭ Public nodes ──────────────────────────────────────────────────────────╮╭ Notes ─────────────────────────────────────╮
+│ No list of public nodes yet.                                           ││ • The public node node.example.com:18089   │
+│ [f] Get the list                                                       ││   did not answer when fmonero last checked │
+│ Getting the list tells monero.fail your IP address. Nothing else is    ││   it.                                      │
+│ contacted.                                                             ││   Pick another node in the list and press  │
+│                                                                        ││   Enter.                                   │
+│                                                                        ││ • You are using the public node            │
+│                                                                        ││   node.example.com:18089. It sees your IP  │
+│                                                                        ││   address and when you ask it anything.    │
+│                                                                        ││   Press l to use your own node instead.    │
+│                                                                        ││ • No wallet is open. The wallet service    │
+│                                                                        ││   starts when you open or create one.      │
+│                                                                        ││   Press o to open a wallet, or c to create │
+│                                                                        ││   one.                                     │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+╰────────────────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────╯
+● nothing listening node.example.com:18089 ● wallet not running │ Checked 1 node. 0 answered.          ⇥ screens  ? help

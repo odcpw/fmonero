@@ -1,0 +1,40 @@
+[ 1 Node ]  2 Wallet    3 Send    4 Log
+╭ Node ──────────────────────────────────────────────────────╮╭ This node ─────────────────────────────────────────────╮
+│ ● Public node · nothing listening · node.example.com:18089 ││ Nothing listening when checked 4s ago.                 │
+│                                                            ││ [f] Get the list                                       │
+│                                                            ││                                                        │
+│                                                            ││                                                        │
+│                                                            ││                                                        │
+│                                                            ││                                                        │
+│                                                            ││                                                        │
+│                                                            ││                                                        │
+│                                                            ││                                                        │
+╰────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────────────────╯
+╭ Public nodes ──────────────────────────────────────────────────────────╮╭ Notes ─────────────────────────────────────╮
+│ No list of public nod╭ Use your own node ─────────────────────────────────────────────────────╮e.example.com:18089   │
+│ [f] Get the list     │                                                                        │ fmonero last checked │
+│ Getting the list tell│ fmonero will use the node on this machine.                             │                      │
+│ contacted.           │                                                                        │n the list and press  │
+│                      │ · the wallet service will use your own node when it next starts        │                      │
+│                      │                                                                        │ublic node            │
+│                      │ Your own node is not running yet. Switching will not start it. Press u │089. It sees your IP  │
+│                      │ after this.                                                            │u ask it anything.    │
+│                      │                                                                        │ own node instead.    │
+│                      │ y to confirm · Esc cancels                                             │The wallet service    │
+│                      │                                                                        │n or create one.      │
+│                      ╰────────────────────────────────────────────────────────────────────────╯allet, or c to create │
+│                                                                        ││   one.                                     │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+╰────────────────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────╯
+● nothing listening node.example.com:18089 ● wallet not running                                        ⇥ screens  ? help

@@ -2683,7 +2683,27 @@ impl Tui {
         match units::detect_layout(&self.ctx) {
             Ok(units::Layout::UserUnit) => {}
             Ok(units::Layout::None) => {
-                self.note(node_set_up_line(), true);
+                // **And "nothing is set up" is not "nothing is there"** (round 5's own read of its
+                // captures). With something already answering on that port — which is what the
+                // capture sandbox's mock is — `fmonero has not set up your node yet. Press S to set
+                // it up.` sat under a hero reading `● Synced` and a status bar reading `node synced`.
+                // Both sentences were true and a reader cannot hold them together. `Model.js`'s
+                // `nodeLabel` has drawn this distinction since round 4 iteration 3; this is the same
+                // two branches, in the refusal.
+                let answering = self
+                    .status
+                    .as_ref()
+                    .is_some_and(|s| s.node.reachable == Some(true));
+                self.note(
+                    if answering {
+                        "Something else is answering on that port and fmonero did not set it up, so \
+                         fmonero cannot start or stop it."
+                            .to_string()
+                    } else {
+                        node_set_up_line()
+                    },
+                    true,
+                );
                 return Cmd::none();
             }
             _ => {
@@ -2898,7 +2918,7 @@ impl Tui {
         // other dense row in the program separates fields.
         let which = format!(
             " Note for {} XMR · {} · {} ",
-            t.amount.to_xmr_string(),
+            t.amount.to_xmr_money(),
             t.kind.words(),
             screens::moment(t.timestamp)
         );

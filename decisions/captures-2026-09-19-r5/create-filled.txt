@@ -1,0 +1,40 @@
+  1 Node  [ 2 Wallet ]  3 Send    4 Log                                                                 network mainnet
+╭ Balance ─────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 1.234567891234 XMR                                                                                                   │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭ Addresses ───────────────────────────────────╮╭ ▸ Payments  6 ───────────────────────────────────────────────────────╮
+│ #  │NAME    │ADDRESS (✓ used)                ││ / filter by address or note                                          │
+│ 0  │Primar… │42ey1afD…fJJQAWDm ✓             ││ WHEN             WHAT        AMOUNT XMR CONFIRMS SPENDABLE  NOTE     │
+│ 1  │donati… │8AsN91rz…N1EX5Mtm ✓             ││ 2026-09-16 14:01 sending         0.1000        0 not yet             │
+│ 2  │        │86kKnBKF…GRsdGfNk               ││ 2026-09-15 13:20 failed          0.0200        0 never               │
+│                                              ││ 2026-09-16 10:00 out             0.2500      122 yes        coffee   │
+│                                              ││ 2026-09-15 00:40 in              0.5000     1122 yes                 │
+│                                              ││ 2026-09-13 15:20 mined           0.6000     2122 yes                 │
+│                          ╭ Create a wallet ───────────────────────────────────────────────╮ 3122 not yet             │
+│                          │                                                                │                          │
+│                          │ Name                ptywallet                                  │                          │
+│                          │ Password            •••                                        │                          │
+│                          │ Password again      •••                                        │                          │
+│                          │ Seed language        ◂ English ▸                               │                          │
+│                          │                                                                │                          │
+│                          │ ↑↓ fields · Enter next, then create · Esc discards             │                          │
+│                          │ Tab cannot change screens while this is open. Esc closes it    │                          │
+│                          │ and keeps nothing.                                             │                          │
+│                          │                                                                │                          │
+│                          │                                                                │                          │
+│                          │                                                                │                          │
+│                          ╰────────────────────────────────────────────────────────────────╯                          │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
+╰──────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────────────────╯
+[R] Check for payments [t] Choose which payments show [Q] QR code [x] Close wallet
+● node synced block 3 541 122 · 16 out · 3 in ● wallet open 1.234567891234 XMR                         ⇥ screens  ? help

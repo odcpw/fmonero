@@ -1,0 +1,40 @@
+[ 1 Node ]  2 Wallet    3 Send    4 Log                                                                 network mainnet
+╭ Node ──────────────────────────────────────────────────────╮╭ Net ───────────────────────────────────────────────────╮
+│ ● Synced                                                   ││ right now   0 B/s down · 0 B/s up                      │
+│ blocks     ████████████  100%  3 541 122 / 3 541 122       ││ its limits  8192 kB/s down · 2048 kB/s up              │
+│ last block  3d 03h ago                                     ││                                                        │
+│ Synced means it has every block its peers have offered. A  │╰────────────────────────────────────────────────────────╯
+│ last block this old means none has been offered for a      │╭ Waiting to be mined ───────────────────────────────────╮
+│ while.                                                     ││ waiting     14 payments across the network · 21.4 kB · │
+│ peers       16 out · 3 in                                  ││ oldest 3d 03h ago                                      │
+│ version     0.18.5.1-release · mainnet                     ││ their fees  0.000427 XMR altogether                    │
+│                                                            ││ XMR a byte  cheapest 0.00000002 · normal 0.00000008    │
+╰────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────────────────╯
+╭ Peers  3 ──────────────────────────────────────────────────────────────╮╭ Notes ─────────────────────────────────────╮
+│ HOST                   │DOING         │BLOCK      │AVERAGE DOWN / UP   ││ • Only 96 GB free on the disk your node    │
+│ 203.0.113.17          ╭ Before contacting anyone ────────────────────────────────────────────╮of the blockchain      │
+│ 198.51.100.42         │                                                                      │, and it keeps         │
+│ 192.0.2.201           │ Getting the list tells monero.fail your IP address.                  │                       │
+│                       │ Checking a node tells that node too. Nothing else is contacted.      │ that disk, or press d │
+│                       │                                                                      │                       │
+│                       │ monero.fail's figures are its own measurements. They are not a       │ fmonero without       │
+│                       │ recommendation, and not yours.                                       │ord.                   │
+│                       │                                                                      │his machine can reach  │
+│ [b] Show blocked addre│ Enter continues · Esc cancels                                        │ urgent.               │
+╰───────────────────────│                                                                      │                       │
+╭ Public nodes ─────────╰──────────────────────────────────────────────────────────────────────╯                       │
+│ No list of public nodes yet.                                           ││                                            │
+│ [f] Get the list                                                       ││                                            │
+│ Getting the list tells monero.fail your IP address. Nothing else is    ││                                            │
+│ contacted.                                                             ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+╰────────────────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────╯
+● node synced block 3 541 122 · 16 out · 3 in ● wallet open 1.234567891234 XMR                         ⇥ screens  ? help

@@ -1,0 +1,40 @@
+  1 Node    2 Wallet    3 Send  [ 4 Log ]                                                               network mainnet
+╭ Log  follow on  /tmp/tmp.0OEvlBcRjJ/bitmonero.log ───────────────────────────────────────────────────────────────────╮
+│ / search the log                                                                                                     │
+│ 2026-09-16 14:02:09.114 I Monero 'Fluorine Fermi' (v0.18.5.1-release) started                                        │
+│╭ Keys · any key closes ─────────────────────────────────────────────────────────────────────────────────────────────╮│
+││                                                                                                                    ││
+││ Tab  ⇧Tab  Ctrl+C  screens · quit. Always in a field and while something runs. A pop-up holding unfinished work    ││
+││                    asks for Esc first. Quit twice to stop a job first.                                             ││
+││ 1 2 3 4  q         the same two, but only when no field has focus. Esc leaves a field.                             ││
+││ ?  r               this help · check now                                                                           ││
+││ Esc                close this help, else leave the field, else stop what is running                                ││
+││ mouse              click tabs, rows, fields and every [key] chip. The wheel scrolls. Right-click is Esc.           ││
+││ ↑↓  j k            move the selection in a list or a table. Nothing is selected until you press one.               ││
+││ u  d  b            Node: start · stop your node · swap the peers table for the blocked addresses                   ││
+││ L  S               Node: change how much your node logs (it asks first) · set your own node up                     ││
+││ p  f               Node: check the listed nodes · get a fresh list                                                 ││
+││ Enter  a  H        Node: use the selected node (it asks first) · add an address · go back to the last one          ││
+││ l                  Node: use your own node instead (it asks first)                                                 ││
+││ o  c  x            Wallet: open a wallet · create one · close the open wallet                                      ││
+││ W                  Wallet: start the wallet service, or stop it when nothing is open                               ││
+││ a  l  n            Wallet: new address · rename the selected one · edit the note on the selected payment           ││
+││ R  Q  P            Wallet: check for payments · show the address as a QR code · clear a payment record fmonero     ││
+││                    lost track of (it asks first)                                                                   ││
+││ /  t               Wallet: filter the rows · change which kinds of payment show                                    ││
+││ ←→  Enter          Wallet: swap panes · copy an address · open a row                                               ││
+││ Send: ↑↓  Enter    next/previous field · works out the fee. Tab leaves the form, Esc leaves a field, Enter goes    ││
+││                    back in.                                                                                        ││
+││ pop-ups: ↑↓  Enter move between a pop-up's fields · next, then confirm on the last one                             ││
+││ Send: p  Ctrl+P  @ change the fee level (on its row, or from anywhere) · address book                              ││
+││ Send: ←→           on the Fee or Account row: change it                                                            ││
+││ Send: type "send"  typing the word confirms. Esc discards. Once sent it cannot be taken back.                      ││
+││ Log: /  f  n N     search · follow · next/previous match                                                           ││
+││ sweep              sends everything you have. In a terminal: fmonero wallet sweep <address> --dry-run              ││
+││                                                                                                                    ││
+│╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯│
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+● node synced block 3 541 122 · 16 out · 3 in ● wallet open 1.234567891234 XMR                         ⇥ screens  ? help

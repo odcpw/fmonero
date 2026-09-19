@@ -227,7 +227,7 @@ impl SendScreen {
             Ok(p) => (
                 format!(
                     "{dest} · {} XMR · Enter works out the fee. Nothing is sent yet.",
-                    p.to_xmr_string()
+                    p.to_xmr_money()
                 ),
                 true,
             ),
@@ -698,16 +698,15 @@ fn view_preview(m: &Tui, area: Rect, frame: &mut ftui::Frame) {
     lines.push(Line::from_spans([
         Span::styled("Amount  ".to_string(), th.dimmed()),
         Span::styled(
-            // **Eight decimals once the fee is known** (round 4 iteration 3): with a plan in hand
-            // this pane shows an Amount, a Fee and a Total, and `0.0100` above `0.00003072` above
-            // `0.01003072` is the same three-precisions-in-one-column the confirm modal had. Before
-            // the plan exists it is the figure the reader typed, which is theirs to read.
-            match (amount, &s.stage) {
-                (Some(a), Stage::Built(_)) => {
-                    format!("{} XMR", a.to_xmr_min(Piconero::FEE_DECIMALS))
-                }
-                (Some(a), _) => format!("{} XMR", a.to_xmr_string()),
-                (None, _) => "—".to_string(),
+            // **Eight decimals, always** (round 5, M1). Round 4 iteration 3 put the Amount, the Fee
+            // and the Total at one precision once a plan existed, and left the pre-plan Amount at
+            // four on the argument that it is "the figure the reader typed" — so the number changed
+            // shape under him at the moment he pressed Enter: `Amount 0.1000 XMR` became
+            // `Amount 0.10000000 XMR`. The reader is deciding about one amount; it has one shape on
+            // this path, and `Piconero::to_xmr_money` is where that decision lives.
+            match amount {
+                Some(a) => format!("{} XMR", a.to_xmr_money()),
+                None => "—".to_string(),
             },
             th.text(),
         ),

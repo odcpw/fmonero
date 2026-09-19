@@ -55,8 +55,22 @@ export FMONERO_CACHE_DIR="$WORK/cache"
 # a wallet — `wallet_dir::list` reads `*.keys` basenames and no wallet bytes — but a gate that
 # asserts an EMPTY state has to own the folder it calls empty.
 export XDG_DATA_HOME="$WORK/data"
+# **And the two the §2i seam needs** (round 5, V18/S11's structural half, and the rule now in
+# `CLAUDE.md`). `FMONERO_STATE_DIR` moves fmonero's own files; it does **not** move
+# `systemctl --user`. Without these two, `detect_layout` read the OWNER's real unit files and asked
+# his real manager whether they were active — so this gate's `Layout` was whatever his machine
+# happened to be in, and on 2026-09-19 a sandbox that made the same omission started his real
+# `monerod` for thirty seconds (DECISIONS: V18). The fixture is empty, which is exactly this
+# scenario: no unit is installed and nothing is running, so `Layout::None` — the first state a
+# fresh machine is in, and the one round 5's S10 is about.
+export FMONERO_SYSTEMD_USER_DIR="$WORK/systemd/user"
+export FMONERO_SYSTEMCTL_FIXTURE="$WORK/systemctl.fixture"
+# And nothing may reach monero.fail: `f` in the picker fetches, and the §2n.5 notice is the only
+# thing standing in front of it. A local `--static` mock is the belt to that braces.
+export FMONERO_NODES_URL="http://127.0.0.1:18295/nodes.json"
 mkdir -p "$FMONERO_STATE_DIR/run" "$FMONERO_CONFIG_DIR" "$FMONERO_CACHE_DIR" \
-         "$XDG_DATA_HOME/fmonero/wallets/mainnet"
+         "$XDG_DATA_HOME/fmonero/wallets/mainnet" "$FMONERO_SYSTEMD_USER_DIR"
+: > "$FMONERO_SYSTEMCTL_FIXTURE"
 chmod 700 "$FMONERO_STATE_DIR" "$FMONERO_CONFIG_DIR" "$FMONERO_CACHE_DIR"
 chmod 700 "$XDG_DATA_HOME/fmonero" "$XDG_DATA_HOME/fmonero/wallets" \
           "$XDG_DATA_HOME/fmonero/wallets/mainnet"
@@ -74,6 +88,10 @@ if [ -n "$CAPTURE" ]; then
           --log "$WORK/node.jsonl" >/dev/null 2>&1 & MOCKS+=("$!")
   "$MOCK" --role wallet --port "$WALLET_PORT" --fixtures "$ROOT/tests/fixtures" \
           --log "$WORK/wallet.jsonl" --auth fmonero:t3st >/dev/null 2>&1 & MOCKS+=("$!")
+  # §2n.7's own mode, so `FMONERO_NODES_URL` points at this machine and a stray `f` cannot reach
+  # monero.fail. Nothing in this script presses Enter on the notice, so nothing fetches either way.
+  "$MOCK" --static "$ROOT/tests/fixtures/nodes" --port 18295 \
+          --log "$WORK/nodes.jsonl" >/dev/null 2>&1 & MOCKS+=("$!")
   # **Our** mocks must own those ports.` bind` failing is silent — the process exits and a
   # listener left over from another run answers in its place, serving the same fixtures from a
   # log this run cannot read. Everything on screen then looks right while every "the mock
@@ -130,7 +148,7 @@ printf '\n== the TUI on a pty (%s)\n' "$SCENARIO"
 # for. Verified on this machine: with a server already running, `tmux new-session -d 'echo
 # [$FMONERO_STATE_DIR]'` prints `[]`.
 tmux new-session -d -s "$SESSION" -x 120 -y 40 \
-  "env FMONERO_STATE_DIR=$FMONERO_STATE_DIR FMONERO_CONFIG_DIR=$FMONERO_CONFIG_DIR FMONERO_CACHE_DIR=$FMONERO_CACHE_DIR XDG_DATA_HOME=$XDG_DATA_HOME $FM tui 2>$WORK/tui.err; echo \$? > $WORK/rc"
+  "env FMONERO_STATE_DIR=$FMONERO_STATE_DIR FMONERO_CONFIG_DIR=$FMONERO_CONFIG_DIR FMONERO_CACHE_DIR=$FMONERO_CACHE_DIR XDG_DATA_HOME=$XDG_DATA_HOME FMONERO_SYSTEMD_USER_DIR=$FMONERO_SYSTEMD_USER_DIR FMONERO_SYSTEMCTL_FIXTURE=$FMONERO_SYSTEMCTL_FIXTURE FMONERO_NODES_URL=$FMONERO_NODES_URL $FM tui 2>$WORK/tui.err; echo \$? > $WORK/rc"
 sleep 2
 
 # And the sandbox is asserted, not assumed: if the pane is not in it, everything below is a test
@@ -297,6 +315,60 @@ case "$PTEXT" in
   *"list  old"*|*"0 nodes ·"*) bad "the footer must be SUPPRESSED with no cache, not rendered empty" ;;
   *) ok "and no footer is rendered against a fetched_at that does not exist" ;;
 esac
+# **Round 5, S10: the first state a fresh machine is in, on a real pty.** With no unit written and
+# nothing running, `may_mutate_node` answered `u`, `d` and `L` with *"Another program on this machine
+# runs this node"* — about a node that does not exist — while the hero two rows above invited `u`.
+# The hero's own line is only reachable when nothing is answering: with a node up — which is what
+# `--capture` has, because the mock answers — the hero shows the sync instead, correctly. So the
+# sentence is asserted in the default mode, where there is no daemon of any kind, and the KEY is
+# asserted in both: `u` refuses on the layout, not on whether something answered.
+if [ -z "$CAPTURE" ]; then
+  case "$PTEXT" in
+    *"has not set up your node yet"*) ok "S10: the hero says nobody has set this node up" ;;
+    *) bad "the hero does not name the state this sandbox is in" "$(printf '%s' "$PTEXT" | sed -n '2,6p')" ;;
+  esac
+else
+  printf '  skip  S10 the hero: the capture run has a node answering, so the hero shows its sync\n'
+fi
+tmux send-keys -t "$SESSION" u 2>/dev/null || true; sleep 1
+UTEXT="$(pane)"
+# Two true sentences, and which one depends on whether anything is answering — round 5's own read of
+# its own captures found the wrong one: with the mock up, `fmonero has not set up your node yet` sat
+# under a hero reading `● Synced`. Both were true and a reader cannot hold them together.
+if [ -n "$CAPTURE" ]; then
+  WANT="Something else is answering on that port"
+else
+  WANT="has not set up your node yet"
+fi
+case "$UTEXT" in
+  *"$WANT"*) ok "S10: and so does u, instead of blaming another program" ;;
+  *) bad "u did not name the true state (wanted '$WANT')" "$(printf '%s' "$UTEXT" | tail -3)" ;;
+esac
+case "$UTEXT" in
+  *"Another program"*) bad "u still claims another program runs a node that does not exist" ;;
+  *) ok "S10: and it no longer claims another program owns it" ;;
+esac
+# **Round 5, S6: the consent modal's own control line, at the size the owner runs.** `grep -c
+# "Enter continues"` over all seventy-eight of round 4's captures returned 0: the overlay asked for
+# ten rows and the six sentences needed eleven. Esc cancels, so nothing is fetched here.
+tmux send-keys -t "$SESSION" f 2>/dev/null || true; sleep 1
+NTEXT="$(pane)"
+[ -n "$CAPTURE" ] && printf '%s
+' "$NTEXT" > "$CAPTURE/notice.txt"
+case "$NTEXT" in
+  *"Before contacting anyone"*) ok "S6: f shows the §2n.5 notice before anything is contacted" ;;
+  *) bad "the notice did not appear" "$(printf '%s' "$NTEXT" | sed -n '8,18p')" ;;
+esac
+case "$NTEXT" in
+  *"Enter continues · Esc cancels"*) ok "S6: and its keys are ON SCREEN at 120x40" ;;
+  *) bad "the notice's own control line is off screen" "$(printf '%s' "$NTEXT" | sed -n '8,20p')" ;;
+esac
+tmux send-keys -t "$SESSION" Escape 2>/dev/null || true; sleep 0.6
+if [ -s "$WORK/nodes.jsonl" ]; then
+  bad "Esc on the notice fetched a list anyway" "$(head -2 "$WORK/nodes.jsonl")"
+else
+  ok "S6: Esc contacted nothing (the static mock's log is empty)"
+fi
 
 # 3. The picker WITH a cache: two column groups, a health ratio beside its sample size, and the
 #    footer that surfaces `skipped_no_port`. The cache is written here, so nothing is fetched.
@@ -461,7 +533,7 @@ env FMONERO_STATE_DIR="$R_STATE" FMONERO_CONFIG_DIR="$R_CONFIG" FMONERO_CACHE_DI
 env FMONERO_STATE_DIR="$R_STATE" FMONERO_CONFIG_DIR="$R_CONFIG" FMONERO_CACHE_DIR="$R_CACHE" \
   "$FM" settings set node.mode remote >/dev/null
 tmux new-session -d -s "$REMOTE_SESSION" -x 120 -y 40 \
-  "env FMONERO_STATE_DIR=$R_STATE FMONERO_CONFIG_DIR=$R_CONFIG FMONERO_CACHE_DIR=$R_CACHE XDG_DATA_HOME=$XDG_DATA_HOME $FM tui 2>$WORK/tui-remote.err; echo \$? > $WORK/rc-remote"
+  "env FMONERO_STATE_DIR=$R_STATE FMONERO_CONFIG_DIR=$R_CONFIG FMONERO_CACHE_DIR=$R_CACHE XDG_DATA_HOME=$XDG_DATA_HOME FMONERO_SYSTEMD_USER_DIR=$FMONERO_SYSTEMD_USER_DIR FMONERO_SYSTEMCTL_FIXTURE=$FMONERO_SYSTEMCTL_FIXTURE FMONERO_NODES_URL=$FMONERO_NODES_URL $FM tui 2>$WORK/tui-remote.err; echo \$? > $WORK/rc-remote"
 sleep 2
 tmux send-keys -t "$REMOTE_SESSION" 1 2>/dev/null || true
 sleep 1.5

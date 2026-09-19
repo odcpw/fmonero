@@ -3074,6 +3074,7 @@ fn a_pending_record_can_be_resolved_from_the_wallet_screen() {
         "does not cancel anything",
         "will not let you send again",
         "stops you paying twice",
+        "look at your payments first",
         "y to confirm · Esc cancels",
     ] {
         assert!(
@@ -3194,4 +3195,64 @@ fn the_payments_ledger_carries_the_year_at_the_owners_widths() {
         note.contains(&stamp),
         "the note modal's title has no year:\n{note}"
     );
+}
+
+/// **M10: the Log screen names its file, and a title cannot wrap.**
+///
+/// The title read `╭ Log  follow on  /tmp/claude-1000/…-620b5efc18d… ╮` at both sizes — the path
+/// elided mid-token, in the only place in the product the file is named, and `fit` is right for a
+/// table cell and wrong for the one string a reader may need to type. The title keeps the path when
+/// it fits whole and the pane's own first row carries it, hard-chunked, when it does not.
+#[test]
+fn the_log_screen_names_its_file_whole_at_every_width() {
+    let dir = std::env::temp_dir().join(format!(
+        "fmonero-tui-logpath-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut ctx = Context::for_test(&dir).expect("test context");
+    ctx.settings.node.url = "http://127.0.0.1:1".into();
+    ctx.settings.wallet.url = "http://127.0.0.1:2".into();
+    // A path no title can hold: 168 characters, the shape a scratch workspace produces.
+    let long = dir.join(format!(
+        "{}/bitmonero.log",
+        "a-very-long-workspace-segment".repeat(4)
+    ));
+    std::fs::create_dir_all(long.parent().expect("a parent")).expect("dirs");
+    std::fs::write(&long, b"2026-09-16 14:02:11 INFO synced\n").expect("a log");
+    ctx.settings.node.log_file = long.clone();
+    let path = long.display().to_string();
+    assert!(path.chars().count() > 150, "{}", path.chars().count());
+    let s = sim(model(&ctx, Screen::Log));
+    for (w, h) in [(120u16, 32u16), (150, 40)] {
+        let text = sim_text(&s, w, h);
+        // Whole, in order, with the wrapping and the pane's chrome taken out.
+        let flat: String = text
+            .chars()
+            .filter(|c| !c.is_whitespace() && *c != '│' && *c != '╭' && *c != '╮' && *c != '─')
+            .collect();
+        assert!(
+            flat.contains(&path),
+            "{w}x{h} lost part of the log path:\n{text}"
+        );
+        // And nothing in the frame is elided: `fit`'s ellipsis is what this replaced.
+        assert!(
+            !text.contains('…'),
+            "{w}x{h} still elides something:\n{text}"
+        );
+        // A short path goes back in the title, which is where one fact belongs when it fits.
+        assert!(text.contains("Log  follow"), "{text}");
+    }
+    let mut short = ctx.clone();
+    short.settings.node.log_file = dir.join("bitmonero.log");
+    std::fs::write(&short.settings.node.log_file, b"x\n").expect("a log");
+    let s = sim(model(&short, Screen::Log));
+    let text = sim_text(&s, 150, 40);
+    let title = text.lines().nth(1).unwrap_or_default().to_string();
+    assert!(
+        title.contains(&short.settings.node.log_file.display().to_string()),
+        "a path that fits belongs in the title: {title}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

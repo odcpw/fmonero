@@ -1619,11 +1619,19 @@ fn pool_pane(m: &Tui, area: Rect, frame: &mut Frame) {
                 th,
                 "waiting",
                 format!(
-                    "{} · {} · oldest {oldest}",
+                    "{} · {}",
                     fmonero_core::payments_across_the_network(p.txs_total),
                     bytes(p.bytes_total)
                 ),
             ));
+            // **The age on its own row, because the row it shared could not hold both** (round 5,
+            // M8). This pane is 54 cells at 120 columns and the label takes 12, so
+            // `14 payments across the network · 21.4 kB · oldest 3d 03h ago` wrapped — and
+            // `lines_at`'s word wrap returns to column 0, which puts `oldest 3d 03h ago` under the
+            // label column reading as a row of its own with no label. Two short rows say the same
+            // two facts and cost the pane nothing: it has four, and this is the fourth shape they
+            // take.
+            lines.push(kv(th, "oldest", oldest.clone()));
             // **S3: this is a total and the row says so**, in the CLI's own words for the same
             // figure (`they take 21.4 kB and carry 0.000427 XMR in fees`). `their fees` under a
             // title that said `per byte` was the whole of the confusion.
@@ -2237,7 +2245,7 @@ fn subaddress_pane(m: &Tui, area: Rect, frame: &mut Frame) {
                         .iter()
                         .find(|s| s.address_index == a.address_index)
                 })
-                .map_or("—".to_string(), |s| s.balance.to_xmr_string());
+                .map_or("—".to_string(), |s| s.balance.to_xmr_money());
             // `used` is a marker on the address rather than a column of its own: at 48
             // columns a fifth column is a cut column, and a cut `used` reads as `us`.
             let addr = format!(
@@ -2371,7 +2379,14 @@ impl RenderItem for HistoryItem<'_> {
             // to be mined (§2o rule 5, self-read round 3). The style below still keys on the wire
             // value, which is what `--json` carries.
             t.kind.words(),
-            t.amount.to_xmr_string(),
+            // **One shape for money in this ledger** (round 5's own read of its captures). The
+            // column showed `0.1000` while the `Enter` detail view of the same row showed
+            // `0.10000000` and the note modal's title a third — one payment, three renderings, two
+            // of them in the same frame because the modal is drawn over the list. Eight decimals is
+            // what a COLUMN of money wants (M4's own argument, applied to the column beside the one
+            // it fixed): `0.10000000` and `1.234567891234` line their points up, and `0.1000` beside
+            // `1.234567891234` does not.
+            t.amount.to_xmr_money(),
             w = self.cols.when,
         );
         if self.cols.confirms {
@@ -2653,17 +2668,20 @@ fn detail_modal(m: &Tui, frame: &mut Frame) {
         // **The fee only where there is a fee of yours** (round 4 iteration 3): a received or
         // mined payment carries the SENDER's fee, and printed beside `Amount` on a row he received
         // it read as money he had paid.
+        // **One precision beside another** (round 5's own read, M1's class): this row read
+        // `0.1000 XMR · your fee 0.00003072 XMR`, two shapes of money in one sentence about one
+        // payment. `to_xmr_money` is the money path's own figure.
         pair(
             "Amount",
             match t.kind {
                 fmonero_core::history::TransferKind::In
                 | fmonero_core::history::TransferKind::Block => {
-                    format!("{} XMR", t.amount.to_xmr_string())
+                    format!("{} XMR", t.amount.to_xmr_money())
                 }
                 _ => format!(
                     "{} XMR · your fee {} XMR",
-                    t.amount.to_xmr_string(),
-                    t.fee.to_xmr_string()
+                    t.amount.to_xmr_money(),
+                    t.fee.to_xmr_money()
                 ),
             },
         ),
@@ -2730,7 +2748,7 @@ fn detail_modal(m: &Tui, frame: &mut Frame) {
     let addr_w = (inner.width as usize).saturating_sub(2).max(8);
     for d in &t.destinations {
         lines.push(Line::styled(
-            format!("  {} XMR", d.amount.to_xmr_string()),
+            format!("  {} XMR", d.amount.to_xmr_money()),
             text,
         ));
         for part in wrapped(&d.address, addr_w) {
@@ -3409,7 +3427,8 @@ fn clear_pending_modal(m: &Tui, frame: &mut Frame) {
         th.text(),
     ));
     text.push((
-        "· so look in the payments list below first, and clear this once you know".to_string(),
+        // Round 5's own read: `the payments list below` is the list this modal is drawn on top of.
+        "· so look at your payments first, and clear this once you know".to_string(),
         th.text(),
     ));
     text.push((String::new(), th.text()));

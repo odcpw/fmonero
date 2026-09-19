@@ -1,0 +1,40 @@
+  1 Node    2 Wallet  [ 3 Send ]  4 Log                                                                 network mainnet
+╭ Send ──────────────────────────────────────────────────────────────╮╭ Preview ───────────────────────────────────────╮
+│ To      DwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm  ││ To                                             │
+│         95 characters typed. The box is showing the end of them.   ││ 42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVd │
+│ Amount  0.01                                                       ││ FCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQA │
+│                                                                    ││ WDm                                            │
+│ Note    optional, kept with this wallet                            ││ Amount  0.01000000 XMR                         │
+│                                                                    ││ Fee     0.00003072 XMR                         │
+│ Fee cheapest  normal  fast  fastest  p · Ctrl+P                    ││ Total   0.01003072 XMR                         │
+│ Account ◂ 0 ▸ ←→ changes it                                        ││ Account 0                                      │
+│ mainnet address · 0.0100 XMR · Enter works out the fee. Nothing    ││ Unlocked 1.234567891234 XMR                    │
+│   is sent yet.                                                     ││                                                │
+│ account 0 · ↑↓ fiel╭ Confirm · this sends money ────────────────────────────────────────────────╮                    │
+│   the form         │                                                                            │                    │
+│                    │ To                                                                         │                    │
+│                    │ 42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9Uxq │                    │
+│                    │ eoyFQMYbqSWYTfJJQAWDm                                                      │                    │
+│                    │ Amount 0.01000000 XMR  (10000000000 piconero)                              │                    │
+│                    │ Fee    0.00003072 XMR  (30720000 piconero)                                 │                    │
+│                    │ Total  0.01003072 XMR  (10030720000 piconero)                              │                    │
+│                    │ Account 0  Fee level normal                                                │                    │
+│                    │                                                                            │                    │
+│                    │ Type "send" and press Enter to send · Esc discards                         │                    │
+│                    │ > _                                                                        │                    │
+│                    │                                                                            │                    │
+│                    ╰────────────────────────────────────────────────────────────────────────────╯                    │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+╰────────────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────────╯
+● node synced block 3 541 122 · 16 out · 3 in ● wallet open 1.234567891234 XMR                         ⇥ screens  ? help

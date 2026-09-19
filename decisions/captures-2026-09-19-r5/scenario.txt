@@ -1,0 +1,1 @@
+fmonero-mock --role node/--role wallet --auth over tests/fixtures/ (no real daemon, no real wallet)
