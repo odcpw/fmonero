@@ -514,6 +514,16 @@ pub struct Tui {
     /// can say `0 wallets` — a real count, so a user can see why `o` will not help before
     /// pressing it (§7a.5).
     wallets: Vec<String>,
+    /// **Why that list is empty, when it is empty because the folder could not be read**
+    /// (round 4, S1).
+    ///
+    /// All four `wallet_dir::list` call sites ended `.unwrap_or_default()`, so a folder fmonero
+    /// was not allowed to read became a folder with no wallets in it, and the Wallet screen then
+    /// told the owner *"none on this machine yet. Press c to create one"* — a false statement
+    /// about his money followed by the one action that writes a new wallet file where the old one
+    /// lives. The CLI on the identical state was honest. This holds core's own sentence for the
+    /// two places that would otherwise substitute one.
+    wallets_err: Option<String>,
 }
 
 /// Run the TUI. `Ok(0)` on a clean quit, the §4a code of the session's last failed action
@@ -600,6 +610,7 @@ impl Tui {
             note_at: Instant::now(),
             hits: hit::Map::default(),
             wallets: Vec::new(),
+            wallets_err: None,
         }
     }
 
@@ -1073,6 +1084,23 @@ impl Tui {
         Cmd::none()
     }
 
+    /// **Re-read `wallet.dir`, keeping the reason when it cannot be read** (round 4, S1).
+    ///
+    /// The one place the TUI learns what wallets exist. Four call sites each did this with
+    /// `.unwrap_or_default()`, which turned "fmonero is not allowed to read your wallet folder"
+    /// into "you have no wallets" — and then the screen offered to create one, in the folder
+    /// holding the one it could not see. An error keeps the list it last had rather than emptying
+    /// it, for the same reason.
+    fn reload_wallets(&mut self) {
+        match wallet_dir::list(&self.ctx) {
+            Ok(names) => {
+                self.wallets = names;
+                self.wallets_err = None;
+            }
+            Err(e) => self.wallets_err = Some(e.to_string()),
+        }
+    }
+
     // ------------------------------------------------------- the public-node picker (§7a.4)
 
     /// Re-read the cache. **Spawns nothing** (`nodes::cached`), which is what lets the Node
@@ -1398,8 +1426,8 @@ impl Tui {
             }
             Screen::Wallet => {
                 // A real count, so the empty state can say `0 wallets` and a user can see why `o`
-                // will not help before pressing it (§7a.5).
-                self.wallets = wallet_dir::list(&self.ctx).unwrap_or_default();
+                // will not help before pressing it (§7a.5) — and S1's reason when there is none.
+                self.reload_wallets();
                 if self.wallet.addresses.is_none() {
                     Cmd::batch(vec![self.load_wallet(), self.load_history()])
                 } else {
@@ -2430,7 +2458,9 @@ impl Tui {
     }
 
     fn open_wallet_modal(&mut self) -> Cmd<Msg> {
-        let names = wallet_dir::list(&self.ctx).unwrap_or_default();
+        // S1: the modal lists what is there, and says why it cannot when it cannot.
+        self.reload_wallets();
+        let names = self.wallets.clone();
         let mut pass = TextInput::new()
             .with_mask('•')
             .with_style(self.theme.text())
@@ -2674,7 +2704,7 @@ impl Model for Tui {
         // The picker reads the **cache** on entry (`nodes::cached`, which cannot spawn), so a fetch
         // is never on the render path and launching the TUI contacts nobody (§2n.5 rule 1, §2n.6).
         self.reload_picker();
-        self.wallets = wallet_dir::list(&self.ctx).unwrap_or_default();
+        self.reload_wallets();
         match self.screen {
             Screen::Wallet => {
                 cmds.push(self.load_wallet());
@@ -2910,11 +2940,12 @@ impl Model for Tui {
                     }
                     Ok(Outcome::Relayed(txids)) => {
                         self.exit.store(0, Ordering::SeqCst);
-                        let first = txids.first().cloned().unwrap_or_default();
-                        // S10: no id in a toast. The screen it jumps to is the answer.
+                        // S10: no id in a toast. The screen it jumps to is the answer, and
+                        // `txids` is what `--json` carries for an agent.
+                        let _ = &txids;
                         self.note("Sent. The payment is at the top of your payments.", false);
                         self.send.clear();
-                        self.send.stage = Stage::Sent(first);
+                        self.send.stage = Stage::Sent;
                         self.screen = Screen::Wallet;
                         self.tabs.borrow_mut().active = Screen::Wallet.index();
                         self.wallet.pane = Pane::History;
@@ -2947,7 +2978,7 @@ impl Model for Tui {
                             );
                         }
                         self.modal = Some(Modal::SeedBackup { lines });
-                        self.wallets = wallet_dir::list(&self.ctx).unwrap_or_default();
+                        self.reload_wallets();
                     }
                     Ok(Outcome::NodeList(list)) => {
                         self.exit.store(0, Ordering::SeqCst);

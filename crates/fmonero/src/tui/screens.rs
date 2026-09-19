@@ -167,7 +167,18 @@ pub(super) fn view(m: &Tui, frame: &mut Frame) {
             pass,
             asking,
         }) => {
-            let rows: Vec<String> = if names.is_empty() {
+            let rows: Vec<String> = if let Some(err) = m.wallets_err.as_deref() {
+                // **S1: fmonero could not read the folder, and it must not say the folder is
+                // empty.** This modal said *"There are no wallets yet, in this folder:"* over a
+                // path holding a wallet, and then named the key that creates a new one. The
+                // sentence core built is the honest one, and the next step is the folder, not a
+                // create.
+                vec![
+                    err.to_string(),
+                    m.ctx.settings.wallet.dir.display().to_string(),
+                    "Press o again once you can read that folder.".into(),
+                ]
+            } else if names.is_empty() {
                 // §2o.1: one key creates a wallet, so the empty state names the key, not the
                 // command it would have printed into a modal nobody can type into.
                 //
@@ -1663,6 +1674,12 @@ fn wallet_empty(m: &Tui, area: Rect, frame: &mut Frame) {
     // what the user is looking for, and the directory is one `fmonero settings get wallet.dir`
     // away for the one reader who wants it.
     let open_label = match m.wallets.len() {
+        // **S1 first**: with the folder unreadable the count is not zero, it is unknown, and the
+        // chip must not name the key that would write a new wallet file on top of an old one.
+        _ if m.wallets_err.is_some() => {
+            "Open a wallet      (fmonero cannot read your wallet folder. Press o to see why)"
+                .to_string()
+        }
         0 => "Open a wallet      (none on this machine yet. Press c to create one)".to_string(),
         n => {
             let names = m.wallets.join(", ");

@@ -254,7 +254,10 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Node,
         class: Class::D,
         severity: Severity::Error,
-        title: "Your node answers",
+        // **S4: the title is true in both modes now.** It read `Your node answers` and skipped
+        // outright with a public node, so the one check that carries this group's alarm had
+        // nothing to say about the node the owner actually uses.
+        title: "The node fmonero uses answers",
         detect: node_reachable,
     },
     CheckDef {
@@ -772,8 +775,42 @@ fn node_layout(p: &Probes) -> Verdict {
 }
 
 fn node_reachable(p: &Probes) -> Verdict {
-    // v5.2, §2m.3: no local daemon, no local chain, no local credential.
-    if let Some(v) = need_local_node(p) {
+    // **S4: with a public node this is the one `node` check that has a source, and it must use
+    // it.** It skipped `remote_node` like the rest of the group, so a `doctor --only node` run
+    // against a silent public node ended `2 OK, 0 need attention, 0 not working` — while the
+    // layout row one line above named the address and `status` said `no answer` about it. The
+    // measurement is §2n.4's cached check, and a check that came back with nothing is a fact.
+    if p.node_mode == "remote" {
+        let Some(ok) = p.remote_check_ok else {
+            return Verdict::skip(
+                "no_remote_check",
+                format!("Nothing has checked {} yet.", p.daemon_address),
+            )
+            .cmd("fmonero status --check-node");
+        };
+        let when = p
+            .remote_check_age_sec
+            .map(|a| fmonero_core::age(a.max(0) as u64))
+            .unwrap_or_else(|| "at some point".to_string());
+        if ok {
+            return Verdict::pass(format!(
+                "The public node {} answered when fmonero checked it {when}.",
+                p.daemon_address
+            ));
+        }
+        // The specific reason where there is one — `too slow` and `refused` are different
+        // problems and the picker's own column says which (§2n.4).
+        let why = fmonero_core::nodes::probe_reason_words(p.remote_check_reason.as_deref());
+        return Verdict::fail(
+            "node_unreachable",
+            format!(
+                "The public node {} did not answer when fmonero checked it {when}: {why}.",
+                p.daemon_address
+            ),
+        )
+        .cmd("fmonero node list   # then: fmonero node remote <address> --yes");
+    }
+    if let Some(v) = need_monerod(p) {
         return v;
     }
     if let Some(v) = need_monerod(p) {
@@ -1041,11 +1078,11 @@ fn wallet_rpc_auth(p: &Probes) -> Verdict {
     if !p.wallet_login_file.owner_only() {
         return Verdict::fail(
             "login_file_readable",
+            // M14: the mode in octal is a number a reader who has never used a terminal
+            // cannot act on, and the sentence beside it already says what it means.
             format!(
-                "{} is {:04o}, so other people who use this machine can read it. Only you \
-                 may.",
-                p.wallet_login_file.path,
-                p.wallet_login_file.mode.unwrap_or(0)
+                "Other people who use this machine can read {}. Only you may.",
+                p.wallet_login_file.path
             ),
         )
         .cmd(
@@ -1237,12 +1274,13 @@ fn wallet_dir_exists(p: &Probes) -> Verdict {
         let list: Vec<String> = p
             .wallet_dir_bad_modes
             .iter()
-            .map(|(path, mode)| format!("{path} is {mode:04o}"))
+            // M14: the paths, not their modes.
+            .map(|(path, _mode)| path.clone())
             .collect();
         return Verdict::warn(
             "bad_mode",
             format!(
-                "Other people who use this machine can look inside your wallet directories: {}. \
+                "Other people who use this machine can look inside your wallet folders: {}. \
                  Only you may.",
                 list.join(", ")
             ),
@@ -1602,16 +1640,20 @@ fn remote_node_untrusted(p: &Probes) -> Verdict {
             "You are using your own node, which fmonero trusts because it is yours.",
         );
     }
+    // **M15: one node, one name.** `remote_host` strips the port, so the row above this one said
+    // `the public node 127.0.0.1:18099` and this one said `127.0.0.1` — the same node, one line
+    // apart, in two spellings. The address as the user set it is the name; `remote_host` stays for
+    // the private-network test below, which is about the host and not about what to call it.
+    let addr = p.daemon_address.as_str();
     let host = fmonero_core::settings::remote_host(&p.daemon_address);
     if !p.daemon_trusted {
         return Verdict::pass(format!(
-            "fmonero does not tell {} which amounts your wallet holds.",
-            host
+            "fmonero does not tell {addr} which amounts your wallet holds."
         ));
     }
     if fmonero_core::settings::is_private_host(host) {
         return Verdict::pass(format!(
-            "{host} is an address on your own network, which is the one case for trusting a node \
+            "{addr} is an address on your own network, which is the one case for trusting a node \
              you did not start yourself."
         ));
     }
@@ -1621,7 +1663,7 @@ fn remote_node_untrusted(p: &Probes) -> Verdict {
     Verdict::warn(
         "trusted_public_node",
         format!(
-            "{host} is trusted, so your wallet puts the amounts it holds inside the questions it \
+            "{addr} is trusted, so your wallet puts the amounts it holds inside the questions it \
              asks that node. If the node is yours, give it by its address on your own network \
              instead of by name: fmonero never treats a name as private, because working that \
              out means asking the network."
@@ -2085,11 +2127,12 @@ fn monerod_conf_mode(p: &Probes) -> Verdict {
     }
     match p.monerod_conf.mode {
         Some(0o600) => Verdict::pass(format!("Only you can read {}.", p.monerod_conf.path)),
-        Some(m) => Verdict::fail(
+        Some(_) => Verdict::fail(
             "bad_mode",
+            // M14: no octal mode in front of a reader.
             format!(
-                "{} is {m:04o}, so other people who use this machine can read it. It holds the \
-                 password your node asks for, so only you may.",
+                "Other people who use this machine can read {}. It holds the password your node \
+                 asks for, so only you may.",
                 p.monerod_conf.path
             ),
         )
@@ -2143,17 +2186,16 @@ fn state_perms(p: &Probes) -> Verdict {
     let daemon: Vec<String> = bad
         .iter()
         .filter(|x| x.daemon_owned)
-        .map(|x| format!("{} can be read by others ({:04o})", x.path, x.mode))
+        // M14: the path, not its mode.
+        .map(|x| format!("{} can be read by others", x.path))
         .collect();
     let ours: Vec<String> = bad
         .iter()
         .filter(|x| !x.daemon_owned)
-        .map(|x| {
-            format!(
-                "{} can be read by others ({:04o}). It should be {:04o}.",
-                x.path, x.mode, x.want
-            )
-        })
+        // M14: `(0755). It should be 0700.` is two numbers a reader cannot act on, in a check
+        // whose verdict is `not working`. What it means is the first half of the sentence, and
+        // the fix line below is what to do about it.
+        .map(|x| format!("{} can be read by others, and only you may read it", x.path))
         .collect();
     if ours.is_empty() {
         // Never chmod'ed: the daemon recreates them on every start and

@@ -62,7 +62,11 @@ pub(super) enum Stage {
     Built(Box<Plan>),
     Relaying,
     /// The toast after a successful relay; any key returns to Form.
-    Sent(String),
+    ///
+    /// It carried the txid until round 4's S10 deleted every id from the TUI's prose. The
+    /// variant carries nothing now: the screen says where the payment is, and `--json` has
+    /// the id.
+    Sent,
 }
 
 /// What a key press asks the model to do. The model owns every `Cmd` and every action.
@@ -247,7 +251,7 @@ impl SendScreen {
         if self.picker.is_some() {
             return self.on_picker_key(k);
         }
-        if let Stage::Sent(_) = self.stage {
+        if let Stage::Sent = self.stage {
             self.back_to_form();
         }
         let ctrl = k.modifiers.contains(ftui::Modifiers::CTRL);
@@ -566,7 +570,7 @@ pub(super) fn view(m: &Tui, area: Rect, frame: &mut ftui::Frame, tier: Tier) {
         // characters). An elided id is not a value: it cannot be pasted, filtered on or read
         // out. What the reader wants after a send is where the payment is, and it is one row
         // below on the screen this line sits at the bottom of.
-        Stage::Sent(_) => Line::styled(
+        Stage::Sent => Line::styled(
             "Sent. The payment is at the top of your payments.".to_string(),
             th.ok(),
         ),

@@ -353,6 +353,9 @@ fn not_checked_because(reason: &str) -> Option<&'static str> {
         "unit_missing" => "the services are not set up yet",
         "no_version_line" => "your node printed no version",
         "node_unreachable" | "no_get_info" => "your node did not answer",
+        // S4: nothing has ever checked the configured public node — a different fact from a
+        // check that came back empty, which is a `fail` and not a skip.
+        "no_remote_check" => "nothing has checked it yet",
         "node_restricted" => "it only answers basic questions",
         "node_syncing" => "your node is still syncing",
         "node_offline" => "your node is set to stay offline",

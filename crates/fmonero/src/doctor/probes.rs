@@ -328,6 +328,16 @@ pub struct Probes {
     pub daemon_address: String,
     pub daemon_trusted: bool,
     pub daemon_ssl: String,
+    /// **The cached check of the configured public node** (round 4, S4).
+    ///
+    /// In remote mode every other source in the `node` group is gone (§2m.3), which is why
+    /// `doctor --only node` reported `0 need attention, 0 not working` about a public node the
+    /// same run said `no answer` about one line above. This is §2n.4's stored result, read out of
+    /// `state.json` — no process and no socket, so it belongs to `empty` like the three fields
+    /// above it. `None` means nothing has ever checked this address.
+    pub remote_check_ok: Option<bool>,
+    pub remote_check_age_sec: Option<i64>,
+    pub remote_check_reason: Option<String>,
     pub node_taken: bool,
     pub node_reachable: bool,
     pub node_error: Option<String>,
@@ -500,6 +510,14 @@ impl Probes {
         if remote {
             // `node_layout` still needs the layout string, and it costs nothing here.
             p.layout = Layout::Remote.as_str().to_string();
+            // S4: and so does `node_reachable`, which had nothing to answer with and skipped.
+            if let Ok(Some(probe)) =
+                fmonero_core::state::remote_probe(ctx, &units::daemon_target(ctx).address)
+            {
+                p.remote_check_ok = Some(probe.reachable);
+                p.remote_check_age_sec = Some((fmonero_core::now_unix() - probe.probed_at).max(0));
+                p.remote_check_reason = probe.reason.map(str::to_string);
+            }
         }
 
         // ---- wallet ---------------------------------------------------------
@@ -541,6 +559,10 @@ impl Probes {
             daemon_address: units::daemon_target(ctx).address,
             daemon_trusted: units::daemon_target(ctx).trusted,
             daemon_ssl: units::daemon_target(ctx).ssl.to_string(),
+            // S4: the one measurement the node group still has with a public node.
+            remote_check_ok: None,
+            remote_check_age_sec: None,
+            remote_check_reason: None,
             node_taken: false,
             node_reachable: false,
             node_error: None,

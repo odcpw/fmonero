@@ -750,7 +750,7 @@ fn the_send_screen_builds_once_and_relays_that_exact_transaction() {
     assert!(!relayed.is_empty());
 
     // The toast, the jump to the Wallet screen, and a cleared form (§7a step 5).
-    assert!(matches!(sim.model().send.stage, Stage::Sent(_)));
+    assert!(matches!(sim.model().send.stage, Stage::Sent));
     assert_eq!(sim.model().screen, Screen::Wallet);
     assert!(
         sim.model().send.to.value().is_empty(),
@@ -831,7 +831,9 @@ fn an_unresolved_pending_record_banners_every_screen() {
             // matters is that nothing is CUT OFF, which is what a fixed two-row banner did at
             // 45 columns.
             let flat = text.replace('\n', " ");
-            for needle in ["SENDING", "press 2 for the wallet", &BUILT_TXID[..8]] {
+            // **S10: no id in the banner**, so the three things checked are the amount, the
+            // counter and the route.
+            for needle in ["SENDING", "0.1000 XMR", "press 2 for the wallet"] {
                 assert!(
                     flat.contains(needle),
                     "{screen:?} at {cw}x{ch} lost {needle}:\n{text}"
