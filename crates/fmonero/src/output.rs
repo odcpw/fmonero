@@ -629,11 +629,7 @@ fn own_node_rows(out: &Out, node: &serde_json::Value, unit_active: Option<bool>)
         Some(h) => format!("block {}  ", grouped(h)),
         None => String::new(),
     };
-    out.line(
-        format!("node    {badge}  {}  {block}{whose}", cell(&node["url"]),)
-            .trim_end()
-            .to_string(),
-    );
+    out.line(format!("node    {badge}  {}  {block}{whose}", cell(&node["url"])).trim_end());
     // **Nothing is said with dashes** (X23). With the node off every field below is `null`, and the
     // row read `synced —%  peers — out / — in  waiting —  blockchain —  running —` under a badge
     // that had already said `not answering`: the shape §6.5 deleted from the widget and W3 deleted
