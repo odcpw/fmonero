@@ -1100,7 +1100,7 @@ fn warnings(
                     "history_cache_stale",
                     Severity::Info,
                     detail,
-                    "fmonero wallet history --limit 1   # rebuilds the snapshot",
+                    "fmonero wallet history --limit 1   # writes the saved copy of your payments again",
                     Some("Press R to rebuild it."),
                 );
             }

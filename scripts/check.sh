@@ -391,7 +391,20 @@ HITS_2O=""
 for f in "${COPY_SURFACES[@]}"; do
   while IFS= read -r lit; do
     [ -n "$lit" ] || continue
-    printf '%s\n' "$lit" | grep -qE "$ALLOWED_2O" && continue
+    if printf '%s\n' "$lit" | grep -qE "$ALLOWED_2O"; then
+      # **An allow-listed command's trailing comment is still prose** (v5.6.1). `fmonero …   # …`
+      # and `sudo …   # …` are printed whole, comment included, and the allow-list exempted the
+      # whole literal — which is how `# a restricted node is not ours to reconfigure` sat in a
+      # doctor fix line through the v5.6 round. The command half is exempt; the half after the
+      # `#` is checked like any other sentence.
+      case "$lit" in
+        *'#'*) tail_2o="${lit#*#}" ;;
+        *) continue ;;
+      esac
+      printf '%s\n' "$tail_2o" | grep -qE "$BANNED_2O" || continue
+      HITS_2O="$HITS_2O$f: (comment of a command) #$tail_2o"$'\n'
+      continue
+    fi
     printf '%s\n' "$lit" | grep -qE "$BANNED_2O" || continue
     HITS_2O="$HITS_2O$f: $lit"$'\n'
   done < <(literals_2o "$f")
@@ -439,6 +452,17 @@ if printf '%s\n' "$GOOD_LIT" | grep -qE "$ALLOWED_2O"; then
   pass "self-test: §2o exempts \"In a terminal: omarchy pkg add monero\""
 else
   fail "self-test: §2o would reject its own documented exception"
+fi
+# v5.6.1: and the comment half of an allow-listed command is not exempt with it.
+printf '%s\n' 'let s = "fmonero doctor   # a restricted node is not ours to reconfigure";' \
+  > "$SELF_2O/comment.rs"
+COMMENT_LIT="$(literals_2o "$SELF_2O/comment.rs")"
+COMMENT_TAIL="${COMMENT_LIT#*#}"
+if printf '%s\n' "$COMMENT_LIT" | grep -qE "$ALLOWED_2O" &&
+   printf '%s\n' "$COMMENT_TAIL" | grep -qE "$BANNED_2O"; then
+  pass "self-test: §2o checks the comment of an allow-listed command"
+else
+  fail "self-test: §2o exempts a command's comment as well as its command"
 fi
 
 # ---------------------------------------------------------------- §7a / §6.1 line budgets

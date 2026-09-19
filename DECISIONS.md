@@ -10851,7 +10851,7 @@ moved, so §2k's manifest freeze holds.
   this round reported `ok    widget is loaded (cursor: …)` and nothing else.
 
   `tests/plugin-smoke.sh --static` — the repository half, which is what a machine without a running
-  shell can check — is **68 passed, 0 failed**.
+  shell can check — is **70 passed, 0 failed**.
 
   ### V16 — the header's balance, against real `status --json` documents
 
@@ -10890,7 +10890,31 @@ moved, so §2k's manifest freeze holds.
   estimate, §7a.3 (the `this wallet` row), §7a.4 (the named columns and the health cell), §7a.5 (the
   fifth service string and the new chip). `docs/COPY.md` gains §8 for the round and a widened §5.
 
-  ### The gates, command by command, at `54b0174` on this machine
+  ### Two more holes the round found in its own greps
+
+  Both were found by using the new step rather than by reading it, which is the argument §2o.3 makes
+  for having a self-test at all.
+
+  1. **An allow-listed command's trailing comment was exempt with it.** A fix line is printed whole,
+     so `fmonero doctor   # a restricted node is not ours to reconfigure` is a sentence a person
+     reads — and the allow-list, which exempts a literal for *beginning* with a command, exempted the
+     comment too. The step now splits at the `#` and checks the half after it; four real literals
+     fired immediately (`# rewrites both units from the template`, two `# rebuilds the cache …`, one
+     `# rebuilds the snapshot`) and are rewritten, and a fifth self-test plants one.
+  2. **`plugin-smoke`'s first draft of the V16 grep was a broken pipeline** — `grep -q … | grep -q …`,
+     which produces nothing to pipe and can only ever report `ok`. It is a real `forbid` now, scoped
+     to a line that also names an amount (the shape `scripts/check.sh` uses for its `as f64` half),
+     with a positive fixture proving it fires and a negative one proving it leaves `bytes()`'s
+     legitimate `toFixed` alone. A blanket `toFixed` ban fired on that function, which is the trap
+     §6.7 names: a grep that fails on correct code is a grep the next agent relaxes.
+
+  **Two `systemctl` fix lines survive V10's rule, and the reason is in the code.** Both are
+  `sudo systemctl status monerod`, for the `system_unit` layout — a node fmonero does not own. The rule
+  is about fmonero reaching around itself to start and stop its **own** services; there is no fmonero
+  command that can say anything about Arch's node, `status` is read-only, and the alternative is a fix
+  line with no fix in it.
+
+  ### The gates, command by command, at `28d0b57` on this machine
 
   ```
   $ cargo fmt --all --check                                    exit 0
@@ -10902,13 +10926,14 @@ moved, so §2k's manifest freeze holds.
       test result: ok. 3 passed;   0 failed        (fmonero-mock)
       test result: ok. 0 passed;   0 failed        (doc-tests)      313 total, exit 0
   $ scripts/check.sh --full
-      check.sh: PASS          69 ok, 0 FAIL, 1 skip (shellcheck absent; bash -n ran instead)
+      check.sh: PASS          70 ok, 0 FAIL, 1 skip (shellcheck absent; bash -n ran instead)
       ok    §2o rule 7: no banned word in … (15 files)    ok  self-test: fires on all three of V17's holes
+      ok    self-test: §2o checks the comment of an allow-listed command
       ok    §7a: 7843 lines (budget 7900)                 ok  §6.1: 1544 of 1561        exit 0
   $ tests/e2e.sh --fast          576 passed, 0 failed, 3 skipped      exit 0
   $ tests/e2e.sh --full          610 passed, 0 failed, 3 skipped      exit 0
-  $ tests/plugin-smoke.sh        71 passed, 2 failed                  exit 1   ← V1, see above
-  $ tests/plugin-smoke.sh --static  68 passed, 0 failed               exit 0
+  $ tests/plugin-smoke.sh        73 passed, 2 failed                  exit 1   ← V1, see above
+  $ tests/plugin-smoke.sh --static  70 passed, 0 failed               exit 0
   $ tests/tui_tmux.sh            38 passed, 0 failed                  exit 0
   $ tests/tui_tmux.sh --capture  41 passed, 0 failed                  exit 0
   ```

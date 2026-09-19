@@ -713,6 +713,12 @@ fn node_layout(p: &Probes) -> Verdict {
         "user_unit" => Verdict::pass(format!("fmonero runs your node at {}.", p.node_url)),
         // §0: Arch's node is "detected, used read-only, never fought". That is a healthy
         // layout, not a defect — the node mutators are simply not ours to call (§2i).
+        //
+        // **The one place `systemctl` survives a fix line, and V10's rule is why it may.** That
+        // rule is about fmonero reaching around itself to start and stop its OWN services, which
+        // it now never suggests. This node is not fmonero's: there is no fmonero command that can
+        // tell you anything about it, `status` is read-only, and the alternative would be a fix
+        // line with no fix in it.
         "system_unit" => {
             Verdict::pass(fmonero_core::FOREIGN_NODE_INFO).cmd("sudo systemctl status monerod")
         }
@@ -780,7 +786,10 @@ fn node_unrestricted(p: &Probes) -> Verdict {
             .cmd(if p.layout == "user_unit" {
                 "fmonero setup --units --yes"
             } else {
-                "sudo systemctl status monerod   # a restricted node is not ours to reconfigure"
+                // §2o: the trailing comment is part of what the user reads, and the whole
+                // literal is allow-listed by the grep for beginning with a command — so the word
+                // `restricted` was slipping through in the one place the allow-list cannot see.
+                "sudo systemctl status monerod   # a node fmonero does not own is not ours to change"
             }),
         Some(false) => Verdict::pass("Your node answers everything fmonero asks."),
         None => Verdict::skip("no_get_info", "Your node did not say."),
@@ -1344,8 +1353,10 @@ fn unit_no_password_in_argv(p: &Probes) -> Verdict {
              least they can.",
         );
     }
-    Verdict::fail("credential_in_argv", bad.join("; "))
-        .cmd("fmonero setup --units --yes   # rewrites both units from the template")
+    Verdict::fail("credential_in_argv", bad.join("; ")).cmd(
+        "fmonero setup --units --yes   # writes both service files again from fmonero's own \
+             template",
+    )
 }
 
 fn unit_no_node_wants(p: &Probes) -> Verdict {
@@ -1785,7 +1796,8 @@ fn public_node_cache(p: &Probes) -> Verdict {
             "You have never fetched a list of public nodes, and nothing here needs one.",
         )
         .cmd(
-            "fmonero node list --refresh   # rebuilds the cache (this contacts monero.fail, §2n.5)",
+            "fmonero node list --refresh   # fetches the list again, which tells monero.fail \
+             your IP address",
         );
     };
     if age > fmonero_core::nodes::CACHE_MAX_AGE_SEC {
@@ -1795,7 +1807,8 @@ fn public_node_cache(p: &Probes) -> Verdict {
             age / 3600
         ))
         .cmd(
-            "fmonero node list --refresh   # rebuilds the cache (this contacts monero.fail, §2n.5)",
+            "fmonero node list --refresh   # fetches the list again, which tells monero.fail \
+             your IP address",
         );
     }
     Verdict::pass(format!(

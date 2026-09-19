@@ -2,10 +2,10 @@
 ╭ Node ──────────────────────────────────────────────────────╮╭ Net ───────────────────────────────────────────────────╮
 │ ● Synced                                                   ││ ↓ ↑         0 B/s   0 B/s                              │
 │ blocks     ████████████  100%  3541122 / 3541122           ││ speed limits ↑2048 ↓8192 kB/s                          │
-│ last block  60h 23m ago                                    ││                                                        │
+│ last block  60h 32m ago                                    ││                                                        │
 │ peers       16 out · 3 in                                  │╰────────────────────────────────────────────────────────╯
 │ version     0.18.5.1-release · mainnet                     │╭ Waiting to be mined · fees ────────────────────────────╮
-│                                                            ││ waiting     14 transactions · 20.9 kB · oldest 60h 26m │
+│                                                            ││ waiting     14 transactions · 20.9 kB · oldest 60h 35m │
 │                                                            ││ ago                                                    │
 │                                                            ││ their fees  0.000427 XMR · 0 failing · 0 double spends │
 │                                                            ││ fee levels  cheapest 0.00000002 · normal 0.00000008 ·  │

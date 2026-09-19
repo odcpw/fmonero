@@ -374,11 +374,23 @@ present "cursor reports the mode" Panel.qml 'remote: svc.remote'
 # V16: the header takes the SHORT balance from Status, because §2a.5 forbids the QML from
 # shortening the exact one itself.
 present "the header takes the pre-rendered short balance (§6.4, V16)" Model.js 'balance_xmr_short'
-if grep -qE 'balance_xmr[^_]' "$PLUGIN/Model.js" | grep -q 'toFixed\|substring\|slice'; then
-  bad "the widget must not shorten an amount itself (§2a.5)"
-else
-  ok "no QML or JS shortens an amount itself (§2a.5)"
-fi
+# §6.7's `parseFloat` / `Number(` / `/ 1e` greps cover the arithmetic; `toFixed` is the one that
+# would shorten an amount, which is why V16 put the short form in Rust. A real `forbid`, with the
+# fixture below proving it fires — the first draft of this check was a broken pipeline that could
+# only ever pass.
+# ...and the grep is on a line that ALSO names an amount, which is the same shape
+# `scripts/check.sh` uses for its `as f64` half. A blanket `toFixed` ban would fire on `bytes()`,
+# where rounding a byte count is correct — and a grep that fails on correct code is a grep the next
+# agent relaxes (§6.7's own rule).
+forbid "no QML or JS shortens an amount itself (§2a.5)" \
+  '(balance|unlocked|amount|_xmr|pico)[A-Za-z_]*\)?\.?[^;]*(toFixed|\.slice\(|substring\()'
+fires "the amount-shortening grep" \
+  '(balance|unlocked|amount|_xmr|pico)[A-Za-z_]*\)?\.?[^;]*(toFixed|\.slice\(|substring\()' \
+  'var s = String(w.balance_xmr).toFixed(4)'
+silent "the amount-shortening grep" \
+  '(balance|unlocked|amount|_xmr|pico)[A-Za-z_]*\)?\.?[^;]*(toFixed|\.slice\(|substring\()' \
+  'return (i === 0 ? v.toFixed(0) : v.toFixed(1)) + " " + u[i]'
+
 
 # --- 7c. WHICH QML THE SHELL IS RUNNING (DECISIONS V1) ------------------------
 #
