@@ -8,8 +8,8 @@
 │                                                                    ││ Fee     0.00003072 XMR                         │
 │ Fee cheapest  normal  fast  fastest  p · Ctrl+P                    ││ Total   0.01003072 XMR                         │
 │ Account ◂ 0 ▸ ←→ changes it                                        ││ Account 0                                      │
-│ mainnet address · 0.0100 XMR · Enter works out the fee. Nothing    ││ Unlocked 1.234567891234 XMR                    │
-│   is sent yet.                                                     ││                                                │
+│ mainnet address · 0.01000000 XMR · Enter works out the fee.        ││ Unlocked 1.234567891234 XMR                    │
+│   Nothing is sent yet.                                             ││                                                │
 │ account 0 · ↑↓ fiel╭ Confirm · this sends money ────────────────────────────────────────────────╮                    │
 │   the form         │                                                                            │                    │
 │                    │ To                                                                         │                    │

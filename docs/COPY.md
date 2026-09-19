@@ -1155,3 +1155,19 @@ S11 needed no edit: round 4's own commit had already corrected `README.md`, `age
 and DESIGN §1.1 to what the journal shows, and V18's structural half — `FMONERO_STATE_DIR` gating
 `install` but not `start`/`stop` — was closed with a test (`units::tests::a_sandbox_without_the_fixture_may_not_start_or_stop_a_real_unit`).
 What round 5 adds is the rule where the next agent writing a sandbox will read it: `CLAUDE.md`.
+
+### 12.7 What round 5's own read of its own output added
+
+Ninety-four captures, read start to finish, produced seven more rows. Five are M1's own class:
+
+| Where | Was | Is |
+|---|---|---|
+| the Send screen's Preview, before a plan exists | `Amount  0.1000 XMR`, becoming `0.10000000` the moment Enter worked out the fee | `0.10000000 XMR` throughout: the reader is deciding about one amount, and it has one shape |
+| the validation row under the form | `… · 0.1000 XMR · Enter works out the fee.` | `… · 0.10000000 XMR · …` |
+| a multi-payment plan's rows (`output.rs`) | `0.8000 XMR` above `0.434506451234 XMR` | both from the integer, at one precision |
+| the payment detail modal | `Amount  0.1000 XMR · your fee 0.00003072 XMR` | both at eight decimals |
+| the ledger's own `AMOUNT XMR` column, in both surfaces | `0.1000` in the list against `0.10000000` in the detail view and a third in the note title — two of them in the same frame, because the modal is drawn over the list | one column, one shape, and `wallet history` agrees |
+| `wallet validate` on a bad address | `That is not a Monero address.` and nothing else | `"notanaddress" is not a Monero address. Addresses are 95 characters and start with 4 or 8. This one is 12.` (rule 10) |
+| `u`/`d`/`L` with nothing set up **and something answering** | `fmonero has not set up your node yet.` under a hero reading `● Synced` | `Something else is answering on that port and fmonero did not set it up, so fmonero cannot start or stop it.` |
+| the waiting pane's first row, once it said whose | `waiting  14 payments across the network · 21.4 kB · oldest 3d 03h ago` — 71 cells in a 54-cell pane, wrapping to column 0 under the label | two rows: `waiting  14 payments across the network · 21.4 kB` and `oldest  3d 03h ago` |
+| `list_modal`'s key row | flush against the border, one character out of line with the text above it | one leading space, like every row it belongs to |

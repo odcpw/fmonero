@@ -11612,7 +11612,8 @@ moved, so §2k's manifest freeze holds.
   ```
   units before / after: fmonero-monerod.service    inactive disabled NRestarts=0
                         fmonero-wallet-rpc.service inactive disabled NRestarts=0     → identical
-  sha256 before / after, all six byte-identical:
+  sha256 before / after, all six byte-identical (verified at the start of this round, mid-round and
+  after `install.sh --yes` ran twice):
   64580d70…  fmonero-monerod.service        920870797f…  fmonero-wallet-rpc.service
   bed63c96…  monerod.conf                   ac5f2f1bda…  config.toml
   230cb88c…  omarchy-menu.jsonc             dd3fed204f…  shell.json
@@ -13418,3 +13419,214 @@ that variable**, and the way to find the next one is to diff the four `export`s 
     18395, logging into a `sb-cli2` sandbox that no longer has an owner. They are not mine and I left them
     alone; they are why this round's own mocks used 18495 and 185xx/186xx/187xx. Whoever reads this next
     can kill them.
+
+## Plain-language round 5 (real output)
+
+- 2026-09-19 · **## Plain-language round 5 (real output)** — round 4's independent verification
+  returned twelve serious findings and twenty minor ones and **fixed none of them**; this round
+  closes all thirty-two, each with a test where a test could hold it, and then re-reads the program
+  the way that verification did: `tests/tui_tmux.sh --capture` plus **94 captures of my own** on real
+  tmux pty sessions (70 of the TUI at 120x32 and 150x40 across five sandboxes, 24 of the CLI's human
+  form on a 120-column pty), read start to finish as the owner's non-technical friend. **That read
+  found seven more things and they are fixed too**, five of them the same defect class as M1 — one
+  amount printed at two precisions in one frame — which is the shape a round finds only by looking at
+  its own output.
+
+  **The three defects the whole effort was named after are gone, and all three were arithmetic.**
+  The picker renders `monero-rpc.cheems.de.box.skhron.com.ua:18089` whole at 120 columns;
+  `node list --probe`'s header is **exactly 120** characters on a 120-column terminal, measured; and
+  the open-a-wallet modal renders a 248-character path character-complete. Every line of real program
+  output in all 24 CLI captures fits 120 columns — the only four that do not are the `$ fmonero …`
+  echo lines this round's own capture script writes.
+
+
+  ### The gates, command by command, on this machine at `a399127`
+
+  ```
+  $ cargo fmt --all --check                                     exit 0, no output
+  $ cargo clean -p fmonero -p fmonero-core -p fmonero-mock      Removed 1749 files, 1016.9MiB
+  $ cargo clippy --workspace --all-targets -- -D warnings        exit 0
+  $ cargo test --workspace         151 + 196 + 3 + 0 doc = 350 passed, 0 failed   exit 0
+  $ scripts/check.sh --full        83 ok, 0 FAIL, 1 skip (shellcheck absent)      exit 0
+      ok  §2o rule 7: no banned word in the TUI, the CLI, the doctor, core or the widget (41 files)
+      ok  §2o rule 7: no banned word in any --help line
+      ok  §2o rule 12: no em-dash in prose, in any of the 41 surfaces
+      ok  §7a: 10 042 lines (budget 10 100)   ok  §6.1: 1 700 of 1 725
+  $ tests/e2e.sh --fast            598 passed, 0 failed, 3 skipped                exit 0
+  $ tests/e2e.sh --full            632 passed, 0 failed, 3 skipped                exit 0
+  $ tests/plugin-smoke.sh --static 78 passed, 0 failed                            exit 0
+  $ tests/plugin-smoke.sh          82 passed, 1 failed                            exit 1  ← V1
+      FAIL  the shell is running qml-b04f2cf9, this tree is qml-5fba81b1
+  $ tests/tui_tmux.sh              43 passed, 0 failed                            exit 0
+  $ tests/tui_tmux.sh --capture    47 passed, 0 failed, 15 captures               exit 0
+  $ scripts/install.sh --yes       all seven actions `unchanged`, twice
+  $ scripts/install.sh --yes       and the second says "already this exact binary"
+  $ omarchy restart shell          Refusing to restart Omarchy shell while the session is locked.
+  ```
+
+  **Every gate number is higher than round 4's or equal to it.** Round 4 read `e2e.sh --fast` 597,
+  `--full` 631, `plugin-smoke --static` 73, live 77 with one failure, `tui_tmux` 37 and `--capture` 42;
+  the differences are this round's own assertions. `plugin-smoke` live fails **one** assertion, V1's
+  version token, and the reason is unchanged: the bar holds an uncommitted mid-round panel from round
+  4 iteration 3 and the session has been locked since 12:03:46.
+
+  ### The owner's machine, before and after everything above
+
+  ```
+  units   before / after   fmonero-monerod.service     inactive disabled NRestarts=0
+                           fmonero-wallet-rpc.service  inactive disabled NRestarts=0   → identical
+  sha256 before / after, all six byte-identical:
+    64580d70a217…  fmonero-monerod.service      920870797f0a…  fmonero-wallet-rpc.service
+    bed63c9603dc…  monerod.conf                 ac5f2f1bda4f…  config.toml
+    dd3fed204fff…  shell.json                   230cb88cd258…  extensions/omarchy-menu.jsonc
+  node.mode is still `remote` (`fmonero settings get node.mode` → "remote")
+  ~/.local/bin/fmonero  502e5c33… (round 4's binary)  →  403c427fa809db7b… (this commit's) — the ONE
+  thing this round changed on his machine, and it is what the task asked for
+  the one wallet `moneroli` was never opened and never read
+  ~/.bitmonero: every file still stamped 2026-09-19 00:21–00:22, nothing of this round's written there
+  ```
+
+  ### The twelve serious findings, and how each failure was proved
+
+  | # | The defect, and what proved it | What holds it closed |
+  |---|---|---|
+  | **S1** | The picker's address column was capped at `rows[0].width / 2`, so at 120 columns the budget was 36 rather than the measured 46 and `Table` cut `monero-rpc.cheems.de.box.skhron.com.ua:18089` to `…skhron.com.ua:180` with no marker. Proved by a render test that seeds a cache with a 43-character address, the fixture's 44-character one and the configured node's own, and asserts character equality at 90, 100, 120, 150 and 180 columns. | `the_picker_renders_every_address_whole_at_every_width`, plus 16 pty captures at both sizes |
+  | **S2** | `output::columns` counted `gap × (n − 1)` and not the row's own two-space indent, so `node list --probe` shrank to exactly 120 and printed a 122-character header. Proved by extracting `nodes_header` and measuring it at 80, 100, 120 and 150 with the widest fixture address. | `node_lists_header_fits_the_terminal_at_every_width_with_the_widest_address`; `indent` is a positional parameter, so the next table cannot forget it |
+  | **S3** | `list_modal` budgeted `MODAL_W − 4` and rendered `" {part} "` into an interior of the same width, so every line that filled the budget lost its last character. Proved by opening the modal on a 248-character `wallet.dir` and comparing the frame's characters against the path's. | `the_open_wallet_modal_renders_a_248_character_path_character_complete` |
+  | **S4** | The pending-send refusal put a full 64-character id in a `#` comment, on a command that takes no id. Proved by a hex-run scan (eight or more hex characters carrying at least one `a`–`f`) over the sentence and the hint. | `the_pending_refusal_names_a_time_and_never_an_id`; `send::PENDING_HINT` and `PENDING_ACTION` are single literals shared by five surfaces |
+  | **S5** | The sweep plan's rows led with a short id, justified by a `payment id` line that only exists after a relay — which is never, on the refusal and dry-run paths the plan is read on. Proved by the same scan over `plan_row`. | `a_plan_row_carries_no_id`, which also asserts the shipped row would be caught |
+  | **S6** | The consent overlay asked for ten rows; its six lines need eleven, because the third sentence wraps. Proved by opening it and asserting its own key line is in the frame at 120x32 and 150x40. | `the_privacy_notice_shows_its_keys_at_both_sizes`, and two assertions in `tests/tui_tmux.sh` on a real pty |
+  | **S7** | `Panel.qml` rendered `Warning::action`, written for the TUI's keymap: seven of the nine warnings that reach the bar named a key it does not bind and two named `d`, which opens the doctor there. Proved by scanning the source of `warnings()` for every `press x` / `then x` against the panel's own `onTextKey` ladder. | `no_panel_visible_warning_names_a_key_the_panel_does_not_bind`, whose rule is stronger than "names a bound key": a sentence naming **any** key must have an entry in `PANEL_ACTIONS`, because `d` is bound and means the wrong thing. Removing `node_low_disk`'s entry makes it fail. |
+  | **S8** | The Send screen refused a filled, valid form with one line and named no key, chip or next step; the only resolution was a command §2o.1 had removed from the banner above the form. Proved by driving the whole route: the chip, the confirm's five sentences, the clear, and that `Esc` leaves the record alone. | `a_pending_record_can_be_resolved_from_the_wallet_screen` |
+  | **S9** | `short_time` returned `MM-DD HH:MM` unconditionally, in the list, the detail view and the note modal's title, while `wallet history` printed the year. Proved by asserting the sixteen-character stamp in all three at 120x32 and 150x40, and that the `NOTE` column survives the five extra cells. | `the_payments_ledger_carries_the_year_at_the_owners_widths` and `one_moment_formatter_carries_the_year_and_the_short_form_is_derived_from_it` |
+  | **S10** | `may_mutate_node` is `layout == UserUnit`, so `Layout::None` and `Layout::SystemUnit` got one refusal and only one of the two sentences was true. Proved by a pair: a model with no units, and a model with Arch's `monerod.service` active through the §2i fixture. | `node_mutations_are_refused_with_the_sentence_that_is_true_of_this_machine`, plus two pty assertions |
+  | **S11** | `README.md`, `agent.rs`'s `BUILD_NOTE` and DESIGN §1.1 said no `monerod` had ever run here. **Already corrected** by round 4's own commit (`02cd91d`), and verified here line by line; V18's structural half — `FMONERO_STATE_DIR` gating `install` but not `start`/`stop` — was already closed with a test. What was missing was the rule where the next agent writing a sandbox would read it. | `CLAUDE.md` now carries it, and `tests/tui_tmux.sh` sets the two variables it was missing |
+  | **S12** | `toast_hidden` suppresses every toast while a transaction is built, so the one modal that needed `Press Esc first to discard this.` was the one that could not show it. Proved by building a transaction, pressing `Tab`, and asserting the modal's own row at both sizes. | `tab_inside_the_send_confirm_says_which_key_comes_first`; the `?` overlay's first row is true about pop-ups |
+
+  ### The twenty minor ones
+
+  `docs/COPY.md` §12 is the row-by-row table; this is the short form, grouped as the verifier grouped
+  them. **M1** one precision on the money path (`Piconero::to_xmr_money`). **M2** `everything you have`
+  was the figure after the fees; the sentence names the total, the amount and the fees in that order.
+  **M3** one payment `was` prepared, two `were` — and the doctor's `payment(s)` is a plural function.
+  **M4** eight and **eight** in `Model.js`'s `shortAddr`, held to the Rust one by `plugin-smoke`.
+  **M5** `wallet history`'s header is the TUI's: `when` first, fee last. **M6** `reachable`, not
+  `unit_active` alone. **M7** `Synced` reconciled with an old top block, in one sentence §2j can back.
+  **M8** whose payments are waiting, in all three surfaces, from one phrase in core. **M9** one label
+  per row. **M10** the log path whole, in the title when it fits and in the pane when it does not.
+  **M11** a token longer than the line chunked under the hanging indent rather than left to the
+  terminal. **M12** no `id` in the filter hint. **M13** the empty wallet panel says there are none.
+  **M14** its two status rows each name a step. **M15** `sweep` says what it does. **M16**
+  `wallet set-daemon` is `wallet use-node`, with the old name a hidden alias. **M17** three `///`
+  em-dashes. **M18** clap's own voice, in fmonero's. **M19** two identical "pick another one" actions
+  made distinct. **M20** `status` said the public node was unchecked twice in three lines.
+
+  ### What this round's own read of its own output found
+
+  Ninety-four captures, read start to finish. **Seven things, five of them M1's own class** — one
+  amount at two precisions in one frame, which is what a round finds only by looking at what it drew:
+
+  1. the Send screen's **Preview** showed `Amount 0.1000 XMR` while the form validated and
+     `0.10000000` once the fee was known. Round 4 iteration 3 had fixed exactly this for the Fee and
+     the Total and had argued the pre-plan Amount was "the figure the reader typed"; it is the figure
+     the reader is deciding about, and it changed shape under him at the moment he pressed Enter.
+  2. the **validation row** under the form said `0.1000 XMR` in the same frame.
+  3. a two-payment **sweep plan** printed `0.80000000 XMR`'s predecessor `0.8000 XMR` above
+     `0.434506451234 XMR` — one column, two shapes, on the screen that empties an account.
+  4. the **payment detail modal** read `0.1000 XMR · your fee 0.00003072 XMR`.
+  5. the **ledger disagreed with itself**: the list's `AMOUNT XMR` column, the `Enter` detail view and
+     the note modal's title rendered one payment three ways, two of them in the same frame because the
+     modal is drawn over the list.
+  6. `wallet validate`'s refusal was `That is not a Monero address.` and nothing else — no echo of what
+     was typed, no shape — on the one command whose whole job is that answer (§2o rule 10).
+  7. `u` with nothing set up said `fmonero has not set up your node yet` under a hero reading
+     `● Synced`, because something **was** answering on that port. Two true sentences, and which one
+     is right depends on whether anything answered.
+
+  And M8's own row, once it was longer: `waiting  14 payments across the network · 21.4 kB · oldest
+  3d 03h ago` is 71 cells in a 54-cell pane, and `lines_at`'s word wrap returns to column 0 — so
+  `oldest 3d 03h ago` landed under the label column reading as a row with no label. Two short rows.
+
+  ### The automated half of the read, over all 94 captures
+
+  ```
+  ok  no banned word in any capture (the verifier's twenty-two, at word boundaries, with §2o.3's
+      own two carve-outs: a runnable command, and a settings key or a path)
+  ok  no id-shaped hex run in any capture (8+ hex characters carrying at least one a-f)
+  ok  every em-dash is a missing-value cell, not prose
+  ok  every CLI output line fits 120 columns (the only four that do not are this script's own
+      `$ fmonero …` echo lines)
+  ok  the year is on 14 wallet captures
+  ok  monero-rpc.cheems.de.box.skhron.com.ua:18089 renders whole in 16 picker captures
+  ok  monero-rpc.cheems.de.box.skhron.com.u:18089  renders whole in 8
+  ok  the consent modal's keys are on screen at both sizes
+  ok  Tab in the send confirm says which key comes first, at both sizes
+  ok  the clear-that-record chip is on the Wallet screen at both sizes
+  ```
+
+  ### One thing this round did that it should not have
+
+  **The first capture pass sent a DNS query for `monero-rpc.cheems.de.box.skhron.com.ua`.** The C
+  sandbox was configured on that address with a cold `state.json`, and in public-node mode the Node
+  screen checks the configured node on the §2n.4 schedule — so entering it started one check, which
+  failed and rendered `a web error`. No HTTP request reached the host and nothing was told anything
+  about this machine beyond the resolver lookup, but it is an outbound contact this round had no
+  reason to make and it is recorded rather than tidied away. Every later pass seeds a **fresh** probe
+  into `state.json` (which is bound 1 of §5's four: a fresh cache starts nothing) **and** sets
+  `node.remote_probe_sec = 0`, which turns the schedule off outright; D's own configured address is
+  `127.0.0.1`. `FMONERO_NODES_URL` pointed at a local `fmonero-mock --static` in every sandbox, and
+  the static mock's request log is empty on every run — which is what proves `Esc` on the consent
+  modal fetches nothing.
+
+  ### Two things this round cleaned up that were not findings
+
+  **Five `e2e.sh --fast` failures that were not fmonero's.** The first run after the code was finished
+  reported six; five of them were three `fmonero-mock` processes **left running by an earlier round**
+  on 127.0.0.1:18391, 18393 and 18395 — the strays round 4's own verification recorded and invited the
+  next reader to kill. `e2e.sh` uses those ports and asserts that *nothing* is listening on them, so
+  `reason unreachable` came back `auth_refused` and four assertions after it read the stray's answers.
+  They are killed, and so are two of this round's own, leaked when a capture run's `timeout` fired
+  before its `trap`. **Nothing was listening on any 18xxx port when the gates below were run.**
+
+  The sixth was real and is the one assertion this round had to move: `e2e.sh` pinned
+  `public_node_down`'s action as `Pick another one on the Node screen.`, which is M19's defect
+  verbatim. It now pins the new sentence **and** `panel_action` beside it.
+
+  ### What round 5 does not claim
+
+  - **A real send or sweep of any amount is still RED.** The confirm modal was reached against
+    `fmonero-mock` at 120x32 and 150x40, the word was never typed, and `Esc` discarded the built
+    transaction; the mock's own log carries the `transfer` and **no** `relay_tx`, which is what makes
+    "nothing was relayed" an answer rather than an empty log's silence. Nothing went near the owner's
+    wallet: `moneroli` was never opened and never read, and every sandbox owned its own
+    `wallet.dir`.
+  - **The v5.6 widget has still never been seen rendering by me.** The session has been locked since
+    12:03:46 today; `omarchy restart shell` was attempted **once** and refused. Every widget claim here
+    rests on `Model.js` under `node` against documents this machine's binary produced, on
+    `plugin-smoke --static`, and on reading `Panel.qml`. The one live failure is V1's version token:
+    the bar holds `qml-b04f2cf9`, an uncommitted mid-round panel from round 4 iteration 3, and this
+    tree is `qml-5fba81b1`. The owner's one-line action after he unlocks is `omarchy restart shell`.
+  - **`--check-node` has still never deliberately contacted a real public node.** The one DNS query
+    this round sent by accident is disclosed above; nothing else left this machine.
+  - **S11 needed no edit.** Round 4's own commit had already corrected the three documents, and this
+    round verified them rather than rewriting them.
+
+  ### Is this ready for the owner to use today?
+
+  **Everything round 4's verification said stops it is closed, and what is left is the two things no
+  amount of reading can close.** The register holds under a read that did not trust it: 94 captures at
+  two widths in five sandboxes carry none of the twenty-two words, no id-shaped hex run, no prose
+  em-dash, and every line of CLI output fits the terminal it was printed on. The three width defects
+  the whole effort was named after are arithmetic now and each has a test that fails without the fix.
+  The two dead ends are routes: `P` on the Wallet screen resolves a payment record behind a confirm
+  that says what clearing does and does not do, and `S` on the Node screen writes the services a fresh
+  machine has none of. The money ledger carries the year, in one formatter both surfaces read, and
+  every amount on the money path and down every money column has one shape.
+
+  What is left is what it has always been. **A real send or sweep has never been run**, so `--yes` on
+  the money path is still RED and nothing here claims otherwise. **The v5.6 widget has been seen
+  rendering exactly once, not by me**, and the bar is still holding an uncommitted panel from round 4
+  iteration 3 because the session has been locked since 12:03 — one `omarchy restart shell` after the
+  owner unlocks fixes that, and `~/.local/bin/fmonero` is already this commit's binary, so the panel
+  will be current the moment it reloads. On the strength of the reading rather than of the tests: this
+  is a build worth opening, with a first send of an amount he could lose.
