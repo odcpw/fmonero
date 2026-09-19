@@ -1,5 +1,5 @@
   1 Node    2 Wallet    3 Send  [ 4 Log ]                                                               mainnet omarchy
-╭ Log  follow on  /tmp/tmp.m3Hsopc4HO/bitmonero.log ───────────────────────────────────────────────────────────────────╮
+╭ Log  follow on  /tmp/tmp.P9zN7g2sBZ/bitmonero.log ───────────────────────────────────────────────────────────────────╮
 │ / search the log                                                                                                     │
 │ 2026-09-16 14:02:09.114 I Monero 'Fluorine Fermi' (v0.18.5.1-release) started                                        │
 │╭ Keys · any key closes ─────────────────────────────────────────────────────────────────────────────────────────────╮│

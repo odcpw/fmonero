@@ -11367,18 +11367,18 @@ moved, so §2k's manifest freeze holds.
 
 - 2026-09-19 · the fixer · **## Plain-language round 3 (real output)** — the twenty-two findings
   W1–W22 of `## Plain-language fix-up verification (real output)` and every "unclear line" of that
-  section are closed, in nine commits from `cfa12df` to `HEAD`. Then **every screen, modal and
+  section are closed, in twelve commits from `cfa12df` to `HEAD`. Then **every screen, modal and
   refusal was captured at 120x32 and 150x40, plus the human form of `status`, `doctor`,
   `settings list`, `node list`, `node info`, `node peers`, `wallet history` and `wallet balance` in
   two sandboxes, and read line by line as the owner's non-technical friend** — which found
-  **thirty-three more** and closed those too. Three of the round's items are **room** rather than
+  **thirty-six more** and closed those too. Three of the round's items are **room** rather than
   text: a sentence cut to fit is a sentence the reader does not have, which is the lesson of V15's
   own fix. **The owner's machine is untouched**: both units inactive, disabled, `NRestarts=0` before
   and after, and the sha256 of every file he owns identical. **V1 is still RED** and says so: the
   desktop session is locked, `omarchy restart shell` refuses, and `plugin-smoke`'s two live version
   assertions fail by design until he unlocks.
 
-  ### The gates, command by command, at `e7dc91e` on this machine
+  ### The gates, command by command, at `82f468a` on this machine
 
   ```
   $ cargo fmt --all --check                                    exit 0
@@ -11394,7 +11394,7 @@ moved, so §2k's manifest freeze holds.
       ok    §2o rule 12: no em-dash in prose, in any of the 15 surfaces
       ok    self-test: §2o rule 12 fires on all three planted em-dashes and on none of the three glyphs
       ok    self-test: §2o reads a {field} as a substitution and the prose around it as prose
-      ok    §7a: 8205 lines (budget 8300)        ok  §6.1: 1549 of 1561
+      ok    §7a: 8218 lines (budget 8300)        ok  §6.1: 1549 of 1561
   $ tests/e2e.sh --fast            588 passed, 0 failed, 3 skipped                    exit 0
   $ tests/e2e.sh --full            622 passed, 0 failed, 3 skipped                    exit 0
   $ tests/plugin-smoke.sh --static 71 passed, 0 failed                                exit 0
@@ -11460,7 +11460,7 @@ moved, so §2k's manifest freeze holds.
   | **W21** | `FMONERO_STATE_DIR` left the **defaults** of `node.data_dir` and `node.log_file` at the owner's own `~/.bitmonero` | both follow `paths.bitmonero_dir`, which follows the sandbox | `tui/tests.rs`: a sandboxed Log screen names the sandbox's log and may not render the machine's chain folder; `context.rs` asserts both paths are under the test root |
   | **W22** | `wallet_sync_line`'s doc comment had been left on `refreshed_age` | back where it belongs | `cargo doc` (in `check.sh --full`) |
 
-  ### The self-read: thirty-three more, each read off a screen or a terminal
+  ### The self-read: thirty-six more, each read off a screen or a terminal
 
   Captured with `tests/tui_tmux.sh --capture` and with a second harness of my own — every screen,
   every modal, every refusal, at **120x32 and 150x40**, in local mode and with a public node — then
@@ -11506,6 +11506,14 @@ moved, so §2k's manifest freeze holds.
   **And one across two crates**: (33) core's low-disk warning said `a pruned copy of the chain` where
   the doctor says `a smaller copy of the blockchain` — §2o rule 8 on a sentence both surfaces show.
 
+  **Three more from reading the doctor's last four groups one at a time**, which is how a reader meets
+  them: (34) `history_cache_fresh` said `no wallet is open` where it can only know that no wallet gave
+  it a block number — under `--only install` the wallet is never asked, so the row was claiming
+  something it had not looked at; (35) `prune_configured`'s title said `a pruned chain` while its own
+  detail and core's warning both say `a smaller copy of the blockchain`; (36) `ports_owned` joined two
+  sentences with a semicolon, which left `which is not one of fmonero's own` attached to the last port
+  only, and began each of them in lower case.
+
   Two of these produced new shared code rather than new strings: `TransferKind::words()` and
   `AddrKind::words()` in core (the wire value is what `--json` carries and what agents branch on),
   and `nodes::probe_reason_words`, because the picker said `too slow` while `node list` printed the
@@ -11528,8 +11536,9 @@ moved, so §2k's manifest freeze holds.
     `state.json` this round wrote by hand and against the mock; the detached-spawn path is unchanged.
   - **The doctor's rows are read, not all exercised.** The two sandboxes reach the rows two machine
     states reach; the rest are covered by the fixtures, the grep and `cargo test`.
-  - **The thirty-three self-read findings are the ones a full read found.** A thirty-fourth read may
-    find more, which is the honest shape of "read it as a person" — what this round can say is that a
-    second pass over the re-captured screens found nothing further, and that the four rules a grep
-    can now police (rule 7's words, rule 12's em-dash, `txid`, and W7's grouped numbers over the
-    captures) no longer depend on anyone reading carefully.
+  - **The thirty-six self-read findings are the ones a full read found.** A thirty-seventh read may
+    find more, which is the honest shape of "read it as a person". What this round can say is that a
+    third capture pass at both sizes, scanned for rule-7 words, em-dashes, ellipses and bare
+    seven-digit runs and then read screen by screen, turned up nothing further — and that four things
+    a grep can now police (rule 7's word list, rule 12's em-dash, `txid`, and W7's grouped numbers
+    over the captures) no longer depend on anyone reading carefully.

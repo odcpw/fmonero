@@ -1,6 +1,6 @@
 [ 1 Node ]  2 Wallet    3 Send    4 Log                                                                         omarchy
 ╭ Node ──────────────────────────────────────────────────────╮╭ This node ─────────────────────────────────────────────╮
-│ ● Public node · node.example.com:18089                     ││ No answer when checked 2s ago.                         │
+│ ● Public node · node.example.com:18089                     ││ No answer when checked 3s ago.                         │
 │                                                            ││ [f] Choose another node                                │
 │                                                            ││                                                        │
 │                                                            ││                                                        │
