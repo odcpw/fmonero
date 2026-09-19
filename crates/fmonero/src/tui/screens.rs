@@ -2058,7 +2058,7 @@ fn wallet_daemon_phrase(m: &Tui) -> String {
     // takes out of the alarm channel. The sentence is the whole point of the row, so it gets to
     // be a sentence (§2o).
     if s.node.layout == Layout::Remote && s.wallet.name.is_none() {
-        "not running yet. It starts when you open or create a wallet.".into()
+        "not running yet".into()
     } else {
         "not running".into()
     }
