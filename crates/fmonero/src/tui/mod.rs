@@ -137,13 +137,12 @@ pub const KEYS: &[(&str, &str)] = &[
     // already said so — the overlay was the thing that lied.
     (
         "Tab  ⇧Tab  Ctrl+C",
-        "screens · quit. Always: in a field, in a pop-up, in this help, or while something is \
-         running. Press quit twice while something runs and it stops first.",
+        "screens · quit. Always: in a field, in a pop-up or while something runs. Quit twice to \
+         stop a job first.",
     ),
     (
         "1 2 3 4  q",
-        "the same two, but only when no field has focus. A field keeps every key you type. Esc \
-         leaves the field.",
+        "the same two, but only when no field has focus. Esc leaves a field.",
     ),
     ("?", "this help"),
     ("r", "check now"),
@@ -153,17 +152,11 @@ pub const KEYS: &[(&str, &str)] = &[
     ),
     (
         "mouse",
-        "click tabs, rows, fields and every [key] chip. The wheel scrolls the list under the          pointer. Right-click is Esc.",
+        "click tabs, rows, fields and every [key] chip. The wheel scrolls. Right-click is Esc.",
     ),
-    (
-        "u  d",
-        "Node: start · stop your node. Not available while you use a public node.",
-    ),
+    ("u  d", "Node: start · stop your node"),
     ("b", "Node: peers ⇄ bans"),
-    (
-        "L",
-        "change how much your node writes to its log (it asks first)",
-    ),
+    ("L", "Node: change how much your node logs (it asks first)"),
     ("p  f", "Node: check the listed nodes · get a fresh list"),
     (
         "Enter  a  H",
@@ -180,7 +173,10 @@ pub const KEYS: &[(&str, &str)] = &[
     ),
     ("a  l", "Wallet: new address · rename the selected one"),
     ("n", "Wallet: edit the note on the selected payment"),
-    ("R  Q", "Wallet: check for payments · show the address as a QR code"),
+    (
+        "R  Q",
+        "Wallet: check for payments · show the address as a QR code",
+    ),
     ("/  t", "Wallet: filter rows · change which kinds show"),
     (
         "←→  Enter",
@@ -188,7 +184,8 @@ pub const KEYS: &[(&str, &str)] = &[
     ),
     (
         "Send: ↑↓  Enter",
-        "next/previous field · check it. Tab leaves the form. Esc leaves the field; Enter goes          back into it.",
+        "next/previous field · check it. Tab leaves the form, Esc leaves a field, Enter goes \
+         back in.",
     ),
     (
         "modals: ↑↓  Enter",
@@ -201,11 +198,11 @@ pub const KEYS: &[(&str, &str)] = &[
     ("Send: ←→", "on the Fee or Account row: change it"),
     (
         "Send: sweep",
-        "not in the TUI. To send everything, in a terminal: fmonero wallet sweep <address>          --dry-run",
+        "to send everything, in a terminal: fmonero wallet sweep <address> --dry-run",
     ),
     (
         "Send: type \"send\"",
-        "typing the word is how you confirm. Esc discards. Once it is sent it cannot be taken          back.",
+        "typing the word confirms. Esc discards. Once sent it cannot be taken back.",
     ),
     ("Log: /  f  n N", "search · follow · next/previous match"),
 ];
@@ -1032,7 +1029,10 @@ impl Tui {
     /// the `CancelToken`. A relay is never cancelled (§7a).
     fn cancel_action(&mut self) -> Cmd<Msg> {
         match self.action.take() {
-            None => self.note("Nothing is running.", false),
+            // W16: `Nothing is running.` on a screen whose subject is a node and a wallet
+            // service reads as a claim about those two. `Esc` cancels an action of fmonero's own,
+            // so that is what it says it found none of.
+            None => self.note("Nothing to cancel.", false),
             Some(a) if !a.cancellable => {
                 let label = a.label.clone();
                 self.action = Some(a);
@@ -1041,7 +1041,7 @@ impl Tui {
                     true,
                 );
             }
-            Some(a) => self.note(format!("Stopped: {}", a.label), true),
+            Some(a) => self.note(format!("{} stopped.", a.label), true),
         }
         Cmd::none()
     }
@@ -1134,14 +1134,14 @@ impl Tui {
     /// click would restart the wallet unit and close an open wallet for a change of nothing.
     fn use_selected_node(&mut self) -> Cmd<Msg> {
         let Some(sel) = self.picker.table.borrow().selected else {
-            self.note("select a node first (↑↓ or click), then Enter", true);
+            self.note("Select a node first, with ↑↓ or a click, then Enter.", true);
             return Cmd::none();
         };
         let Some(address) = self.picker_rows().get(sel).map(|n| n.address.clone()) else {
             return Cmd::none();
         };
         if nodes::configured_address(&self.ctx).as_deref() == Some(address.as_str()) {
-            self.note("this is the node you are using", false);
+            self.note("This is the node you are using.", false);
             return Cmd::none();
         }
         let wallet_open = self
@@ -1939,7 +1939,14 @@ impl Tui {
                     .borrow_mut()
                     .set_auto_scroll(self.logs.follow);
                 let on = self.logs.follow;
-                self.note(if on { "following" } else { "follow off" }, false);
+                self.note(
+                    if on {
+                        "Following the log."
+                    } else {
+                        "Not following the log."
+                    },
+                    false,
+                );
             }
             KeyCode::Char('L') => {
                 let next = (self.logs.level + 1) % 5;
@@ -2054,13 +2061,13 @@ impl Tui {
                             self.task("label", move |ctx| {
                                 let w = WalletClient::from_ctx(ctx)?;
                                 w.label_address(account, index, &text)?;
-                                Ok("label saved".into())
+                                Ok("Name saved.".into())
                             })
                         }
                         Prompt::Note { txid } => self.task("note", move |ctx| {
                             let w = WalletClient::from_ctx(ctx)?;
                             w.set_tx_notes(&[txid], &[text])?;
-                            Ok("note saved".into())
+                            Ok("Note saved.".into())
                         }),
                     }
                 }
@@ -2363,10 +2370,15 @@ impl Tui {
         // to go back to your own. The switch still asks first: it restarts the wallet service and
         // closes the wallet this session is holding (§2m.5).
         if self.remote_mode() {
-            self.note(
-                "You are using a public node. Press f for the list, or l to use your own node.",
-                true,
-            );
+            // **W14: short enough to be read whole.** The status bar has ~37 columns left for a
+            // toast at 120, and this sentence was cut to `You are using a public node. Press…` at
+            // both widths — so the two in-app routes it exists to name were never on screen. The
+            // situation is on the Node screen in front of the user; what the toast owes them is
+            // the two keys.
+            // 40 columns, measured against the narrowest room the bar has for a toast: the
+            // left segment carries two badges and the node's address, which leaves 44 columns
+            // at 120 with a 22-character address, and every column over that is a cut sentence.
+            self.note("Press f for the list, or l for your own.", true);
             return Cmd::none();
         }
         if !matches!(units::may_mutate_node(&self.ctx), Ok(true)) {
@@ -2460,8 +2472,19 @@ impl Tui {
         self.task("close", |ctx| {
             let w = WalletClient::from_ctx(ctx)?;
             fmonero_core::wallet_session::close(ctx, &w)?;
-            Ok("wallet closed".into())
+            Ok("Wallet closed.".into())
         })
+    }
+
+    /// Does `W` stop the wallet service right now, rather than start it (W15)?
+    ///
+    /// **The chip's label reads this**, so `[W] Start the wallet service` can no longer sit on a
+    /// screen where pressing `W` stops it — which is what the empty state did in exactly the state
+    /// §7a.5 describes. One predicate, and it is the one [`Tui::toggle_wallet_daemon`] branches on.
+    pub(super) fn wallet_daemon_key_stops(&self) -> bool {
+        self.status
+            .as_ref()
+            .is_some_and(|s| s.wallet.unit_active && !s.wallet.open && s.wallet.name.is_none())
     }
 
     /// `W` — start the wallet daemon, or stop it when it is idle.
@@ -2861,7 +2884,7 @@ impl Model for Tui {
                     }
                     Ok(Outcome::Opened(name)) => {
                         self.exit.store(0, Ordering::SeqCst);
-                        self.note(format!("{name} is open"), false);
+                        self.note(format!("{name} is open."), false);
                     }
                     Ok(Outcome::Built(plan)) => {
                         self.exit.store(0, Ordering::SeqCst);
@@ -2873,7 +2896,10 @@ impl Model for Tui {
                     Ok(Outcome::Relayed(txids)) => {
                         self.exit.store(0, Ordering::SeqCst);
                         let first = txids.first().cloned().unwrap_or_default();
-                        self.note(format!("sent · {first}"), false);
+                        self.note(
+                            format!("Sent. Payment {}.", fmonero_core::short_id(&first)),
+                            false,
+                        );
                         self.send.clear();
                         self.send.stage = Stage::Sent(first);
                         self.screen = Screen::Wallet;
@@ -2914,7 +2940,10 @@ impl Model for Tui {
                         self.exit.store(0, Ordering::SeqCst);
                         self.picker.progress = None;
                         self.picker.err = None;
-                        self.note(format!("{} public nodes.", list.nodes.len()), false);
+                        self.note(
+                            format!("{} public nodes in the list.", list.nodes.len()),
+                            false,
+                        );
                         self.picker.list = Some(*list);
                         self.sort_picker();
                     }
@@ -2923,7 +2952,7 @@ impl Model for Tui {
                         self.picker.progress = None;
                         let reached = pairs.iter().filter(|(_, p)| p.reachable).count();
                         self.note(
-                            format!("checked {} · {reached} answered", pairs.len()),
+                            format!("Checked {} nodes. {reached} answered.", pairs.len()),
                             false,
                         );
                         // The cache is the authority (`nodes::record_probes` wrote it), so the

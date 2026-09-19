@@ -82,11 +82,27 @@ pub(super) fn view(m: &Tui, frame: &mut Frame) {
         .map_or(0, |p| {
             wrap_words(&pending_banner_text(p), b.width as usize).len() as u16
         });
+    // **W14: a toast that does not fit the status bar gets a row of its own**, directly above it
+    // and the full width of the window. The bar's left half carries two badges, the node's
+    // address and the balance, so what is left for a toast is between 18 and 44 columns — and the
+    // refusal the whole of §2o.1 is built on is 40. It was cut to `Press f for the…` at both
+    // sizes, which named neither of the two routes it exists to name. Shortening a sentence until
+    // it fits the worst case is how it stops saying anything; the room is the fix.
+    let toast_lines: Vec<String> = if m.note.is_empty() || note_fits(m, b.width) {
+        Vec::new()
+    } else {
+        // Two rows at most: a toast is a sentence, and a third row of one is a panel.
+        let mut lines = wrap_words(&m.note, b.width as usize);
+        lines.truncate(2);
+        lines
+    };
+    let toast = toast_lines.len() as u16;
     let rows = Flex::vertical()
         .constraints([
             Constraint::Fixed(1),
             Constraint::Fixed(banner),
             Constraint::Fill,
+            Constraint::Fixed(toast),
             Constraint::Fixed(1),
         ])
         .split(b);
@@ -94,13 +110,25 @@ pub(super) fn view(m: &Tui, frame: &mut Frame) {
     if banner > 0 {
         pending_banner(m, rows[1], frame);
     }
+    if toast > 0 {
+        let style = if m.note_err { th.err() } else { th.ok() };
+        lines_at(
+            toast_lines
+                .into_iter()
+                .map(|l| Line::styled(l, style))
+                .collect(),
+            rows[3],
+            false,
+            frame,
+        );
+    }
     match m.screen {
         Screen::Node => node_screen(m, rows[2], frame, tier),
         Screen::Wallet => wallet_screen(m, rows[2], frame, tier),
         Screen::Send => super::send::view(m, rows[2], frame, tier),
         Screen::Log => log_screen(m, rows[2], frame),
     }
-    status_line(m, rows[3], frame);
+    status_line(m, rows[4], frame);
     match &m.modal {
         // **V4: `Use your own node` is an overlay, not a one-row `Dialog`.** §7a.4 asks it to state
         // three things and `Dialog` draws its message as a single centred row, so a `\n` in it
@@ -142,7 +170,10 @@ pub(super) fn view(m: &Tui, frame: &mut Frame) {
             };
             list_modal(
                 m,
-                " Open a wallet — Enter opens · Esc cancels ",
+                // W18: the keys are stated once, by `list_modal` itself. This title also said
+                // them, differently (`Enter opens` against the body's `Enter chooses`), and its
+                // em-dash is one §2o rule 12 forbids.
+                " Open a wallet ",
                 &rows,
                 if names.is_empty() { usize::MAX } else { *sel },
                 asking.then_some((pass, "password ")),
@@ -285,27 +316,13 @@ fn pending_banner(m: &Tui, area: Rect, frame: &mut Frame) {
     lines_at(lines, area, false, frame);
 }
 
-fn status_line(m: &Tui, area: Rect, frame: &mut Frame) {
+/// The status bar's left half: the two badges and what is known beside them (§7a.1).
+///
+/// Its own function because **its width decides where the toast goes** (W14): a sentence that does
+/// not fit beside these spans is drawn on a row of its own, and the only honest way to know that
+/// is to measure the spans rather than guess at them.
+fn status_left(m: &Tui) -> Vec<Span<'static>> {
     let th = &m.theme;
-    // **`⇥ screens` is §7a.1's rule, stated on every screen and in every focus state** (v5.5).
-    // The rule's whole value is that it is true everywhere, and a user who has just been trapped
-    // in a field needs to read it from where they are. Both segments are hit targets, because
-    // they are the two things on this line already labelled like controls (§7a.2).
-    let right = "⇥ screens  ? help";
-    let rw = right.width() as u16;
-    if area.width > rw {
-        let x = area.right() - rw;
-        para(right.to_string(), th.dimmed(), false).render(Rect::new(x, area.y, rw, 1), frame);
-        m.hits.status(
-            Rect::new(x + rw - 6, area.y, 6, 1),
-            Rect::new(x, area.y, 9, 1),
-        );
-    } else {
-        StatusLine::new()
-            .style(th.dimmed())
-            .right(StatusItem::key_hint("?", "help"))
-            .render(area, frame);
-    }
     let (node, wallet) = (m.node_badge(), m.wallet_badge());
     let (node_tone, wallet_tone) = (m.node_tone(), m.wallet_tone());
     // **With a public node the segment names the node, not a row label** (§2o, v5.6): the
@@ -352,16 +369,57 @@ fn status_line(m: &Tui, area: Rect, frame: &mut Frame) {
             th.warn(),
         ));
     }
+    spans
+}
+
+fn status_left_width(m: &Tui) -> usize {
+    status_left(m).iter().map(|s| s.content.width()).sum()
+}
+
+/// Does the whole toast fit on the status bar beside the badges (W14)?
+///
+/// The same arithmetic `status_line` lays out with: `19` is the width of the `⇥ screens  ? help`
+/// segment on the right, and the left segment is measured rather than estimated — its width
+/// depends on the node's address, the balance and whether an action is running.
+fn note_fits(m: &Tui, width: u16) -> bool {
+    let avail = (width.saturating_sub(19) as usize).saturating_sub(status_left_width(m) + 2);
+    m.note.width() <= avail
+}
+
+fn status_line(m: &Tui, area: Rect, frame: &mut Frame) {
+    let th = &m.theme;
+    // **`⇥ screens` is §7a.1's rule, stated on every screen and in every focus state** (v5.5).
+    // The rule's whole value is that it is true everywhere, and a user who has just been trapped
+    // in a field needs to read it from where they are. Both segments are hit targets, because
+    // they are the two things on this line already labelled like controls (§7a.2).
+    let right = "⇥ screens  ? help";
+    let rw = right.width() as u16;
+    if area.width > rw {
+        let x = area.right() - rw;
+        para(right.to_string(), th.dimmed(), false).render(Rect::new(x, area.y, rw, 1), frame);
+        m.hits.status(
+            Rect::new(x + rw - 6, area.y, 6, 1),
+            Rect::new(x, area.y, 9, 1),
+        );
+    } else {
+        StatusLine::new()
+            .style(th.dimmed())
+            .right(StatusItem::key_hint("?", "help"))
+            .render(area, frame);
+    }
+    let mut spans = status_left(m);
     // **V15: the toast is cut with an ellipsis, at a word boundary.** This line is rendered
     // `WrapMode::None` into the width left of `⇥ screens  ? help`, so the terminal used to cut the
     // last span wherever it happened to land: `A wallet is open. Press x to close i` is a complete
     // sentence about a key that does not exist.
     let avail = area.width.saturating_sub(19) as usize;
-    if !m.note.is_empty() {
-        let used: usize = spans.iter().map(|s| s.content.width()).sum::<usize>() + 2;
+    // W14: only when the whole sentence fits. When it does not, `view` has given it a row of its
+    // own above this one, and printing a cut copy here as well would be the same sentence twice,
+    // one of them false.
+    if !m.note.is_empty() && note_fits(m, area.width) {
         spans.push(Span::styled("│ ", th.dimmed()));
         spans.push(Span::styled(
-            elide(&m.note, avail.saturating_sub(used)),
+            m.note.clone(),
             if m.note_err { th.err() } else { th.ok() },
         ));
     }
@@ -576,7 +634,10 @@ fn picker_pane(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
             };
             // `web_compatible` is a CORS flag for browser wallets: it decides nothing here, so
             // v5.6 drops the marker and leaves the field to `node list --json` (§2o).
-            let tag = if n.custom { " yours" } else { "" };
+            // W17: `own`, as §7a.4 says — `yours` collided with `your own node`, which is the
+            // one distinction the whole product is built on, for a public node the user merely
+            // typed in. The footer explains it in four words.
+            let tag = if n.custom { " own" } else { "" };
             let mut cells = vec![format!("{mark}{}{tag}", n.address)];
             if health {
                 // The ratio **with its sample size**: 100 % of 3 and 72 % of 94 are not
@@ -651,8 +712,22 @@ fn picker_pane(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
     } else {
         inner
     };
+    // **W6: the footer wraps, it is never cut.** It carries what was left out of the list, and
+    // `fit` clipped that to `37 without a port were …` in the narrower tier — the clause exists
+    // to tell the reader why a count is short, so a cut one is worse than none. Its height is the
+    // number of rows its own text needs, up to three.
+    let footer_text = picker_footer(m, &rows_data);
+    let footer_lines: Vec<String> = footer_text
+        .as_deref()
+        .map(|t| wrap_words(t, body.width as usize))
+        .unwrap_or_default();
+    let footer_h = (footer_lines.len().clamp(1, 3)) as u16;
     let rows = Flex::vertical()
-        .constraints([Constraint::Fill, Constraint::Fixed(1), Constraint::Fixed(1)])
+        .constraints([
+            Constraint::Fill,
+            Constraint::Fixed(footer_h),
+            Constraint::Fixed(1),
+        ])
         .split(body);
     // **The address is never elided at any tier** (§7a.4), so columns are dropped from the RIGHT
     // until it has room — rather than handed `Constraint::Fill` over whatever is left, which at 72
@@ -709,34 +784,22 @@ fn picker_pane(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
         state.offset,
     );
     drop(state);
-    // The footer, which is where `skipped_no_port` and `skipped_invalid` surface — a list that
-    // silently showed 158 of 195 would look like a truncated fetch (§2n.1).
-    if let Some(list) = m.picker.list.as_ref() {
-        let footer = match &m.picker.progress {
-            Some(p) => p.clone(),
-            // One total, not four numbers, two of which named parse failures: both skip
-            // counts stay in `node list --json`, which is where a machine reads them (§2o).
-            // `list {age} old` put "ago" and "old" in one phrase — `list 3s ago old` (V6).
-            // `age()` already ends in "ago", so the preposition is all that was needed.
-            None => format!(
-                "{} nodes from monero.fail · list from {} · {} skipped",
-                rows_data.len(),
-                list.cache_age_sec
-                    .map(age)
-                    .unwrap_or_else(|| "an unknown time".into()),
-                list.skipped_no_port + list.skipped_invalid,
-            ),
+    if !footer_lines.is_empty() {
+        let style = if m.picker.progress.is_some() {
+            th.warn()
+        } else {
+            th.dimmed()
         };
-        para(
-            fit(&footer, rows[1].width as usize),
-            if m.picker.progress.is_some() {
-                th.warn()
-            } else {
-                th.dimmed()
-            },
+        lines_at(
+            footer_lines
+                .into_iter()
+                .take(footer_h as usize)
+                .map(|l| Line::styled(l, style))
+                .collect(),
+            rows[1],
             false,
-        )
-        .render(rows[1], frame);
+            frame,
+        );
     }
     chip_row(
         m,
@@ -760,6 +823,53 @@ fn picker_pane(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
         ],
         frame,
     );
+}
+
+/// The picker's footer (§2n.1, W6) — what the list is, how old it is, and **what was left out**.
+///
+/// A list that silently showed 158 of 195 would look like a truncated fetch, so the two skip
+/// counts surface here. v5.6 merged them into one number and dropped the noun, which left
+/// `39 skipped` — a count of nothing a reader can name. Each clause names what it counts, each
+/// pluralises, and a count of zero draws no clause at all.
+fn picker_footer(m: &Tui, rows_data: &[&fmonero_core::PublicNode]) -> Option<String> {
+    let list = m.picker.list.as_ref()?;
+    if let Some(p) = &m.picker.progress {
+        return Some(p.clone());
+    }
+    let n = rows_data.len();
+    let mut parts = vec![
+        format!(
+            "{n} {} from monero.fail",
+            if n == 1 { "node" } else { "nodes" }
+        ),
+        // `list {age} old` put "ago" and "old" in one phrase — `list 3s ago old` (V6). `age()`
+        // already ends in "ago", so the preposition is all that was needed.
+        format!(
+            "list from {}",
+            list.cache_age_sec
+                .map(age)
+                .unwrap_or_else(|| "an unknown time".into())
+        ),
+    ];
+    if list.skipped_no_port > 0 {
+        parts.push(format!(
+            "{} without a port {} left out",
+            list.skipped_no_port,
+            if list.skipped_no_port == 1 {
+                "was"
+            } else {
+                "were"
+            }
+        ));
+    }
+    if list.skipped_invalid > 0 {
+        parts.push(format!("{} fmonero could not read", list.skipped_invalid));
+    }
+    if rows_data.iter().any(|r| r.custom) {
+        // W17's legend, under the table that draws the marker.
+        parts.push("own = a node you added".to_string());
+    }
+    Some(parts.join(" · "))
 }
 
 fn node_hero(m: &Tui, area: Rect, frame: &mut Frame) {
@@ -798,16 +908,21 @@ fn node_hero(m: &Tui, area: Rect, frame: &mut Frame) {
                 // prose and clipped mid-offset, with `checked` doing double duty for the node's own
                 // measurement two lines away. One label per thing: the node is *checked*, a wallet
                 // is *refreshed*.
+                // W5: `refreshed not yet` is not a sentence. The clause is the whole value, so
+                // it reads either `refreshed 2m 04s ago` or `not refreshed yet`.
                 lines.push(kv(
                     th,
                     "this wallet",
                     format!(
-                        "block {} · refreshed {}",
+                        "block {} · {}",
                         match s.wallet.height {
                             Some(h) => grouped(h),
                             None => "—".into(),
                         },
-                        refreshed_age(s).unwrap_or_else(|| "not yet".into())
+                        match refreshed_age(s) {
+                            Some(age) => format!("refreshed {age}"),
+                            None => "not refreshed yet".to_string(),
+                        }
                     ),
                 ));
                 // Decision 7, on the screen a user watches while it happens: the scanning is
@@ -1442,10 +1557,18 @@ fn wallet_empty(m: &Tui, area: Rect, frame: &mut Frame) {
                 "c",
                 "Create wallet…    a new one, kept on this machine",
             ),
+            // **W15: the label follows the state.** In the state §7a.5 says `W` stops the
+            // service — it is running and nothing is open — this chip still read `Start`, and
+            // pressing it stopped the service. One predicate decides both (`Tui::
+            // wallet_daemon_key_stops`).
             (
                 Button::WalletDaemon,
                 "W",
-                "Start the wallet service   (not needed: opening or creating a wallet starts it)",
+                if m.wallet_daemon_key_stops() {
+                    "Stop the wallet service    (nothing is open, so nothing is interrupted)"
+                } else {
+                    "Start the wallet service   (not needed: opening a wallet starts it)"
+                },
             ),
         ],
         frame,
@@ -2093,10 +2216,12 @@ fn create_modal(m: &Tui, form: &super::CreateForm, frame: &mut Frame) {
             Constraint::Fill,
         ])
         .split(inner);
+    // W19: `seed lang` was an abbreviation where §7a.5 says `language`, and the four labels are
+    // now one style — the Send screen's, which capitalises `To`, `Amount`, `Fee` and `Account`.
     for (i, (label, input)) in [
-        ("name      ", name),
-        ("password  ", pass),
-        ("repeat    ", again),
+        ("Name           ", name),
+        ("Password       ", pass),
+        ("Repeat         ", again),
     ]
     .iter()
     .enumerate()
@@ -2117,7 +2242,7 @@ fn create_modal(m: &Tui, form: &super::CreateForm, frame: &mut Frame) {
         m,
         rows[3],
         Selector::Language,
-        "seed lang ",
+        "Seed language  ",
         fmonero_core::settings::SEED_LANGUAGES[lang].1,
         field == 3,
         frame,
@@ -2581,57 +2706,67 @@ pub(super) fn confirm_dialog(th: &Theme, title: &str, message: &str) -> Dialog {
         .focused_button_style(th.selected())
 }
 
+/// The `?` overlay (§7a: **it is the keymap**) — **wrapped, never elided** (W13).
+///
+/// V15 gave every cut line an `…`, which made the overlay honest and still unreadable: 11 of its
+/// 25 rows ended in one at 120 columns and 9 at 150, including the two that explain why `u`, `d`
+/// and `L` are unavailable and what `Esc` does. A key's line is the only place those facts exist,
+/// so the fix is room: the overlay is as wide as the frame allows up to 118 columns, the key
+/// column is 19, and an action that still does not fit continues on a second row indented under
+/// itself. Nothing here may end in `…`, and `tests.rs` asserts exactly that.
 fn help(m: &Tui, frame: &mut Frame) {
     let th = &m.theme;
-    // `overlay` spends a row on each border and a row on each padding edge, so the interior is
-    // `h - 4`: asking for `KEYS.len() + 3` rendered one row short and silently dropped the LAST
-    // row of the table at every terminal size — which is the Log screen's `/ f n N`, bindings
-    // that are implemented and documented nowhere else a user can reach (§7a: the overlay IS the
-    // keymap).
-    let Some(inner) = overlay(
-        m,
-        frame,
-        100,
-        KEYS.len() as u16 + 4,
-        " Keys — any key closes ",
-    ) else {
-        return;
-    };
+    /// The key column, measured: `Send: p  Ctrl+P  @` is the widest at 18 cells.
+    const KEY_W: usize = 19;
+    const WIDTH: u16 = 118;
+    let w = WIDTH.min(frame.bounds().width);
+    let text_w = (w as usize).saturating_sub(4).saturating_sub(KEY_W).max(8);
     // §7a: in remote mode the keys that need the local daemon are marked from this same table,
     // so help and behaviour cannot drift — `confirm` toasts, and `b` has no bans to show.
     let remote = m.remote_mode();
-    let lines = KEYS
-        .iter()
-        .map(|(k, a)| {
-            let disabled = remote && matches!(*k, "u  d" | "L" | "b");
-            // The mouse row reads its own setting rather than a copy of it, so the overlay's text
-            // cannot drift from the policy actually in force (§7a.2's reason for making it a
-            // setting and not a flag).
-            let action = if disabled {
-                format!("{a}  (not while you use a public node)")
-            } else if *k == "mouse" && !m.ctx.settings.tui.mouse {
-                // The settings key stays: it is a name the user types, which is §2o rule 5's
-                // own carve-out. What goes is the shell command (§2o.1).
-                "off — turn on tui.mouse in your settings".to_string()
-            } else {
-                (*a).to_string()
-            };
-            // V15: the overlay is 100 columns wide at most and the key column takes 22, so nine
-            // of these rows were cut mid-word at 120 columns — `… every key yo`, and a
-            // `fmonero wallet sweep <a` that looks like a command a user could type.
-            Line::from_spans([
-                Span::styled(format!("{k:<22}"), th.key().bg(th.selection)),
-                Span::styled(
-                    elide(&action, (inner.width as usize).saturating_sub(22)),
-                    if disabled {
-                        th.dimmed().bg(th.selection)
-                    } else {
-                        th.text().bg(th.selection)
-                    },
-                ),
-            ])
+    let mut rows: Vec<(String, String, bool)> = Vec::new();
+    for (k, a) in KEYS {
+        let disabled = remote && matches!(*k, "u  d" | "L" | "b");
+        // The mouse row reads its own setting rather than a copy of it, so the overlay's text
+        // cannot drift from the policy actually in force (§7a.2's reason for making it a
+        // setting and not a flag).
+        let action = if disabled {
+            format!("{a}  (not while you use a public node)")
+        } else if *k == "mouse" && !m.ctx.settings.tui.mouse {
+            // The settings key stays: it is a name the user types, which is §2o rule 5's
+            // own carve-out. What goes is the shell command (§2o.1).
+            "off. Turn on tui.mouse in your settings".to_string()
+        } else {
+            (*a).to_string()
+        };
+        rows.push(((*k).to_string(), action, disabled));
+    }
+    let wrapped: Vec<(String, Vec<String>, bool)> = rows
+        .into_iter()
+        .map(|(k, a, d)| {
+            let lines = wrap_words(&a, text_w);
+            (k, lines, d)
         })
         .collect();
+    let height: usize = wrapped.iter().map(|(_, l, _)| l.len().max(1)).sum();
+    let Some(inner) = overlay(m, frame, w, height as u16 + 4, " Keys · any key closes ") else {
+        return;
+    };
+    let mut lines: Vec<Line> = Vec::new();
+    for (k, action, disabled) in wrapped {
+        let style = if disabled {
+            th.dimmed().bg(th.selection)
+        } else {
+            th.text().bg(th.selection)
+        };
+        for (i, part) in action.iter().enumerate() {
+            let key = if i == 0 { k.clone() } else { String::new() };
+            lines.push(Line::from_spans([
+                Span::styled(crate::output::pad(&key, KEY_W), th.key().bg(th.selection)),
+                Span::styled(part.clone(), style),
+            ]));
+        }
+    }
     lines_at(lines, inner, false, frame);
 }
 
@@ -2825,35 +2960,11 @@ pub(super) fn fit(s: &str, n: usize) -> String {
     format!("{out:<n$}")
 }
 
-/// Cut a sentence to `n` cells **at a word boundary, with an ellipsis** (v5.6.1, V15).
-///
-/// The difference from [`fit`] is the padding (none here) and the boundary: a truncated sentence
-/// that ends mid-word reads as a finished one, which is how `A wallet is open. Press x to close i`
-/// and `Could not read your settings: cannot read /tm` reached the owner's screen. The `…` is the
-/// program's own mark for "there is more", used everywhere else a value is cut, and backing off to
-/// the last space is what keeps the fragment a phrase rather than a stump — unless the word itself
-/// is most of the budget, in which case cutting inside it and marking the cut is the honest answer.
-pub(super) fn elide(s: &str, n: usize) -> String {
-    if s.width() <= n {
-        return s.to_string();
-    }
-    if n <= 1 {
-        return "…".repeat(n.min(1));
-    }
-    let mut cut = String::new();
-    for c in s.chars() {
-        if cut.width() + 1 > n - 1 {
-            break;
-        }
-        cut.push(c);
-    }
-    if let Some(i) = cut.rfind(' ') {
-        if i * 2 >= n {
-            cut.truncate(i);
-        }
-    }
-    format!("{}…", cut.trim_end())
-}
+// **`elide` is gone** (W13, W14). It existed for two callers — the status bar's toast and the `?`
+// overlay's rows — and both now have room instead of a mark: a toast that does not fit beside the
+// badges gets a row of its own and wraps, and the overlay wraps its rows. The honest ellipsis
+// V15 added was still the reader losing the end of the sentence. `fit` remains, for table CELLS,
+// where a column has a fixed width and a value that overruns it is a value, not prose.
 
 /// Hard-wrap at a width, for the one string that may never be elided: an address.
 pub(super) fn wrapped(s: &str, width: usize) -> Vec<String> {

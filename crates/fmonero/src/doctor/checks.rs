@@ -697,7 +697,7 @@ fn version_supported(p: &Probes) -> Verdict {
     }
     match version_of(&line) {
         Some(v) if v == SUPPORTED_MONERO => {
-            Verdict::pass(format!("{line}. That is the {v} fmonero is built for."))
+            Verdict::pass(format!("{line}. That is the {v} fmonero is written for."))
         }
         Some(v) => Verdict::warn(
             "unsupported_version",

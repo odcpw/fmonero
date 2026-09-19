@@ -477,7 +477,10 @@ step "§7a  the TUI fits its line budget · §6.1 the plugin fits its own"
 # v5.6: 7600, and §7a says so before the code was written — the plain-language round's own
 # arithmetic is the ` This node ` pane, the `Context` reload and its three cases, and the fee-level
 # helpers (was 7200).
-TUI_BUDGET=7900
+# v5.6.2: 8300, itemised in §7a before the code was written (was 7900). Three of the nine items
+# are **room** rather than text — the toast's own row, the picker footer's wrap, the `?` overlay's
+# — because a sentence cut to fit is a sentence the reader does not have.
+TUI_BUDGET=8300
 if [ -d "$BIN/tui" ]; then
   TUI_FILES=()
   for f in mod theme screens send subs hit; do

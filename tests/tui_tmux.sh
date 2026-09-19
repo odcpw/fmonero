@@ -313,9 +313,11 @@ case "$CTEXT" in
   *"72% of 18"*) ok "with the health ratio BESIDE its sample size (§2n.1)" ;;
   *) bad "the ratio must carry its sample size" "$(printf '%s' "$CTEXT" | tail -14)" ;;
 esac
+# W6: the footer says what was skipped, pluralises, and **wraps** rather than being cut — so the
+# assertion is on the clause's first half, which is what a single pane row can hold here.
 case "$CTEXT" in
-  *"37 skipped"*) ok "and the footer surfaces the skip count" ;;
-  *) bad "the footer does not surface the skip count" "$(printf '%s' "$CTEXT" | tail -4)" ;;
+  *"37 without a port"*) ok "and the footer says what was left out of the list (W6)" ;;
+  *) bad "the footer does not say what was left out" "$(printf '%s' "$CTEXT" | tail -4)" ;;
 esac
 
 # 4. §7a.5's wallet empty state: three chips and a service line, with no wallet open.
@@ -331,7 +333,7 @@ tmux send-keys -t "$SESSION" 2 2>/dev/null || true; sleep 1.2
 if [ -n "$CAPTURE" ]; then
   tmux send-keys -t "$SESSION" x 2>/dev/null || true; sleep 1.5
   case "$(pane)" in
-    *"wallet closed"*) ok "§7a.5: x closes the open wallet on a real pty (the toast says so)" ;;
+    *"Wallet closed"*) ok "§7a.5: x closes the open wallet on a real pty (the toast says so)" ;;
     *) bad "x did not report closing the wallet" "$(printf '%s' "$(pane)" | tail -3)" ;;
   esac
   printf '%s\n' "$(pane)" > "$CAPTURE/wallet-empty.txt"
@@ -466,10 +468,10 @@ tmux send-keys -t "$REMOTE_SESSION" u 2>/dev/null || true
 sleep 1
 RTEXT2="$(tmux capture-pane -p -t "$REMOTE_SESSION" 2>/dev/null || true)"
 case "$RTEXT2" in
-  # The status line is trimmed to the pane's width, so the assertion is on the half that fits —
-  # which still has to be the part naming a key, not a command.
-  *"You are using a public node. Press f"*)
-    ok "u names the in-app way out (§2o.1)" ;;
+  # W14: the toast is short enough that BOTH routes fit the status bar at 120 columns — the old
+  # sentence was cut to `You are using a public node. Press…`, which named neither.
+  *"Press f for the list, or l for your own."*)
+    ok "u names both in-app ways out, whole (§2o.1, W14)" ;;
   *) bad "u did not name the in-app way out" "$(printf '%s' "$RTEXT2" | tail -3)" ;;
 esac
 case "$RTEXT2" in

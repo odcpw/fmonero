@@ -141,19 +141,19 @@ impl Action {
     /// The label the status line shows while this runs.
     pub fn label(&self) -> String {
         match self {
-            Action::NodeUp => "starting the node".into(),
-            Action::NodeDown => "stopping the node".into(),
-            Action::WalletOpen { name, .. } => format!("opening {name}"),
-            Action::WalletRefresh { .. } => "checking for payments".into(),
-            Action::BuildTx(_) => "checking the fee".into(),
-            Action::Relay(_) => "sending".into(),
-            Action::WalletCreate { name, .. } => format!("creating {name}"),
-            Action::WalletDaemonStart => "starting the wallet service".into(),
-            Action::WalletDaemonStop => "stopping the wallet service".into(),
-            Action::NodeListFetch { .. } => "getting the node list".into(),
-            Action::NodeProbe { targets } => format!("checking {} nodes", targets.len()),
-            Action::NodeUseRemote { address, .. } => format!("switching to {address}"),
-            Action::NodeLocal => "switching to your own node".into(),
+            Action::NodeUp => "Starting your node".into(),
+            Action::NodeDown => "Stopping your node".into(),
+            Action::WalletOpen { name, .. } => format!("Opening {name}"),
+            Action::WalletRefresh { .. } => "Checking for payments".into(),
+            Action::BuildTx(_) => "Checking the fee".into(),
+            Action::Relay(_) => "Sending".into(),
+            Action::WalletCreate { name, .. } => format!("Creating {name}"),
+            Action::WalletDaemonStart => "Starting the wallet service".into(),
+            Action::WalletDaemonStop => "Stopping the wallet service".into(),
+            Action::NodeListFetch { .. } => "Getting the node list".into(),
+            Action::NodeProbe { targets } => format!("Checking {} nodes", targets.len()),
+            Action::NodeUseRemote { address, .. } => format!("Switching to {address}"),
+            Action::NodeLocal => "Switching to your own node".into(),
         }
     }
 
@@ -297,14 +297,14 @@ pub fn execute(
             Action::NodeUp => {
                 let s = node_session::up(ctx, None, cancel)?;
                 Ok(Outcome::Note(if s.already_running {
-                    "your node was already running".into()
+                    "Your node was already running.".into()
                 } else {
-                    format!("your node started in {}s", s.waited_sec)
+                    format!("Your node started in {}s.", s.waited_sec)
                 }))
             }
             Action::NodeDown => {
                 node_session::down(ctx, cancel)?;
-                Ok(Outcome::Note("your node is stopped".into()))
+                Ok(Outcome::Note("Your node is stopped.".into()))
             }
             Action::WalletOpen { name, password } => {
                 let w = WalletClient::from_ctx(ctx)?;
@@ -317,10 +317,10 @@ pub fn execute(
                 // of "refresh, then record that we did" (§5b, §5's `wallet.last_refresh_at`).
                 let r = fmonero_core::wallet_session::refresh(ctx, &w, start_height, cancel)?;
                 Ok(Outcome::Note(format!(
-                    "checked {} blocks{}",
+                    "Checked {} blocks.{}",
                     r.blocks_fetched,
                     if r.received_money {
-                        " · money came in"
+                        " Money came in."
                     } else {
                         ""
                     }
@@ -379,14 +379,14 @@ pub fn execute(
                     cancel,
                 )?;
                 Ok(Outcome::Note(if started {
-                    "the wallet service is running".into()
+                    "The wallet service is running.".into()
                 } else {
-                    "the wallet service was already running".into()
+                    "The wallet service was already running.".into()
                 }))
             }
             Action::WalletDaemonStop => {
                 units::stop(ctx, &ctx.settings.wallet.unit, cancel)?;
-                Ok(Outcome::Note("the wallet service is stopped".into()))
+                Ok(Outcome::Note("The wallet service is stopped.".into()))
             }
             Action::NodeListFetch { refresh } => {
                 let list = nodes::list(
@@ -521,14 +521,14 @@ mod tests {
 
     #[test]
     fn labels_name_what_is_running() {
-        assert_eq!(Action::NodeUp.label(), "starting the node");
+        assert_eq!(Action::NodeUp.label(), "Starting your node");
         assert_eq!(
             Action::WalletOpen {
                 name: "main".into(),
                 password: String::new()
             }
             .label(),
-            "opening main"
+            "Opening main"
         );
     }
 }

@@ -219,6 +219,14 @@ fn screen_text(m: &Tui, w: u16, h: u16) -> String {
     render(m, w, h).join("\n")
 }
 
+/// The screen's text with every line break and every run of spaces collapsed to one space, so a
+/// sentence that **wrapped** — which is what v5.6.2 does instead of eliding — can be asserted
+/// whole. A frame's rows are 120 cells wide and padded; `contains` on the raw text can only ever
+/// see a sentence that happens to fit one row.
+fn flowed(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 fn key(code: KeyCode) -> Event {
     Event::Key(KeyEvent::new(code))
 }
@@ -722,9 +730,18 @@ fn the_send_screen_builds_once_and_relays_that_exact_transaction() {
         sim.model().send.to.value().is_empty(),
         "the form must clear"
     );
+    // W8: the toast carries the id **shortened**, and the whole one is in the payment row and in
+    // `--json`. A 64-character id in a status bar is a status bar with nothing else on it.
     assert!(
-        sim.model().note.contains(BUILT_TXID),
+        sim.model()
+            .note
+            .contains(&fmonero_core::short_id(BUILT_TXID)),
         "{}",
+        sim.model().note
+    );
+    assert!(
+        !sim.model().note.contains(BUILT_TXID),
+        "the whole id belongs in --json: {}",
         sim.model().note
     );
     // The relay announced the paid line through the sink, into the Log pane (§2a.2, §2g).
@@ -1381,8 +1398,27 @@ fn the_picker_renders_the_cache_on_entry_and_shows_both_column_groups() {
         text.contains("42"),
         "the latency of the probed row:\n{text}"
     );
-    // v5.6 collapses the two parse-failure counts into one total; both stay in `--json`.
-    assert!(text.contains("skipped"), "the footer surfaces it:\n{text}");
+    // W6: the footer says what was skipped and what it counts, and pluralises both. The cache
+    // this test seeds has 37 portless rows and no unreadable ones, so the second clause is absent
+    // — a count of zero draws no clause.
+    // The Notes pane is drawn on the same rows to the right of this pane, so the footer's own
+    // wrap is asserted in two halves rather than by flowing the whole frame.
+    let flat = flowed(&text);
+    assert!(
+        flat.contains("37 without a port were") && flat.contains("left out"),
+        "the footer must say what was left out:\n{text}"
+    );
+    assert!(
+        flat.contains("2 nodes from monero.fail"),
+        "and pluralise its own count:\n{text}"
+    );
+    // And it is wrapped rather than cut: nothing in the footer's own rows ends in an ellipsis.
+    for line in text.lines().filter(|l| l.contains("monero.fail")) {
+        assert!(
+            !line.contains('…'),
+            "the footer was cut instead of wrapped: {line}"
+        );
+    }
 }
 
 /// **V6 and V7, on the strings the verification read off a real pty.** The footer said
@@ -1498,10 +1534,14 @@ fn the_use_your_own_node_confirm_states_what_the_switch_does() {
     );
 }
 
-/// **V15.** Nothing is cut mid-word without saying so. The status bar is rendered with no wrap
-/// into whatever is left of its row, and the `?` overlay's action column is 74 cells wide at 120
-/// columns, so nine of its rows ended in the middle of a word — `… every key yo`, and a
-/// `fmonero wallet sweep <a` that reads like a command a user could type.
+/// **V15, and W14 on top of it.** Nothing a user reads is cut mid-word.
+///
+/// V15's finding was a toast cut wherever the status bar's row happened to end —
+/// `A wallet is open. Press x to close i`, a complete sentence about a key that does not exist —
+/// and its fix was an ellipsis at a word boundary. W14 found the cost of that fix: the refusal the
+/// whole of §2o.1 is built on is 40 columns and the bar had 18 of them, so an honest mark was all
+/// the user ever saw of it. A toast that does not fit beside the badges now has a row of its own,
+/// wrapped, and this test reads it at the two sizes the captures are read at.
 #[test]
 fn a_cut_line_always_says_it_was_cut() {
     let mut s = sim(offline_model(Screen::Node));
@@ -1509,59 +1549,80 @@ fn a_cut_line_always_says_it_was_cut() {
     s.model_mut().note_for_test(long);
     for (cols, rows) in [(120u16, 32u16), (80, 24)] {
         let text = sim_text(&s, cols, rows);
-        let bar = text.lines().last().unwrap_or_default();
-        assert!(bar.contains('│'), "the toast is on the status bar:\n{text}");
-        // The right-hand `⇥ screens  ? help` segment is drawn on the same row, so the toast is
-        // what lies between the last `│` and it.
-        let after = bar.rsplit('│').next().unwrap_or_default();
-        let tail = after.split('⇥').next().unwrap_or_default().trim();
         assert!(
-            tail.ends_with('…') || long.contains(tail),
-            "{cols}x{rows}: the toast was cut without a mark: {tail:?}"
+            flowed(&text).contains(long),
+            "{cols}x{rows}: the toast must be on screen whole:\n{text}"
         );
-        if tail.ends_with('…') {
+        // And it is never cut mid-word: no row that carries part of it ends in an ellipsis.
+        for line in text.lines().filter(|l| l.contains("A wallet is open")) {
             assert!(
-                !tail.trim_end_matches('…').ends_with(char::is_alphanumeric)
-                    || long.starts_with(tail.trim_end_matches('…')),
-                "{cols}x{rows}: {tail:?} is a fragment pretending to be a sentence"
+                !line.contains('…'),
+                "{cols}x{rows}: the toast was cut: {line}"
             );
         }
     }
-    // The `?` overlay at 120 columns: nine of its rows used to end mid-word. Only the overlay's
-    // own rows are examined — between its title border and its closing one — because the screen
-    // behind it is still drawn and its rows are somebody else's assertion.
-    s.inject_event(key(KeyCode::Char('?')));
-    let text = sim_text(&s, 120, 40);
-    let lines: Vec<&str> = text.lines().collect();
-    let top = lines
-        .iter()
-        .position(|l| l.contains("Keys — any key closes"))
-        .expect("the overlay is open");
+    // A short toast still shares the bar with the badges, which is the whole point of the bar.
+    s.model_mut().note_for_test("Copied.");
+    let text = sim_text(&s, 120, 32);
+    let bar = text.lines().last().unwrap_or_default();
+    assert!(
+        bar.contains("Copied."),
+        "a short toast stays on the bar:\n{text}"
+    );
 
-    // The overlay is 100 columns wide, centred in 120, so its interior starts at column 12 and the
-    // action column at 12 + 22. Only those cells are the overlay's; the screen behind it is still
-    // drawn to the left and right of them.
-    const ACTION_X: usize = 12 + 22;
-    const ACTION_W: usize = 96 - 22;
-    let mut rows = 0;
-    for line in &lines[top + 1..] {
-        let action: String = line.chars().skip(ACTION_X).take(ACTION_W).collect();
-        let action = action.trim_end();
-        // The overlay's own bottom border, which is where its rows stop — the screen behind it
-        // draws borders of its own to the left and right of these columns.
-        if action.chars().all(|c| c == '─') && !action.is_empty() {
-            break;
-        }
-        if action.is_empty() {
-            continue;
-        }
-        rows += 1;
+    // **W13: the `?` overlay wraps, and nothing in it ends in `…`.** V15 marked its cut rows,
+    // which made them honest and still unreadable — 11 of 25 at 120 columns and 9 at 150,
+    // including the rows that say why `u`, `d` and `L` are unavailable. Read at both sizes, in
+    // both modes, and every row of `KEYS` has to be present **whole**.
+    s.inject_event(key(KeyCode::Char('?')));
+    for (cols, rows) in [(120u16, 32u16), (150, 40)] {
+        let text = sim_text(&s, cols, rows);
+        let top = text
+            .lines()
+            .position(|l| l.contains("Keys · any key closes"))
+            .unwrap_or_else(|| panic!("the overlay is open at {cols}x{rows}:\n{text}"));
+        // The overlay's own rows and its own COLUMNS. The screen behind it is still drawn to the
+        // left and right of them, and the status bar below it carries a toast that IS elided on
+        // purpose (V15, above) — either one lands inside a wrapped sentence otherwise.
+        let title_row = text.lines().nth(top).unwrap_or_default();
+        let x0 = title_row.chars().position(|c| c == '╭').unwrap_or(0);
+        let x1 = title_row
+            .chars()
+            .position(|c| c == '╮')
+            .unwrap_or_else(|| title_row.chars().count());
+        // From the overlay's own left border to its own right one, so the row that ends the
+        // overlay is recognisable by its first character.
+        let column =
+            |l: &str| -> String { l.chars().skip(x0).take(x1.saturating_sub(x0) + 1).collect() };
+        let body: Vec<String> = text
+            .lines()
+            .skip(top + 1)
+            .map(column)
+            .take_while(|l| !l.starts_with('╰'))
+            .collect();
         assert!(
-            action.chars().count() < ACTION_W || action.ends_with('…'),
-            "a help row was cut without a mark: {action:?}"
+            body.len() > KEYS.len(),
+            "{cols}x{rows}: the overlay drew {} rows for {} keys:\n{text}",
+            body.len(),
+            KEYS.len()
         );
+        for line in &body {
+            assert!(
+                !line.contains('…'),
+                "{cols}x{rows}: a help row was elided: {line}\n{text}"
+            );
+        }
+        // Every action, whole — wrapped rows are joined before the comparison, which is the only
+        // way to assert a sentence that spans two of them. The overlay's own border columns (and
+        // the screen's behind it) come out first, or they would land inside the sentence.
+        let flat = flowed(&body.join(" ").replace('│', " "));
+        for (k, action) in KEYS {
+            assert!(
+                flat.contains(&flowed(action)),
+                "{cols}x{rows}: the {k} row is not on screen whole:\n{text}"
+            );
+        }
     }
-    assert!(rows >= 10, "the overlay rendered {rows} rows:\n{text}");
 }
 
 /// **V11.** The modal showed neither what was wrong with what the user had typed nor which key
@@ -1638,7 +1699,7 @@ fn the_picker_selects_nothing_on_entry_and_refuses_the_configured_node() {
         s.model().modal.is_none(),
         "activating the node already in use must not open the confirm"
     );
-    assert_eq!(s.model().note, "this is the node you are using");
+    assert_eq!(s.model().note, "This is the node you are using.");
     // The next row DOES open it, with all three consequences named.
     s.inject_event(key(KeyCode::Down));
     s.inject_event(key(KeyCode::Enter));
@@ -1727,7 +1788,7 @@ fn the_create_modal_is_fillable_from_the_keyboard_alone() {
         s.model().note
     );
     let armed = format!("{:?}", s.model().action.as_ref().map(|a| a.label.clone()));
-    assert!(armed.contains("creating fresh"), "{armed}");
+    assert!(armed.contains("Creating fresh"), "{armed}");
 }
 
 /// Every local refusal §7a.5 names, and **nothing is sent** for any of them.
@@ -2426,4 +2487,152 @@ fn the_node_has_one_set_of_words_for_being_off_and_never_advises_the_running_key
             "{cols}x{rows}: it is starting, not stopped:\n{text}"
         );
     }
+}
+
+/// **W15.** Every toast is a capitalised sentence.
+///
+/// `the wallet service is stopped` was the one the verification read, lowercase, beside a `[W]`
+/// chip that said `Start` — but it was one of a dozen: `following`, `sent · <64 hex characters>`,
+/// `checked 8 · 3 answered`, `select a node first (↑↓ or click), then Enter`. The literals are read
+/// out of `mod.rs` and `subs.rs` rather than listed here, because a list beside 3 000 lines of
+/// event handling is a list that goes stale — and the same scan covers the action labels, which
+/// are the first toast of every long action.
+#[test]
+fn every_toast_is_a_capitalised_sentence() {
+    fn literals(src: &str, needles: &[&str]) -> Vec<String> {
+        let mut out = Vec::new();
+        for needle in needles {
+            for (i, _) in src.match_indices(needle) {
+                let rest = &src[i + needle.len()..];
+                // The first string literal after the call, `format!(` and whitespace aside.
+                let Some(open) = rest.find('"') else { continue };
+                let head = &rest[..open];
+                if head
+                    .chars()
+                    .any(|c| !c.is_whitespace() && !"(format!&".contains(c))
+                {
+                    continue;
+                }
+                let mut lit = String::new();
+                let mut chars = rest[open + 1..].chars();
+                while let Some(c) = chars.next() {
+                    match c {
+                        '\\' => {
+                            // A continued literal: `\` then a newline and indentation.
+                            match chars.next() {
+                                Some('\n') => {
+                                    lit.push(' ');
+                                }
+                                Some(other) => lit.push(other),
+                                None => break,
+                            }
+                        }
+                        '"' => break,
+                        c => lit.push(c),
+                    }
+                }
+                out.push(lit);
+            }
+        }
+        out
+    }
+    let mut all = literals(
+        include_str!("mod.rs"),
+        &["self.note(", "Outcome::Note(", "Ok(\""],
+    );
+    all.extend(literals(
+        include_str!("subs.rs"),
+        &["Outcome::Note(", "=> \"", "=> format!("],
+    ));
+    assert!(
+        all.len() > 30,
+        "the scan found only {} literals — it is not reading the sources",
+        all.len()
+    );
+    for lit in &all {
+        let trimmed = lit.trim_start();
+        let Some(first) = trimmed.chars().next() else {
+            continue;
+        };
+        // A literal that opens with a format field starts with the value, which may be a wallet
+        // name or an address; a debug-only or non-prose literal has no space in it at all.
+        if first == '{' || !trimmed.contains(' ') && !trimmed.ends_with('.') {
+            continue;
+        }
+        assert!(
+            first.is_uppercase() || first.is_ascii_digit(),
+            "a toast has to be a capitalised sentence: {lit:?}"
+        );
+    }
+}
+
+/// **W14.** The refusal the whole of §2o.1 is built on has to be readable: it was cut to
+/// `You are using a public node. Press…` at 120 **and** 150 columns, so the two in-app routes it
+/// exists to name were never on screen. The status bar's left segment carries two badges and the
+/// node's address, and what is left for a toast is about 44 columns.
+#[test]
+fn the_public_node_refusal_names_both_routes_on_screen() {
+    let w = World::new("refusal-toast");
+    let mut ctx = w.ctx.clone();
+    ctx.settings.node.mode = fmonero_core::NodeMode::Remote;
+    ctx.settings.node.remote = "xmr-node.cakewallet.com:18081".into();
+    let mut s = sim(model(&ctx, Screen::Node));
+    for k in ['u', 'd', 'L'] {
+        s.inject_event(key(KeyCode::Char(k)));
+        for (cols, rows) in [(120u16, 32u16), (150, 40)] {
+            let text = sim_text(&s, cols, rows);
+            // On the bar when it fits beside the badges, on its own row when it does not — and
+            // whole either way, which is the finding.
+            assert!(
+                flowed(&text).contains("Press f for the list, or l for your own."),
+                "{cols}x{rows}: `{k}` must name both routes whole:\n{text}"
+            );
+            for line in text.lines().filter(|l| l.contains("Press f for")) {
+                assert!(
+                    !line.contains('…'),
+                    "{cols}x{rows}: the refusal was cut: {line}"
+                );
+            }
+        }
+    }
+}
+
+/// **W16.** `Esc` with nothing of fmonero's own running said `Nothing is running.` on a screen
+/// whose subject is a node and a wallet service, both of which a reader will think it means.
+#[test]
+fn esc_with_nothing_running_talks_about_the_cancel_and_not_about_the_node() {
+    let mut s = sim(offline_model(Screen::Node));
+    s.inject_event(key(KeyCode::Escape));
+    assert_eq!(s.model().note, "Nothing to cancel.");
+    assert!(!s.model().note_err, "it is not an error, it is an answer");
+}
+
+/// **W15.** The `[W]` chip says what `W` will do, from the predicate `W` itself branches on. In
+/// the state §7a.5 describes — the service up, nothing open — the chip read `Start` and pressing
+/// it stopped the service, and then toasted about it in lower case.
+#[test]
+fn the_wallet_service_chip_says_which_way_the_key_goes() {
+    let mut s = sim(offline_model(Screen::Wallet));
+    // Nothing running: `W` starts it.
+    assert!(!s.model().wallet_daemon_key_stops());
+    let text = sim_text(&s, 120, 32);
+    assert!(
+        text.contains("[W] Start the wallet service")
+            && !text.contains("[W] Stop the wallet service"),
+        "with the service down the chip starts it:\n{text}"
+    );
+    // The service up with nothing open — §7a.5's stop state, reached by moving the one field the
+    // predicate reads, because no wallet mock answers "running with nothing open".
+    if let Some(st) = s.model_mut().status.as_mut() {
+        st.wallet.unit_active = true;
+        st.wallet.open = false;
+        st.wallet.name = None;
+    }
+    assert!(s.model().wallet_daemon_key_stops());
+    let text = sim_text(&s, 120, 32);
+    assert!(
+        text.contains("[W] Stop the wallet service")
+            && !text.contains("[W] Start the wallet service"),
+        "with the service up and nothing open the chip stops it:\n{text}"
+    );
 }

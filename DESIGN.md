@@ -6523,7 +6523,7 @@ places to update when monero.fail changes one field.
 
 ---
 
-## 7a. TUI (`fmonero tui`) — one agent, one pass, ≤ 7 900 lines across `src/tui/{mod,theme,screens,send,subs,hit}.rs` (`tests.rs` excluded)
+## 7a. TUI (`fmonero tui`) — one agent, one pass, ≤ 8 300 lines across `src/tui/{mod,theme,screens,send,subs,hit}.rs` (`tests.rs` excluded)
 
 **The budget is the measured figure, and it is a ceiling against growth rather than a target**
 (v5.1). v5 asked for 1 800 — fproton's 1 200 plus a fourth screen, a send state machine, two modals
@@ -6628,6 +6628,30 @@ identified an estimate consuming 99.7 % of its own ceiling as the arithmetic tha
 trade, and 7 805 of 7 850 is 99.4 % of one. `TUI_BUDGET` becomes 7900. The nine items are all
 **corrections to text and placement**, not new features — which is why the estimate is a third of
 v5.6's and why an agent who comes in under it still does not get to spend the difference.
+
+**v5.6.2 raises it to 8 300, and states the arithmetic here before the code is written.** The
+measured tree at the start of the plain-language round 3 is **7 843** across the six files (`mod`
+2 979 · `screens` 2 836 · `send` 854 · `subs` 534 · `hit` 436 · `theme` 204), 57 under the v5.6.1
+ceiling. The twenty-two findings of the 2026-09-19 verification put nine items in these files, and
+**three of them are room rather than text** — the round's own lesson is that a sentence nobody can
+read whole is not shorter, it is absent:
+
+| item | estimate |
+|---|---|
+| **W2** — `u` and `d` get the overlay shape `l` has: what starts, the folder the chain goes into, the disk it needs, what it costs to stop, and the keys (`node_power_modal`, its two routing arms, the `Dialog` message dropped) | ≈ 100 |
+| **W9** — one predicate for `not running` / `not answering` / `starting`, its sentence form, and the four surfaces that read it (the hero's three-way advice, the Net pane, the Peers pane, the mempool pane) | ≈ 70 |
+| **W14** — a toast that does not fit beside the badges gets a row of its own and wraps: `status_left`, `status_left_width`, `note_fits`, the extra layout row, minus `elide` and its two call sites | ≈ 55 |
+| **W6** — the picker footer becomes its own function, pluralises, names both skip counts, carries W17's legend and **wraps to the rows it needs** | ≈ 60 |
+| **W13** — the `?` overlay wraps its rows instead of eliding them, sizing itself from the wrap | ≈ 15 |
+| **W10** — decision 7's one sentence, wrapped, on the two screens that render it | ≈ 20 |
+| **W15** — the `[W]` chip reads the predicate `W` branches on, and every toast becomes a sentence | ≈ 15 |
+| **W5, W16, W17, W18, W19** — five strings, each one or two lines | ≈ 15 |
+
+That is **350 over 7 843 = 8 193**, and the ceiling is **8 300** rather than 8 200: v5.5 revision 12
+identified an estimate consuming 99.9 % of its own ceiling as the arithmetic that forces a dishonest
+trade, and 8 193 of 8 200 is one line short of being that. `TUI_BUDGET` becomes 8300. Nothing here
+is a new feature: two of the nine items **delete** a helper (`elide`) and a modal message, and the
+three that cost the most are the three that stop cutting a sentence the user needs.
 
 **Runtime.** The ftui 0.7 Elm loop: one `struct Tui` implementing `ftui::Model`;
 **`App::fullscreen(tui).with_mouse().run()`** when `settings.tui.mouse` (v5.5, §7a.2), else the same
