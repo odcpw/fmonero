@@ -540,7 +540,12 @@ OS_EXEMPT='with_detail\(|RpcError::'
 HITS_OS=""
 for f in "${COPY_SURFACES[@]}"; do
   case "$f" in *.rs) ;; *) continue ;; esac
-  found="$(sed '/^#\[cfg(test)\]/q' "$f" | grep -n '"' | grep -vE "$OS_EXEMPT" | grep -E "$OS_SUBST" || true)"
+  # **A comment line is not a user-facing string** (round 4 iteration 3, when the derived file list
+  # brought `error.rs` in): `Error::io`'s own doc comment quotes the very shape this step refuses —
+  # `` `format!("cannot read {path}: {e}")` `` — as the thing it exists to replace. §2o rule 4
+  # already allows a code comment what it forbids a string.
+  found="$(sed '/^#\[cfg(test)\]/q' "$f" | grep -n '"' | grep -vE '^[0-9]+:[[:space:]]*//' \
+    | grep -vE "$OS_EXEMPT" | grep -E "$OS_SUBST" || true)"
   [ -z "$found" ] && continue
   HITS_OS="$HITS_OS$(printf '%s\n' "$found" | sed "s|^|$f:|")"$'\n'
 done
@@ -915,11 +920,14 @@ step "§7a  the TUI fits its line budget · §6.1 the plugin fits its own"
 # v5.6.2: 8300, itemised in §7a before the code was written (was 7900). Three of the nine items
 # are **room** rather than text — the toast's own row, the picker footer's wrap, the `?` overlay's
 # — because a sentence cut to fit is a sentence the reader does not have.
+# v5.6.5: **9600**, itemised in §7a before this line moved (was 9200) — sixteen items from round 4
+# iteration 3's reader, led by `wrap_hanging` (the round's one data-loss defect: a wrapped bullet
+# dropped two characters at every break) and the payment detail modal.
 # v5.6.4: **9200**, itemised in §7a before this line moved (was 8600) — twenty-three items from a
 # fresh reader's round (+541, measured 9 076) and nine more from this round's own read of its own
 # captures (+74, measured 9 150). Seven of those nine are ROOM rather than text: a sentence cut to
 # fit is a sentence the reader does not have, and four of the nine were exactly that.
-TUI_BUDGET=9200
+TUI_BUDGET=9600
 if [ -d "$BIN/tui" ]; then
   TUI_FILES=()
   for f in mod theme screens send subs hit; do
@@ -945,12 +953,15 @@ fi
 # the same 32. `Panel.qml` +10 for X8 (`14 transactions` on the ` Waiting ` row) and `Model.js` +38
 # for X6 (one decimal byte formatter), X11 (one rounding, down), X13 (the public node's verdict on the
 # hero) and the notes for X10 and X30.
+# v5.6.5: **1674**, itemised in §6.1 before this line moved — 360 + 870 + 112 + 300 = 1 642 plus
+# manifest.json's 32 real lines. Four items from round 4 iteration 3: the locked row's amount, the
+# hero's spendable line, the second problems-section exclusion, and `pendingLabel`'s wording.
 # v5.6.4: **1649**, itemised in §6.1 before this line moved — 360 + 850 + 112 + 295 = 1 617 plus
 # the same 32. `Service.qml` +12 for S8 (an exit code and the program's own stderr at a person) and
 # M26 (the in-app `action` a failed button never showed); `Model.js` +21 for M2 (one duration shape),
 # M27 (a row starting with a bare separator, and a header with no verdict) and M28 (the peers row
 # blaming a node that is off).
-QML_BUDGET=1649
+QML_BUDGET=1674
 if [ -d plugin/oliver.monero ]; then
   QML_LINES="$(cat plugin/oliver.monero/*.qml plugin/oliver.monero/*.js plugin/oliver.monero/manifest.json 2>/dev/null | grep -c '')"
   if [ "$QML_LINES" -le "$QML_BUDGET" ]; then
@@ -971,9 +982,9 @@ if [ -d plugin/oliver.monero ]; then
     fi
   done <<'PERFILE'
 360 Service.qml
-850 Panel.qml
+870 Panel.qml
 112 MoneroIcon.qml
-295 Model.js
+300 Model.js
 PERFILE
 else
   printf '  skip  §6.1 line budget: plugin/oliver.monero does not exist yet\n'

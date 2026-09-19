@@ -2254,9 +2254,22 @@ impl RenderItem for HistoryItem<'_> {
         if self.cols.fee {
             // M4: eight decimals, so `0.00000000` and `0.00003072` line up instead of `0.0000`
             // sitting beside `0.00003072` in one column.
+            //
+            // **And `none` where the fee was not his** (round 4 iteration 3): a received or mined
+            // payment carries the SENDER's fee, and under a column of money beside an `in` row it
+            // read as money he had paid. `none` is what he paid.
+            let mine = !matches!(
+                t.kind,
+                fmonero_core::history::TransferKind::In
+                    | fmonero_core::history::TransferKind::Block
+            );
             text.push_str(&format!(
                 "  {:>10}",
-                t.fee.to_xmr_min(fmonero_core::Piconero::FEE_DECIMALS)
+                if mine {
+                    t.fee.to_xmr_min(fmonero_core::Piconero::FEE_DECIMALS)
+                } else {
+                    "none".to_string()
+                }
             ));
         }
         let style = if selected {

@@ -409,10 +409,10 @@ pub fn set_pending_send(ctx: &Context, p: &PendingSend) -> Result<(), Error> {
 /// Flips one entry of the list to `relayed: true` and re-fsyncs before the next `relay_tx`.
 pub fn mark_relayed(ctx: &Context, txid: &str) -> Result<(), Error> {
     let Some(mut record) = pending_send(ctx)? else {
-        return Err(Error::failure(format!(
-            "fmonero has no record of the payment it was sending, so it cannot mark one as \
-             gone out."
-        )));
+        return Err(Error::failure(
+            "fmonero has no record of the payment it was sending, so it cannot mark one as gone \
+             out.",
+        ));
     };
     let now = crate::now_unix();
     let mut found = false;

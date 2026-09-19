@@ -945,3 +945,129 @@ The payment detail modal's first row was the whole 64-character id; `unlocks at 
 and `double spend false` was on every correct payment. All three are gone — the id to `--json`, the
 other two rendered only when they carry a fact. §2o has no rule that says "delete it", and it needs
 none: a row that says nothing is a row that pushes the rows that do say something off the bottom.
+
+---
+
+## 11. Plain-language round 4, iteration 3 (2026-09-19): the CLI, and the four lines about money
+
+A fresh reader took 129 human CLI captures and 101 TUI captures of v5.6.4 on a real pty at 120x32
+and 150x40, and returned ten serious items and forty-two minor ones. His verdict was that the TUI is
+*"genuinely finished work"* and that *"the distance left is almost entirely in the CLI"*. He was
+right about where, and about two lines in the TUI that were worse than anything in the CLI.
+
+### 11.1 The four about money
+
+| Where | Was | Is |
+|---|---|---|
+| `wallet send` / `wallet sweep` refused for want of `--yes` (`main.rs::refuse_with_plan`) | `fmonero: error[safety]: This would send …` / `reason: needs_yes` / `hint: fmonero wallet send` | the plan, then one plain sentence and one `Try:`, through `Out::report` — the only error printer there is |
+| the same sentence's total | `0.50003072 would leave this wallet.` | `0.50003072 XMR would leave this wallet.`, and where the sum overflows, `fmonero could not add the amount and the fee together, so do not send this.` |
+| the TUI's pending banner, the bar's pending row, `status` | `0 of 1 sent` — `relayed_count`, an acknowledgement fmonero never got | `may already have gone out`, from `PendingStatus::progress_words`, which is the same wording the warning beside it already used |
+| the TUI's status bar with a payment unresolved | `● node problem` on a node that was synced, answering and holding nineteen peers | the **wallet** cell reads `payment may be out`; the node cell reports the node |
+| `wallet send --yes` against a mismatched relay answer | two 64-character ids differing in their first two characters, and *"check which one landed"* | *"The node says it took a different payment from the one fmonero prepared. The money may have moved, so do not send it again until you have looked."* Both ids are in `detail`. |
+| `status` and the bar's hero with funds locked | the total balance alone | the spendable figure with it, from `wallet.locked_xmr` and `unlocked_xmr_short` |
+| the send confirm's three figures | `0.0100` · `0.00003072` · `0.01003072` | all three at eight decimals, so the sum checks by eye |
+
+### 11.2 The twenty-two commands that had no human renderer
+
+`output::human` matched seventeen labels and fell through to a printer that used each JSON key as a
+row label. That is where `host=203.0.113.66 ip=1114702027 seconds=84213`, `ssl_support disabled`,
+`trusted false`, `nettype mainnet`, `unit_started false`, `synchronized —`, a 64-character payment id
+under the plural key `txids`, and the seed warning a second time under `seed_backup_hint` all came
+from — six of rule 7's banned words and rule 5's own prohibition, on twenty-two commands.
+
+Each has a renderer now, and `capabilities` is the only label the generic printer still serves. The
+shape of all of them: say what happened, then what to do next; one fact a line; a unit on every
+quantity; no id outside `--json`. Three worth quoting:
+
+* `node bans` → `2 addresses blocked` / `203.0.113.66   23h 23m left` — the words the TUI's own
+  Blocked-addresses pane uses, and the 32-bit integer form of the address stays in `--json`.
+* `wallet set-daemon` → `This wallet is now using the node at 127.0.0.1:18081.` /
+  `fmonero will not tell that node which amounts your wallet holds.` /
+  `Opening a wallet sets this again, so it lasts until then.` — §2o.2's own wording for `trusted`,
+  and `ssl_support` is not shown at all.
+* `version` → `fmonero 0.1.0` and `agent::BUILD_SUMMARY`, three short paragraphs ending *"treat a
+  send as untested, and send nothing you could not lose."* `BUILD_NOTE`'s nine reason ids, five
+  section numbers and `ProgramSimulator` stay in `--json`, where the agent it was written for reads
+  them.
+
+### 11.3 `--help`, read for the first time
+
+Every line of `--help` is a `///` doc comment, and §2o.3's step greps string literals. So
+`The local monerod: start, stop, inspect, peers, bans, limits`,
+`stop_daemon over RPC first, so LMDB closes cleanly, then systemctl stop`,
+`Point monero-wallet-rpc at a REMOTE node and keep it there (§2m)` and
+`--units  Write both systemd user units and monerod.conf, then daemon-reload` had never been looked
+at by the rule that governs them. 139 doc comments across four files are now read by a step of their
+own, with a self-test. A sample of the rewrite:
+
+| Was | Is |
+|---|---|
+| `The local monerod: start, stop, inspect, peers, bans, limits` | `Your node: start it, stop it, look at it, its peers, blocked addresses, limits` |
+| `Stop the node: stop_daemon over RPC first, so LMDB closes cleanly, then systemctl stop` | `Stop your node, giving it time to close its files cleanly first` |
+| `Point monero-wallet-rpc at a REMOTE node and keep it there (§2m)` | `Use a public node someone else runs, and keep using it` |
+| `Send \`trusted\` — only ever for a node YOU run (§2m.6)` | `Let it see which amounts your wallet holds. Only ever for a node YOU run` |
+| `Ask each listed node for get_info from THIS machine` | `Check each listed node from THIS machine (each one learns your IP address)` |
+| `Transfer history, from a local snapshot plus one incremental fetch` | `Your payments, from a saved copy plus whatever is new since it was written` |
+| `Clear the pending-send record after checking whether the transaction landed` | `Clear the record of a payment fmonero was in the middle of sending` |
+| `Write both systemd user units and monerod.conf, then daemon-reload` | `Set up the two background services and the node's own settings file` |
+| `16 tx rejected` | `16 the node would not take it` |
+
+### 11.4 The forty-two minor ones, by the surface they were found on
+
+**The Send screen.** The Preview read `Fee  known once Enter prepares it` while the confirm modal
+beside it showed the real figure — it reads the plan off `Stage::Built` now and gains a Total row.
+Five wordings for pressing Enter became one, `works out the fee`, which replaces §7a.6's own
+`check it` (M19's undefined noun, sixth use).
+
+**The Wallet screen.** The balance column is whole or absent, because at 120 columns it printed
+`1.2345678…` three rows under the same number in full. The focused pane carries a `▸` and is the only
+one whose title claims `Enter`. `Payments 2 of 2 · in only` on a wallet of six was the kind filter
+narrowing the query as well as the view. `[t] What shows` is `[t] Choose which payments show`, the
+words the `?` overlay uses. Three chips that told the reader not to press them are not drawn in the
+states they cannot act in. `x` with nothing open answers about the wallet, not about a service.
+
+**The payment detail modal.** Capitalised labels, like every other modal. `failed · never got into a
+block`, because `not in a block yet` read as a payment still coming. No fee against money received.
+The recipient's **whole** address, which this modal is the only place to show. ` Note for 0.1000 XMR
+· sending · 09-16 14:01 `, because "the sending of" is not a phrase anyone says — this supersedes
+§3.5's ` Note for this payment `, which M5 had already replaced for a reason that still holds.
+
+**The confirms.** The log-level modal says what the level is now as well as what `y` would set,
+stops naming a key that closes it — `4` meant a *level* in two of its own bullets — and is refused
+outright while the node is off, where it was guaranteed to fail. The Stop confirm says what
+confirming does instead of offering a confirmation for nothing.
+
+**The `?` overlay.** Its bottom border was drawn on the status bar at 120x32, leaving
+`●╰────…────╯p`: `overlay` reserves that row. Three keymap pairs merged to pay for the row the
+overlay never had — how to move a selection in a list or a table — and the `sweep` exception is the
+last row of the panel, reading `In a terminal: …`, which is the shape §2o.1 prescribes for all four.
+
+**The wrapping.** `wrap_bullet` dropped two characters at every line break whenever a bullet carried
+a token longer than the modal, silently and with no marker; the open-a-wallet modal lost three.
+`wrap_hanging` gives each line its own budget before anything is wrapped, and a test walks every
+character at five widths.
+
+**The CLI.** One next step per error, and in the CLI it is the command: `Press o on the Wallet
+screen` beside `Try: fmonero wallet open <name>` was the same instruction twice, naming a screen the
+reader is not looking at (`action` stays in `--json`, for the TUI and the widget). No `Try:` under an
+`[info]`. `node log` with no file says so once. `node info` stops claiming it is fetching once it has
+caught up, and its fee continuation keeps its label. `answered` heads the column whose cells read
+`100% of 18`, with a legend saying whose checks those were — this supersedes §3.9's and §4's
+`reliability`. `require_yes` names the action in words, not the command twice.
+`wallet clear-pending` says *payments*. `wallet address` gives each address a row of its own.
+
+**The doctor.** A hoisted group note is a bullet that says which rows it explains. One wording for a
+service that is not set up, where there were three. One hint in the footer instead of a `jq` pipeline
+over the internal `status` value. `Only fmonero is listening on the node and wallet ports` is a
+statement, not a question with no question mark, and its next step is `node info` rather than
+`status --json`. `… can be read by others, and only you should be able to.` no longer joins two
+contradictory clauses with "and", and it ends.
+
+**The bar.** The locked row carries its amount, from `wallet.locked_xmr`. The hero's supporting fact
+is what is spendable whenever some of the balance is not. `wallet_behind` is not repeated in the
+problems section while the hero already says it. The peers row with a public node is `—`, the glyph
+for a value with no source, rather than a sentence where a number goes.
+
+**One word, everywhere.** `refused` was the one probe reason returned as itself while the other five
+were turned into English, and to a Monero user it reads as the node turning him away. It is
+`nothing listening`.

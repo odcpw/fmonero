@@ -380,7 +380,7 @@ fm node log --json
 expect_rc 0 "node log with no log file (§4b)"
 expect_json '.lines | length' '0' "no lines"
 expect_keys "node log" "ok schema path lines truncated"
-expect_contains "no log yet" "and it says so"
+expect_contains "No log yet" "and it says so"
 
 fm node log --follow --json
 expect_rc 2 "--follow is refused in the CLI, where a pipe would hang (§2d)"

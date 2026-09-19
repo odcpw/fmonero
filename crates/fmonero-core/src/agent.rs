@@ -36,7 +36,7 @@ This is not a finished program, and it says so where it matters.
 What has been seen working, on this machine and on a real wallet holding nothing: how things are, \
 your wallets, opening and closing one, the balance, your addresses, your payments, checking for \
 new blocks, the address book, notes, the settings, the doctor, the bar widget, and every screen of \
-the app — with your own node and with a public node someone else runs.
+the app, with your own node and with a public node someone else runs.
 
 What has never happened: no payment has ever been sent from this version. Sending has only ever \
 been tried against a stand-in that answers the way a wallet does. Until that changes, treat a send \

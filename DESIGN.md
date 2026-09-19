@@ -2945,6 +2945,37 @@ shape §6.7's greps already use: a planted `"the wallet daemon is not running"` 
 the allowed `"In a terminal: omarchy pkg add monero"` must not. A grep nobody has seen fire is a grep
 the first agent to hit it relaxes.
 
+**v5.6.5 finishes what X2 started, and adds two steps of a shape the word grep cannot have.**
+
+* **The file list is derived, not curated.** X2 widened it from fifteen files to twenty-two by
+  reading three commands; the reader after it found `no fmonero node unit is installed, so there is
+  no node to mutate` — two banned words, and not a sentence — in `rpc/node.rs`, one
+  `fmonero node ban` away from the owner and in a file the twenty-two did not include. The rule for
+  membership is mechanical now: **a file that calls an `Error::` constructor, a `with_hint`, or one
+  of `Out`'s printers is a file whose strings a person reads.** That is 41 files. `agent.rs` joins
+  them with its two agent-contract constants (`BUILD_NOTE`, `ROBOT_GUIDE`) and the `capabilities.env`
+  table inside `copy-exempt` regions, each with its reason printed by the gate; `error.rs`'s §4a
+  exit-code dictionary and `doctor/report.rs`'s `never_does` list are exempt the same way, and for
+  the same reason — they are read through forced-JSON commands and an agent branches on those words.
+* **`--help` is read for the first time.** Every line of it is a `///` doc comment, and the step
+  greps string *literals*, so the `after_help = "…"` blocks were checked from the first version of
+  this rule and the doc comments beside them never were. What reached a reader:
+  `The local monerod: start, stop, …`, `stop_daemon over RPC first, so LMDB closes cleanly`,
+  `Point monero-wallet-rpc at a REMOTE node and keep it there (§2m)`,
+  `--units  Write both systemd user units and monerod.conf`. The step reads the `///` comments of
+  every `#[derive(Parser | Subcommand | Args)]` item in `main.rs`, `setup.rs`, `doctor/mod.rs` and
+  `tui/mod.rs` — a `///` on a function is a code comment and rule 4 allows `§` there, and a field
+  marked `#[clap(skip)]` is not an argument, so neither is read. Its self-test plants the
+  `stop_daemon` line, a `--probe` line and a code comment, and exactly the first must fire.
+* **One error printer.** `refuse_with_plan` was a second one, written before X1 fixed `Out::report`
+  and missed by it, so `error[safety]`, `reason: needs_yes` and a field labelled `hint:` reached a
+  person on the one screen in the product where money is about to move. The word grep could not see
+  it: the literal was `"fmonero: error[{}]"`, built from `e.code_name()` at runtime — the same blind
+  spot S6 closed for `{e}`. The rule is that **`code_name()` and `reason()` belong to `--json`**:
+  they may be read where a structured record is built and may not be interpolated into anything
+  printed, and the literal `error[` appears nowhere outside `--json`. Its self-test plants the exact
+  line that shipped and the two record-building uses that must not fire.
+
 Tests that pin these strings (`crates/fmonero/src/tui/tests.rs`, `tests/e2e.sh`,
 `tests/plugin-smoke.sh`, the doctor's `expect.json` fixtures) are **updated, never deleted**, and
 `tests/tui_tmux.sh --capture` is re-run so the captures in `decisions/` show the new text.
@@ -5790,6 +5821,22 @@ property of the type rather than a habit. *Tests:* a unit test asserts every con
 `hint` names an `fmonero` subcommand that the TUI can reach has a `Some(action)`, and §6.7 asserts the
 widget renders `action` and never `hint`.
 
+### 5b.7 The v5.6.5 amendments, in full
+
+**Three additions to the §5 document and one to `PendingStatus`, no signature moved.** Every one
+exists because a fact was being worded or computed on one surface and could not be on another, and
+§2a.5 forbids the surface that could not from doing the arithmetic itself.
+
+| # | Addition | Why the document has to carry it |
+|---|---|---|
+| 1 | `PendingStatus::progress_words: String` | the TUI's banner and the widget's pending row both rendered `relayed_count` as `0 of 1 sent`, beside a warning in the same frame reading *"A payment of 0.5000 XMR was prepared and may already have gone out."* `relayed_count` is fmonero's record of an acknowledgement it never got, and §2a.9 is explicit that a relay failure is **not** evidence of a refusal — printed as a count it asserts the opposite, and the obvious next move for whoever reads it is to send again. One formatter renders the phrase; the widget could not, because a count needs a plural and a hedge. The counts stay in the document for the agent that wants them. |
+| 2 | `WalletStatus::locked_xmr: Option<String>` | `balance - unlocked`, pre-rendered. The TUI's locked line reads `0.5000 XMR locked for about 12 min` and the widget's otherwise identical line carried no amount at all, because the subtraction is arithmetic on money and §2a.5 forbids that in QML outright — `Panel.qml` recorded it as a document gap rather than a QML one. `None` when nothing is locked, so no surface prints a row about nothing. |
+| 3 | `WalletStatus::unlocked_xmr_short: Option<String>` | the companion of `balance_xmr_short`, for the same reason (§6.4): the bar's hero reported `Wallet open · 1.2345 XMR` in a state where half of that could not leave the wallet, and shortening the unlocked figure in QML is the same forbidden arithmetic. |
+
+All three are **additions**: an agent reading schema 1 sees three more keys and nothing it already
+parsed has moved. `status`'s human rendering gains the spendable and locked rows from (2), and the
+`send`/`sweep` pending row reads (1) instead of the count.
+
 ### 5b.6 The v5.6.2 amendments, in full
 
 **Nine additions, no signature moved.** Every one exists because a fact was being worded or computed
@@ -5901,10 +5948,38 @@ the assertion, because thirty payloads in a decisions log is bulk, not evidence.
 |---|---|---|
 | `manifest.json` | ~55 lines | schemaVersion 1, id `oliver.monero`, name "Monero", version, author, license, description, `kinds:["bar-widget"]`, `entryPoints.barWidget:"Panel.qml"`, `barWidget{displayName, description, category:"Finance", allowMultiple:false, defaultSection:"right", defaults{}, schema[]}` |
 | `Service.qml` | ≤ **360** (v5.6.4, was 340) | the state model (6.3), the two polls, the action queue |
-| `Panel.qml` | ≤ **850** (v5.6.3, was 845) | bar button + `KeyboardPanel` content (6.5) |
+| `Panel.qml` | ≤ **870** (v5.6.5, was 850) | bar button + `KeyboardPanel` content (6.5) |
 | `MoneroIcon.qml` | ≤ **112** (v5.6, was 96) | the Monero ⓜ glyph as `QtQuick.Shapes` + `PathSvg`; no image asset. The progress ring now draws the **wallet's** catch-up as well as a local node's sync (§6.4), which is one more arc and its percent source |
-| `Model.js` | ≤ **295** (v5.6.4, was 270) | pure formatters: `parseStatus(text)`, `shortAddr`, `age`, `rate`, `grouped`, **`headerLine(status)`** (v5.6 — §6.4's five-word header, from one first-match table), **`walletSyncLabel(status)`** (v5.6 — `Syncing 63% · 240 000 blocks left`), **`nodeLabel(node)`** (v5.6, renamed from `remoteLabel`), **`checkedLabel(node)`** (v5.6, renamed from `probeLabel`; still refuses to render a height without its age), `walletStateLabel`, `pendingLabel`, `peersLabel`, `worstSeverity`, `safeArgv` |
+| `Model.js` | ≤ **300** (v5.6.5, was 295) | pure formatters: `parseStatus(text)`, `shortAddr`, `age`, `rate`, `grouped`, **`headerLine(status)`** (v5.6 — §6.4's five-word header, from one first-match table), **`walletSyncLabel(status)`** (v5.6 — `Syncing 63% · 240 000 blocks left`), **`nodeLabel(node)`** (v5.6, renamed from `remoteLabel`), **`checkedLabel(node)`** (v5.6, renamed from `probeLabel`; still refuses to render a height without its age), `walletStateLabel`, `pendingLabel`, `peersLabel`, `worstSeverity`, `safeArgv` |
 | `README.md` | — | docs agent |
+
+**v5.6.5 raises `Panel.qml` and `Model.js`, and states the arithmetic here before the code was
+written.** The measured v5.6.4 tree is **1 631** (`Panel` 846 · `Service` 351 · `MoneroIcon` 107 ·
+`Model` 291 · `manifest` 32). Round 4 iteration 3's reader put four items on the widget, three of
+them in `Panel.qml`.
+
+`Panel.qml` **+18**, to **864** measured, from three findings. The **locked row** carried no amount
+at all where the TUI's otherwise identical line reads `0.5000 XMR locked for about 12 min`, because
+the subtraction is arithmetic on money and §2a.5 forbids that in QML — `Status` now carries
+`wallet.locked_xmr` pre-rendered and the row reads it, with the hidden-amounts branch keeping the
+time and dropping the figure (**+7** with its note). The **hero's supporting fact** becomes what is
+spendable whenever some of the balance is not: the header reports the balance, and reporting only
+that in a state where half of it cannot leave the wallet was the one glance surface with no spendable
+figure — `spendableLine`, from `wallet.unlocked_xmr_short`, for `balance_xmr_short`'s reason (**+7**).
+And the **problems section** gains a second exclusion of the same kind as its first: `wallet_behind`
+is not printed there while the hero already reads `Wallet syncing 99% · 6 122 blocks left`, which put
+one fact on three rows of a 380-pixel panel (**+4**).
+
+`Model.js` **+6**, to **297** measured, from two. `pendingLabel` rendered `relayed_count` as
+`0 of 1 sent` — fmonero's record of an acknowledgement it never got — directly above the panel's own
+warning saying the payment *may already have gone out*; it prints `pending.progress_words`, the one
+wording, rendered once in Rust and shared with the TUI's banner and the warning (**+4** with its
+note). And `peersLabel`'s remote arm answered `this is about your own node` where a number goes: it is
+`—`, the program's glyph for a value with no source (**+2**).
+
+So `Panel.qml` becomes **870** (measured 864) and `Model.js` **300** (measured 297); `Service.qml` and
+`MoneroIcon.qml` are untouched at 360 and 112. `QML_BUDGET` becomes **1 674**:
+360 + 870 + 112 + 300 = 1 642, plus `manifest.json`'s 32 real lines.
 
 **v5.6.4 raises `Service.qml` and `Model.js`, and states the arithmetic here before the code was
 written.** The measured v5.6.3 tree is **1 591** (`Panel` 846 · `Service` 339 · `MoneroIcon` 107 ·
@@ -6621,7 +6696,7 @@ places to update when monero.fail changes one field.
 
 ---
 
-## 7a. TUI (`fmonero tui`) — one agent, one pass, ≤ 9 100 lines across `src/tui/{mod,theme,screens,send,subs,hit}.rs` (`tests.rs` excluded)
+## 7a. TUI (`fmonero tui`) — one agent, one pass, ≤ 9 600 lines across `src/tui/{mod,theme,screens,send,subs,hit}.rs` (`tests.rs` excluded)
 
 **v5.6.4 raises it to 9 100, and the arithmetic is here before the gate moved.** The measured v5.6.3
 tree is **8 535** (`mod` 3 063 · `screens` 3 409 · `send` 889 · `subs` 534 · `hit` 436 · `theme` 204),
@@ -6648,6 +6723,50 @@ and round 4's reading put twenty-three items into these files. They are, with wh
   no longer contradicts itself: M10 and M12 (three confirms that described what was not happening and
   said nothing about the node's last check), M6 (`history_cols` measuring a note column against the
   pane instead of a constant) and M30 (a QR modal that names its address and says what it is for).
+
+**v5.6.5 raises §7a from 9 200 to 9 600, and the arithmetic is written here before the code is.**
+The measured v5.6.4 tree is **9 150**. Round 4 iteration 3's reader returned ten serious items and
+forty-two minor ones; sixteen of them land in these six files, and the itemisation is:
+
+* **`wrap_hanging`**, and `wrap_bullet` delegating to it (**+56** with its note). This is the round's
+  one data-loss defect: `wrap_bullet` wrapped a bullet to the full width and *then* prefixed two
+  spaces to each continuation, so every continuation was two columns too wide and the modal clipped
+  two characters out of the middle of a token — silently, with no marker. The open-a-wallet modal
+  lost three the same way, and `wrap_hanging` closes both by giving each line its own budget before
+  anything is wrapped.
+* **the payment detail modal**: capitalised labels, a `failed` row that no longer says it is waiting
+  for a block, no fee printed against money received, and the recipient's **whole** address, which
+  this modal is the only place in the product to show (**+60**).
+* **the Send screen's Preview** reads the fee off `Stage::Built` instead of promising it, and gains a
+  Total row: the modal beside it was showing the real figure in the same frame (**+30**).
+* **the confirm modal's three money figures at one precision**, so the sum checks by eye (**+8**).
+* **the `?` overlay**: `overlay` reserves the status bar's row — the bottom border was drawn on it at
+  120x32, leaving `●╰────…────╯p` — three keymap pairs merged to pay for the row that says how to
+  move a selection, and the `sweep` exception moved to the last row of the panel in §2o.1's own
+  shape (**+44**).
+* **`route_here`**, which drops `on the Node screen` from a warning's route when the reader is on the
+  Node screen: §5's `action` is one string for every surface, and the widget needs the locator
+  (**+22**).
+* **`use_node_chip`**, so `[Enter] Use this node` names the node it would use or the keys that give
+  it one (**+16**).
+* **the wallet empty state draws only the chips that can act** — three of them carried a
+  parenthetical telling the reader not to press them (**+26**, and `wallet_daemon_chip` returns an
+  `Option`).
+* **the addresses pane's balance column is whole or absent**, and the focused pane says which it is
+  and is the only one claiming `Enter` (**+42**).
+* **the payments pane's counts are honest**, because the kind filter no longer narrows the query as
+  well as the view — which also made S5's third empty state unreachable (**+22**).
+* **the log-level confirm** names both levels, stops naming a key that closes it, and is refused
+  outright while the node is off; **the Stop confirm** says what confirming does; **`x`** with
+  nothing open answers about the wallet (**+52**).
+* the fee column's `none` where the fee was the sender's, the Log screen's path elided with a marker,
+  the note and rename modals' labels and title, the `[t]` chip's sentence, and the failed-action
+  toast reading as English (**+40**).
+
+**9 150 + 378 measured = 9 528, and the ceiling is 9 600.** `TUI_BUDGET` becomes 9600. Nothing here
+deletes code, which is worth saying plainly: this iteration is almost entirely the *notes* on why a
+line reads the way it now does, and those notes are what stopped three of these defects coming back
+after round 4 had already fixed their neighbours.
 
 That is **+541 measured**, to **9 076**. Two of the twenty-three DELETE code (S10, part of S9),
 which is the shape a round of this kind should have more of.
@@ -6771,7 +6890,7 @@ ceiling** — v5.6's own round came in at exactly 7 600 and the first two commit
 | **V4** — `confirm_local` gets the shape §7a.4 specifies: what restarts, the named wallet closed and offered again, and the "not running yet" sentence | ≈ 25 |
 | **V5** — the `this wallet` row through the node pane's own formatters (`grouped` + `age`) | ≈ 10 |
 | **V6** — the picker footer's `list {age} old` → `list from {age}` | ≈ 2 |
-| **V7** — the reliability cell fits, and the two `block` columns get §7a.4's two group headings | ≈ 30 |
+| **V7** — the reliability cell fits, and the two `block` columns get §7a.4's two group headings (v5.6.5 heads it `answered`, because nothing said what the `of 18` counted) | ≈ 30 |
 | **V11** — the `a` modal validates live through `Settings::parse_remote_address`, shows the refusal under the field, and keeps its `Enter adds it · Esc cancels` line at both sizes | ≈ 35 |
 | **V12** — the wallet empty state: no balance pane with nothing in it, and a chip that reads as English | ≈ 20 |
 | **V13/V14** — one fact, one phrasing: the wallet-service line against the status bar, and the hero against the node badge | ≈ 15 |
@@ -7476,7 +7595,7 @@ six; the changes are marked.**
 | **Wallet:** `R` `Q` | check for payments · show the address as a QR code |
 | **Wallet:** `/` `t` | filter rows · change which kinds show |
 | **Wallet:** `←→` `Enter` | swap panes · copy an address · open a row |
-| **Send:** `↑↓` `Enter` | **next/previous field · check it** (`Tab` no longer moves between fields, §7a.1; `Esc` leaves the field, `Enter` from outside goes back into the form) |
+| **Send:** `↑↓` `Enter` | **next/previous field · works out the fee** (`Tab` no longer moves between fields, §7a.1; `Esc` leaves the field, `Enter` from outside goes back into the form). v5.6.5: one wording for this, because the form's hint row, its validation row, the Preview's Fee row, the `?` overlay and the toast said it five different ways, and §7a.6 itself said `check it` — M19's undefined noun, sixth use |
 | **Send:** `p` `Ctrl+P` `@` | change the fee level (on its row, or from anywhere) · address book |
 | **Send:** `←→` | on the Fee or Account row: change it |
 | **Send:** sweep | not in the TUI yet. To send everything, in a terminal: `fmonero wallet sweep <address> --dry-run` (§2o.1's fourth exception) |

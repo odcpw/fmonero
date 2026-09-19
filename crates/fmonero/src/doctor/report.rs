@@ -209,12 +209,7 @@ fn human_lines(out: &Out, report: &Report) -> Vec<String> {
             // everywhere else, and the second half answers the reader's question: which of the rows
             // below does this explain?
             for note in group_notes(report, &group) {
-                lines.push(out.paint(
-                    &format!(
-                        "  · {note} That is what the rows marked \"not checked\" are waiting for."
-                    ),
-                    Paint::Dim,
-                ));
+                lines.push(format!("  {}", out.paint(&format!("· {note}"), Paint::Dim)));
             }
         }
         let (verdict, paint) = verdict_phrase(check);
@@ -235,11 +230,18 @@ fn human_lines(out: &Out, report: &Report) -> Vec<String> {
             // the run-level `Try:` lines carry the machine-wide move instead.
             if matches!(check.status.as_str(), "warn" | "fail") {
                 // §2o rule 11, and the same word the footer and every CLI error use.
-                lines.push(out.paint(&format!("    Try: {cmd}"), Paint::Dim));
+                // **The indent is outside the paint** (round 4 iteration 3): `wrapped_lines`
+                // measures a line's own leading spaces to decide where its continuations hang, and
+                // a painted string begins with an escape, so every wrapped line in this table
+                // returned to column 2 instead of hanging under its own text.
+                lines.push(format!("    {}", out.paint(&format!("Try: {cmd}"), Paint::Dim)));
             }
         }
         if let Some(outcome) = &check.fix_outcome {
-            lines.push(out.paint(&format!("    {}", fix_words(outcome)), Paint::Dim));
+            lines.push(format!(
+                "    {}",
+                out.paint(fix_words(outcome), Paint::Dim)
+            ));
         }
         for action in &check.actions {
             let tag = match action.outcome.as_str() {
@@ -304,7 +306,18 @@ fn human_lines(out: &Out, report: &Report) -> Vec<String> {
 /// two.
 fn group_notes(report: &Report, group: &str) -> Vec<String> {
     let mut seen: Vec<(String, usize)> = Vec::new();
-    for c in report.checks.iter().filter(|c| c.group == group) {
+    // **Only a `skip`'s detail is hoisted** (round 4 iteration 3). A `warn` or `fail` row's detail
+    // is its own finding and belongs on its own row: hoisting one put `Your node is not running.`
+    // above a group whose second row then read `Your node is not running. fmonero asked it on
+    // http://127.0.0.1:18081.` — the same sentence twice, four lines apart, which is the shape X24
+    // existed to remove. What X24 was actually written for is a precondition that silences a whole
+    // group, and that is always a run of skips: with a public node the same sentence is the detail
+    // of nine of them.
+    for c in report
+        .checks
+        .iter()
+        .filter(|c| c.group == group && c.status == "skip")
+    {
         if c.detail.is_empty() {
             continue;
         }

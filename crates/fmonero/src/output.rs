@@ -589,6 +589,10 @@ fn own_node_rows(out: &Out, node: &serde_json::Value, unit_active: Option<bool>)
         } else {
             out.paint("syncing", Paint::Yellow)
         }
+    } else if node["layout"].as_str() == Some("none") {
+        // Nothing has been set up, which is a different fact from "it is not running" and is the
+        // one this row can act on (round 4 iteration 3).
+        out.paint("not set up", Paint::Dim)
     } else {
         // **M1: one predicate for one fact.** This row said `not answering` while the warning
         // three lines below it said `Your node is not running.` — two wordings of one thing in one
@@ -611,7 +615,11 @@ fn own_node_rows(out: &Out, node: &serde_json::Value, unit_active: Option<bool>)
         Some("none") if node["reachable"] == serde_json::Value::Bool(true) => {
             "a node fmonero did not set up"
         }
-        Some("none") => "no node is set up yet",
+        // **Not beside a badge that already said `not running`** (round 4 iteration 3): the first
+        // row of the first command read `not running  127.0.0.1:18081  no node is set up yet`, two
+        // overlapping facts about one node. With nothing set up, "not set up" is the fact and the
+        // badge carries it; with something set up and off, "not running" is.
+        Some("none") => "",
         _ => "your own node",
     };
     // **`block —` says nothing** (X23's lesson, found by round 4's own read of this output): with
@@ -621,10 +629,14 @@ fn own_node_rows(out: &Out, node: &serde_json::Value, unit_active: Option<bool>)
         Some(h) => format!("block {}  ", grouped(h)),
         None => String::new(),
     };
-    out.line(format!(
-        "node    {badge}  {}  {block}{whose}",
-        cell(&node["url"]),
-    ));
+    out.line(
+        format!(
+            "node    {badge}  {}  {block}{whose}",
+            cell(&node["url"]),
+        )
+        .trim_end()
+        .to_string(),
+    );
     // **Nothing is said with dashes** (X23). With the node off every field below is `null`, and the
     // row read `synced —%  peers — out / — in  waiting —  blockchain —  running —` under a badge
     // that had already said `not answering`: the shape §6.5 deleted from the widget and W3 deleted
@@ -749,6 +761,14 @@ pub fn status_human(out: &Out, v: &serde_json::Value) {
         ));
     }
     for w in v["warnings"].as_array().into_iter().flatten() {
+        // **Not the one the wallet rows have just said** (round 4 iteration 3). With funds locked
+        // the rows above now read `0.734567891234 XMR can be spent now` /
+        // `0.5000 XMR locked for about 12 min`, and this list then printed
+        // `[info] 0.5000 XMR unlocks in about 12 min.` — one fact, two wordings, three rows apart.
+        // The same exclusion the widget's problems section makes for a warning its hero renders.
+        if w["id"].as_str() == Some("funds_locked") && wallet["locked_xmr"].is_string() {
+            continue;
+        }
         let severity = w["severity"].as_str().unwrap_or("info");
         let paint = match severity {
             "error" => Paint::Red,
@@ -848,7 +868,7 @@ fn footers(label: &str, v: &serde_json::Value, json: bool) -> Vec<String> {
         // it, on stdout, where the answer belongs, and this printed it a second time on stderr.
         "node log" if json && v["lines"].as_array().is_some_and(|a| a.is_empty()) => {
             out.push(format!(
-                "no log yet at {}",
+                "No log yet. Your node writes it once it runs: {}",
                 v["path"].as_str().unwrap_or("the configured log file")
             ));
         }
@@ -865,8 +885,17 @@ fn footers(label: &str, v: &serde_json::Value, json: bool) -> Vec<String> {
 /// `wallet send` / `wallet sweep`: the confirmation block, identical for a dry run, for the
 /// no-`--yes` refusal and for a relayed success, so a human reads one shape too (§5c).
 fn money_human(out: &Out, v: &serde_json::Value) {
-    let pair =
-        |pico: &str, xmr: &str| format!("{} XMR ({} piconero)", cell(&v[xmr]), cell(&v[pico]));
+    // **All three figures at one precision** (round 4 iteration 3, the same fix the TUI's confirm
+    // took): `Amount 0.0100`, `Fee 0.00003072`, `Total 0.01003072` is three decimal counts on the
+    // three numbers the reader is being asked to add up. Eight decimals for all three — rendered
+    // from the integer `*_pico`, never from the string beside it — and the sum checks by eye.
+    let pair = |pico: &str, xmr: &str| {
+        let shown = v[pico]
+            .as_u64()
+            .map(|p| fmonero_core::Piconero(p).to_xmr_min(fmonero_core::Piconero::FEE_DECIMALS))
+            .unwrap_or_else(|| cell(&v[xmr]));
+        format!("{shown} XMR ({} piconero)", cell(&v[pico]))
+    };
     out.line(format!("To        {}", cell(&v["dest"])));
     out.line(format!("Amount    {}", pair("amount_pico", "amount_xmr")));
     out.line(format!("Fee       {}", pair("fee_pico", "fee_xmr")));
@@ -991,10 +1020,22 @@ fn history_human(out: &Out, v: &serde_json::Value) {
         // M4: eight decimals down the fee column, so `0.00000000` and `0.00003072` line their
         // points up instead of `0.0000` sitting beside `0.00003072`. `fee_pico` is the integer
         // §5 prints beside the string, so nothing is recomputed from the rendered text.
-        let fee = t["fee_pico"]
-            .as_u64()
-            .map(|p| fmonero_core::Piconero(p).to_xmr_min(fmonero_core::Piconero::FEE_DECIMALS))
-            .unwrap_or_else(|| cell(&t["fee_xmr"]));
+        //
+        // **And `none` where the fee was not yours** (round 4 iteration 3). A received or mined
+        // payment carries the SENDER's fee, and under a column headed `fee XMR` beside an `in` row
+        // that reads as money he paid — `2026-09-13 15:20  mined  0.6000  0.00000000` said he had
+        // paid to be given a block reward. `none` is what he paid, and it costs no column width,
+        // which a heading naming the owner of the fee would (`your fee XMR` is twelve cells against
+        // a nine-cell minimum). `fee_pico` is unchanged in `--json`.
+        let mine = !matches!(t["type"].as_str(), Some("in") | Some("block"));
+        let fee = if !mine {
+            "none".to_string()
+        } else {
+            t["fee_pico"]
+                .as_u64()
+                .map(|p| fmonero_core::Piconero(p).to_xmr_min(fmonero_core::Piconero::FEE_DECIMALS))
+                .unwrap_or_else(|| cell(&t["fee_xmr"]))
+        };
         out.row(format!(
             "{}  {}  {}  {}  {}  {}  {}",
             pad(&when, w[0]),
@@ -1003,7 +1044,9 @@ fn history_human(out: &Out, v: &serde_json::Value) {
             pad_right(&fee, w[3]),
             pad_right(&cell(&t["confirmations"]), w[4]),
             pad(spendable, w[5]),
-            fit(t["note"].as_str().unwrap_or(""), w[6])
+            // The last cell is not padded: `pad` left trailing spaces on every row of this table
+            // (round 4 iteration 3).
+            fit(t["note"].as_str().unwrap_or(""), w[6]).trim_end()
         ));
     }
     // `high_water` is the snapshot's own bookkeeping and stays in `--json` (§2o rule 7).
@@ -1090,7 +1133,7 @@ fn address_human(out: &Out, v: &serde_json::Value) {
             _ => {}
         }
         if a["used"] == serde_json::Value::Bool(true) {
-            head.push_str("  · used before");
+            head.push_str(" · used before");
         }
         out.line(format!("  {head}"));
         out.row(format!("      {}", cell(&a["address"])));
@@ -1514,7 +1557,11 @@ fn nodes_human(out: &Out, v: &serde_json::Value) {
 fn log_human(out: &Out, v: &serde_json::Value) {
     let lines = v["lines"].as_array().map(Vec::as_slice).unwrap_or_default();
     if lines.is_empty() {
-        out.line(format!("no log yet at {}", cell(&v["path"])));
+        // A sentence, and the same one the Log screen shows for the same state (round 4
+        // iteration 3): this read `no log yet at /path` — lower case, no full stop, the shape §2o
+        // rule 1 has nowhere else.
+        out.line("No log yet. Your node writes it once it runs.");
+        out.row(format!("  {}", cell(&v["path"])));
         return;
     }
     for l in lines {
@@ -1731,13 +1778,10 @@ fn bans_human(out: &Out, v: &serde_json::Value) {
         out.row(format!(
             "  {}  {}",
             pad(&cell(&b["host"]), w[0]),
-            pad(
-                &b["seconds"]
-                    .as_u64()
-                    .map(|sec| format!("{} left", fmonero_core::duration(sec)))
-                    .unwrap_or_else(|| "—".to_string()),
-                w[1]
-            )
+            b["seconds"]
+                .as_u64()
+                .map(|sec| format!("{} left", fmonero_core::duration(sec)))
+                .unwrap_or_else(|| "—".to_string())
         ));
     }
 }
@@ -1758,9 +1802,12 @@ fn ban_change_human(out: &Out, v: &serde_json::Value) {
 
 /// `node limit` — what the node may transfer and how many peers it may keep.
 fn limit_human(out: &Out, v: &serde_json::Value) {
+    // Ungrouped, because the TUI's ` Net ` pane reads `its limits  8192 kB/s down · 2048 kB/s up`
+    // and one fact has one formatter (round 4 iteration 3). `grouped` is for block numbers and
+    // counts, where a space every three digits is what makes a nine-digit height readable.
     let kbps = |k: &str| match v[k].as_i64() {
         Some(n) if n < 0 => "the node's own default".to_string(),
-        Some(n) => format!("{} kB/s", grouped(n as u64)),
+        Some(n) => format!("{n} kB/s"),
         None => "—".to_string(),
     };
     out.line(format!(
