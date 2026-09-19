@@ -16,11 +16,16 @@ use super::checks::{CheckDef, Class, PlanKind, Verdict, CHECKS};
 use super::mutate::{write_scopes, PlannedAction, KEEP_RUNS};
 use super::{DoctorGroup, GROUPS};
 use crate::output::{Out, Paint};
+use unicode_width::UnicodeWidthStr;
 
 /// One row of `report.json::checks` (§7).
 #[derive(Clone, Debug, Serialize)]
 pub struct CheckReport {
     pub id: String,
+    /// The sentence a person reads down the left of the table (§7, W1). It is `CheckDef::title`,
+    /// carried here because the human table is rendered from this document and printed the `id`
+    /// instead — so all forty rewritten titles reached no reader, and fifteen identifiers did.
+    pub title: String,
     pub group: String,
     pub severity: String,
     pub status: String,
@@ -44,6 +49,7 @@ impl CheckReport {
     pub fn new(def: &CheckDef, v: &Verdict) -> CheckReport {
         CheckReport {
             id: def.id.to_string(),
+            title: def.title.to_string(),
             group: def.group.name().to_string(),
             severity: def.severity.name().to_string(),
             status: v.status.name().to_string(),
@@ -154,82 +160,88 @@ pub fn exit_code(summary: &Summary) -> i32 {
     0
 }
 
-/// The human table (§7). One line per check, then the counts and the next moves.
+/// The human table (§7, W1): **the title, a plain-English verdict, and the detail under it.**
+///
+/// What this printed until W1 was `check.id` where §7 says the title goes, and `:{reason}` after
+/// the status word — so the forty titles `docs/COPY.md` §3.12 rewrote reached no human at all,
+/// and what a person read instead was the identifier set: `unit_no_password_in_argv`,
+/// `wallet_daemon_matches_unit`, `wallet_rpc_auth`, fifteen of the forty carrying a word §2o rule
+/// 7 deletes outright. The ids are the agent contract and they stay in `--json`, where agents
+/// already read them (§7); `pass` · `warn` · `fail` · `skip` stay there too, as `status`.
+///
+/// The shape: one leader line per check ending in its verdict, then the detail indented under it,
+/// then any fix line and any mutation. The verdict starts at a fixed column so a reader can scan
+/// forty of them, and `not checked` carries **why** in words, because one missing precondition
+/// silences a whole group and the reason is the only thing that explains twelve rows at once.
 pub fn human(out: &Out, report: &Report) {
+    for line in human_lines(out, report) {
+        out.line(line);
+    }
+}
+
+/// Every line the table prints, in order — so a test can read the whole of it (W1).
+fn human_lines(out: &Out, report: &Report) -> Vec<String> {
+    /// The column the verdict starts at. The widest title is 66 characters and the widest
+    /// `not checked: …` phrase is 47, so the longest line this can draw is 118 — inside an
+    /// 80-column terminal's wrap and inside the 120 the captures are read at.
+    const VERDICT_COL: usize = 70;
+    let mut lines: Vec<String> = Vec::new();
     let mut group = String::new();
-    let width = report
-        .checks
-        .iter()
-        .map(|c| c.id.len())
-        .max()
-        .unwrap_or(28)
-        .max(28);
     for check in &report.checks {
         if check.group != group {
             group = check.group.clone();
-            out.line(out.paint(&format!("[{group}]"), Paint::Dim));
+            // The heading is the group's plain name (W1). `[units]` was a word §2o rule 7
+            // deletes, printed over seven rows; `--only units` and `--json` are unchanged.
+            let heading = GROUPS
+                .iter()
+                .find(|g| g.name() == group)
+                .map_or(group.clone(), |g| g.title().to_string());
+            lines.push(out.paint(&heading, Paint::Dim));
         }
-        let tag = match check.status.as_str() {
-            "pass" => out.paint("pass", Paint::Green),
-            "warn" => out.paint("warn", Paint::Yellow),
-            "fail" => out.paint("fail", Paint::Red),
-            _ => out.paint("skip", Paint::Dim),
-        };
-        let reason = match &check.reason {
-            Some(r) if check.status != "pass" => format!(":{r}"),
-            _ => String::new(),
-        };
-        out.line(format!(
-            "  {tag}{reason:<26} {:<width$}  {}",
-            check.id, check.detail
+        let (verdict, paint) = verdict_phrase(check);
+        let head = format!("  {} ", check.title);
+        let dots = VERDICT_COL.saturating_sub(UnicodeWidthStr::width(head.as_str()) + 1);
+        lines.push(format!(
+            "{head}{} {}",
+            out.paint(&".".repeat(dots), Paint::Dim),
+            out.paint(&verdict, paint)
         ));
+        if !check.detail.is_empty() {
+            lines.push(format!("    {}", check.detail));
+        }
         if let Some(cmd) = &check.fix_cmd {
             // Only for a finding. A `skip` already says why it could not be asked, and 25
-            // repetitions of `fix: omarchy pkg add monero` bury the three rows that matter —
-            // the run-level `next:` lines carry the machine-wide move instead.
+            // repetitions of `Try: omarchy pkg add monero` bury the three rows that matter —
+            // the run-level `Try:` lines carry the machine-wide move instead.
             if matches!(check.status.as_str(), "warn" | "fail") {
-                out.line(format!(
-                    "{:33}{:<width$}  {}",
-                    "",
-                    "",
-                    out.paint(&format!("fix: {cmd}"), Paint::Dim)
-                ));
+                // §2o rule 11, and the same word the footer and every CLI error use.
+                lines.push(out.paint(&format!("    Try: {cmd}"), Paint::Dim));
             }
         }
         if let Some(outcome) = &check.fix_outcome {
-            out.line(format!(
-                "{:33}{:<width$}  {}",
-                "",
-                "",
-                out.paint(&format!("--fix: {outcome}"), Paint::Dim)
-            ));
+            lines.push(out.paint(&format!("    {}", fix_words(outcome)), Paint::Dim));
         }
         for action in &check.actions {
             let tag = match action.outcome.as_str() {
-                "applied" => out.paint("applied", Paint::Green),
-                "already" => out.paint("already", Paint::Dim),
-                "planned" => out.paint("would  ", Paint::Yellow),
-                _ => out.paint("failed ", Paint::Red),
+                "applied" => out.paint("changed", Paint::Green),
+                "already" => out.paint("already set", Paint::Dim),
+                "planned" => out.paint("would change", Paint::Yellow),
+                _ => out.paint("could not change", Paint::Red),
             };
-            out.line(format!(
-                "{:33}{:<width$}  {tag} [{}] {}",
-                "", "", action.class, action.action
-            ));
+            lines.push(format!("    {tag}: {}", action.action));
             if let Some(e) = &action.error {
-                out.line(format!(
-                    "{:33}{:<width$}  {}",
-                    "",
-                    "",
-                    out.paint(e, Paint::Red)
-                ));
+                lines.push(format!("    {}", out.paint(e, Paint::Red)));
             }
         }
     }
 
     let s = &report.summary;
-    out.line("");
-    out.line(format!(
-        "{} checks: {} pass, {} warn, {} fail, {} skip",
+    lines.push(String::new());
+    // The counts, in the same words the rows use. `4 warn, 0 fail, 12 skip` restated three
+    // machine words a reader had just been shown as sentences (§2o rule 8).
+    let needs = if s.warn == 1 { "needs" } else { "need" };
+    lines.push(format!(
+        "{} checks: {} OK, {} {needs} attention, {} not working, {} not checked",
         s.total, s.pass, s.warn, s.fail, s.skip
     ));
     if s.dry_run && s.planned > 0 {
@@ -241,19 +253,97 @@ pub fn human(out: &Out, report: &Report) {
             .cloned()
             .collect();
         if !paths.is_empty() {
-            out.line(out.paint(&format!("blast radius: {}", paths.join(", ")), Paint::Dim));
+            lines.push(out.paint(
+                &format!(
+                    "nothing was changed. It would write to: {}",
+                    paths.join(", ")
+                ),
+                Paint::Dim,
+            ));
         }
     }
     if let Some(dir) = &s.run_dir {
-        out.line(out.paint(&format!("run artifacts: {dir}"), Paint::Dim));
+        lines.push(out.paint(&format!("run artifacts: {dir}"), Paint::Dim));
     }
     if !s.next.is_empty() {
-        out.line("");
+        lines.push(String::new());
         for cmd in &s.next {
             // §2o rule 11: `Try:` is an instruction; `next:` labelled a field.
-            out.line(format!("  Try: {cmd}"));
+            lines.push(format!("  Try: {cmd}"));
         }
     }
+    lines
+}
+
+/// One row's verdict, as a phrase a person reads, and the colour it is painted (W1).
+///
+/// A `skip` carries its reason in words. It is the one status whose reason explains something the
+/// detail cannot: `You are using the public node …, so there is nothing of your own to check
+/// here.` is the same sentence twelve times in one run, and the phrase beside the title is what
+/// makes those twelve scannable as one fact.
+fn verdict_phrase(check: &CheckReport) -> (String, Paint) {
+    match check.status.as_str() {
+        "pass" => ("OK".to_string(), Paint::Green),
+        "warn" => ("needs attention".to_string(), Paint::Yellow),
+        "fail" => ("not working".to_string(), Paint::Red),
+        _ => (
+            match check.reason.as_deref().and_then(not_checked_because) {
+                Some(words) => format!("not checked: {words}"),
+                None => "not checked".to_string(),
+            },
+            Paint::Dim,
+        ),
+    }
+}
+
+/// `--fix`'s own three outcomes, in the register of the table around them.
+fn fix_words(outcome: &str) -> &str {
+    match outcome {
+        "fixed" => "fmonero fixed this.",
+        "applied" => "fmonero changed something here.",
+        "applied, still failing" => "fmonero changed something, and this still needs attention.",
+        "failed" => "fmonero could not fix this.",
+        other => other,
+    }
+}
+
+/// Why a check was not run, in words (W1).
+///
+/// **Every `Verdict::skip` reason in `checks.rs` has an entry here**, and the test below reads
+/// that file to prove it — a reason added without a phrase would otherwise print `not checked`
+/// with no reason, silently, on a whole group of rows.
+fn not_checked_because(reason: &str) -> Option<&'static str> {
+    Some(match reason {
+        "monerod_not_installed" | "wallet_rpc_not_installed" => "Monero is not installed",
+        "remote_node" => "you are using a public node",
+        "local_mode" => "you are using your own node",
+        "unit_missing" => "the services are not set up yet",
+        "no_version_line" => "your node printed no version",
+        "node_unreachable" | "no_get_info" => "your node did not answer",
+        "node_restricted" => "it only answers basic questions",
+        "node_syncing" => "your node is still syncing",
+        "node_offline" => "your node is set to stay offline",
+        "probe_failed" => "the chain folder could not be read",
+        "wallet_unreachable" => "the wallet service did not answer",
+        "wallet_daemon_down" => "the wallet service is not running",
+        "no_request_completed" => "nothing was asked of it this run",
+        "no_heights" => "a block number is missing",
+        "no_node_credential" => "your node asks for no password",
+        "daemon_unreachable" => "one of the two did not answer",
+        "wallet_closed" | "no_wallet_height" => "no wallet is open",
+        "wallet_rpc_active" => "the wallet service is running",
+        "cannot_measure" => "the free space is not measurable",
+        "prune_off" => "you asked for the whole blockchain",
+        "no_conf" => "your node is not set up yet",
+        "no_mode" => "who can read the file is unknown",
+        "no_cache" => "there is no list of nodes yet",
+        "no_checkout" => "fmonero's own copy is missing",
+        "no_omarchy" => "Omarchy is not installed",
+        "list_failed" => "Omarchy could not list its widgets",
+        "foreign_node" => "another program runs this node",
+        "not_taken" => "this group was not asked for",
+        _ => return None,
+    })
 }
 
 /// `fmonero doctor capabilities --json` (§7, §5c): every check, group and class.
@@ -410,6 +500,154 @@ mod tests {
             }
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The literals `checks.rs` can produce, read out of the file itself: every `Verdict::skip`
+    /// reason, and every reason of any kind. A table of 82 reasons maintained by hand beside a
+    /// file of 2 400 lines drifts; reading the source does not.
+    fn reasons_in_checks_rs(kind: &str) -> Vec<String> {
+        let src = include_str!("checks.rs");
+        let needle = format!("Verdict::{kind}(");
+        let mut out = Vec::new();
+        for (i, _) in src.match_indices(&needle) {
+            let rest = &src[i + needle.len()..];
+            let Some(open) = rest.find('"') else { continue };
+            // Only a literal that follows the paren immediately (whitespace aside) is the
+            // reason: `Verdict::warn(reason_variable, …)` would not be one.
+            if rest[..open].chars().any(|c| !c.is_whitespace()) {
+                continue;
+            }
+            let Some(close) = rest[open + 1..].find('"') else {
+                continue;
+            };
+            let lit = &rest[open + 1..open + 1 + close];
+            if lit
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+            {
+                out.push(lit.to_string());
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// **W1.** The human table prints the **title** §7 says it prints, a verdict in words, and
+    /// no identifier of any kind. The run that produced the finding read:
+    ///
+    /// ```text
+    ///   warn:wallet_unreachable        wallet_rpc_reachable     The wallet service is not …
+    ///   skip:wallet_daemon_down        wallet_rpc_auth          The wallet service is not …
+    /// ```
+    ///
+    /// — three words §2o rule 7 deletes (`daemon`, `rpc`, `unit`) on the screen of the command
+    /// that had just had 54 of its sentences rewritten. Every row is rendered here, in all four
+    /// statuses, with every reason the file can produce.
+    #[test]
+    fn the_human_table_prints_titles_and_never_an_id_or_a_reason() {
+        let plain = Out {
+            json: false,
+            color: false,
+        };
+        let reasons = reasons_in_checks_rs("skip");
+        assert!(
+            reasons.len() > 20,
+            "the reason scan found only {reasons:?} — it is not reading checks.rs"
+        );
+        // One row per check per status, with the skip rows cycling through every skip reason, so
+        // no reason can reach the table unrendered by this test.
+        let mut rows: Vec<CheckReport> = Vec::new();
+        for def in CHECKS {
+            rows.push(CheckReport::new(def, &Verdict::pass("A sentence.")));
+            rows.push(CheckReport::new(
+                def,
+                &Verdict::warn("unit_drift", "A sentence."),
+            ));
+            rows.push(CheckReport::new(
+                def,
+                &Verdict::fail("not_installed", "A sentence."),
+            ));
+            for reason in &reasons {
+                let leaked: &'static str = Box::leak(reason.clone().into_boxed_str());
+                rows.push(CheckReport::new(def, &Verdict::skip(leaked, "A sentence.")));
+            }
+        }
+        let report = Report {
+            ok: false,
+            schema: fmonero_core::SCHEMA_VERSION,
+            run_id: None,
+            checks: rows,
+            summary: Summary::default(),
+        };
+        let lines = human_lines(&plain, &report);
+        let text = lines.join("\n");
+        for def in CHECKS {
+            assert!(
+                text.contains(def.title),
+                "the table must print the title: {}",
+                def.title
+            );
+            assert!(
+                !text.contains(def.id),
+                "an id reached the human table: {}",
+                def.id
+            );
+        }
+        for reason in &reasons {
+            assert!(
+                !text.contains(reason.as_str()),
+                "a reason reached the human table: {reason}"
+            );
+        }
+        // And no machine status word either: `pass`, `warn`, `fail` and `skip` are `--json`'s.
+        // As whole words, because `password` and `appears` are English and `skipped` is not what
+        // this is about.
+        let words: Vec<String> = lines
+            .iter()
+            .flat_map(|l| l.split(|c: char| !c.is_alphanumeric() && c != '_'))
+            .map(str::to_ascii_lowercase)
+            .collect();
+        for machine in ["pass", "warn", "fail", "skip", "verdict"] {
+            assert!(
+                !words.iter().any(|w| w == machine),
+                "{machine:?} is a machine word and reached the human table"
+            );
+        }
+        // Rule 5 in general, over the whole rendering: nothing shaped like an identifier.
+        for line in &lines {
+            for token in line.split_whitespace() {
+                let t = token.trim_matches(|c: char| !c.is_alphanumeric() && c != '_');
+                assert!(
+                    !(t.contains('_') && !t.contains('/') && !t.contains('.')),
+                    "an identifier-shaped token reached the table: {token:?} in {line:?}"
+                );
+            }
+        }
+    }
+
+    /// **W1.** Every `Verdict::skip` reason has words, so `not checked` is never bare — one
+    /// missing precondition silences a whole group, and the reason is what explains twelve rows
+    /// at once.
+    #[test]
+    fn every_skip_reason_has_a_sentence_for_the_human_table() {
+        for reason in reasons_in_checks_rs("skip") {
+            let words = not_checked_because(&reason);
+            assert!(
+                words.is_some(),
+                "skip:{reason} would print a bare `not checked` — add it to not_checked_because"
+            );
+            let words = words.unwrap_or_default();
+            assert!(
+                words.len() <= 34,
+                "`not checked: {words}` is {} characters and the column budgets 47",
+                words.len() + 13
+            );
+            assert!(
+                !words.contains('_'),
+                "the words for skip:{reason} are still an id: {words}"
+            );
+        }
     }
 
     #[test]

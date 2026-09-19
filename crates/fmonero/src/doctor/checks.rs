@@ -450,7 +450,10 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Install,
         class: Class::D,
         severity: Severity::Warn,
-        title: "~/.local/bin/fmonero exists (the shell's PATH has no ~/.cargo/bin)",
+        // Self-read (round 3): the old title was `~/.local/bin/fmonero exists (the shell's PATH
+        // has no ~/.cargo/bin)` — a path, a shell variable and a second path, as the sentence a
+        // person reads. The detail names the path; the title says what the check is for.
+        title: "fmonero is installed where your shell looks for it",
         detect: binary_on_path,
     },
     CheckDef {
@@ -595,17 +598,42 @@ fn need_local_node(p: &Probes) -> Option<Verdict> {
     })
 }
 
-fn need_units(p: &Probes) -> Option<Verdict> {
-    (!p.node_unit.exists || !p.wallet_unit.exists).then(|| {
+fn need_units(p: &Probes, about: Which) -> Option<Verdict> {
+    let node_missing = !p.node_unit.exists;
+    let wallet_missing = !p.wallet_unit.exists;
+    let missing = match about {
+        Which::Wallet => wallet_missing,
+        Which::Both => node_missing || wallet_missing,
+    };
+    missing.then(|| {
+        // **W11: the row's own subject, named** — `wallet_dir_matches_unit`,
+        // `wallet_daemon_matches_unit` and `wallet_port_consistent` are three checks of the
+        // WALLET service, and all three read `fmonero has not set up the node service yet.`
+        // because one word was chosen for all seven skips from whichever file happened to exist.
+        let what = match (about, node_missing, wallet_missing) {
+            (Which::Wallet, _, _) => "the wallet service",
+            (Which::Both, true, true) => "its two background services",
+            (Which::Both, true, false) => "your node",
+            (Which::Both, _, _) => "the wallet service",
+        };
         Verdict::skip(
             "unit_missing",
-            format!(
-                "fmonero has not set up the {} service yet.",
-                if p.node_unit.exists { "wallet" } else { "node" }
-            ),
+            format!("fmonero has not set up {what} yet."),
         )
         .cmd("fmonero setup --units --yes")
     })
+}
+
+/// Which of the two background services a `units` check is about (W11).
+///
+/// `Both` is every check that reads the two files together — the bind address, the credential
+/// scan, the `Wants=` scan, the enabled state — and `Wallet` is the three that read only the
+/// wallet unit. There is no node-only check today: `units_present` reports the two files itself
+/// and does not skip behind this at all.
+#[derive(Copy, Clone, Debug)]
+enum Which {
+    Wallet,
+    Both,
 }
 
 // ------------------------------------------------------------------ binaries
@@ -635,7 +663,7 @@ fn monerod_installed(p: &Probes) -> Verdict {
         )
         .cmd("monerod --version");
     }
-    Verdict::pass(format!("{path} — {}", p.monerod_version.first_line()))
+    Verdict::pass(format!("{path}: {}", p.monerod_version.first_line()))
 }
 
 fn wallet_rpc_installed(p: &Probes) -> Verdict {
@@ -653,10 +681,7 @@ fn wallet_rpc_installed(p: &Probes) -> Verdict {
         )
         .cmd("monero-wallet-rpc --version");
     }
-    Verdict::pass(format!(
-        "{path} — {}",
-        p.wallet_rpc_version_cmd.first_line()
-    ))
+    Verdict::pass(format!("{path}: {}", p.wallet_rpc_version_cmd.first_line()))
 }
 
 fn version_supported(p: &Probes) -> Verdict {
@@ -671,7 +696,9 @@ fn version_supported(p: &Probes) -> Verdict {
         );
     }
     match version_of(&line) {
-        Some(v) if v == SUPPORTED_MONERO => Verdict::pass(format!("{line} (0.18.x)")),
+        Some(v) if v == SUPPORTED_MONERO => {
+            Verdict::pass(format!("{line}. That is the {v} fmonero is built for."))
+        }
         Some(v) => Verdict::warn(
             "unsupported_version",
             format!("This is Monero {v}. fmonero was written for {SUPPORTED_MONERO}."),
@@ -1261,10 +1288,10 @@ fn units_present(p: &Probes) -> Verdict {
             // V10: `the fmonero-monerod.service service is not set up yet` was a file name
             // used as prose, and a stutter. The name is the value of a settings key
             // (`node.unit`, `wallet.unit`), which rule 5 exempts; the word around it is not.
-            bad.push(format!("{name} has not been written yet"));
+            bad.push(format!("{name} has not been written yet."));
         } else if !matches {
             bad.push(format!(
-                "{name} is not the file fmonero writes: something has changed it"
+                "{name} is not the file fmonero writes, so something has changed it."
             ));
         }
     }
@@ -1274,12 +1301,12 @@ fn units_present(p: &Probes) -> Verdict {
             p.node_unit_name, p.wallet_unit_name
         ));
     }
-    Verdict::warn("unit_drift", bad.join("; "))
+    Verdict::warn("unit_drift", bad.join(" "))
         .fixable(PlanKind::WriteBothUnits, "fmonero doctor --fix")
 }
 
 fn unit_loopback(p: &Probes) -> Verdict {
-    if let Some(v) = need_units(p) {
+    if let Some(v) = need_units(p, Which::Both) {
         return v;
     }
     let mut bad = Vec::new();
@@ -1308,7 +1335,7 @@ fn unit_loopback(p: &Probes) -> Verdict {
 }
 
 fn unit_no_password_in_argv(p: &Probes) -> Verdict {
-    if let Some(v) = need_units(p) {
+    if let Some(v) = need_units(p, Which::Both) {
         return v;
     }
     let mut bad = Vec::new();
@@ -1360,7 +1387,7 @@ fn unit_no_password_in_argv(p: &Probes) -> Verdict {
 }
 
 fn unit_no_node_wants(p: &Probes) -> Verdict {
-    if let Some(v) = need_units(p) {
+    if let Some(v) = need_units(p, Which::Both) {
         return v;
     }
     let mut bad = Vec::new();
@@ -1400,7 +1427,7 @@ fn unit_no_node_wants(p: &Probes) -> Verdict {
 }
 
 fn unit_enabled_state(p: &Probes) -> Verdict {
-    if let Some(v) = need_units(p) {
+    if let Some(v) = need_units(p, Which::Both) {
         return v;
     }
     let enabled: Vec<&str> = [&p.node_unit_state, &p.wallet_unit_state]
@@ -1438,7 +1465,7 @@ fn unit_enabled_state(p: &Probes) -> Verdict {
 /// new wallet's restore height from it, before fmonero's own `set_daemon` ever runs
 /// (`wallet_rpc_server.cpp:3596`, `:3606-3609`, §2m.3).
 fn wallet_daemon_matches_unit(p: &Probes) -> Verdict {
-    if let Some(v) = need_units(p) {
+    if let Some(v) = need_units(p, Which::Wallet) {
         return v;
     }
     let Some(address) = &p.unit_daemon_address else {
@@ -1566,7 +1593,7 @@ fn remote_node_untrusted(p: &Probes) -> Verdict {
 }
 
 fn wallet_dir_matches_unit(p: &Probes) -> Verdict {
-    if let Some(v) = need_units(p) {
+    if let Some(v) = need_units(p, Which::Wallet) {
         return v;
     }
     let Some(service_dir) = &p.unit_wallet_dir else {
@@ -1597,7 +1624,7 @@ fn wallet_dir_matches_unit(p: &Probes) -> Verdict {
 }
 
 fn wallet_port_consistent(p: &Probes) -> Verdict {
-    if let Some(v) = need_units(p) {
+    if let Some(v) = need_units(p, Which::Wallet) {
         return v;
     }
     let unit = p.unit_wallet_port;
@@ -1802,18 +1829,20 @@ fn public_node_cache(p: &Probes) -> Verdict {
     };
     if age > fmonero_core::nodes::CACHE_MAX_AGE_SEC {
         return Verdict::pass(format!(
-            "{count} public nodes, listed {}h ago. fmonero shows the age with the list and \
+            "{count} public nodes, listed {}. fmonero shows the age with the list and \
              fetches a fresh one by itself after a day.",
-            age / 3600
+            fmonero_core::age(age)
         ))
         .cmd(
             "fmonero node list --refresh   # fetches the list again, which tells monero.fail \
              your IP address",
         );
     }
+    // W12: the shared formatter, so `5h 42m ago` here and on the screen — this printed
+    // `listed 342 min ago` five and a half hours in.
     Verdict::pass(format!(
-        "{count} public nodes, listed {} min ago.",
-        age / 60
+        "{count} public nodes, listed {}.",
+        fmonero_core::age(age)
     ))
 }
 

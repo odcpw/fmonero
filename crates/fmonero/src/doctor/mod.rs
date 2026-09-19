@@ -70,6 +70,23 @@ impl DoctorGroup {
         }
     }
 
+    /// The heading a person reads above the group's rows (W1).
+    ///
+    /// `name()` is what `--only` takes and what `--json` carries, and one of the seven is
+    /// `units` — a word §2o rule 7 deletes outright, printed as a heading over seven rows. The
+    /// machine name stays exactly as it is; the heading says what the group is about.
+    pub fn title(self) -> &'static str {
+        match self {
+            DoctorGroup::Binaries => "Monero's own programs",
+            DoctorGroup::Node => "Your node",
+            DoctorGroup::Wallet => "Your wallet",
+            DoctorGroup::Units => "The two background services",
+            DoctorGroup::Storage => "Room on the disk",
+            DoctorGroup::Install => "fmonero's own files",
+            DoctorGroup::Security => "Privacy on this machine",
+        }
+    }
+
     /// `--only GROUP`. `DoctorArgs::only` is a frozen `Option<String>` (§5b), so the parse
     /// happens here — and an unknown group names every legal one rather than saying "no".
     pub fn parse(name: &str) -> Result<DoctorGroup, Error> {
