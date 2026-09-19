@@ -77,7 +77,7 @@ seven actions unchanged.
 AMBER — verified against crates/fmonero-mock serving fixtures DERIVED FROM THE MONERO SOURCE \
 at v0.18.5.1, which proves fmonero's wire format and parsing and proves NOTHING about a real \
 daemon: node info|peers|bans|ban|unban|limit, wallet open|close|balance|address|new-address|\
-history|refresh|book|notes|set-daemon|create, wallet send and sweep including the \
+history|refresh|book|notes|use-node|create, wallet send and sweep including the \
 do_not_relay build, the real fee, the no---yes refusal and the relay sequence, MD5 Digest \
 authentication, the wallet-RPC error map, the restricted-node degradation, the deadline, \
 breaker and --force paths, the TUI's ProgramSimulator send (one transfer, one relay_tx) and \
@@ -389,7 +389,7 @@ const COMMANDS: &[Command] = &[
     cmd("wallet book remove", "INDEX", true, true, true, false, false, "amber"),
     cmd("wallet refresh", "[--start-height H]", true, false, true, true, false, "red"),
     cmd("wallet notes", "get TXID | set TXID TEXT", true, false, true, false, false, "amber"),
-    cmd("wallet set-daemon", "ADDRESS [--trusted]", true, true, true, false, false, "amber"),
+    cmd("wallet use-node", "ADDRESS [--trusted]", true, true, true, false, false, "amber"),
     cmd("settings list", "", false, false, false, false, false, "green"),
     cmd("settings get", "KEY", false, false, false, false, false, "green"),
     cmd("settings set", "KEY VALUE", true, false, false, false, false, "green"),

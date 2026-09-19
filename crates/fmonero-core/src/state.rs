@@ -386,7 +386,8 @@ pub fn pending_send(ctx: &Context) -> Result<Option<PendingSend>, Error> {
         ))
         .with_detail(e.to_string())
         .with_reason("pending_send")
-        .with_hint("fmonero wallet history --limit 5   # then: fmonero wallet clear-pending --yes")
+        .with_hint(crate::send::PENDING_HINT)
+        .with_action(crate::send::PENDING_ACTION)
     })
 }
 

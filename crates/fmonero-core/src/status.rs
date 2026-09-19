@@ -1162,7 +1162,7 @@ fn warnings(
             "send_may_be_in_flight",
             Severity::Error,
             text,
-            "fmonero wallet history --limit 5   # then: fmonero wallet clear-pending --yes",
+            crate::send::PENDING_HINT,
             Some("Press 2 to look at your payments."),
         );
     }

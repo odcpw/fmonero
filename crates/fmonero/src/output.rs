@@ -171,10 +171,26 @@ pub fn wrapped_lines(text: &str) -> Vec<String> {
 /// 120-column terminal had been handed to it.
 pub const NO_FLEX: usize = usize::MAX;
 
-pub fn columns(mins: &[usize], prefs: &[usize], gap: usize, flex: usize) -> Vec<usize> {
+/// **`indent` is the row's own leading prefix, and it is not optional** (round 5, S2).
+///
+/// Three of the four tables in this file render `format!("  {}  {}…")` — a two-space indent in
+/// front of the first column — and this function counted only the gaps *between* columns. So every
+/// one of them was two columns wider than the budget believed, and `node list --probe`, whose
+/// preferred widths are the largest, shrank to exactly 120 on a 120-column terminal and printed a
+/// **122**-character header: `synced` broke in half and arrived as `sync` on one line and `ed` on
+/// the next, in the row a person reads first. It is a parameter rather than a constant because
+/// `wallet history` has no indent, and it is positional rather than defaulted so that the next
+/// table added here cannot forget it.
+pub fn columns(
+    mins: &[usize],
+    prefs: &[usize],
+    gap: usize,
+    indent: usize,
+    flex: usize,
+) -> Vec<usize> {
     debug_assert_eq!(mins.len(), prefs.len());
     let total = term_width();
-    let gaps = gap * mins.len().saturating_sub(1);
+    let gaps = gap * mins.len().saturating_sub(1) + indent;
     let mut out: Vec<usize> = prefs.to_vec();
     let sum = |v: &[usize]| -> usize { v.iter().sum::<usize>() + gaps };
     while sum(&out) > total {
@@ -492,7 +508,7 @@ pub fn human(out: &Out, label: &str, value: &serde_json::Value) {
         "wallet notes get" | "wallet notes set" => return notes_human(out, value),
         "wallet book list" => return book_list_human(out, value),
         "wallet book add" | "wallet book remove" => return book_change_human(out, label, value),
-        "wallet set-daemon" => return set_daemon_human(out, value),
+        "wallet use-node" => return set_daemon_human(out, value),
         "wallet clear-pending" => return clear_pending_human(out, value),
         "settings get" => return settings_get_human(out, value),
         "settings set" => return settings_set_human(out, value),
@@ -807,7 +823,10 @@ fn footers(label: &str, v: &serde_json::Value, json: bool) -> Vec<String> {
             if v["node"]["layout"].as_str() == Some("remote")
                 && v["node"]["remote_probe"].is_null() =>
         {
-            out.push("Nothing has checked this public node yet.".to_string());
+            // **M20: the fact is already on the node row.** The badge two lines above reads
+            // `public node · not checked yet`, so this footer said the same thing again and then
+            // pointed at the command — three lines for one fact and one next step. §2o rule 11: the
+            // hint is the last line, never the sentence.
             out.push(
                 "Try: fmonero status --check-node   # checks it in the background".to_string(),
             );
@@ -875,6 +894,19 @@ fn footers(label: &str, v: &serde_json::Value, json: bool) -> Vec<String> {
     out
 }
 
+/// One row of a multi-payment plan: which of them, how much, the fee, and whether it went.
+///
+/// Its own function so a test can read it (round 5, S5): the row used to lead with
+/// `5c2e0b83…29d74b`, and on the two paths this plan is read — the refusal and the dry run —
+/// nothing has been relayed, so there was no full id anywhere and the fragment named a payment the
+/// reader could do nothing with. §2o rule 5 puts ids in `--json`.
+fn plan_row(n: usize, amount: &str, fee: &str, status: &str) -> String {
+    format!(
+        "  {}  {amount} XMR  fee {fee} XMR  {status}",
+        pad(&format!("{n}."), 3)
+    )
+}
+
 /// `wallet send` / `wallet sweep`: the confirmation block, identical for a dry run, for the
 /// no-`--yes` refusal and for a relayed success, so a human reads one shape too (§5c).
 fn money_human(out: &Out, v: &serde_json::Value) {
@@ -905,23 +937,26 @@ fn money_human(out: &Out, v: &serde_json::Value) {
     let txs = v["txs"].as_array().map(Vec::as_slice).unwrap_or_default();
     if txs.len() > 1 {
         // **`payments`, not `transactions`** (X8): §2o.2's own word, on the one path where getting
-        // it wrong costs money. And the **short id** (X9), because 64 hexadecimal characters is a
-        // paragraph in a table; the whole id is two lines below under `payment id` and in `--json`.
+        // it wrong costs money.
+        //
+        // **And no id at all** (round 5, S5). X9 shortened the 64 characters to `5c2e0b83…29d74b`
+        // and justified it with *"the whole id is two lines below under `payment id`"* — which is
+        // true only after a relay. On the two paths this plan is actually read, the refusal and the
+        // dry run, nothing was relayed, so there is no such line and the reader was left holding a
+        // hex fragment with nothing to do with it. §2o rule 5 puts ids in `--json`; the amount, the
+        // fee and whether it went are the three facts, and every row is complete without the
+        // fourth. The row number is what tells two rows of the same amount apart.
         out.line(format!("{} payments:", txs.len()));
-        for t in txs {
-            out.line(format!(
-                "  {}  {} XMR  fee {} XMR  {}",
-                t["txid"]
-                    .as_str()
-                    .map(fmonero_core::short_id)
-                    .unwrap_or_else(|| "—".to_string()),
-                cell(&t["amount_xmr"]),
-                cell(&t["fee_xmr"]),
-                if t["relayed"] == serde_json::Value::Bool(true) {
+        for (i, t) in txs.iter().enumerate() {
+            out.line(plan_row(
+                i + 1,
+                &cell(&t["amount_xmr"]),
+                &cell(&t["fee_xmr"]),
+                &if t["relayed"] == serde_json::Value::Bool(true) {
                     out.paint("sent", Paint::Green)
                 } else {
                     out.paint("not sent", Paint::Dim)
-                }
+                },
             ));
         }
     }
@@ -966,27 +1001,37 @@ fn history_human(out: &Out, v: &serde_json::Value) {
     // saying blank meant spendable, and it printed `locked` for a FAILED payment that will never
     // unlock.
     let w = columns(
-        &[16, 7, 10, 9, 8, 9, 8],
-        &[16, 7, 18, 12, 8, 9, 20],
+        &[16, 7, 10, 8, 9, 8, 9],
+        &[16, 7, 18, 8, 9, 20, 12],
         2,
+        0,
         NO_FLEX,
     );
+    // **M5: one header, one order, one first word.** This read
+    // `date  what  amount XMR  fee XMR  confirms  spendable  note` against the TUI's
+    // `WHEN  WHAT  AMOUNT XMR  CONFIRMS  SPENDABLE  NOTE  FEE XMR` — a different first word for one
+    // column and the fee fourth in one surface and last in the other, on the two lists of the same
+    // payments. `when` is the word §2o.2's vocabulary carries for it, and the fee is last in both:
+    // it is the column a reader gives up first, which is why the TUI drops it before the note.
     out.row(format!(
         "{}  {}  {}  {}  {}  {}  {}",
-        pad("date", w[0]),
+        pad("when", w[0]),
         pad("what", w[1]),
         pad_right("amount XMR", w[2]),
-        pad_right("fee XMR", w[3]),
-        pad_right("confirms", w[4]),
-        pad("spendable", w[5]),
-        "note"
+        pad_right("confirms", w[3]),
+        pad("spendable", w[4]),
+        pad("note", w[5]),
+        pad_right("fee XMR", w[6])
     ));
     for t in rows {
-        // `2026-09-16T14:01` is a machine timestamp cut in half; the `T` is not a word.
+        // **One formatter for the whole ledger** (round 5, S9): `fmonero_core::when`, which the
+        // TUI's list, its payment detail and its note modal title now read as well. This sliced
+        // sixteen characters off an RFC3339 string by hand, and the TUI sliced eleven out of the
+        // middle of the same string, which is how the year came to be on one surface and not the
+        // other.
         let when = t["timestamp"]
             .as_i64()
-            .and_then(fmonero_core::rfc3339_from_unix)
-            .map(|s| s.chars().take(16).collect::<String>().replace('T', " "))
+            .and_then(fmonero_core::when)
             .unwrap_or_else(|| "—".to_string());
         // The kind **in words** and the lock as a word, not as a JSON value: this table printed
         // `block` for a mining reward, `pool` for one waiting to be mined and `true` under
@@ -1034,12 +1079,12 @@ fn history_human(out: &Out, v: &serde_json::Value) {
             pad(&when, w[0]),
             pad(kind, w[1]),
             pad_right(&cell(&t["amount_xmr"]), w[2]),
-            pad_right(&fee, w[3]),
-            pad_right(&cell(&t["confirmations"]), w[4]),
-            pad(spendable, w[5]),
-            // The last cell is not padded: `pad` left trailing spaces on every row of this table
-            // (round 4 iteration 3).
-            fit(t["note"].as_str().unwrap_or(""), w[6]).trim_end()
+            pad_right(&cell(&t["confirmations"]), w[3]),
+            pad(spendable, w[4]),
+            fit(t["note"].as_str().unwrap_or(""), w[5]),
+            // Right-aligned, like every other money column here: the fees down this column are all
+            // rendered to eight decimals, so aligning them is what makes the points line up.
+            pad_right(&fee, w[6])
         ));
     }
     // `high_water` is the snapshot's own bookkeeping and stays in `--json` (§2o rule 7).
@@ -1185,6 +1230,7 @@ fn peers_human(out: &Out, v: &serde_json::Value) {
             let w = columns(
                 &[widest, 5, 14, 11, 9, 20],
                 &[widest, 6, 14, 11, 9, 22],
+                2,
                 2,
                 NO_FLEX,
             );
@@ -1360,6 +1406,43 @@ fn node_info_human(out: &Out, v: &serde_json::Value) {
 /// a `ping 20` with no unit, ungrouped block numbers beside the picker's grouped ones, and two
 /// markers (`web`, `own`) in the rows with nothing to say what they meant. The column names are
 /// the picker's, the units are on the numbers, and the one marker left is explained in the footer.
+/// `node list`'s header row, as its own function so a test can **measure it** (round 5, S2).
+///
+/// It was 122 characters on a 120-column terminal with probe results in the list, so `synced`
+/// broke in half: `sync` at the end of line one and `ed` alone on line two, in the first row a
+/// person reads. The cause was [`columns`] not counting this row's own two-space indent; the
+/// reason it went unnoticed for two rounds is that nothing could assert the width of a string
+/// built inside a `format!` inside a printer.
+///
+/// `NODES_INDENT` is the indent both this row and the data rows carry, and the one number
+/// [`columns`] must be told about.
+pub const NODES_INDENT: usize = 2;
+
+fn nodes_header(w: &[usize], probed_any: bool) -> String {
+    format!(
+        "  {}  {}  {}  {}{}",
+        pad("address", w[0]),
+        // **The heading names what the figure counts** (round 4 iteration 3). It read
+        // `reliability` over `100% of 18`, and nothing anywhere said what the 18 were — the sample
+        // size travels with the percentage precisely so the two are comparable (§2n.1), and a
+        // reader who cannot tell what is being counted gets nothing from it. `answered` makes the
+        // cell a sentence: answered 100% of 18. The footer says who made those 18 checks.
+        pad("answered", w[1]),
+        pad_right("their block", w[2]),
+        pad("last seen", w[3]),
+        if probed_any {
+            format!(
+                "  {}  {}  {}",
+                pad("ping", w[4]),
+                pad("block here", w[5]),
+                "synced"
+            )
+        } else {
+            String::new()
+        },
+    )
+}
+
 fn nodes_human(out: &Out, v: &serde_json::Value) {
     let rows = v["nodes"].as_array().map(Vec::as_slice).unwrap_or_default();
     if rows.is_empty() {
@@ -1383,33 +1466,19 @@ fn nodes_human(out: &Out, v: &serde_json::Value) {
             &[widest, 11, 11, 9, 8, 10, 6],
             &[widest, 12, 12, 12, 8, 12, 6],
             2,
+            NODES_INDENT,
             NO_FLEX,
         )
     } else {
-        columns(&[widest, 11, 11, 9], &[widest, 12, 12, 12], 2, NO_FLEX)
+        columns(
+            &[widest, 11, 11, 9],
+            &[widest, 12, 12, 12],
+            2,
+            NODES_INDENT,
+            NO_FLEX,
+        )
     };
-    out.row(format!(
-        "  {}  {}  {}  {}{}",
-        pad("address", w[0]),
-        // **The heading names what the figure counts** (round 4 iteration 3). It read
-        // `reliability` over `100% of 18`, and nothing anywhere said what the 18 were — the sample
-        // size travels with the percentage precisely so the two are comparable (§2n.1), and a
-        // reader who cannot tell what is being counted gets nothing from it. `answered` makes the
-        // cell a sentence: answered 100% of 18. The footer says who made those 18 checks.
-        pad("answered", w[1]),
-        pad_right("their block", w[2]),
-        pad("last seen", w[3]),
-        if probed_any {
-            format!(
-                "  {}  {}  {}",
-                pad("ping", w[4]),
-                pad("block here", w[5]),
-                "synced"
-            )
-        } else {
-            String::new()
-        },
-    ));
+    out.row(nodes_header(&w, probed_any));
     let mut any_own = false;
     for r in rows {
         let configured = r["configured"] == serde_json::Value::Bool(true);
@@ -1764,7 +1833,7 @@ fn bans_human(out: &Out, v: &serde_json::Value) {
         .max()
         .unwrap_or(16)
         .clamp(16, 46);
-    let w = columns(&[widest, 12], &[widest, 14], 2, NO_FLEX);
+    let w = columns(&[widest, 12], &[widest, 14], 2, 2, NO_FLEX);
     // The 32-bit integer form of the address stays in `--json`: `ip=1114702027` was printed at a
     // person beside the same address in dotted form.
     for b in rows {
@@ -1960,7 +2029,7 @@ fn book_change_human(out: &Out, label: &str, v: &serde_json::Value) {
     }
 }
 
-/// `wallet set-daemon`. **The two things §2o.2 says are never shown are not shown**: `ssl_support`
+/// `wallet use-node`. **The two things §2o.2 says are never shown are not shown**: `ssl_support`
 /// had a row of its own reading `disabled`, and `trusted false` was a flag where the vocabulary
 /// table asks for what it means.
 fn set_daemon_human(out: &Out, v: &serde_json::Value) {
@@ -2165,22 +2234,124 @@ mod tests {
     #[test]
     fn a_table_takes_its_widths_from_the_terminal_and_protects_the_address() {
         // 100 columns: the preferred widths fit, and the slack goes to the flexible column.
-        let w = at_width("100", || columns(&[44, 11, 11, 9], &[44, 12, 12, 12], 2, 0));
+        let w = at_width("100", || {
+            columns(&[44, 11, 11, 9], &[44, 12, 12, 12], 2, 0, 0)
+        });
         assert_eq!(w.iter().sum::<usize>() + 6, 100, "{w:?}");
         assert!(w[0] > 44, "the flexible column took the slack: {w:?}");
         // …and `NO_FLEX` leaves it unspent, which is what a table of short values wants.
         let w = at_width("100", || {
-            columns(&[44, 11, 11, 9], &[44, 12, 12, 12], 2, NO_FLEX)
+            columns(&[44, 11, 11, 9], &[44, 12, 12, 12], 2, 0, NO_FLEX)
         });
         assert_eq!(w, vec![44, 12, 12, 12], "{w:?}");
         // 80 columns: every column is at its minimum, and the address column holds it — a row one
         // column wider than the terminal is honest, an elided address is not.
-        let w = at_width("80", || columns(&[44, 11, 11, 9], &[44, 12, 12, 12], 2, 0));
+        let w = at_width("80", || {
+            columns(&[44, 11, 11, 9], &[44, 12, 12, 12], 2, 0, 0)
+        });
         assert_eq!(w, vec![44, 11, 11, 9], "{w:?}");
         // 120 columns: it fits with room, and no column is ever below its minimum.
-        let w = at_width("120", || columns(&[44, 11, 11, 9], &[44, 12, 12, 12], 2, 0));
+        let w = at_width("120", || {
+            columns(&[44, 11, 11, 9], &[44, 12, 12, 12], 2, 0, 0)
+        });
         assert_eq!(w.iter().sum::<usize>() + 6, 120, "{w:?}");
         assert!(w[1] >= 11 && w[2] >= 11 && w[3] >= 9, "{w:?}");
+    }
+
+    /// **Round 5, S2: `node list`'s header is never wider than the terminal.**
+    ///
+    /// It was 122 characters at 120 columns with probe results in the list, because [`columns`]
+    /// counted the six two-space gaps between the seven columns and not the two-space indent the
+    /// row itself carries — so `synced` arrived as `sync` on one line and `ed` on the next, in the
+    /// first row of the table a person reads before choosing a node. The widest address in
+    /// `tests/fixtures/nodes/nodes.json` is `monero-rpc.cheems.de.box.skhron.com.ua:18089`, 44
+    /// characters, and `nodes_human` budgets it as 48 (the mark, the ` own` tag and two spaces).
+    #[test]
+    fn node_lists_header_fits_the_terminal_at_every_width_with_the_widest_address() {
+        const WIDEST: &str = "monero-rpc.cheems.de.box.skhron.com.ua:18089";
+        let widest = WIDEST.chars().count() + 4;
+        for cols in ["80", "100", "120", "150"] {
+            for probed in [false, true] {
+                let w = at_width(cols, || {
+                    if probed {
+                        columns(
+                            &[widest, 11, 11, 9, 8, 10, 6],
+                            &[widest, 12, 12, 12, 8, 12, 6],
+                            2,
+                            NODES_INDENT,
+                            NO_FLEX,
+                        )
+                    } else {
+                        columns(
+                            &[widest, 11, 11, 9],
+                            &[widest, 12, 12, 12],
+                            2,
+                            NODES_INDENT,
+                            NO_FLEX,
+                        )
+                    }
+                });
+                let header = nodes_header(&w, probed);
+                let want: usize = cols.parse().expect("a width");
+                // At 80 the minimums alone exceed the terminal and the table says so honestly by
+                // being wide — but the address column is never below the address, and no header
+                // may exceed a terminal that has room for the minimums.
+                let mins: usize = if probed {
+                    widest + 11 + 11 + 9 + 8 + 10 + 6 + 12 + NODES_INDENT
+                } else {
+                    widest + 11 + 11 + 9 + 6 + NODES_INDENT
+                };
+                if mins <= want {
+                    assert!(
+                        visible_width(&header) <= want,
+                        "the header is {} columns on a {want}-column terminal (probed {probed}): \
+                         {header:?}",
+                        visible_width(&header)
+                    );
+                }
+                assert!(w[0] >= widest, "the address column shrank: {w:?}");
+            }
+        }
+    }
+
+    /// The same arithmetic from the other side: an indented table is two columns narrower.
+    #[test]
+    fn the_rows_own_indent_is_part_of_the_budget() {
+        let plain = at_width("100", || columns(&[10, 10], &[40, 40], 2, 0, 0));
+        let indented = at_width("100", || columns(&[10, 10], &[40, 40], 2, 2, 0));
+        assert_eq!(plain.iter().sum::<usize>() + 2, 100);
+        assert_eq!(indented.iter().sum::<usize>() + 2 + 2, 100);
+    }
+
+    /// **Round 5, S5: no id on a plan row, and no hex run anywhere in one.**
+    ///
+    /// The scan is for a run of eight or more hexadecimal characters that contains at least one
+    /// letter, which is what an id looks like and what an amount — all digits — never is.
+    #[test]
+    fn a_plan_row_carries_no_id() {
+        let row = plan_row(1, "0.80000000", "0.00003072", "not sent");
+        assert_eq!(row, "  1.   0.80000000 XMR  fee 0.00003072 XMR  not sent");
+        assert!(hex_runs(&row).is_empty(), "{row}");
+        // And the row the defect shipped as would be caught.
+        assert!(!hex_runs("  5c2e0b83…29d74b  0.8000 XMR").is_empty());
+    }
+
+    /// Runs of eight or more hex characters carrying at least one `a`-`f`: what an id looks like,
+    /// and what an amount or a block number cannot be.
+    pub(crate) fn hex_runs(s: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut run = String::new();
+        for c in s.chars().chain(std::iter::once(' ')) {
+            if c.is_ascii_hexdigit() {
+                run.push(c);
+                continue;
+            }
+            if run.chars().count() >= 8 && run.chars().any(|c| c.is_ascii_alphabetic()) {
+                out.push(run.clone());
+            }
+            run.clear();
+        }
+        out
     }
 
     /// X1, from the other side: **no `code_name` and no `reason` reaches a human line.** The

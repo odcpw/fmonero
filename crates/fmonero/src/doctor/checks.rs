@@ -1220,7 +1220,7 @@ fn wallet_daemon_auth(p: &Probes) -> Verdict {
         // stagenet — so a hard-coded 18081 repointed the wallet at a port nothing is listening
         // on, from the command this very check supplied.
         .cmd(format!(
-            "fmonero wallet set-daemon {} --trusted --yes",
+            "fmonero wallet use-node {} --trusted --yes",
             fmonero_core::units::host_port(&p.node_url)
         ));
     }
@@ -1325,23 +1325,23 @@ fn pending_send(p: &Probes) -> Verdict {
     let Some(rec) = &p.pending else {
         return Verdict::pass("No payment is waiting to be accounted for.");
     };
-    let unrelayed: Vec<&str> = rec
-        .txs
-        .iter()
-        .filter(|t| !t.relayed)
-        .map(|t| t.txid.as_str())
-        .collect();
-    if unrelayed.is_empty() {
+    // **Round 5, S4's class, on the doctor's own money row.** This joined every unrelayed
+    // 64-character id into the detail a person reads — the same defect the send refusal had, in
+    // the one report the owner is told to run when something looks wrong. The count is the fact;
+    // the ids are in `doctor --json`, where an agent reads them.
+    let unrelayed = rec.txs.iter().filter(|t| !t.relayed).count();
+    if unrelayed == 0 {
         // Fully relayed: the next `send` resolves it by itself (§2a.4). Reporting `fail`
         // here would teach the user to run `clear-pending` out of habit, which is the one
         // thing the interlock exists to prevent.
         return Verdict::warn(
             "resolvable_record",
             format!(
-                "{} payment(s) to {} have all gone out. fmonero clears this note by itself the \
-                 next time you send.",
-                rec.txs.len(),
-                rec.dest
+                "{} to {} {} all gone out. fmonero clears this note by itself the next time you \
+                 send.",
+                payments(rec.txs.len()),
+                rec.dest,
+                if rec.txs.len() == 1 { "has" } else { "have" }
             ),
         )
         .cmd("fmonero wallet history --limit 5");
@@ -1349,15 +1349,18 @@ fn pending_send(p: &Probes) -> Verdict {
     Verdict::fail(
         "send_may_be_in_flight",
         format!(
-            "{} of {} payment(s) to {} are not marked as sent: {}. Only you can decide whether \
-             they arrived, so fmonero never clears this note on its own.",
-            unrelayed.len(),
-            rec.txs.len(),
-            rec.dest,
-            unrelayed.join(", ")
+            "{} The money would have gone to {}. Only you can decide whether it arrived, so \
+             fmonero never clears this note on its own.",
+            fmonero_core::send::pending_send_sentence(rec, unrelayed),
+            rec.dest
         ),
     )
-    .cmd("fmonero wallet history --limit 5   # then: fmonero wallet clear-pending --yes")
+    .cmd(fmonero_core::send::PENDING_HINT)
+}
+
+/// `1 payment` / `2 payments` — M3's rule, which `payment(s)` was the other way of ducking.
+fn payments(n: usize) -> String {
+    format!("{n} payment{}", if n == 1 { "" } else { "s" })
 }
 
 // ------------------------------------------------------------------ units

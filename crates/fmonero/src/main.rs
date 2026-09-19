@@ -172,7 +172,7 @@ Without --wait a node that is still catching up is exit 0, with a warning that s
         /// How many lines from the end
         #[arg(long, value_name = "N", default_value_t = 200)]
         lines: usize,
-        /// Keep watching — that is the Log screen's job; here it would never finish
+        /// Keep watching. This never finishes, so it is the Log screen's job and not this one
         #[arg(long)]
         follow: bool,
         /// Keep only lines containing this text
@@ -221,7 +221,7 @@ taken if it is offered and nothing checks who is on the other end, and Tor is no
   fmonero node local --yes                              # the way back"
     )]
     Remote {
-        /// [http[s]://]host:port — the port is needed, no path, no password
+        /// [http[s]://]host:port. The port is needed. No path, no password
         addr: String,
         /// Let it see which amounts your wallet holds. Only ever for a node YOU run
         #[arg(long)]
@@ -229,7 +229,7 @@ taken if it is offered and nothing checks who is on the other end, and Tor is no
     },
     /// Go back to your own node on this machine
     Local,
-    /// Public nodes from monero.fail, saved — and, with --probe, checked from here
+    /// Public nodes from monero.fail, saved here. With --probe, each one is checked from here
     #[command(
         after_help = "Uses the saved list, and fetches a new one only when you pass --refresh
 or the saved list is missing or more than 24 h old. --probe then checks the top --limit of them
@@ -413,7 +413,7 @@ Nothing has ever been sent from this version: it has only ever been tried agains
         #[arg(long, value_name = "AMOUNT")]
         max_fee: Option<String>,
     },
-    /// Sweep an account to one recipient
+    /// Send everything in one account to one address, in as many payments as it takes
     #[command(
         after_help = "Sends the whole account (or only the outputs below --below) and may need
 several payments. They go in order, under one record that survives a crash. There is no amount
@@ -465,12 +465,19 @@ itself, so if you find yourself typing this after every send, something is wrong
         cmd: NotesCmd,
     },
     /// Point this wallet at another node, until the next time it is opened
+    ///
+    // **M16: the command's NAME carried rule 7's first banned word.** It was `set-daemon` — the
+    // upstream RPC method's own spelling — and §2o.3's gate reads `///` text and flag names, so a
+    // subcommand name was outside every grep the round had. `set-daemon` stays as a hidden alias so
+    // nothing already written against it breaks; `--help` and the emitted `command` label are
+    // `use-node`, which is also what the thing does in §2o.2's own words.
     #[command(
-        after_help = "fmonero itself only ever talks to this machine; the wallet service is what
+        alias = "set-daemon",
+        after_help = "fmonero itself only ever talks to this machine. The wallet service is what
 reaches a node somewhere else. Opening a wallet sets this again, so `fmonero node remote` is the
 lasting version of it."
     )]
-    SetDaemon {
+    UseNode {
         /// host:port
         address: String,
         /// Let it see which amounts your wallet holds. Only ever for a node YOU run
@@ -568,10 +575,58 @@ fn clap_message(e: &clap::Error) -> String {
         }
     }
     if parts.is_empty() {
-        "invalid arguments".to_string()
-    } else {
-        parts.join("; ")
+        return "fmonero could not read those arguments.".to_string();
     }
+    parts
+        .iter()
+        .map(|p| fmonero_voice(p))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// **M18: clap's voice beside fmonero's, in one line.** `fmonero: unrecognized subcommand 'note';
+/// tip: a similar subcommand exists: 'node'` sat one command away from
+/// `fmonero: "notanaddress" is not a Monero address. Addresses are 95 characters and start with 4
+/// or 8. This one is 12.` — lower case against sentence case, a semicolon §2o rule 1 forbids, no
+/// period, and `tip:` where §2o rule 2 asks for a sentence. clap renders its own errors and there
+/// is no hook for the wording, so the one place that already flattens them is the one place that
+/// can say them in fmonero's voice.
+///
+/// Every clause clap can produce is not enumerable, so the fallback does the two things that are
+/// always right: a capital first letter and a full stop. The three clauses a person actually meets
+/// are named.
+fn fmonero_voice(part: &str) -> String {
+    let quoted = |rest: &str| -> Option<String> {
+        let (_, after) = rest.split_once('\'')?;
+        let (word, _) = after.split_once('\'')?;
+        Some(word.to_string())
+    };
+    if let Some(name) = part
+        .strip_prefix("unrecognized subcommand")
+        .and_then(&quoted)
+    {
+        return format!("\"{name}\" is not an fmonero command.");
+    }
+    if let Some(name) = part
+        .strip_prefix("tip: a similar subcommand exists:")
+        .and_then(&quoted)
+    {
+        return format!("Did you mean \"{name}\"?");
+    }
+    if let Some(name) = part.strip_prefix("unexpected argument").and_then(&quoted) {
+        return format!("fmonero does not take \"{name}\" here.");
+    }
+    let mut out = String::with_capacity(part.len() + 1);
+    let stem = part.strip_prefix("tip: ").unwrap_or(part);
+    let mut chars = stem.chars();
+    if let Some(first) = chars.next() {
+        out.extend(first.to_uppercase());
+        out.push_str(chars.as_str());
+    }
+    if !out.ends_with('.') && !out.ends_with('?') && !out.ends_with(':') {
+        out.push('.');
+    }
+    out
 }
 
 /// The command path the user was reaching for, e.g. `["wallet", "send"]`, so that both the
@@ -614,7 +669,7 @@ fn clap_path(argv: &[std::ffi::OsString]) -> Vec<&'static str> {
                 "book",
                 "refresh",
                 "notes",
-                "set-daemon",
+                "use-node",
             ],
         ),
         ("settings", &["list", "get", "set"]),
@@ -861,7 +916,7 @@ fn command_path(cmd: &Cmd) -> String {
                 WalletCmd::Book { .. } => "book",
                 WalletCmd::Refresh { .. } => "refresh",
                 WalletCmd::Notes { .. } => "notes",
-                WalletCmd::SetDaemon { .. } => "set-daemon",
+                WalletCmd::UseNode { .. } => "use-node",
             }
         ),
         Cmd::Settings { cmd } => format!(
@@ -967,9 +1022,14 @@ fn refuse_with_plan(out: &Out, label: &str, e: &Error, payload: serde_json::Valu
 /// `plan.total()` was `unwrap_or_default()`, so an amount plus a fee that overflows `u64` printed
 /// a bare ` would leave this wallet.`: §5's "a zero may not stand in for unknown" on the money
 /// path. `Piconero::checked_add` already refuses to invent money; this says so.
+/// `0.10000000 XMR` — an amount with its unit, at the money path's one precision (M1).
+fn amount_words(p: Piconero) -> String {
+    format!("{} XMR", p.to_xmr_money())
+}
+
 fn leaves_this_wallet(plan: &Plan) -> String {
     match plan.total() {
-        Ok(t) => format!("{} XMR would leave this wallet.", t.to_xmr_string()),
+        Ok(t) => format!("{} XMR would leave this wallet.", t.to_xmr_money()),
         Err(_) => "fmonero could not add the amount and the fee together, so do not send this."
             .to_string(),
     }
@@ -1891,11 +1951,15 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                 }
                 if !yes {
                     let payload = plan_payload(&plan, &[], false, false);
+                    // **One precision on the money path** (round 5, M1): the plan table two lines
+                    // above prints eight decimals, and this sentence printed four, so the amount a
+                    // reader is deciding about changed shape between the table and the sentence
+                    // about the table.
                     let e = Error::safety(format!(
                         "This would send {} XMR to {}, with a fee of {} XMR. {}",
-                        plan.total_amount.to_xmr_string(),
+                        plan.total_amount.to_xmr_money(),
                         plan.dest,
-                        plan.total_fee.to_xmr_string(),
+                        plan.total_fee.to_xmr_money(),
                         leaves_this_wallet(&plan)
                     ))
                     .with_reason("needs_yes")
@@ -1962,13 +2026,23 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                 }
                 if !yes {
                     let payload = plan_payload(&plan, &[], false, false);
+                    // **M2: "everything you have" was the figure AFTER the fees.** The sentence
+                    // read `This would send everything you have, 1.234506451234 XMR` three lines
+                    // under a plan whose `Total` was `1.234567891234 XMR` — the balance — so the
+                    // one figure named as everything was the one figure that is not. What empties
+                    // the account is the total; what reaches the recipient is the amount; the
+                    // difference is the fees. All three, in that order, at one precision (M1).
                     let e = Error::safety(format!(
-                        "This would send everything you have, {} XMR, to {}, in {} payments, \
-                         with {} XMR of fees in total.",
-                        plan.total_amount.to_xmr_string(),
+                        "This would empty this account. {} to {}, {} XMR in fees, and {} \
+                         would leave this wallet in {} payments.",
+                        amount_words(plan.total_amount),
                         plan.dest,
-                        plan.txs.len(),
-                        plan.total_fee.to_xmr_string()
+                        plan.total_fee.to_xmr_money(),
+                        match plan.total() {
+                            Ok(t) => format!("{} XMR", t.to_xmr_money()),
+                            Err(_) => "everything in it".to_string(),
+                        },
+                        plan.txs.len()
                     ))
                     .with_reason("needs_yes")
                     .with_hint(send_hint(
@@ -2181,7 +2255,7 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                     }
                 }
             }
-            WalletCmd::SetDaemon { address, trusted } => {
+            WalletCmd::UseNode { address, trusted } => {
                 // The SAME grammar `node.remote` uses (§2m.2, §5b), so the two commands cannot
                 // accept different strings — and it runs before the `--yes` gate, because an
                 // unparseable address costs nothing to refuse.
@@ -2190,7 +2264,7 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                 if trusted {
                     own.push("--trusted".into());
                 }
-                require_yes(yes, "fmonero wallet set-daemon", &own)?;
+                require_yes(yes, "fmonero wallet use-node", &own)?;
                 let w = WalletClient::from_ctx(&ctx)?;
                 // Omitting the two credential fields does not KEEP the wallet's daemon login,
                 // it clears it: `on_set_daemon` builds the optional login only from a non-empty
@@ -2214,7 +2288,7 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                 let ssl = units::ssl_for_address(&address);
                 w.set_daemon(&address, trusted, login.as_ref(), ssl)?;
                 out.emit(
-                    "wallet set-daemon",
+                    "wallet use-node",
                     ok(serde_json::json!({
                         "address": address,
                         "trusted": trusted,
@@ -2398,7 +2472,7 @@ fn require_yes(yes: bool, what: &str, args: &[String]) -> Result<(), Error> {
         "fmonero wallet create" => "Making a new wallet",
         "fmonero wallet clear-pending" => "Clearing that record",
         "fmonero wallet book remove" => "Taking an address out of your address book",
-        "fmonero wallet set-daemon" => "Pointing this wallet at another node",
+        "fmonero wallet use-node" => "Pointing this wallet at another node",
         other => other,
     };
     Err(Error::safety(format!(
@@ -2528,9 +2602,9 @@ mod tests {
             "fmonero wallet book remove 3 --yes",
         ),
         (
-            "fmonero wallet set-daemon",
+            "fmonero wallet use-node",
             &["127.0.0.1:18081", "--trusted"],
-            "fmonero wallet set-daemon 127.0.0.1:18081 --trusted --yes",
+            "fmonero wallet use-node 127.0.0.1:18081 --trusted --yes",
         ),
         // v5.2, §2m.5: both mode commands need `--yes` — they decide which node the next send
         // is built against, they restart a daemon that may be holding an open wallet, and they

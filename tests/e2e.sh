@@ -551,7 +551,7 @@ hint_runs "fmonero node down --yes"            4 node down
 hint_runs "fmonero node restart --yes"         4 node restart
 hint_runs "fmonero wallet clear-pending --yes" 0 wallet clear-pending
 hint_runs "fmonero wallet book remove 3 --yes" 4 wallet book remove 3
-hint_runs "fmonero wallet set-daemon 127.0.0.1:18081 --yes" 4 wallet set-daemon 127.0.0.1:18081
+hint_runs "fmonero wallet use-node 127.0.0.1:18081 --yes" 4 wallet use-node 127.0.0.1:18081
 # Last, because the password has to be in the environment for the hint's own run: `wallet
 # create` refuses BEFORE it asks for one (§4.1), so only the second invocation needs it.
 FMONERO_WALLET_PASSWORD=x hint_runs "fmonero wallet create zzhint --yes" 4 wallet create zzhint
@@ -869,25 +869,25 @@ fi
 # 401s from then on with nothing reporting an error.
 printf 'rpc-login=fmonero:0123456789abcdef0123456789abcdef\n' > "$FMONERO_CONFIG_DIR/monerod.conf"
 chmod 600 "$FMONERO_CONFIG_DIR/monerod.conf"
-fm --timeout 3 wallet set-daemon 127.0.0.1:18081 --trusted --yes --json
-expect_rc 0 "wallet set-daemon"
-expect_keys "wallet set-daemon" "ok schema address trusted ssl_support authenticated persistent"
+fm --timeout 3 wallet use-node 127.0.0.1:18081 --trusted --yes --json
+expect_rc 0 "wallet use-node"
+expect_keys "wallet use-node" "ok schema address trusted ssl_support authenticated persistent"
 expect_json '.persistent' 'false' \
   "§5c: the payload says this is a one-off the next wallet open undoes (v5.2)"
 expect_json '.ssl_support' '"disabled"' \
   "§2m.3: ssl_support is derived from the ADDRESS — loopback means disabled"
 SD="$(jq -s '[.[] | select(.method=="set_daemon")] | last | .body.params' "$WALLET_LOG")"
 if printf '%s' "$SD" | jq -e '.username == "fmonero" and (.password | length) == 32' >/dev/null; then
-  ok "§4.2: a loopback set-daemon carries the node credential"
+  ok "§4.2: a loopback use-node carries the node credential"
 else
-  bad "§4.2: set-daemon sent no credential, which CLEARS the wallet's daemon login" "$SD"
+  bad "§4.2: use-node sent no credential, which CLEARS the wallet's daemon login" "$SD"
 fi
 if printf '%s' "$SD" | jq -e '.ssl_support == "disabled"' >/dev/null; then
   ok "§1b.4: ssl_support is ALWAYS sent — an omitted key means autodetect, not plaintext"
 else
   bad "§1b.4: set_daemon sent no ssl_support, which epee reads as autodetect" "$SD"
 fi
-fm --timeout 3 wallet set-daemon 10.0.0.5:18081 --trusted --yes --json
+fm --timeout 3 wallet use-node 10.0.0.5:18081 --trusted --yes --json
 SD="$(jq -s '[.[] | select(.method=="set_daemon")] | last | .body.params' "$WALLET_LOG")"
 if printf '%s' "$SD" | jq -e 'has("username") | not' >/dev/null; then
   ok "§2c: and a REMOTE one still gets nothing — a remote node is monero-wallet-rpc's business"
@@ -897,15 +897,15 @@ fi
 if printf '%s' "$SD" | jq -e '.ssl_support == "autodetect"' >/dev/null; then
   ok "§2m.3: and a non-loopback address gets ssl_support autodetect, from the same derivation"
 else
-  bad "§2m.3: a remote set-daemon did not send autodetect" "$SD"
+  bad "§2m.3: a remote use-node did not send autodetect" "$SD"
 fi
 # §2m.2's grammar is the SAME one `node.remote` uses, so the two commands cannot accept
 # different strings (§4.1, §5b `Settings::parse_remote_address`).
-fm --timeout 3 wallet set-daemon node.example.com --yes --json
-expect_rc 2 "wallet set-daemon with no port is exit 2 (§2m.2)"
+fm --timeout 3 wallet use-node node.example.com --yes --json
+expect_rc 2 "wallet use-node with no port is exit 2 (§2m.2)"
 expect_json '.reason' '"bad_remote_address"' "and it names the grammar that refused it"
-fm --timeout 3 wallet set-daemon 127.0.0.1:18081 --json
-expect_rc 3 "wallet set-daemon without --yes is exit 3"
+fm --timeout 3 wallet use-node 127.0.0.1:18081 --json
+expect_rc 3 "wallet use-node without --yes is exit 3"
 
 FMONERO_WALLET_PASSWORD=t3stpw fm --timeout 3 wallet create newone --yes --json
 expect_rc 0 "wallet create (the mock records the call; NO wallet file is ever created)"
@@ -2260,7 +2260,7 @@ for verbose_case in \
   "status" \
   "node info" "node peers" "node bans" "node limit" \
   "wallet balance" "wallet address" "wallet history --limit 5" "wallet book list" \
-  "wallet refresh" "wallet new-address" "wallet set-daemon 127.0.0.1:18191 --yes"
+  "wallet refresh" "wallet new-address" "wallet use-node 127.0.0.1:18191 --yes"
 do
   # shellcheck disable=SC2086
   fm -vv --timeout 3 $verbose_case --json

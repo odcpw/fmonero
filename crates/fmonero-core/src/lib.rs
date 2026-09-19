@@ -76,6 +76,18 @@ pub const FOREIGN_NODE_READ_ONLY: &str =
 pub const FOREIGN_NODE_INFO: &str =
     "Another program on this machine runs this node. fmonero reads it and never changes it.";
 
+/// The one sentence fmonero uses when **nobody** has set up a node here yet — the
+/// `Layout::None` state (§2i), which is a fresh machine before the node service is written.
+///
+/// Round 5, S10: one predicate collapsed this state into [`FOREIGN_NODE_READ_ONLY`], so the Node
+/// screen's first-run refusal claimed another program owned a node that does not exist. Four
+/// surfaces said the true version four ways — `fmonero has not set up the node service yet.`,
+/// `fmonero has not set up the wallet service yet.`, `No node is set up on this machine.` — and
+/// §2o rule 8 asks for one. This is it, and it is deliberately about *your node* rather than
+/// about a service: "service" is the wallet's word in §2o.2's table, and the node's own row there
+/// is **your node**.
+pub const NODE_NOT_SET_UP: &str = "fmonero has not set up your node yet.";
+
 /// **Decision 7, in one sentence, for every surface** (§7a.5, §6.5, W10).
 ///
 /// The wallet's scanning happens inside the wallet service, so closing the TUI window or the
@@ -227,6 +239,31 @@ pub fn now_rfc3339() -> String {
     let ts = zoned.timestamp();
     let ts = ts.round(jiff::Unit::Second).unwrap_or(ts);
     ts.display_with_offset(zoned.offset()).to_string()
+}
+
+/// A moment a person reads: `2026-09-16 14:01`, local time, minute precision.
+///
+/// **One formatter for the whole money ledger** (round 5, S9). There were two: `wallet history`
+/// sliced sixteen characters off [`rfc3339_from_unix`] and got the year, and the TUI's own
+/// `short_time` sliced `MM-DD HH:MM` out of the same string and did not — so a payment from
+/// September 2024 and one from September 2026 were the same row on the screen the owner reads to
+/// reconcile what he was paid, at every width, with room to spare at 150. The list, the payment
+/// detail view, the note modal's title and the CLI's table all read this function now.
+///
+/// `None` for a timestamp no calendar can hold, and for `0`, which is what a payment that is not
+/// in a block yet carries.
+pub fn when(seconds: i64) -> Option<String> {
+    if seconds <= 0 {
+        return None;
+    }
+    let s = rfc3339_from_unix(seconds)?;
+    (s.len() >= 16).then(|| s[..16].replace('T', " "))
+}
+
+/// The same moment without its year: `09-16 14:01`, for the one tier that has eleven cells and
+/// not sixteen. Derived from [`when`], so the two can never disagree about the minute.
+pub fn when_short(seconds: i64) -> Option<String> {
+    when(seconds).map(|s| s[5..].to_string())
 }
 
 /// A Unix epoch second as RFC 3339 with the local offset (§5).
@@ -409,6 +446,33 @@ mod tests {
             !short_id(id).contains(&id[20..40]),
             "the middle of the id is what the shortening removes"
         );
+    }
+
+    /// **Round 5, S9: one moment formatter, and the year is in it.**
+    ///
+    /// `wallet history` printed `2026-09-16 14:01` and the TUI's ledger `09-16 14:01`, from two
+    /// hand-written slices of the same RFC3339 string — so a payment from September 2024 and one
+    /// from September 2026 were the same row on the screen the owner reconciles against. Both
+    /// surfaces read [`when`] now, and the short form is derived from it rather than sliced
+    /// separately.
+    #[test]
+    fn one_moment_formatter_carries_the_year_and_the_short_form_is_derived_from_it() {
+        // A fixed instant: the assertion is on the shape, which is what the two surfaces shared
+        // wrongly, and on the two being the same string minus five characters.
+        let long = when(1_789_000_000).expect("a real instant");
+        let short = when_short(1_789_000_000).expect("a real instant");
+        assert_eq!(long.len(), 16, "{long}");
+        assert_eq!(short.len(), 11, "{short}");
+        assert_eq!(&long[5..], short, "{long} / {short}");
+        assert_eq!(&long[4..5], "-");
+        assert_eq!(&long[10..11], " ");
+        assert_eq!(&long[13..14], ":");
+        assert!(long.starts_with("20"), "the year is there: {long}");
+        assert!(!long.contains('T'), "not a machine timestamp: {long}");
+        // A payment that is not in a block yet carries 0, and that is not a moment.
+        assert_eq!(when(0), None);
+        assert_eq!(when(-1), None);
+        assert_eq!(when_short(0), None);
     }
 
     /// X6 and X11: the two formatters round 4 collapsed, with the three answers the three old

@@ -131,6 +131,19 @@ impl Piconero {
     /// The floor a column of **fees** uses, so eight decimals is one number in one place (M4).
     pub const FEE_DECIMALS: usize = 8;
 
+    /// **The one precision the money path prints** (round 5, M1).
+    ///
+    /// A reader watching the Send screen saw `Amount  0.1000 XMR` while the form validated and
+    /// `Amount  0.10000000 XMR` once the fee was worked out — the number changing under him at the
+    /// moment he was deciding — and the CLI did the same thing in one screen: the plan table said
+    /// `0.10000000 XMR` and the refusal sentence three lines below said `0.1000 XMR`. Both figures
+    /// were exact; only the floor differed. Everything on the path where money is about to move
+    /// prints through here, so the amount, the fee and their sum are one shape and the sum checks
+    /// by eye.
+    pub fn to_xmr_money(self) -> String {
+        self.to_xmr_min(Self::FEE_DECIMALS)
+    }
+
     /// **A glance figure: at most four decimals, and never more than you have** (v5.6, §6.4).
     ///
     /// `to_xmr_string` is exact, which makes a real balance thirteen characters of fraction —

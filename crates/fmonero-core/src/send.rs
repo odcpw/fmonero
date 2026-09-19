@@ -512,14 +512,17 @@ fn preflight(
         // Every entry relayed: resolve. A positive "not found" is the only answer allowed to
         // block; every other failure leaves the record and does NOT block (§2a.4).
         if let Some(missing) = resolve_record(ctx, w)? {
-            return Err(Error::safety(format!(
-                "This wallet has no record of {missing}, which fmonero sent. That payment may \
-                 still be on its way."
-            ))
+            // **The id is in `detail`, not in the sentence** (round 5, S4). It named the payment
+            // to a person who has nothing to do with sixty-four hexadecimal characters, on the
+            // one path where the next act moves money; the agent that wants it reads `--json`.
+            return Err(Error::safety(
+                "One payment fmonero sent is not in this wallet's own record of payments. It may \
+                 still be on its way.",
+            )
             .with_reason("pending_send")
-            .with_hint(format!(
-                "fmonero wallet history --limit 5   # confirm whether {missing} landed, then: fmonero wallet clear-pending --yes"
-            )));
+            .with_detail(format!("txid {missing} was answered not found"))
+            .with_hint(PENDING_HINT)
+            .with_action(PENDING_ACTION));
         }
     }
     if cancel.is_cancelled() {
@@ -835,27 +838,51 @@ pub fn refuse_if_send_in_flight(ctx: &Context) -> Result<(), Error> {
     if unrelayed == 0 {
         return Ok(());
     }
-    let first = record
-        .txs
-        .iter()
-        .find(|t| !t.relayed)
-        .map(|t| t.txid.clone())
-        .unwrap_or_default();
-    // **X2: `in flight`, `built` and `relayed` in one sentence, about money** — and
-    // `record.kind.as_str()` is the internal word (`send` / `sweep`) where §2o.2 wants the verb.
-    Err(Error::safety(format!(
-        "An earlier {} may still be on its way: {unrelayed} of {} payments were prepared and \
-         fmonero never saw them go out.",
-        match record.kind {
-            PendingKind::Sweep => "sweep",
-            PendingKind::Send => "payment",
-        },
+    Err(Error::safety(pending_send_sentence(&record, unrelayed))
+        .with_reason("pending_send")
+        .with_hint(PENDING_HINT)
+        .with_action(PENDING_ACTION))
+}
+
+/// The CLI's runnable way out of an unresolved record, in **one** literal (§2o rule 8): this
+/// refusal, `preflight`'s resolve step, `state`'s reader, `status`'s warning and the doctor's row
+/// all print it, and until round 5 two of the five carried a 64-character id inside the `#`
+/// comment as well (S4).
+pub const PENDING_HINT: &str =
+    "fmonero wallet history --limit 5   # then: fmonero wallet clear-pending --yes";
+
+/// The **in-app** way out, which until round 5 did not exist at all (S8): the Send screen refused
+/// with a bare fact and the only resolution was a shell command no TUI surface named. `P` on the
+/// Wallet screen runs the same sequence behind a confirm that states the risk (§7a.5, §2o.1).
+pub const PENDING_ACTION: &str = "Press P on the Wallet screen to clear that record.";
+
+/// What an unresolved record says to a person: **which** payment, by when it was prepared, and
+/// never by its id (round 5, S4 — §2o rule 5 puts ids in `--json` and nowhere else).
+///
+/// The id it used to carry was the one thing in the sentence a reader could do nothing with: it is
+/// not part of any command fmonero offers, `wallet history` takes no id, and sixty-four
+/// hexadecimal characters wrapped the terminal it was printed on. What identifies the payment for
+/// a person is **when** it was prepared, which is the field the record has always held.
+/// M3's `were`/`was` is here too: one payment was prepared, two were.
+pub fn pending_send_sentence(record: &PendingSend, unrelayed: usize) -> String {
+    let what = match record.kind {
+        PendingKind::Sweep => "sweep",
+        PendingKind::Send => "payment",
+    };
+    let when = crate::when(record.built_at)
+        .map(|w| format!("from {w}"))
+        .unwrap_or_else(|| "fmonero prepared".to_string());
+    if record.txs.len() == 1 {
+        return format!(
+            "The {what} {when} was prepared and fmonero never saw it go out. It may still be on \
+             its way."
+        );
+    }
+    format!(
+        "{unrelayed} of the {} payments in the {what} {when} were prepared and fmonero never saw \
+         them go out. They may still be on their way.",
         record.txs.len()
-    ))
-    .with_reason("pending_send")
-    .with_hint(format!(
-        "fmonero wallet history --limit 5   # confirm whether {first} landed, then: fmonero wallet clear-pending --yes"
-    )))
+    )
 }
 
 /// §2a.11: an exclusive `flock(LOCK_EX|LOCK_NB)` on `state_dir/send.lock`, owned by the
@@ -975,6 +1002,74 @@ fn short(address: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Runs of eight or more hex characters carrying at least one `a`-`f`: what an id looks like,
+    /// and what an amount, a block number or a date cannot be.
+    fn hex_runs(s: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut run = String::new();
+        for c in s.chars().chain(std::iter::once(' ')) {
+            if c.is_ascii_hexdigit() {
+                run.push(c);
+                continue;
+            }
+            if run.chars().count() >= 8 && run.chars().any(|c| c.is_ascii_alphabetic()) {
+                out.push(run.clone());
+            }
+            run.clear();
+        }
+        out
+    }
+
+    fn record(kind: PendingKind, n: usize) -> PendingSend {
+        PendingSend {
+            kind,
+            account_index: 0,
+            dest: "4".repeat(95),
+            built_at: 1_789_000_000,
+            txs: (0..n)
+                .map(|i| PendingTx {
+                    txid: format!("{:0>1$}", format!("5c2e0b8391f7a6c4{i}"), 64),
+                    amount: Piconero(800_000_000_000),
+                    fee: Piconero(30_720_000),
+                    relayed: false,
+                    relayed_at: None,
+                })
+                .collect(),
+        }
+    }
+
+    /// **Round 5, S4 and M3: the refusal that blocks the money path names no id, and counts.**
+    ///
+    /// What shipped was
+    /// `An earlier payment may still be on its way: 1 of 1 payments were prepared and fmonero never
+    /// saw them go out.` over a `Try:` line whose `#` comment carried the full 64 characters — an
+    /// id that is not part of any command fmonero offers, on a command (`wallet history`) that takes
+    /// no id. What identifies the payment for a person is when it was prepared.
+    #[test]
+    fn the_pending_refusal_names_a_time_and_never_an_id() {
+        let one = record(PendingKind::Send, 1);
+        let sentence = pending_send_sentence(&one, 1);
+        assert!(
+            hex_runs(&sentence).is_empty(),
+            "an id reached a person: {sentence}"
+        );
+        assert!(hex_runs(PENDING_HINT).is_empty(), "{PENDING_HINT}");
+        // The date and the minute, from the one formatter the whole ledger uses (S9).
+        let when = crate::when(one.built_at).expect("a real instant");
+        assert!(sentence.contains(&when), "{sentence} does not carry {when}");
+        // M3: one payment WAS prepared.
+        assert!(sentence.contains("was prepared"), "{sentence}");
+        assert!(!sentence.contains("were prepared"), "{sentence}");
+        // Two of them were.
+        let two = pending_send_sentence(&record(PendingKind::Sweep, 2), 2);
+        assert!(two.contains("were prepared"), "{two}");
+        assert!(two.contains("2 of the 2 payments"), "{two}");
+        assert!(two.contains("sweep"), "{two}");
+        assert!(hex_runs(&two).is_empty(), "{two}");
+        // And the in-app route the Send screen's refusal had none of (S8).
+        assert!(PENDING_ACTION.contains("Wallet screen"), "{PENDING_ACTION}");
+    }
 
     /// §5b and §2b.2: the metadata carries the transaction secret key, so it must not reach
     /// a panic message, a debug dump or a future log line.

@@ -796,7 +796,7 @@ impl Settings {
     /// and the one hint §2m.2 prescribes.
     ///
     /// Called by `Settings::set("node.remote", …)`, by `node_mode::set_remote` and by
-    /// `wallet set-daemon`, so the three cannot accept different strings (§5b).
+    /// `wallet use-node`, so the three cannot accept different strings (§5b).
     ///
     /// Why each refusal, from `set_server`'s own behaviour (§1b.9 item 1):
     /// * **the port is mandatory** — a missing one is filled with 80 or 443, never 18081
@@ -1159,7 +1159,10 @@ fn unknown_key(key: &str, settable: bool) -> Error {
         (Some((_, k, _)), false) => format!("fmonero settings get {k}   # did you mean this?"),
         (None, _) => "fmonero settings list".to_string(),
     };
-    let msg = format!("unknown settings key '{key}'");
+    // **M18: fmonero's own voice, not a lower-case fragment** — `unknown settings key 'nope'` sat
+    // beside `"notanaddress" is not a Monero address.` on the same terminal. Rule 10's shape: name
+    // what was typed, and let the hint name a good one.
+    let msg = format!("\"{key}\" is not one of fmonero's settings.");
     // `settings set` on an unknown key is a usage error; `settings get` is a lookup
     // failure, which §5b spells `NotFound`.
     let base = if settable {

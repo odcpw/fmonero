@@ -246,7 +246,7 @@ case's own sandboxed directories now, and the last step of the file asserts that
 one of your units running.
 
 **AMBER.** `node info|peers|bans|ban|unban|limit`;
-`wallet open|close|create|balance|address|new-address|history|refresh|book|notes|set-daemon`;
+`wallet open|close|create|balance|address|new-address|history|refresh|book|notes|use-node`;
 `wallet send --dry-run`, `wallet send` without `--yes`, and `wallet send --yes` (asserted to
 issue exactly one `transfer` and one `relay_tx` carrying that response's own metadata);
 `wallet sweep` in every form, asserted to carry `subaddr_indices_all: true`; `status` with both
@@ -343,7 +343,7 @@ fmonero wallet send TO AMOUNT [--priority 0-4] [--note TEXT] [--max-fee AMOUNT] 
 fmonero wallet sweep TO [--below AMOUNT] [--max-fee AMOUNT] --yes
 fmonero wallet clear-pending [--yes] · validate ADDRESS · refresh [--start-height H]
 fmonero wallet book list|add ADDRESS DESC|remove INDEX · notes get TXID|set TXID TEXT
-fmonero wallet set-daemon ADDRESS [--trusted] --yes
+fmonero wallet use-node ADDRESS [--trusted] --yes
 fmonero settings list|get KEY|set KEY VALUE
 fmonero setup [--units] [--plugin] [--menu] [--all]
 fmonero doctor [--fix] [--only GROUP] [--dry-run] [--save] · doctor undo latest
