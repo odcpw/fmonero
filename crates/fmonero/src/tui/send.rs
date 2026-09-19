@@ -737,11 +737,15 @@ fn view_preview(m: &Tui, area: Rect, frame: &mut ftui::Frame) {
             Span::styled("Unlocked".to_string(), th.dimmed()),
             // §2o rule 9: an amount carries its unit. This row read `Unlocked 1.234567891234`
             // in the one pane whose subject is how much you can spend (self-read, round 3).
+            //
+            // **And `—` takes no unit** (round 4 iteration 3): with no wallet open this printed
+            // `Unlocked — XMR`, which puts a denomination on a value there is none of. The glyph is
+            // the whole cell, as it is everywhere else in the program.
             Span::styled(
-                format!(
-                    " {} XMR",
-                    w.unlocked_xmr.clone().unwrap_or_else(|| "—".into())
-                ),
+                match &w.unlocked_xmr {
+                    Some(x) => format!(" {x} XMR"),
+                    None => " —".to_string(),
+                },
                 th.text(),
             ),
         ]));
