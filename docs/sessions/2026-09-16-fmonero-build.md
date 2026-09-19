@@ -1,4 +1,4 @@
-# fmonero: the research, plan and build session (2026-09-16/18)
+# fmonero: the research, plan and build session (2026-09-16/19)
 
 Rendered from the raw transcript `4901fef8-2906-4bc0-b226-799715c2e661.jsonl` by `docs/sessions/render.py`. Only the conversation is kept; tool output, reasoning and background-task notifications are omitted. Times are local.
 
@@ -298,4 +298,180 @@ The UX round finished after about four hours. Let me read the implementation and
 The fix agent is working on the six findings; the current state (v5.5 with Tab, mouse, the node picker and the wallet flow) is pushed. I'll reinstall and report as soon as it lands.
 
 _tools: Bash×3, Agent_
+
+### Claude · 2026-09-18 20:24
+
+All four points are fixed, verified on a real terminal, installed, and pushed. Here's what changed and how to use it.
+
+**Tab.** Tab and Shift+Tab now always switch between Node, Wallet, Send and Log, even with a field or filter focused. Inside the Send form you move between fields with Up and Down. The number keys and `q` only work when no field has focus, and the help overlay now says exactly that. The two places that still hold Tab are the send-confirm modal and the create-wallet modal, and both say "Esc to discard first" on screen.
+
+**Mouse.** The tab strip, every table row, the Send fields, every `[key]` chip and every modal button are clickable. One click selects a row, a second click on it activates. The wheel scrolls the list under the cursor and right-click is Esc. This was driven with real mouse reports on a pty; the tab targets were two columns off in the first cut and are now exact.
+
+**Public nodes.** On the Node screen: `f` fetches the list from monero.fail (152 usable nodes today), `p` probes the healthiest ones for height and latency, Enter on a row switches your wallet daemon to it after a confirm, `a` adds a custom address, `H` goes back to a local node. The same is available as `fmonero node list --refresh --probe`. Fetching shows monero.fail your IP and probing shows each probed node your IP, so nothing is probed automatically except the node you already use. In the live run all eight probed nodes were in sync; the Cake Wallet node was the slowest at 3.3 s, several answered in under 60 ms, so you may want to pick a faster one.
+
+**The daemon dead end.** In remote mode there is no node to start; the only daemon is the wallet daemon and it starts when you open or create a wallet. The Wallet screen now says so, with `[o] Open wallet…`, `[c] Create wallet…` and `[W] Start the wallet daemon`, and a line showing the daemon state. `x` closes a wallet. `wallet.autostart = true` starts the daemon when the TUI opens. The bar drop-down has "Open wallet…" and "Choose node…", and the idle daemon is no longer shown as a warning.
+
+Start with:
+
+```bash
+fmonero tui
+```
+
+Create a wallet with `c`, write the seed down using the command it shows, and it opens against your public node. Doctor is green, both units are untouched, and the session log in the repo is current. A real send is still the one thing never exercised; keep the first one small.
+
+_tools: Bash×2_
+
+### Oliver · 2026-09-18 21:18
+
+can you find my walle tin downloads under moneroli and import it to the right place
+
+### Claude · 2026-09-18 21:18
+
+Imported. `fmonero wallet list` now shows `moneroli`.
+
+- **What was copied:** `moneroli.keys` (1.7 KB, verified byte-identical) and the `moneroli` cache (41 MB) into `~/.local/share/fmonero/wallets/mainnet/`, both set to owner-only permissions. The originals are still in `~/Downloads/moneroli/`; delete them once the wallet opens fine.
+- **Open it:** run `fmonero tui`, go to Wallet, press `o`, pick `moneroli`, and enter the same password you used before. Or from the shell:
+
+```bash
+fmonero wallet open moneroli
+```
+
+- **What to expect:** the cache was last written on 2 December 2025, so the wallet will scan the roughly nine and a half months of blocks since then through the Cake Wallet node before the balance is current. Over a public node that can take a good while; the Wallet screen shows the height climbing, and you can leave the TUI, the daemon keeps refreshing. If the node turns out slow, pick a faster one from the Node screen first.
+- **One caution:** I could not tell whether this is a mainnet wallet without opening it; if it was created on stagenet or testnet, fmonero will say so when it opens and refuse the wrong network.
+
+_tools: Bash×2_
+
+### Oliver · 2026-09-18 21:25
+
+the text in the widget isnt clear or useful use your ux ui skill and make it better,
+
+### Claude · 2026-09-18 21:25
+
+Let me look at what the widget actually shows today, with the real status document it renders from, and load the UX audit method before changing anything.
+
+### Oliver · 2026-09-18 21:26
+
+[Request interrupted by user]
+
+### Oliver · 2026-09-18 21:26
+
+sorry most of the text in the tiui is slop too. the xplanaztions need to be in plain english pls
+
+### Claude · 2026-09-18 21:26
+
+Understood: plain English everywhere, not just the widget. Let me capture what the TUI and the widget actually say right now so the rewrite targets real text, not guesses.
+
+_tools: Bash×2, Skill_
+
+### Oliver · 2026-09-18 21:27
+
+[Request interrupted by user for tool use]
+
+### Oliver · 2026-09-18 21:27
+
+and when i change nodes it says im still on cakewalk.
+
+### Claude · 2026-09-18 21:27
+
+Let me check where "Cake Wallet" is still being reported after the switch.
+
+_tools: Bash×2_
+
+### Claude · 2026-09-18 21:30
+
+Good question. Short answer: yes, it keeps syncing, but not because of the widget. Let me confirm what happens when you close the TUI.
+
+_tools: Bash×2, Workflow_
+
+### Claude · 2026-09-18 21:30
+
+Yes. The syncing is done by the wallet service, not by the TUI and not by the widget, so it carries on when the TUI loses focus or is closed. I checked the code: quitting the TUI leaves the wallet open, and after opening a wallet the service is told to refresh itself every 20 seconds in the background. The widget only reads the status every few seconds and shows the progress; it drives nothing.
+
+It stops syncing only if you press `x` in the Wallet screen (that closes the wallet) or if you log out of the desktop, because user services stop at logout. If you want it to survive logout too, that's one command (`loginctl enable-linger`); say so and I'll set it up.
+
+The plain-English rewrite round is running; it also fixes the stale node name after a switch and reworks the widget. I'll report when it lands.
+
+_tools: Bash_
+
+### Oliver · 2026-09-18 21:35
+
+I don't want to manage th cli. that's wat the tui is for. and no, like fbittorrent, the window is closed, the widget continues, ssame thing here pls.
+
+### Claude · 2026-09-18 21:36
+
+Two things then: the TUI must never push you to the command line, and closing the TUI window must behave like fbittorrent, with the widget carrying on and showing the wallet's sync progress. Closing the window already leaves the sync running; what's missing is the widget showing that progress. Let me see if I can hand these two rules to the round that's running.
+
+### Claude · 2026-09-18 21:37
+
+The tree is clean and nothing was left running. Relaunching the round with the two added rules.
+
+_tools: ListAgents, ToolSearch, Bash×2, TaskStop_
+
+### Claude · 2026-09-18 21:38
+
+Relaunched with your two rules baked in, and I've saved them as standing preferences for your tools:
+
+- **No command-line management from the TUI or widget.** Every hint becomes a key or a button. A terminal command may appear only where no in-app path exists (restoring from a seed, reading a seed), and it says "In a terminal: …".
+- **Close the window, the widget carries on.** The sync already runs in the background service; the widget will now show "Wallet syncing 63% · 240 000 blocks left" as its headline with the ring on the icon, then "Wallet open · balance" once caught up, and the TUI says "Syncing in the background. You can close this window." The widget's poll will keep the node height fresh on its own, so the progress stays right with the TUI closed.
+
+Plus the plain-English rewrite of every line, the widget redesign, and the stale node name after switching. Roughly three hours; I'll reinstall and report when it lands.
+
+_tools: Workflow, Write, Bash_
+
+### Oliver · 2026-09-18 21:38
+
+well if we'r eon a remote server it should be synced and showing baanlces right?
+
+### Claude · 2026-09-18 21:38
+
+Not quite. Two different things sync:
+
+- **The node** has all the blocks. A public node is already synced, yes.
+- **Your wallet** still has to read those blocks to find the coins that belong to you. Monero hides who owns what, so the node cannot tell your wallet "here is your balance". The wallet service on your machine checks every block against your keys, which is also why your keys never leave your machine.
+
+Your `moneroli` wallet last did this on 2 December 2025, so the first time you open it, it reads about nine and a half months of blocks (roughly 200 000) through the public node. That is what "wallet syncing" shows. Over a public node it takes tens of minutes up to a couple of hours, depending on the node. The balance it shows meanwhile is the balance as of wherever the scan has reached, not the current one.
+
+Once it has caught up, the balance is current and stays current: the service checks for new blocks every 20 seconds, and later openings only read what happened since. This is the same with every Monero wallet; the Monero GUI shows it as "blocks remaining".
+
+Nothing is syncing yet because the wallet is not open. When the rewrite round lands you open it from the TUI, close the window, and watch the widget count down.
+
+### Claude · 2026-09-19 00:52
+
+The round finished. One caveat: the fresh-eyes reviewer returned an empty result, so that check didn't really happen. I'll read the verifier's report and then look at the screens myself before installing.
+
+### Claude · 2026-09-19 00:53
+
+Fix-and-verify round launched (Opus fixer with a test per finding, then a verifier that must read every screen as a non-technical user and confirm the widget on your bar is really the new version). Current state is pushed.
+
+One thing for you to decide: that accidental 30-second node start left a 147 MB `~/.bitmonero` folder behind. It's harmless and would be reused if you ever run your own node; say the word and I'll delete it.
+
+_tools: Bash×3, Workflow_
+
+### Claude · 2026-09-19 03:17
+
+The fixer closed all nineteen. Let me read the verifier's fresh-eyes result, then install and restart the bar so you actually see the new widget.
+
+### Claude · 2026-09-19 03:19
+
+Round 3 is running. Meanwhile, one thing only you can do: your desktop has been locked since yesterday evening (the lock screen reports `secure: true`), and Omarchy refuses to restart its shell while locked, which is the only way the new widget gets loaded onto the bar. Once you unlock, say so and I'll restart the shell and confirm the bar shows the new version, or run `omarchy restart shell` yourself if you're at the machine. Everything else, including the wallet sync, needs no unlocking.
+
+_tools: Bash×3, Workflow_
+
+### Claude · 2026-09-19 06:21
+
+Round 3 closed all 22 items plus 36 more the fixer found by reading its own screens, and the independent reader still found 37, three of them serious: the command line prints `error[usage]` and reason ids at a person, the wording check skipped a few source files, and long CLI output breaks words in half on a 120-column terminal. Its verdict: not ready as your everyday wallet yet, but much closer, with the money path (the Send screen still shows a full 64-character id and says "transactions") the part that matters most.
+
+Round 4 is running with a tighter loop: fix, then a fresh agent that has not seen the fixer's work reads every screen and command as a non-technical user, and it repeats up to three times until that read finds nothing serious, then an independent verification and install. I'll report the verdict when it lands. The bar widget still needs your desktop unlocked before the shell can be restarted.
+
+_tools: Bash×4, Workflow_
+
+### Claude · 2026-09-19 16:12
+
+Round 4 is pushed and the focused fix pass is running. When it lands I'll run the gates myself, take my own captures of the screens, reinstall, and give you a straight answer on whether it's ready to open your wallet with.
+
+_tools: Bash×3, Agent_
+
+### Claude · 2026-09-19 18:20
+
+Round 5 closed everything on the list, gates are green and the installed binary is current. Now my own look at the real screens before I give you a verdict.
 
