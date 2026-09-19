@@ -1,0 +1,40 @@
+[ 1 Node ]  2 Wallet    3 Send    4 Log                                                                         omarchy
+╭ Node ──────────────────────────────────────────────────────╮╭ This node ─────────────────────────────────────────────╮
+│ ● Public node · node.example.com:18089                     ││ No answer when checked 4s ago.                         │
+│                                                            ││ [f] Choose another node                                │
+│                                                            ││                                                        │
+│                                                            ││                                                        │
+│                                                            ││                                                        │
+│                                                            ││                                                        │
+│                                                            ││                                                        │
+│                                                            ││                                                        │
+│                                                            ││                                                        │
+╰────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────────────────╯
+╭ Public nodes ──────────────────────────────────────────────────────────╮╭ Notes ─────────────────────────────────────╮
+│ No list of public nodes yet.                                           ││ • You are using the public node            │
+│ [f] Get the list     ╭ Use your own node ─────────────────────────────────────────────────────╮9. It sees your IP    │
+│ Getting the list tell│                                                                        │ask it anything.      │
+│ contacted.           │ fmonero will use the node on this machine.                             │ screen to choose     │
+│                      │                                                                        │                      │
+│                      │ · the wallet service will restart                                      │The wallet service    │
+│                      │ Your own node is not running yet. Switching will not start it — press  │or create one.        │
+│                      │ u after this.                                                          │allet, or c to create │
+│                      │                                                                        │                      │
+│                      │ y to confirm · Esc cancels                                             │                      │
+│                      │                                                                        │                      │
+│                      ╰────────────────────────────────────────────────────────────────────────╯                      │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+╰────────────────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────╯
+● public node node.example.com:18089 ● wallet closed │ You are using a public node. Press f for the…   ⇥ screens  ? help

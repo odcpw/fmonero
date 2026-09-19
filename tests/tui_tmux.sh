@@ -140,14 +140,24 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then ok "fmonero tui opened on a 
 fi
 
 pane() { tmux capture-pane -p -t "$SESSION" 2>/dev/null || true; }
-visit() { # visit <key> <label> <needle> [capture-file]
+# `visit <key> <label> <needle>[|<needle>…] [capture-file]` — a `|`-separated needle list, because
+# one screen has two correct shapes: the Wallet screen shows ` Balance ` with a wallet open and the
+# §7a.5 empty-state panel without one, and v5.6.1 deleted the balance pane from the second (V12).
+# A needle that matched both would have to be the tab strip, which every screen carries.
+visit() { # visit <key> <label> <needle>[|<needle>…] [capture-file]
   tmux send-keys -t "$SESSION" "$1" 2>/dev/null || true
   sleep 1
-  local text; text="$(pane)"
-  case "$text" in
-    *"$3"*) ok "$2 renders ($3)" ;;
-    *) bad "$2 did not render" "expected '$3' in the pane" "$(printf '%s' "$text" | head -4)" ;;
-  esac
+  local text hit needle; text="$(pane)"; hit=""
+  local IFS='|'
+  for needle in $3; do
+    case "$text" in *"$needle"*) hit="$needle"; break ;; esac
+  done
+  unset IFS
+  if [ -n "$hit" ]; then
+    ok "$2 renders ($hit)"
+  else
+    bad "$2 did not render" "expected one of '$3' in the pane" "$(printf '%s' "$text" | head -4)"
+  fi
   [ -n "$CAPTURE" ] && [ -n "${4:-}" ] && printf '%s\n' "$text" > "$CAPTURE/$4"
   return 0
 }
@@ -156,7 +166,7 @@ visit 1 "Node screen"   "Node"     "node.txt"
 # v5.6.1, V12: with no wallet open there is no ` Balance ` pane to find — it rendered
 # `— XMR   unlocked — XMR` above the empty state and is gone. The pane that IS there is the empty
 # state's own, and `No wallet is open.` is its first line.
-visit 2 "Wallet screen" "No wallet is open."  "wallet.txt"
+visit 2 "Wallet screen" "No wallet is open.| Balance "  "wallet.txt"
 visit 3 "Send screen"   "cheapest" "send.txt"
 # The Send form owns printable keys while it is focused (otherwise an address typed into the
 # To field would switch screens), so `Esc` leaves it first — which is what its own hint line

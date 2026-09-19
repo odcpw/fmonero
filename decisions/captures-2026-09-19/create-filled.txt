@@ -1,0 +1,40 @@
+  1 Node  [ 2 Wallet ]  3 Send    4 Log                                                                 mainnet omarchy
+╭ Balance ─────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 1.234567891234 XMR   unlocked 1.234567891234 XMR                                                                     │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭ Addresses · Enter copies · a new · l rename ───╮╭ Payments  6 · t: all ──────────────────────────────────────────────╮
+│ #  │ADDRESS (✓ used)      │BALANCE             ││ / filter by txid, address or note                                  │
+│ 0  │42ey1afD…fJJQAWDm ✓   │1.234567891234      ││ WHEN         WHAT            AMOUNT CONFIRMS LOCKED           FEE  │
+│ 1  │8AsN91rz…N1EX5Mtm ✓   │—                   ││ 09-16 14:01  pending         0.1000      0 locked         0.000030 │
+│ 2  │86kKnBKF…GRsdGfNk     │—                   ││ 09-15 13:20  failed          0.0200      0 locked         0.000030 │
+│                                                ││ 09-16 10:00  out             0.2500    122                0.000030 │
+│                                                ││ 09-15 00:40  in              0.5000   1122                0.000030 │
+│                                                ││ 09-13 15:20  block           0.6000   2122                    0.00 │
+│                                                ││ 09-12 06:00  in              0.0750   3122 locked         0.000030 │
+│                          ╭ Create a wallet ───────────────────────────────────────────────╮                          │
+│                          │                                                                │                          │
+│                          │ name      ptywallet                                            │                          │
+│                          │ password  •••                                                  │                          │
+│                          │ repeat    •••                                                  │                          │
+│                          │ seed lang  ◂ English ▸                                         │                          │
+│                          │                                                                │                          │
+│                          │ ↑↓ fields · Enter next, then create · Esc discards             │                          │
+│                          │ Tab is off here. Press Esc to discard first.                   │                          │
+│                          │                                                                │                          │
+│                          │                                                                │                          │
+│                          │                                                                │                          │
+│                          ╰────────────────────────────────────────────────────────────────╯                          │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+│                                                ││                                                                    │
+╰────────────────────────────────────────────────╯╰────────────────────────────────────────────────────────────────────╯
+[R] Check for payments [Q] QR code [x] Close wallet
+● node synced 3541122 16↑3↓ ● wallet open 1.234567891234 XMR │ wallet closed                           ⇥ screens  ? help

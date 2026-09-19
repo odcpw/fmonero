@@ -442,7 +442,9 @@ the bar, coloured by node and wallet state, crossed out when your node is not an
 with a percentage while something is catching up, and badged when something is wrong.
 
 Its panel answers one question and then gets out of the way. **One header line of at most five
-words** — `Public node · synced · wallet closed`, `Wallet syncing 63%`, `Wallet open · 1.2300 XMR` —
+words** — `Public node · synced · wallet closed`, `Wallet syncing 63%`, `Wallet open · 1.2345 XMR`
+(the balance at four decimals, truncated: the bar never shows more than you have, and the panel's
+own `Balance` row carries the exact figure) —
 with at most one supporting fact under it, and then **only the rows that carry information for
 the state you are in**: which node, whether it is synced and when it was last checked; the balance
 and the address with a copy action when a wallet is open, or one row reading `Wallet closed` when
@@ -501,11 +503,13 @@ gives the terminal its own selection and scrollback back.
 carries one ` This node ` pane built from the last check — `block 3 765 346`, `synced`, `answered
 in 240 ms`, `checked 2m ago` — with `Not checked yet.` and `No answer when checked 2m ago.` as its
 other two honest states, and `[f] Choose another node` beside them. **Wallet** with nothing open
-is a panel with three buttons rather than an empty table: `[o] Open wallet…` (which tells you how
-many wallets it will find, so you can see *why* it will not help on a fresh machine), `[c] Create
-wallet…` and `[W] Start the wallet service`, over one line saying which of `not running yet. It
-starts when you open or create a wallet.` / `not running` / `starting…` / `running` the service is,
-and one saying which node is in force. `c` is create and `x` closes. Creating a wallet asks for a name, a password twice and a
+is a panel with three buttons rather than an empty table: `[o] Open a wallet` (which names the
+wallets it will find — `(1 wallet on this machine: moneroli)` — so you can see *why* it will not
+help on a fresh machine), `[c] Create wallet…` and `[W] Start the wallet service`, over one line
+saying which of `not running yet. It starts when you open or create a wallet.` / `not running` /
+`starting…` / `running` / `running, but not answering yet` the service is, and one saying which node
+is in force. There is no balance pane above it: a screen whose subject is that no wallet is open has
+no balance to frame. `c` is create and `x` closes. Creating a wallet asks for a name, a password twice and a
 seed language, then shows the backup command — and **fmonero never displays a seed**, anywhere:
 a terminal scrollback is not a safe place for one. `fmonero settings set wallet.autostart true`
 starts the wallet service when the TUI launches; it is off by default, because a tool that starts

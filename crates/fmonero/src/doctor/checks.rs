@@ -753,11 +753,13 @@ fn node_reachable(p: &Probes) -> Verdict {
     }
     Verdict::fail(
         "node_unreachable",
-        format!(
-            "{} did not answer. {}",
-            p.node_url,
-            p.node_error.as_deref().unwrap_or("Nothing came back.")
-        ),
+        // The message is already a sentence (§2o, V8), so the address goes after it rather than
+        // in front of it: `http://127.0.0.1:18081 did not answer. The node is not answering.` was
+        // the same fact twice, which is what happens when a detail concatenates two rewrites.
+        match p.node_error.as_deref() {
+            Some(e) => format!("{e} fmonero asked it on {}.", p.node_url),
+            None => format!("Your node did not answer on {}.", p.node_url),
+        },
     )
     .cmd("fmonero node up")
 }
@@ -935,11 +937,10 @@ fn wallet_rpc_reachable(p: &Probes) -> Verdict {
     }
     Verdict::warn(
         "wallet_unreachable",
-        format!(
-            "{} did not answer. {}",
-            p.wallet_url,
-            p.wallet_error.as_deref().unwrap_or("Nothing came back.")
-        ),
+        match p.wallet_error.as_deref() {
+            Some(e) => format!("{e} fmonero asked it on {}.", p.wallet_url),
+            None => format!("The wallet service did not answer on {}.", p.wallet_url),
+        },
     )
     // V10: never `systemctl`. Opening a wallet starts the service on the way in, which is the
     // one route fmonero has and the one the TUI's `o` takes.
