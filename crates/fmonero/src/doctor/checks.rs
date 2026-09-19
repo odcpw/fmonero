@@ -441,7 +441,9 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Storage,
         class: Class::D,
         severity: Severity::Info,
-        title: "Your node keeps a pruned chain when you asked it to",
+        // One vocabulary (§2o rule 8): every other surface says "a smaller copy of the
+        // blockchain", including this check's own detail (self-read, round 3).
+        title: "Your node keeps a smaller copy of the blockchain when you asked it to",
         detect: prune_configured,
     },
     // ---- install ------------------------------------------------------------
@@ -1909,9 +1911,12 @@ fn history_cache_fresh(p: &Probes) -> Verdict {
     let Some(wh) = p.wallet_height else {
         return Verdict::skip(
             "no_wallet_height",
+            // Not "no wallet is open": with `--only install` the wallet is never asked, so this
+            // row cannot know whether one is (self-read, round 3 — the same shape as the two rows
+            // that disagreed about it).
             format!(
-                "The saved copy of your payments reaches block {}, and no wallet is open to \
-                 compare it with.",
+                "The saved copy of your payments reaches block {}, and there is no wallet block \
+                 number to compare it with.",
                 crate::output::grouped(c.high_water)
             ),
         );
@@ -2170,7 +2175,7 @@ fn ports_owned(p: &Probes) -> Verdict {
         .filter(|x| !x.loopback)
         .map(|x| {
             format!(
-                "port {} is open to {} by process {}",
+                "Port {} is open to {} by process {}",
                 x.port,
                 x.address,
                 x.pid
@@ -2184,7 +2189,7 @@ fn ports_owned(p: &Probes) -> Verdict {
             "external_bind",
             format!(
                 "{}. fmonero's own services answer on this machine only.",
-                external.join("; ")
+                external.join(". ")
             ),
         )
         .cmd("fmonero setup --units --yes");
@@ -2195,7 +2200,7 @@ fn ports_owned(p: &Probes) -> Verdict {
         .filter(|x| !x.ours)
         .map(|x| {
             format!(
-                "port {} on {} is held by process {}{}",
+                "Port {} on {} is held by process {}{}",
                 x.port,
                 x.address,
                 x.pid
@@ -2209,9 +2214,20 @@ fn ports_owned(p: &Probes) -> Verdict {
         })
         .collect();
     if !foreign.is_empty() {
+        // One sentence per port, and the qualifier as its own (self-read, round 3): joined with
+        // `; ` it read as one sentence in which `which is not one of fmonero's own` attached to
+        // the last port only, and §2o rule 1 has no semicolons in it.
         return Verdict::warn(
             "foreign_listener",
-            format!("{}, which is not one of fmonero's own.", foreign.join("; ")),
+            format!(
+                "{}. {}",
+                foreign.join(". "),
+                if foreign.len() == 1 {
+                    "That is not one of fmonero's own."
+                } else {
+                    "None of those is one of fmonero's own."
+                }
+            ),
         )
         .cmd("fmonero status --json");
     }
@@ -2220,7 +2236,7 @@ fn ports_owned(p: &Probes) -> Verdict {
         .iter()
         .map(|x| {
             format!(
-                "port {} on {} is fmonero's own, process {}",
+                "Port {} on {} is fmonero's own, process {}",
                 x.port,
                 x.address,
                 x.pid
@@ -2229,7 +2245,7 @@ fn ports_owned(p: &Probes) -> Verdict {
             )
         })
         .collect();
-    Verdict::pass(ours.join("; "))
+    Verdict::pass(format!("{}.", ours.join(". ")))
 }
 
 #[cfg(test)]
