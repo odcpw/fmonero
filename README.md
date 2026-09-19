@@ -505,7 +505,8 @@ in 240 ms`, `checked 2m ago` — with `Not checked yet.` and `No answer when che
 other two honest states, and `[f] Choose another node` beside them. **Wallet** with nothing open
 is a panel with three buttons rather than an empty table: `[o] Open a wallet` (which names the
 wallets it will find — `(1 wallet on this machine: moneroli)` — so you can see *why* it will not
-help on a fresh machine), `[c] Create wallet…` and `[W] Start the wallet service`, over one line
+help on a fresh machine), `[c] Create wallet…` and `[W] Start the wallet service` — or `[W] Stop the wallet service`
+in the one state where that key stops it — over one line
 saying which of `not running yet. It starts when you open or create a wallet.` / `not running` /
 `starting…` / `running` / `running, but not answering yet` the service is, and one saying which node
 is in force. There is no balance pane above it: a screen whose subject is that no wallet is open has
@@ -517,8 +518,10 @@ something on launch has done something you did not ask for.
 
 **Closing the TUI's window does not stop anything.** A wallet that is behind keeps scanning inside
 the wallet service, and the Wallet screen says so while it happens: `Syncing 63% · 240 000 blocks
-left.` over `Syncing in the background. You can close this window.` The bar widget carries the same
-progress, so the window is somewhere to look rather than somewhere to wait.
+left.` over `This keeps going in the background, even after you close this window.` — one sentence,
+`fmonero_core::SYNC_KEEPS_GOING`, which the two TUI screens, the bar widget and the warning behind
+them all quote. The bar widget carries the same progress, so the window is somewhere to look rather
+than somewhere to wait.
 
 **No screen in the TUI tells you to run a command.** Every hint names a key or a chip — `Press o to
 open a wallet`, `[Choose node…]` — and anything you do more than once has one. Four places still
@@ -528,14 +531,16 @@ of the TUI); each is phrased `In a terminal: …`, and `docs/COPY.md` §2 lists 
 
 The Send screen validates each keystroke locally, then builds once and shows a confirm modal
 with the full destination address (never elided), the amount, the real fee, the total, the
-account, the priority and the weight. That modal wants the word `send` typed, not just Enter:
+account and the fee level. That modal wants the word `send` typed, not just Enter:
 it is the TUI's `--yes`. Sweep is not in the TUI in v0.1.
 
 ## The doctor
 
 `fmonero doctor` runs detectors over captured input and prints a table (or JSON with `--json`):
-one row per check with a group, a severity, a status of pass, warn, fail or skip, a detail line
-and, where one exists, a `fix_cmd` you can run yourself. Exit 11 means it found failures, so
+one row per check: what was checked, then `OK`, `needs attention`, `not working` or
+`not checked: <why>`, then the detail under it and, where one exists, a command you can run
+yourself. `--json` carries the same rows with their ids, statuses and reasons, which is what agents
+branch on. Exit 11 means it found failures, so
 `fmonero doctor --json >/dev/null; echo $?` is the health check for scripts. A check whose
 precondition is missing reports `skip:<reason>`, never `pass`.
 

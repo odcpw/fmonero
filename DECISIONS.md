@@ -11362,3 +11362,174 @@ moved, so §2k's manifest freeze holds.
     own configuration; the rest are covered by the grep, the fixtures and `cargo test`.
   - **The twenty-two findings are reported, not fixed.** The only files changed in this commit are
     `DESIGN.md` (the four mocks above) and `DECISIONS.md`.
+
+## Plain-language round 3 (real output)
+
+- 2026-09-19 · the fixer · **## Plain-language round 3 (real output)** — the twenty-two findings
+  W1–W22 of `## Plain-language fix-up verification (real output)` and every "unclear line" of that
+  section are closed, in nine commits from `cfa12df` to `HEAD`. Then **every screen, modal and
+  refusal was captured at 120x32 and 150x40, plus the human form of `status`, `doctor`,
+  `settings list`, `node list`, `node info`, `node peers`, `wallet history` and `wallet balance` in
+  two sandboxes, and read line by line as the owner's non-technical friend** — which found
+  **thirty-three more** and closed those too. Three of the round's items are **room** rather than
+  text: a sentence cut to fit is a sentence the reader does not have, which is the lesson of V15's
+  own fix. **The owner's machine is untouched**: both units inactive, disabled, `NRestarts=0` before
+  and after, and the sha256 of every file he owns identical. **V1 is still RED** and says so: the
+  desktop session is locked, `omarchy restart shell` refuses, and `plugin-smoke`'s two live version
+  assertions fail by design until he unlocks.
+
+  ### The gates, command by command, at `e7dc91e` on this machine
+
+  ```
+  $ cargo fmt --all --check                                    exit 0
+  $ cargo clean -p fmonero -p fmonero-core -p fmonero-mock     Removed 2702 files, 1.5GiB
+  $ cargo clippy --all-targets --workspace -- -D warnings      exit 0   (after the clean, a real re-check)
+  $ cargo test --workspace
+      test result: ok. 132 passed; 0 failed        (fmonero)
+      test result: ok. 188 passed; 0 failed        (fmonero-core)
+      test result: ok. 3 passed;   0 failed        (fmonero-mock)
+      test result: ok. 0 passed;   0 failed        (doc-tests)      323 total, exit 0
+  $ scripts/check.sh --full        73 ok, 0 FAIL, 1 skip (shellcheck absent)          exit 0
+      ok    §2o rule 7: no banned word in … (15 files)
+      ok    §2o rule 12: no em-dash in prose, in any of the 15 surfaces
+      ok    self-test: §2o rule 12 fires on all three planted em-dashes and on none of the three glyphs
+      ok    self-test: §2o reads a {field} as a substitution and the prose around it as prose
+      ok    §7a: 8205 lines (budget 8300)        ok  §6.1: 1549 of 1561
+  $ tests/e2e.sh --fast            588 passed, 0 failed, 3 skipped                    exit 0
+  $ tests/e2e.sh --full            622 passed, 0 failed, 3 skipped                    exit 0
+  $ tests/plugin-smoke.sh --static 71 passed, 0 failed                                exit 0
+  $ tests/plugin-smoke.sh          74 passed, 2 failed                                exit 1  ← V1
+      FAIL  the shell is running none, this tree is qml-23a60719 — it has not reloaded
+      FAIL  the shell reports section(s) warnings, which Panel.qml does not build
+  $ tests/tui_tmux.sh              38 passed, 0 failed                                exit 0
+  $ tests/tui_tmux.sh --capture    42 passed, 0 failed                                exit 0
+      ok    W7: no ungrouped block number in any capture (14 screens)
+  $ omarchy restart shell          Refusing to restart Omarchy shell while the session is locked.
+  ```
+
+  **The two `plugin-smoke` failures are this round's own doing and are the correct answer.**
+  `Panel.qml` changed (W10's sentence), so its version token changed with it, and the token is what
+  that gate compares against the one the running shell reports — which is `none`, because the shell
+  is still running the pre-v5.6 panel and cannot be restarted while the session is locked. `--static`
+  is the gate that has something to say about this tree, and it is clean.
+
+  **The owner's machine, before and after everything above.** `diff`ed, not eyeballed:
+
+  ```
+  units before / after: fmonero-monerod.service    inactive disabled NRestarts=0
+                        fmonero-wallet-rpc.service inactive disabled NRestarts=0     → identical
+  sha256 before / after: both unit files, monerod.conf, config.toml, omarchy-menu.jsonc,
+                         shell.json                                                 → identical
+  64580d70…  fmonero-monerod.service        920870797f…  fmonero-wallet-rpc.service
+  bed63c96…  monerod.conf                   ac5f2f1bda…  config.toml
+  230cb88c…  omarchy-menu.jsonc             dd3fed204f…  shell.json
+  node.mode is still `remote`, node.remote is still 185.220.101.63:18081
+  ~/.bitmonero: nothing read and nothing written by this round — W21 is what makes that structural
+  ```
+
+  Every sandboxed run set `FMONERO_STATE_DIR`, `FMONERO_CONFIG_DIR`, `FMONERO_CACHE_DIR`,
+  `XDG_DATA_HOME` and `FMONERO_SYSTEMD_USER_DIR`; no `sudo`, no push, and the installer was not run,
+  so `~/.local/bin/fmonero` is still the previous round's binary. **W21 is the reason `~/.bitmonero`
+  is now untouchable from a sandbox rather than merely untouched**: the two settings that pointed at
+  it now default into the state directory, and a test asserts a sandboxed Log screen cannot open it.
+
+  ### W1–W22, each with what closed it and the test that keeps it closed
+
+  | # | The finding | What it says now | Test |
+  |---|---|---|---|
+  | **W1** | the doctor's human table printed `check.id` where §7 says the title goes, and `:{reason}` after the status word — so all forty rewritten titles reached no reader and fifteen identifiers did | the title, dot leaders, a verdict in words (`OK` · `needs attention` · `not working` · `not checked: <why>`), the detail under it, a `Try:` line for a finding. Group headings are sentences (`The two background services`, not `[units]`) | `report.rs`: every check rendered in all four statuses with every reason `checks.rs` can produce, asserting no id, no reason, no machine status word, nothing identifier-shaped; and a second test reads every `Verdict::skip` reason out of the file and asserts each has a phrase that fits the column |
+  | **W2** | `Start your node` and `Stop your node` were `y confirms · Esc cancels` and nothing else | overlays in `l`'s shape: what starts, the folder the chain goes into, about 120 GB, hours for the first sync, that it keeps going after the window closes; and for `d`, that nothing is lost, where the chain stays, what stops working, and `u` | `tui/tests.rs`: both confirms read at both sizes, each sentence asserted, the chain folder named, nothing elided |
+  | **W3** | `fmonero status` told a public-node owner `not answering` about a node nobody had contacted, with six `—` under it | `public node · synced`, the block, the response time and `checked 2s ago` — the cached check the TUI, the widget and the doctor already render — and no second row when there is nothing in it | read on a pty against a fresh `state.json`; the row is built from `node.remote_probe` alone |
+  | **W4** | four em-dashes in prose, three of them written by the round that added rule 12 | none, in any of the fifteen surfaces | `scripts/check.sh`: rule 12's own grep, with a self-test over three planted dashes and the three shapes of the unknown-value glyph that must pass |
+  | **W5** | `refreshed not yet` | `not refreshed yet`, or `refreshed 2m 04s ago` | pinned by the Node screen's render test |
+  | **W6** | `1 nodes from monero.fail`, and `39 skipped` — a number with no noun | `1 node` / `2 nodes`, `39 without a port were left out`, `2 fmonero could not read`, each clause only when its count is not zero, **wrapped to the rows it needs** | `tui/tests.rs` asserts the clause and that no footer row ends in an ellipsis; `tui_tmux.sh` asserts it on a real pty |
+  | **W7** | ungrouped block numbers in four places, and core could not reach the formatter | `fmonero_core::grouped`, called by core's warnings, the hero, the status bar, the picker, the peers table, the doctor and (as `Model.grouped`) the widget | `tui_tmux.sh --capture` scans **every capture** for a bare run of seven digits, with three exclusions by construction (monerod's own log lines, a run inside an amount, the send confirm's piconero figure). Proved to fire on a planted `block 3541122` |
+  | **W8** | a 64-character id as prose, in the most serious warning the program has, on a bar 380 pixels wide | `bbbb1111…ddeeee`, from `fmonero_core::short_id`; the whole id stays in `--json` and in the payment row | `lib.rs` unit test; the send test asserts the toast carries the short form and **not** the whole one |
+  | **W9** | `not running` and `not answering` in one frame, and a hero advising the key that was already running | one predicate: core's `node_off_words` for the two states the document knows, the TUI's for `starting`. The hero, the badge, the Net pane, the Peers pane, the mempool pane and the Notes row read it, and the advice follows the state | `tui/tests.rs`: one frame may not carry both words, and while `u` runs the hero says `Starting your node…` and nothing advises pressing `u` |
+  | **W10** | decision 7's one fact, worded three ways | `fmonero_core::SYNC_KEEPS_GOING`, quoted by both TUI screens, the widget and the `wallet_behind` warning | `plugin-smoke.sh` reads the constant out of `lib.rs` and asserts `Panel.qml` carries it verbatim; the Wallet screen's render test asserts the constant |
+  | **W11** | three wallet rows said `fmonero has not set up the node service yet.` | `need_units` takes which service the row is about | the doctor's own run, read on a pty |
+  | **W12** | `listed 342 min ago` where the screen said `5h 42m ago` | `fmonero_core::age`, shared | `lib.rs` unit test |
+  | **W13** | 11 of the `?` overlay's 25 rows ended in `…` at 120 columns, 9 at 150 | the overlay is as wide as the frame allows, the key column is measured, and a row that needs two lines gets two. Four of its texts were shortened so 26 rows fit a 32-row window | `tui/tests.rs`: at both sizes, no row of the overlay's own columns ends in `…`, and every `KEYS` action is on screen **whole** (wrapped rows joined first) |
+  | **W14** | the refusal §2o.1 is built on was cut to `Press f for the…` at both sizes | a toast that does not fit beside the badges gets a row of its own, full width and wrapped; `elide` is gone with its last caller | `tui/tests.rs` for `u`, `d` and `L` at both sizes, and the V15 test now asserts a long toast is on screen **whole**; `tui_tmux.sh` asserts it on a real pty |
+  | **W15** | `[W] Start the wallet service` on the screen where `W` stops it, and a lower-case toast | the chip reads the predicate `W` branches on; every toast is a capitalised sentence | `tui/tests.rs` for the chip in both states, and a test that reads every toast literal out of `mod.rs` and `subs.rs` (proved to fire on a planted lower-case one) |
+  | **W16** | `Nothing is running.` on a screen whose subject is a node and a service | `Nothing to cancel.` | `tui/tests.rs` |
+  | **W17** | the picker's custom marker read `yours`, colliding with `your own node` | `own`, as §7a.4 says, with `own = a node you added` in the footer under the table | the picker's render test and the capture |
+  | **W18** | the open-wallet modal stated its keys twice, differently | once, in its body | the capture |
+  | **W19** | `seed lang` | `Seed language`, and the create modal's four labels in one style | the capture |
+  | **W20** | `node list`'s table was a second vocabulary; `node info` was a key dump; `settings list` printed `[default ]` | the picker's columns with units and grouped numbers, one marker and a footer that explains it; the rows `status` prints plus what only `node info` asks for; `(none)` | `tests/e2e.sh`: six string assertions over the human table, a grouped-number grep, five field names that may not appear in `node info`, and `(none)` |
+  | **W21** | `FMONERO_STATE_DIR` left the **defaults** of `node.data_dir` and `node.log_file` at the owner's own `~/.bitmonero` | both follow `paths.bitmonero_dir`, which follows the sandbox | `tui/tests.rs`: a sandboxed Log screen names the sandbox's log and may not render the machine's chain folder; `context.rs` asserts both paths are under the test root |
+  | **W22** | `wallet_sync_line`'s doc comment had been left on `refreshed_age` | back where it belongs | `cargo doc` (in `check.sh --full`) |
+
+  ### The self-read: thirty-three more, each read off a screen or a terminal
+
+  Captured with `tests/tui_tmux.sh --capture` and with a second harness of my own — every screen,
+  every modal, every refusal, at **120x32 and 150x40**, in local mode and with a public node — then
+  the human form of eight commands in two sandboxes. Read as the owner's friend would, top to bottom.
+
+  **In the doctor** (1) the group headings were the machine names, and `[units]` is a rule-7 word
+  over seven rows; (2) two details joined a path to a version with an em-dash; (3) `version_supported`
+  printed two parentheticals in a row, `… (v0.18.5.1-release) (0.18.x)`; (4) `units_present` joined
+  two sentences with a semicolon and named two unit files; (5) `binary_on_path`'s title was a path, a
+  shell variable and a second path; (6) `wallet_nettype_matches` said `No wallet is open` two rows
+  under `and a wallet is open` — both right, from two sources, so the row now says what is actually
+  missing.
+
+  **On the Node screen** (7) the Net pane drew `↓ ↑ — —` over `speed limits ↑— ↓— kB/s` with the node
+  off; (8) the mempool pane drew `fee levels  —  XMR per byte`; (9) the Peers table printed
+  `3541122` in the same frame as `3 541 122`; (10) it carried a `KEEPS` column whose values (`0`,
+  `384`) decide nothing a reader can act on — the argument `docs/COPY.md` §3.9 already made for
+  `node peers`; (11) the mempool's first row wrapped onto a line reading `ago`, which pushed the fee
+  row off the pane; (12) the fee row showed two of the four levels with nothing to say the others
+  existed; (13) the same row split at **every** width, including the one where all four fit;
+  (14) the picker's `ping` cell read `20` under a header reading `ping`.
+
+  **On the status bar and the Wallet and Send screens** (15) the bar read `16↑3↓`, arrows a reader
+  takes for traffic; (16) the Payments table printed the wire words — `block` for a mining reward,
+  `pool` for one waiting, `pending` for one going out; (17) the filter hint read
+  `filter by txid, address or note`, §2o.2's own banned word, which the grep did not carry;
+  (18) the Send screen said `mainnet standard`; (19) its Preview read `Unlocked 1.234567891234` with
+  no unit; (20) the log-level confirm named `y` and not `Esc`, alone among the confirms; (21) two
+  toasts said `1 nodes`.
+
+  **In the CLI's human output** (22) `status`'s wallet row printed a loopback URL, a dash where the
+  name goes and `balance — XMR`; (23) it said `no node is set up yet` about a node that was
+  answering; (24) it labelled the chain's own size `disk`, next to a warning that 96 GB were free;
+  (25) `node info` dumped every field of every peer as one row, because `sync.peers` is an array and
+  `cell` joins arrays; (26) it said `this node runs Monero true`, because `rpc.release` is a boolean;
+  (27) `node peers` printed `block 3541122`, `8412s` and `last seen 1789560101` — a raw unix second
+  in the column whose whole content is *when* — and `3 peer(s)`; (28) `wallet history` printed
+  `2026-09-16T14:01`; (29) it printed `true` under `LOCKED`; (30) `wallet send` labelled a
+  64-character id `txid`; (31) `settings list` marked `node.data_dir`, `node.log_file` and
+  `wallet.dir` as changed from the default on a machine where nobody had changed anything — three of
+  the defaults in `KEYS` are patterns; (32) `list from 0s ago` reads as two prepositions.
+
+  **And one across two crates**: (33) core's low-disk warning said `a pruned copy of the chain` where
+  the doctor says `a smaller copy of the blockchain` — §2o rule 8 on a sentence both surfaces show.
+
+  Two of these produced new shared code rather than new strings: `TransferKind::words()` and
+  `AddrKind::words()` in core (the wire value is what `--json` carries and what agents branch on),
+  and `nodes::probe_reason_words`, because the picker said `too slow` while `node list` printed the
+  wire's `timed_out`. Two produced new greps: rule 12's em-dash, and `txid` — with a `{field}` name
+  read as a substitution rather than as prose, so `"… · id {txid} · …"` is a sentence that says `id`.
+
+  ### What this round does not claim
+
+  - **A real send or sweep of any amount is still RED.** Nothing in it went near `relay_tx` against
+    anything but `fmonero-mock`, and the send test asserts one `transfer` and one `relay_tx` with
+    identical metadata against that mock, as it did before.
+  - **The v5.6.2 widget has still never been seen rendering.** The desktop session is locked,
+    `omarchy restart shell` refuses (attempted once), and the bar therefore still runs the pre-v5.6
+    panel. `Panel.qml`'s version token is bumped to `qml-23a60719`, which is precisely why
+    `plugin-smoke`'s two live assertions fail: they compare the token the shell reports with the one
+    this tree carries, and the shell reports `none`. Every widget claim here rests on `Model.js`
+    under `node` against documents this machine's binary produced, on `plugin-smoke --static`, and on
+    source greps.
+  - **`--check-node` has still never contacted a real public node.** W3's rows were read against a
+    `state.json` this round wrote by hand and against the mock; the detached-spawn path is unchanged.
+  - **The doctor's rows are read, not all exercised.** The two sandboxes reach the rows two machine
+    states reach; the rest are covered by the fixtures, the grep and `cargo test`.
+  - **The thirty-three self-read findings are the ones a full read found.** A thirty-fourth read may
+    find more, which is the honest shape of "read it as a person" — what this round can say is that a
+    second pass over the re-captured screens found nothing further, and that the four rules a grep
+    can now police (rule 7's words, rule 12's em-dash, `txid`, and W7's grouped numbers over the
+    captures) no longer depend on anyone reading carefully.
