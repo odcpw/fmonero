@@ -36,8 +36,7 @@ impl Piconero {
     pub fn parse(s: &str) -> Result<Piconero, Error> {
         if s.eq_ignore_ascii_case("all") {
             return Err(Error::usage(
-                "\"all\" is not an amount. To send everything: fmonero wallet sweep <address> \
-                 --dry-run",
+                "\"all\" is not an amount. To send everything, use fmonero wallet sweep instead.",
             )
             .with_reason("bad_amount")
             .with_hint("fmonero wallet sweep <address> --dry-run   # to move everything"));
@@ -158,10 +157,9 @@ impl Piconero {
 
     /// Addition that refuses to wrap — the only way money is summed (§5b `PendingStatus`).
     pub fn checked_add(self, other: Piconero) -> Result<Piconero, Error> {
-        self.0
-            .checked_add(other.0)
-            .map(Piconero)
-            .ok_or_else(|| Error::failure("amount overflow: the sum does not fit in 64 bits"))
+        self.0.checked_add(other.0).map(Piconero).ok_or_else(|| {
+            Error::failure("That sum of amounts is larger than Monero can represent.")
+        })
     }
 }
 

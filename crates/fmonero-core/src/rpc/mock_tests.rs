@@ -1899,7 +1899,7 @@ fn node_up_wait_times_out_with_exit_eight() {
     let e = crate::node_session::up(&ctx, Some(Duration::from_secs(2)), &CancelToken::new())
         .unwrap_err();
     assert_eq!(e.exit_code(), 8);
-    assert!(e.to_string().contains("still syncing"), "{e}");
+    assert!(e.to_string().contains("still 33% synced"), "{e}");
     assert!(started.elapsed() < Duration::from_secs(6), "bounded (§2d)");
 }
 

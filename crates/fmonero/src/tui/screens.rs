@@ -1415,10 +1415,12 @@ fn swap_chip(m: &Tui, area: Rect, swap: (Button, &str, &str), frame: &mut Frame)
     if area.height < 4 || area.width < 6 {
         return;
     }
+    // `+2`: one column for the border and one for `Sides::horizontal(1)`, so the chip starts in
+    // the same column as the table's own first cell rather than against the border.
     let row = Rect::new(
-        area.x + 1,
+        area.x + 2,
         area.bottom().saturating_sub(2),
-        area.width.saturating_sub(2),
+        area.width.saturating_sub(4),
         1,
     );
     chip_row(m, row, &[swap], frame);
@@ -1956,19 +1958,23 @@ fn wallet_header(m: &Tui, area: Rect, sync: Option<&str>, frame: &mut Frame) {
         }
     }
     let dash = || "—".to_string();
-    let mut spans = vec![
-        Span::styled(
-            format!("{} XMR", w.balance_xmr.clone().unwrap_or_else(dash)),
-            th.accented(),
-        ),
-        Span::styled(
+    let mut spans = vec![Span::styled(
+        format!("{} XMR", w.balance_xmr.clone().unwrap_or_else(dash)),
+        th.accented(),
+    )];
+    // **`unlocked` only when it differs** (round 4's own read of the captures, and §6.5's own rule
+    // for the widget's Balance row). With nothing locked this pane read
+    // `1.234567891234 XMR   unlocked 1.234567891234 XMR` — the same fourteen-digit figure twice on
+    // one row, which is a row that says one thing and takes two.
+    if w.unlocked_xmr != w.balance_xmr {
+        spans.push(Span::styled(
             format!(
                 "   unlocked {} XMR",
                 w.unlocked_xmr.clone().unwrap_or_else(dash)
             ),
             th.text(),
-        ),
-    ];
+        ));
+    }
     if let Some(blocks) = w.blocks_to_unlock.filter(|b| *b > 0) {
         // The amount, and minutes rather than blocks: blocks are the mechanism, minutes are the
         // answer (§2o rule 9).
@@ -2029,7 +2035,12 @@ fn subaddress_pane(m: &Tui, area: Rect, frame: &mut Frame) {
     // not (§5, §2j).
     let fixed_sum: u16 = if wide { 3 + name_w as u16 + 22 } else { 3 + 22 };
     let gaps: u16 = if wide { 3 } else { 2 };
-    let bal_w = area.width.saturating_sub(2 + fixed_sum + gaps).max(1) as usize;
+    // **Four, not two** (round 4's own read of the captures): the block spends one column on each
+    // border AND one on each side of `Sides::horizontal(1)` padding, so this figure was two cells
+    // too generous — and the table then clipped the `…` this very line adds off the end, which put
+    // `1.23456789` on screen as a complete-looking amount that is not the amount. The column was
+    // always wide enough to hide it until the NAME column arrived at 48 (M6).
+    let bal_w = area.width.saturating_sub(4 + fixed_sum + gaps).max(1) as usize;
     let rows = set
         .addresses
         .iter()
@@ -2067,7 +2078,16 @@ fn subaddress_pane(m: &Tui, area: Rect, frame: &mut Frame) {
     // X20: `BALANCE` is money and carries its unit.
     let (header, fixed): (&[&str], &[u16]) = if wide {
         (
-            &["#", "NAME", "ADDRESS (✓ used)", "BALANCE XMR"],
+            // The header is trimmed to the column too: `BALANCE XMR` is eleven cells and the
+            // column is ten at 120 columns, so it rendered `BALANCE XM` — a heading cut mid-word.
+            // The unit alone is the heading when there is no room for both words, which is what
+            // the Node screen's fee row already does.
+            &[
+                "#",
+                "NAME",
+                "ADDRESS (✓ used)",
+                if bal_w >= 11 { "BALANCE XMR" } else { "XMR" },
+            ],
             &[3, name_w as u16, 22],
         )
     } else {
@@ -3394,7 +3414,7 @@ fn qr_modal(m: &Tui, address: &str, frame: &mut Frame) {
         // M30: what the code is for. Money arriving at an address nobody was given is the one
         // thing this modal cannot produce.
         lines.push(Line::styled(
-            "Show this, or send the line above, to be paid.",
+            "Show this to be paid.",
             th.dimmed().bg(th.selection),
         ));
         lines_at(lines, rest, false, frame);

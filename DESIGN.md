@@ -6649,9 +6649,34 @@ and round 4's reading put twenty-three items into these files. They are, with wh
   said nothing about the node's last check), M6 (`history_cols` measuring a note column against the
   pane instead of a constant) and M30 (a QR modal that names its address and says what it is for).
 
-That is **+541 measured**, to **9 076**, and the ceiling is 9 100 — the measured figure rounded up,
-as v5.1 set the rule. Two of the twenty-three DELETE code (S10, part of S9), which is the shape a
-round of this kind should have more of.
+That is **+541 measured**, to **9 076**. Two of the twenty-three DELETE code (S10, part of S9),
+which is the shape a round of this kind should have more of.
+
+**Then the round read its own captures, which is the step the whole effort exists for, and found
+nine more things — +74, to 9 150, and the ceiling is 9 200.** Seven of the nine are *room* rather
+than text, which is the same shape v5.6.2's own self-read had:
+
+* the create modal's footer is measured in **wrapped** rows, because M23's longer sentence was cut to
+  `Esc closes it an` — the modal's own explanation of the `Tab` exception, not surviving the width the
+  modal is drawn at (**+14**, `wrap_words` and a computed height);
+* `wrap_bullet`, so a bullet that wraps keeps a hanging indent: the Stop confirm's
+  `· nothing is lost either way. The blockchain stays in /…/bitmonero` put the path flush with the
+  modal's border, reading as a line of its own (**+18**, one helper, three call sites);
+* the Send form's **status line wraps**, with the same hanging indent its footer already had:
+  `Enter works out the fee. Nothing is` was the cut, on the money screen, with the reassurance the
+  half that fell off (**+16**);
+* `swap_chip`, because the first version of M16's `[b]` chip landed in the gap *below* the peers pane,
+  flush left and outside every frame — the one shape V3 deleted from the Wallet screen (**+20**);
+* the addresses pane's balance column subtracts **four**, not two: the block spends a column on each
+  border *and* on each side of its padding, so the figure was two cells too generous and the table
+  clipped the `…` this code adds off the end — putting `1.23456789` on screen as a complete-looking
+  amount that is not the amount (**+6**, with the heading that shortens to `XMR` when both words do
+  not fit);
+* `unlocked` on the ` Balance ` pane only when it differs from the balance, which is §6.5's own rule
+  for the widget's row (**+8**);
+* `wallet_daemon_phrase` no longer says its own subject twice (**+4**);
+* and two deletions: the payment detail modal's id row, `unlocks at 0` and `double spend false`
+  (**−12** net, counting the two conditionals that replace them).
 
 
 **The budget is the measured figure, and it is a ceiling against growth rather than a target**

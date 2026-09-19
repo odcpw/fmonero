@@ -357,11 +357,12 @@ fn run_unit_verb(ctx: &Context, verb: &str, unit: &str, cancel: &CancelToken) ->
     if out.success() {
         return Ok(());
     }
+    // Round 4's own read: a sentence, with the tool's own complaint in `detail` (S6's rule).
     Err(Error::backend(format!(
-        "Could not {verb} the {}: {}",
-        service_phrase(ctx, unit),
-        one_line(&out.stderr_tail())
+        "fmonero could not {verb} the {}.",
+        service_phrase(ctx, unit)
     ))
+    .with_detail(one_line(&out.stderr_tail()))
     .with_reason("unit_missing")
     .with_hint("fmonero setup --units --yes"))
 }
@@ -458,7 +459,7 @@ pub fn ensure_running(
             // `Restart=on-failure` loop behind a command that has already failed (v5.1).
             let stopped = stop_after_failed_start(ctx, unit, cancel);
             return Err(Error::timeout(format!(
-                "The {} started but never answered ({}s).{stopped}",
+                "The {} started and did not answer within {} seconds.{stopped}",
                 service_phrase(ctx, unit),
                 deadline.as_secs()
             ))

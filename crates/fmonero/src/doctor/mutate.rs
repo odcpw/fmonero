@@ -187,7 +187,7 @@ fn require_in_scope(ctx: &Context, path: &Path) -> Result<(), Error> {
         return Ok(());
     }
     Err(Error::doctor_refused(format!(
-        "{} is outside the doctor's write scopes; nothing was changed",
+        "{} is not one of the files fmonero is allowed to change, so nothing was changed.",
         path.display()
     ))
     .with_hint("fmonero doctor capabilities --json"))
@@ -206,9 +206,8 @@ fn require_test_safe_argv(ctx: &Context, argv: &[&str]) -> Result<(), Error> {
         .unwrap_or_default();
     if !TEST_SAFE_ARGV0.contains(&program.as_str()) {
         return Err(Error::doctor_refused(format!(
-            "`{}` would change this machine outside FMONERO_STATE_DIR; the doctor refuses \
-             every fixer but chmod under a test state directory, the same guard §4.2 puts on \
-             units::install",
+            "{} would change something outside the sandbox this run is confined to, so nothing \
+             was changed.",
             argv.join(" ")
         ))
         .with_hint("fmonero doctor --fix --dry-run   # to see the plan without a test state dir"));
@@ -226,7 +225,7 @@ fn require_test_safe_argv(ctx: &Context, argv: &[&str]) -> Result<(), Error> {
 fn run_relative(path: &Path) -> Result<PathBuf, Error> {
     if has_parent_dir(path) {
         return Err(Error::doctor_refused(format!(
-            "{} contains a `..` component; refusing to map it into the run directory",
+            "{} has a .. in it, and fmonero will not copy a path like that into its own folder.",
             path.display()
         )));
     }
@@ -486,14 +485,16 @@ impl<'a> Mutator<'a> {
                 .map_err(|e| Error::io("read", "the backup it just made", &dest, &e))?;
             if written != old {
                 return Err(Error::doctor_refused(format!(
-                    "the backup of {} does not match the file; nothing was changed",
+                    "The backup fmonero made of {} does not match the file, so nothing was \
+                     changed.",
                     path.display()
                 )));
             }
             backup_rel = Some(rel.display().to_string());
         } else if existing.is_some() && self.run.is_none() {
             return Err(Error::doctor_refused(
-                "refusing to overwrite a file without a run directory to back it up into",
+                "fmonero will not change a file before it has somewhere to keep a copy of the old \
+             one.",
             ));
         }
 
@@ -549,8 +550,8 @@ impl<'a> Mutator<'a> {
         }
         if path.exists() {
             return Err(Error::doctor_refused(format!(
-                "{} exists and is not a directory; the doctor never removes what it did not \
-                 create",
+                "{} is already there and is not a folder. fmonero never removes what it did \
+                 not make.",
                 path.display()
             ))
             .with_hint(format!("ls -l {}", path.display())));
@@ -593,8 +594,8 @@ impl<'a> Mutator<'a> {
         }
         if std::fs::symlink_metadata(link).is_ok() {
             return Err(Error::doctor_refused(format!(
-                "{} already exists and is not the link fmonero would make; the doctor never \
-                 removes what it did not create",
+                "{} is already there and is not the link fmonero would make. fmonero never \
+                 removes what it did not make.",
                 link.display()
             ))
             .with_hint(format!("ls -l {}", link.display())));
@@ -634,22 +635,21 @@ impl<'a> Mutator<'a> {
         let borrowed: Vec<&str> = argv.iter().map(String::as_str).collect();
         require_test_safe_argv(self.ctx, &borrowed)?;
         if proc::which(borrowed[0]).is_none() {
-            return Err(Error::backend(format!("{} is not on PATH", borrowed[0])));
+            return Err(Error::backend(format!(
+                "{} is not installed on this machine.",
+                borrowed[0]
+            )));
         }
         let out = proc::run_with_deadline(&borrowed, self.ctx.timeouts.systemctl, None)?;
         if out.timed_out {
             return Err(Error::upstream(format!(
-                "`{}` was killed at its {}s deadline",
+                "{} took longer than {} seconds, so fmonero stopped it.",
                 argv.join(" "),
                 self.ctx.timeouts.systemctl.as_secs()
             )));
         }
         if !out.success() {
-            return Err(Error::upstream(format!(
-                "`{}` failed: {}",
-                argv.join(" "),
-                out.stderr_tail().trim()
-            )));
+            return Err(Error::upstream(format!("{} did not work.", argv.join(" "))));
         }
         let line = serde_json::json!({
             "seq": seq, "check": check, "class": class.name(), "started_at": started_at,
@@ -673,7 +673,8 @@ impl<'a> Mutator<'a> {
             Some(run) => run.append(line),
             // A mutation with nowhere to record it is not allowed to happen.
             None => Err(Error::doctor_refused(
-                "no run directory: a mutation must be recorded before it is applied",
+                "fmonero records every change before it makes one, and it has nowhere to \
+                 record this. Nothing was changed.",
             )),
         }
     }
@@ -685,7 +686,7 @@ fn write_at_mode(path: &Path, bytes: &[u8], mode: u32) -> Result<(), Error> {
     use std::os::unix::fs::OpenOptionsExt;
     let dir = path
         .parent()
-        .ok_or_else(|| Error::failure(format!("{} has no parent directory", path.display())))?;
+        .ok_or_else(|| Error::failure(format!("{} has no folder above it.", path.display())))?;
     let tmp = dir.join(format!(
         ".{}.fmonero-doctor.tmp.{}",
         path.file_name()
@@ -822,10 +823,12 @@ pub fn plan(kind: PlanKind, ctx: &Context, p: &Probes) -> Result<Vec<Action>, Er
 
         PlanKind::ChmodMonerodConf => {
             let path = ctx.paths.monerod_conf().display().to_string();
-            let old = p
-                .monerod_conf
-                .mode
-                .ok_or_else(|| Error::doctor_refused("monerod.conf has no mode to restore"))?;
+            let old = p.monerod_conf.mode.ok_or_else(|| {
+                Error::doctor_refused(
+                    "fmonero did not record who could read monerod.conf, so it cannot put that \
+                     back.",
+                )
+            })?;
             Ok(vec![Action::RunArgv {
                 argv: vec!["chmod".into(), "600".into(), path.clone()],
                 inverse_argv: vec!["chmod".into(), format!("{old:o}"), path],
@@ -860,8 +863,8 @@ pub fn plan(kind: PlanKind, ctx: &Context, p: &Probes) -> Result<Vec<Action>, Er
         PlanKind::LinkPlugin => {
             let target = super::repo_plugin_dir().ok_or_else(|| {
                 Error::doctor_refused(
-                    "cannot find this repository's plugin/oliver.monero, and a symlinked plugin \
-                     directory has to point at a real checkout (§1.5)",
+                    "fmonero could not find its own plugin folder, and the link it makes has \
+                     to point at a real one.",
                 )
                 .with_hint("cd ~/Projects/odcpw/fmonero && fmonero setup --plugin --yes")
             })?;
@@ -1021,15 +1024,18 @@ pub fn resolve_run(ctx: &Context, run: &str) -> Result<PathBuf, Error> {
     if run == "latest" {
         let latest = ctx.paths.doctor_latest();
         let dir = std::fs::canonicalize(&latest).map_err(|_| {
-            Error::not_found(format!("there is no {}", latest.display()))
+            Error::not_found(format!("There is no {}.", latest.display()))
                 .with_hint("fmonero doctor --fix --dry-run")
         })?;
         return Ok(dir);
     }
     let root = ctx.paths.doctor_runs_dir();
     let entries = std::fs::read_dir(&root).map_err(|_| {
-        Error::not_found(format!("there are no doctor runs under {}", root.display()))
-            .with_hint("fmonero doctor --fix")
+        Error::not_found(format!(
+            "fmonero has no record of any doctor run in {}.",
+            root.display()
+        ))
+        .with_hint("fmonero doctor --fix")
     })?;
     let mut matches: Vec<PathBuf> = entries
         .flatten()
@@ -1041,7 +1047,7 @@ pub fn resolve_run(ctx: &Context, run: &str) -> Result<PathBuf, Error> {
         .collect();
     matches.sort();
     matches.pop().ok_or_else(|| {
-        Error::not_found(format!("no doctor run matches '{run}'"))
+        Error::not_found(format!("No doctor run matches \"{run}\"."))
             .with_hint(format!("ls {}", root.display()))
     })
 }
@@ -1171,7 +1177,11 @@ fn restore_file(ctx: &Context, dir: &Path, inverse: &serde_json::Value) -> Resul
     let target = inverse
         .get("path")
         .and_then(|p| p.as_str())
-        .ok_or_else(|| Error::doctor_refused("an undo record has no path"))?;
+        .ok_or_else(|| {
+            Error::doctor_refused(
+                "One of the recorded changes names no file, so fmonero left it alone.",
+            )
+        })?;
     // Undo is bounded by the same write scopes as apply.
     require_in_scope(ctx, Path::new(target))?;
     let rel = inverse
@@ -1179,7 +1189,7 @@ fn restore_file(ctx: &Context, dir: &Path, inverse: &serde_json::Value) -> Resul
         .and_then(|p| p.as_str())
         .ok_or_else(|| {
             Error::doctor_refused(format!(
-                "no backup was recorded for {target}; refusing to guess"
+                "fmonero has no backup of {target}, and it will not guess what was there."
             ))
         })?;
     let backup = dir.join(rel);
@@ -1194,8 +1204,8 @@ fn restore_file(ctx: &Context, dir: &Path, inverse: &serde_json::Value) -> Resul
         let got = sha256(&bytes);
         if got != want {
             return Err(Error::doctor_refused(format!(
-                "the backup of {target} has changed since the run (sha256 {got} != {want}); \
-                 nothing was restored"
+                "The backup of {target} has changed since fmonero made it, so nothing was \
+                 restored."
             )));
         }
     }
@@ -1213,7 +1223,11 @@ fn quarantine(ctx: &Context, dir: &Path, inverse: &serde_json::Value) -> Result<
     let target = inverse
         .get("path")
         .and_then(|p| p.as_str())
-        .ok_or_else(|| Error::doctor_refused("an undo record has no path"))?;
+        .ok_or_else(|| {
+            Error::doctor_refused(
+                "One of the recorded changes names no file, so fmonero left it alone.",
+            )
+        })?;
     let path = Path::new(target);
     require_in_scope(ctx, path)?;
     if !path.exists() {
@@ -1234,7 +1248,11 @@ fn remove_dir(ctx: &Context, inverse: &serde_json::Value) -> Result<String, Erro
     let target = inverse
         .get("path")
         .and_then(|p| p.as_str())
-        .ok_or_else(|| Error::doctor_refused("an undo record has no path"))?;
+        .ok_or_else(|| {
+            Error::doctor_refused(
+                "One of the recorded changes names no file, so fmonero left it alone.",
+            )
+        })?;
     let path = Path::new(target);
     require_in_scope(ctx, path)?;
     if !path.exists() {
@@ -1258,7 +1276,11 @@ fn remove_symlink(ctx: &Context, inverse: &serde_json::Value) -> Result<String, 
     let link = inverse
         .get("link")
         .and_then(|p| p.as_str())
-        .ok_or_else(|| Error::doctor_refused("an undo record has no link"))?;
+        .ok_or_else(|| {
+            Error::doctor_refused(
+                "One of the recorded changes names no link, so fmonero left it alone.",
+            )
+        })?;
     let path = Path::new(link);
     require_in_scope(ctx, path)?;
     match std::fs::symlink_metadata(path) {
@@ -1269,7 +1291,7 @@ fn remove_symlink(ctx: &Context, inverse: &serde_json::Value) -> Result<String, 
             Ok(format!("removed the link {link}"))
         }
         Ok(_) => Err(Error::doctor_refused(format!(
-            "{link} is no longer a symlink; the doctor will not remove it"
+            "{link} is no longer a link, so fmonero will not remove it."
         ))),
     }
 }
@@ -1340,7 +1362,11 @@ mod tests {
         std::fs::write(run_dir.join("actions.jsonl"), format!("{forged}\n")).unwrap();
         let err = undo(&ctx, &run_dir).expect_err("must refuse");
         assert_eq!(err.exit_code(), 13, "{err}");
-        assert!(err.to_string().contains("write scopes"), "{err}");
+        assert!(
+            err.to_string()
+                .contains("not one of the files fmonero is allowed to change"),
+            "{err}"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

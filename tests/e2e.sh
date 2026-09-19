@@ -1863,7 +1863,7 @@ if [ "$CHECKED" = 1 ]; then
   expect_json '[.warnings[] | select(.id=="public_node_down") | .severity]' '["warn"]' \
     "  and status raises public_node_down at warn, so the bar's dot cannot stay calm (S4)"
   expect_json '[.warnings[] | select(.id=="public_node_down") | .action]' \
-    '["On the Node screen, pick another node and press Enter."]' \
+    '["Pick another one on the Node screen."]' \
     "  with an in-app next step and no shell command (§2o.1, M13)"
   # `contains` on an array of strings is a SUBSTRING test in jq, and `public_node_down` contains
   # `node_down` — so the exact comparison is the only one that means what it says here.

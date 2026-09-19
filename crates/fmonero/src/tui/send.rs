@@ -588,24 +588,40 @@ pub(super) fn view(m: &Tui, area: Rect, frame: &mut ftui::Frame, tier: Tier) {
         .render(rows[3], frame);
 
     let (text, ok) = s.validation();
-    let line = match &s.stage {
-        Stage::Validating => Line::styled("checking the address…".to_string(), th.warn()),
-        Stage::Building => Line::styled(
+    let (status, style) = match &s.stage {
+        Stage::Validating => ("checking the address…".to_string(), th.warn()),
+        Stage::Building => (
             "Checking the fee. Nothing has been sent yet. Esc cancels.".to_string(),
             th.warn(),
         ),
-        Stage::Relaying => Line::styled("Sending. This cannot be stopped.".to_string(), th.warn()),
+        Stage::Relaying => ("Sending. This cannot be stopped.".to_string(), th.warn()),
         // **No id at all now** (round 4, S10; X9 had shortened it, W8 had printed all 64
         // characters). An elided id is not a value: it cannot be pasted, filtered on or read
         // out. What the reader wants after a send is where the payment is, and it is one row
         // below on the screen this line sits at the bottom of.
-        Stage::Sent => Line::styled(
+        Stage::Sent => (
             "Sent. The payment is at the top of your payments.".to_string(),
             th.ok(),
         ),
-        _ => Line::styled(text, if ok { th.ok() } else { th.err() }),
+        _ => (text, if ok { th.ok() } else { th.err() }),
     };
-    let mut lines = vec![line];
+    // **The status line wraps too** (round 4's own read of the captures). It was rendered
+    // `WrapMode::None` on one row, so `mainnet address · 0.0100 XMR · Enter works out the fee.
+    // Nothing is sent yet.` was cut after `Nothing is` — on the money screen's own status line,
+    // with the reassurance that matters the half that fell off. Its continuations take the same
+    // hanging indent the footer below it does.
+    let w = rows[4].width as usize;
+    let text_w = w.saturating_sub(2).max(8);
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, part) in super::screens::wrap_words(&status, text_w)
+        .into_iter()
+        .enumerate()
+    {
+        lines.push(Line::styled(
+            if i == 0 { part } else { format!("  {part}") },
+            style,
+        ));
+    }
     // **A wrapped key line keeps a hanging indent** (X15's shape, found by round 4's own read of the
     // captures): `WrapMode::Word` returned the continuation to column 0, so at 120 columns
     // `· Esc leaves` ended one row and `the form` started the next flush left, reading as a new
@@ -619,8 +635,7 @@ pub(super) fn view(m: &Tui, area: Rect, frame: &mut ftui::Frame, tier: Tier) {
             "Enter returns to the form"
         }
     );
-    let w = rows[4].width as usize;
-    for (i, part) in super::screens::wrap_words(&footer, w.saturating_sub(2).max(8))
+    for (i, part) in super::screens::wrap_words(&footer, text_w)
         .into_iter()
         .enumerate()
     {

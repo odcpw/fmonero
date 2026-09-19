@@ -38,19 +38,18 @@ pub fn wallet_password(password_file: Option<&Path>, confirm: bool) -> Result<St
         let text = value.to_string_lossy().into_owned();
         return Ok(strip_one_newline(&text).to_string());
     }
-    let mut tty = match Tty::open() {
-        Some(t) => t,
-        None => {
-            return Err(Error::wallet_locked(
-                "no wallet password: stdin is not a terminal, and neither --password-file nor \
-                 $FMONERO_WALLET_PASSWORD was given",
+    let mut tty =
+        match Tty::open() {
+            Some(t) => t,
+            None => return Err(Error::wallet_locked(
+                "fmonero needs the wallet password and has no terminal to ask on. Give it with \
+                 --password-file, or in FMONERO_WALLET_PASSWORD.",
             )
             .with_reason("bad_password")
             .with_hint(
                 "FMONERO_WALLET_PASSWORD=… fmonero wallet open <name>   # or --password-file",
-            ))
-        }
-    };
+            )),
+        };
     let first = tty.ask("Wallet password: ")?;
     if !confirm {
         return Ok(first);
@@ -58,7 +57,7 @@ pub fn wallet_password(password_file: Option<&Path>, confirm: bool) -> Result<St
     let again = tty.ask("Wallet password (again): ")?;
     if first != again {
         return Err(
-            Error::usage("the two passwords do not match; nothing was created")
+            Error::usage("The two passwords are not the same. Nothing was created.")
                 .with_reason("bad_args")
                 .with_hint("fmonero wallet create <name> --yes"),
         );

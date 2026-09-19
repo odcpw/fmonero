@@ -746,9 +746,11 @@ step "§7a  the TUI fits its line budget · §6.1 the plugin fits its own"
 # v5.6.2: 8300, itemised in §7a before the code was written (was 7900). Three of the nine items
 # are **room** rather than text — the toast's own row, the picker footer's wrap, the `?` overlay's
 # — because a sentence cut to fit is a sentence the reader does not have.
-# v5.6.4: **9100**, itemised in §7a before this line moved (was 8600) — twenty-three items from a
-# fresh reader's round, measured at 9 076. Two of them DELETE code: S10's ids and half of S9.
-TUI_BUDGET=9100
+# v5.6.4: **9200**, itemised in §7a before this line moved (was 8600) — twenty-three items from a
+# fresh reader's round (+541, measured 9 076) and nine more from this round's own read of its own
+# captures (+74, measured 9 150). Seven of those nine are ROOM rather than text: a sentence cut to
+# fit is a sentence the reader does not have, and four of the nine were exactly that.
+TUI_BUDGET=9200
 if [ -d "$BIN/tui" ]; then
   TUI_FILES=()
   for f in mod theme screens send subs hit; do

@@ -571,7 +571,7 @@ fn resolve_dest(w: &WalletClient, dest: &str) -> Result<String, Error> {
             Ok(address)
         }
         n => Err(Error::ambiguous(format!(
-            "\"{label}\" matches {n} address book entries: {}",
+            "\"{label}\" matches {n} entries in your address book. They are: {}.",
             matches
                 .iter()
                 .map(|e| format!("{} ({})", e.index, short(&e.address)))

@@ -49,7 +49,7 @@ pub fn validate_seed_language(language: &str) -> Result<(), Error> {
     }
     let english: Vec<&str> = SEED_LANGUAGES.iter().map(|(_, e)| *e).collect();
     Err(Error::usage(format!(
-        "\"{language}\" is not a seed language. Choose one of: {}",
+        "\"{language}\" is not one of the seed languages. Choose one of these: {}.",
         english.join(", ")
     ))
     .with_reason("bad_args")
@@ -181,7 +181,8 @@ impl std::str::FromStr for Network {
             "stagenet" => Ok(Network::Stagenet),
             "testnet" => Ok(Network::Testnet),
             other => Err(Error::usage(format!(
-                "'{other}' is not a network; known: mainnet, stagenet, testnet"
+                "\"{other}\" is not a Monero network. The three are mainnet, stagenet and \
+                 testnet."
             ))
             .with_reason("bad_args")
             .with_hint("fmonero settings set node.network mainnet")),
@@ -228,7 +229,8 @@ impl std::str::FromStr for NodeMode {
             "local" => Ok(NodeMode::Local),
             "remote" => Ok(NodeMode::Remote),
             other => Err(Error::usage(format!(
-                "'{other}' is not a node mode; known: local, remote"
+                "\"{other}\" is not one of the two. Use local for a node on this machine, or \
+                 remote for a public one."
             ))
             .with_reason("bad_args")
             .with_hint("fmonero node local --yes")),
@@ -751,7 +753,8 @@ fn parse_dir(key: &str, value: &str) -> Result<PathBuf, Error> {
     let p = PathBuf::from(value);
     if value.is_empty() || !(p.is_absolute() || value.starts_with('~')) {
         return Err(Error::usage(format!(
-            "'{value}' is not an absolute path for {key} (a leading ~ is allowed)"
+            "\"{value}\" is not a full path. {key} needs one that starts at the top of the \
+             filesystem, or with a ~ for your home folder."
         ))
         .with_reason("bad_args")
         .with_hint(format!("fmonero settings set {key} $HOME/.bitmonero")));
@@ -1034,7 +1037,8 @@ impl Settings {
                 let n: u32 = parse_num(key, value, 0u32, 86_400u32)?;
                 if n > 0 && n < 10 {
                     return Err(Error::usage(format!(
-                        "{key} must be 0 (off) or at least 10 seconds"
+                        "{key} is a number of seconds. Use 0 to turn the checks off, or 10 or \
+                         more."
                     ))
                     .with_reason("bad_args")
                     .with_hint(format!("fmonero settings set {key} 60")));

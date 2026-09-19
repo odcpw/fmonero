@@ -847,7 +847,11 @@ fn node_reachable(p: &Probes) -> Verdict {
         // the same fact twice, which is what happens when a detail concatenates two rewrites.
         // M1: the predicate's sentence, not the transport's own. A credential refusal has its
         // own check (`node_auth`) and the raw transport text is in the run's saved probes.
-        format!("{} fmonero asked it on {}.", node_off_sentence(p), p.node_url),
+        format!(
+            "{} fmonero asked it on {}.",
+            node_off_sentence(p),
+            p.node_url
+        ),
     )
     .cmd("fmonero node up")
 }

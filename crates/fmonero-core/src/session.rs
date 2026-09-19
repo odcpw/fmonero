@@ -354,7 +354,7 @@ pub mod node_session {
                 // `node up` times out.** §2o.2 names both explicitly; the unit and the method go
                 // to `detail`.
                 return Err(Error::timeout(format!(
-                    "Your node did not answer within {}s{stopped}",
+                    "Your node did not answer within {} seconds.{stopped}",
                     ctx.timeouts.unit_probe.as_secs()
                 ))
                 .with_detail(format!("{unit}: no get_info answer"))
@@ -378,7 +378,7 @@ pub mod node_session {
                 if !bound.is_zero() && waiting_since.elapsed() >= bound {
                     let pct = sync_percent(&info);
                     return Err(Error::timeout(format!(
-                        "still syncing at {pct}% after {}s",
+                        "Your node is still {pct}% synced after {} seconds of waiting.",
                         waiting_since.elapsed().as_secs()
                     ))
                     .with_hint(

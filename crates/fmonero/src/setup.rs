@@ -95,20 +95,23 @@ impl SetupArgs {
 /// Run setup. `--dry-run` prints a unified diff and changes nothing (§4.2).
 pub fn run(args: SetupArgs, ctx: Context, out: Out) -> anyhow::Result<i32> {
     if !(args.want_units() || args.want_plugin() || args.want_menu()) {
-        return Err(
-            Error::usage("setup needs at least one of --units, --plugin, --menu or --all")
-                .with_reason("bad_args")
-                .with_hint("fmonero setup --all --yes")
-                .into(),
-        );
+        return Err(Error::usage(
+            "fmonero setup needs to be told what to set up. Use --all, or one of \
+                 --units, --plugin and --menu.",
+        )
+        .with_reason("bad_args")
+        .with_hint("fmonero setup --all --yes")
+        .into());
     }
     // A dry run changes nothing, so it needs no confirmation — which is what makes
     // `setup --dry-run` a GREEN row (§4b).
     if !args.dry_run && !args.yes {
-        return Err(Error::safety("fmonero setup needs --yes")
-            .with_reason("needs_yes")
-            .with_hint(args.own_command())
-            .into());
+        return Err(Error::safety(
+            "fmonero setup writes files on this machine, so it needs --yes.",
+        )
+        .with_reason("needs_yes")
+        .with_hint(args.own_command())
+        .into());
     }
     let mut actions: Vec<FileAction> = Vec::new();
     let mut ctx = ctx;
@@ -140,8 +143,8 @@ fn units_step(ctx: &mut Context, args: &SetupArgs) -> Result<Vec<FileAction>, Er
     // and writing a second unit is how two monerod end up on one LMDB (§1.2).
     if units::detect_layout(ctx)? == units::Layout::SystemUnit {
         return Err(Error::safety(
-            "Arch's monerod.service owns the node on this machine, and fmonero never writes a \
-             second unit for a data dir a system daemon serves",
+            "Another program on this machine already runs the node, and fmonero will not set \
+             up a second one over the same copy of the blockchain.",
         )
         .with_reason("foreign_node")
         .with_hint("sudo systemctl status monerod   # fmonero does not use sudo"));
@@ -152,8 +155,8 @@ fn units_step(ctx: &mut Context, args: &SetupArgs) -> Result<Vec<FileAction>, Er
     if args.full_chain {
         if !args.yes {
             return Err(Error::safety(
-                "--full-chain writes a unit with no --prune-blockchain, and a full chain does not \
-                 fit this disk (§1.3)",
+                "--full-chain keeps the whole blockchain, and fmonero's estimate is that it \
+                 does not fit on this disk. Add --yes if you know it does.",
             )
             .with_reason("full_chain_refused")
             .with_hint("fmonero setup --units --full-chain --yes"));
@@ -169,8 +172,8 @@ fn units_step(ctx: &mut Context, args: &SetupArgs) -> Result<Vec<FileAction>, Er
         let free = fmonero_core::fsinfo::free_bytes(&ctx.settings.node.data_dir)?;
         if free < fmonero_core::status::DISK_FLOOR_BYTES {
             return Err(Error::safety(format!(
-                "{} has {} free, under the 120 GB floor for a pruned chain plus headroom — a \
-                 figure that is an ESTIMATE, not measured on this machine (§1.3)",
+                "{} has {} free. A smaller copy of the blockchain needs about 120 GB, and that \
+                 figure is an estimate rather than something measured here.",
                 ctx.settings.node.data_dir.display(),
                 crate::output::human_bytes(free)
             ))
@@ -297,7 +300,7 @@ fn plugin_step(ctx: &Context, args: &SetupArgs) -> Result<Vec<FileAction>, Error
                 .map_err(|e| Error::io("replace", "the link it manages", &link, &e))?;
         } else if link.exists() {
             return Err(Error::safety(format!(
-                "{} exists and is not a symlink, so fmonero will not replace it",
+                "{} is already there and is not a link, so fmonero will not replace it.",
                 link.display()
             ))
             .with_hint(format!("mv {} {}.bak", link.display(), link.display())));
@@ -439,10 +442,10 @@ fn repo_plugin_dir(ctx: &Context) -> Result<std::path::PathBuf, Error> {
             return Ok(c);
         }
     }
-    Err(Error::not_found(format!(
-        "cannot find plugin/{PLUGIN_ID}/manifest.json: run `fmonero setup --plugin` from the \
-         repository, whose checkout the symlink has to point at"
-    ))
+    Err(Error::not_found(
+        "fmonero could not find its own plugin folder. Run fmonero setup --plugin from inside the \
+         repository, because the link it makes has to point at a real checkout.",
+    )
     .with_hint("cd ~/Projects/odcpw/fmonero && fmonero setup --plugin --yes"))
 }
 
@@ -602,8 +605,11 @@ fn strip_comments(text: &str) -> String {
 /// insertion by a `// fmonero` marker, leaving existing ids byte-for-byte alone (§4.2).
 fn insert_before_last_brace(current: &str, missing: &[(&str, &str)]) -> Result<String, Error> {
     let at = current.rfind('}').ok_or_else(|| {
-        Error::failure("the Omarchy menu extension has no closing brace to insert before")
-            .with_hint("fmonero setup --menu --dry-run")
+        Error::failure(
+            "fmonero could not make sense of the Omarchy menu file, so it changed \
+             nothing.",
+        )
+        .with_hint("fmonero setup --menu --dry-run")
     })?;
     let (head, tail) = current.split_at(at);
     let mut merged = head.trim_end().to_string();

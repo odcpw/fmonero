@@ -1010,7 +1010,7 @@ fn print_qr(out: &Out, text: &str) -> Result<(), Error> {
 
 fn run(cli: Cli, out: Out) -> Result<i32, Error> {
     if cli.timeout == Some(0) {
-        return Err(Error::usage("--timeout 0 is not a deadline")
+        return Err(Error::usage("--timeout has to be at least one second.")
             .with_reason("bad_args")
             .with_hint("fmonero --timeout 5 status --json"));
     }
@@ -1025,9 +1025,11 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
     };
     if dry_run && !dry_run_is_supported(&cmd) {
         let path = command_path(&cmd);
-        return Err(Error::usage("--dry-run is not supported by this command")
-            .with_reason("unsupported_flag")
-            .with_hint(format!("fmonero {path} --help")));
+        return Err(
+            Error::usage("This command has no --dry-run. Six of them do.")
+                .with_reason("unsupported_flag")
+                .with_hint(format!("fmonero {path} --help")),
+        );
     }
 
     let ctx = Context::load()?.with_flags(out.json, cli.verbose, cli.timeout, cli.force);
@@ -1103,10 +1105,11 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                 NodeCmd::Up { wait, wait_timeout } => {
                     if wait && wait_timeout == 0 && !output::stdout_is_tty() {
                         return Err(Error::usage(
-                        "--wait-timeout 0 polls until interrupted, and nothing can interrupt a non-interactive caller",
-                    )
-                    .with_reason("bad_args")
-                    .with_hint("fmonero node up --wait --wait-timeout 86400"));
+                            "--wait-timeout 0 waits forever, and nothing can interrupt a command \
+                         whose output is not going to a terminal. Give it a number of seconds.",
+                        )
+                        .with_reason("bad_args")
+                        .with_hint("fmonero node up --wait --wait-timeout 86400"));
                     }
                     let wait = wait.then(|| Duration::from_secs(wait_timeout));
                     let started = node_session::up(&ctx, wait, &cancel)?;
@@ -1250,10 +1253,11 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                 } => {
                     if follow {
                         return Err(Error::usage(
-                        "--follow is only available in the TUI's Log screen; in the CLI a pipe would hang",
-                    )
-                    .with_reason("unsupported_flag")
-                    .with_hint("fmonero tui --log"));
+                            "--follow belongs to the Log screen. Here it would never finish, so a \
+                         pipe reading it would hang.",
+                        )
+                        .with_reason("unsupported_flag")
+                        .with_hint("fmonero tui --log"));
                     }
                     let tail = corelog::tail(&ctx.settings.node.log_file, lines, grep.as_deref())?;
                     out.emit(
@@ -1592,7 +1596,8 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                     prompt::wallet_password(password_file.as_deref(), output::stdout_is_tty())?;
                 if password.is_empty() && !allow_empty_password {
                     return Err(Error::usage(
-                        "an empty password would create an UNENCRYPTED wallet",
+                        "An empty password leaves the wallet file unprotected. Anyone who can \
+                         read the file can spend from it.",
                     )
                     .with_reason("bad_args")
                     .with_hint(format!(
@@ -1692,7 +1697,7 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                         .find(|a| a.address_index == i)
                         .map(|a| a.address.clone())
                         .ok_or_else(|| {
-                            Error::usage(format!("this account has no address {i}"))
+                            Error::usage(format!("This account has no address #{i}."))
                                 .with_reason("bad_args")
                                 .with_hint("fmonero wallet address --json")
                         })?,
@@ -1869,7 +1874,8 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                 if !yes {
                     let payload = plan_payload(&plan, &[], false, false);
                     let e = Error::safety(format!(
-                        "this would send {} XMR to {} with a fee of {} XMR (total {})",
+                        "This would send {} XMR to {}, with a fee of {} XMR. {} would leave \
+                         this wallet.",
                         plan.total_amount.to_xmr_string(),
                         plan.dest,
                         plan.total_fee.to_xmr_string(),
@@ -1940,7 +1946,8 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                 if !yes {
                     let payload = plan_payload(&plan, &[], false, false);
                     let e = Error::safety(format!(
-                        "this would sweep {} XMR to {} in {} transaction(s) with a total fee of {} XMR",
+                        "This would send everything you have, {} XMR, to {}, in {} payments, \
+                         with {} XMR of fees in total.",
                         plan.total_amount.to_xmr_string(),
                         plan.dest,
                         plan.txs.len(),
@@ -2096,8 +2103,10 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                             .into_iter()
                             .find(|e| e.index == index)
                             .ok_or_else(|| {
-                                Error::not_found(format!("no address-book entry {index}"))
-                                    .with_hint("fmonero wallet book list")
+                                Error::not_found(format!(
+                                    "There is no address book entry #{index}."
+                                ))
+                                .with_hint("fmonero wallet book list")
                             })?;
                         w.delete_address_book(index)?;
                         out.emit(
@@ -2269,11 +2278,11 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
         }
         Cmd::Tui(args) => {
             if !output::stdout_is_tty() {
-                return Err(
-                    Error::usage("the TUI needs a terminal; stdout is not a TTY")
-                        .with_reason("bad_args")
-                        .with_hint("fmonero status --json"),
-                );
+                return Err(Error::usage(
+                    "fmonero tui needs a terminal. This output is going somewhere else.",
+                )
+                .with_reason("bad_args")
+                .with_hint("fmonero status --json"));
             }
             tui::run(args, ctx).map_err(from_anyhow)
         }
@@ -2288,9 +2297,11 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
         Cmd::RobotDocs { section } => {
             let section = section.unwrap_or_else(|| "guide".into());
             if section != "guide" {
-                return Err(Error::usage(format!("unknown docs section '{section}'"))
-                    .with_reason("bad_args")
-                    .with_hint("fmonero robot-docs guide"));
+                return Err(Error::usage(format!(
+                    "There is no docs section called \"{section}\"."
+                ))
+                .with_reason("bad_args")
+                .with_hint("fmonero robot-docs guide"));
             }
             // Always plain text, never JSON (§4).
             print!("{}", agent::ROBOT_GUIDE);
@@ -2348,9 +2359,11 @@ fn require_yes(yes: bool, what: &str, args: &[String]) -> Result<(), Error> {
         hint.push_str(&shell_quote(a));
     }
     hint.push_str(" --yes");
-    Err(Error::safety(format!("{what} needs --yes"))
-        .with_reason("needs_yes")
-        .with_hint(hint))
+    Err(
+        Error::safety(format!("{what} changes something, so it needs --yes."))
+            .with_reason("needs_yes")
+            .with_hint(hint),
+    )
 }
 
 /// The `--yes` hint is the user's **own** command with `--yes` appended **verbatim** (§4).
@@ -2434,7 +2447,8 @@ fn check_txid(txid: &str) -> Result<(), Error> {
         return Ok(());
     }
     Err(Error::usage(format!(
-        "'{txid}' is not a transaction id (64 hex characters)"
+        "\"{txid}\" is not a payment id. They are 64 characters long, digits and the letters a \
+         to f."
     ))
     .with_reason("bad_args")
     .with_hint("fmonero wallet history --limit 20"))

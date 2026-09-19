@@ -706,7 +706,8 @@ fn fetch_doc(name: &str, cancel: &CancelToken) -> Result<Vec<u8>, Error> {
     // connection and a 503 are all the second, and the cached list still works in every one of
     // them — which is what the hint says.
     let unreachable = |detail: String| {
-        Error::backend(format!("Could not reach {url}: {detail}"))
+        Error::backend(format!("fmonero could not reach {url}."))
+            .with_detail(detail)
             .with_reason("unreachable")
             .with_hint("fmonero node list   # the cached list still works")
     };
@@ -716,18 +717,18 @@ fn fetch_doc(name: &str, cancel: &CancelToken) -> Result<Vec<u8>, Error> {
     if !out.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
         return Err(unreachable(if stderr.is_empty() {
-            format!("curl exited {:?}", out.code)
+            format!("exited {:?}", out.code)
         } else {
             stderr
         }));
     }
     // The byte cap fmonero enforces itself, independent of the curl on PATH (§2n.3).
     if out.stdout.len() > LIST_MAX_BYTES {
-        return Err(Error::upstream(format!(
-            "{url} answered with more than {LIST_MAX_BYTES} bytes"
-        ))
-        .with_reason("rpc_error")
-        .with_hint("fmonero node list   # the cached list still works"));
+        return Err(
+            Error::upstream(format!("{url} sent back more than fmonero will read."))
+                .with_reason("rpc_error")
+                .with_hint("fmonero node list   # the cached list still works"),
+        );
     }
     Ok(out.stdout)
 }
