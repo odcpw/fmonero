@@ -30,7 +30,7 @@ Panel {
   // with the checked-out tree: a stale shell now fails the gate instead of decorating it. The token
   // is the first eight hex digits of the sha256 of the four widget files with this line removed, so
   // it cannot be left behind by an edit — the gate computes what it should be and says so.
-  readonly property string panelVersion: "qml-576db7ba"
+  readonly property string panelVersion: "qml-cfe3d947"
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent
@@ -101,8 +101,12 @@ Panel {
   // arithmetic on money, which §2a.5 forbids in QML outright — so Status now carries it
   // pre-rendered and this row reads the same string the TUI's otherwise identical line does.
   // `unlocked_xmr_short` is pre-rendered in Rust, for `balance_xmr_short`'s reason (§2a.5, §6.4).
+  // **`svc.wallet` is `status.wallet || null`** (Service.qml:25), so every read of it is guarded —
+  // which is how the first live render of this panel found two `TypeError: Value is null` warnings
+  // in the journal within a second of the shell restarting (round 4 iteration 3). Every other
+  // property in this file that touches `wallet` has the same `&&`, and these two did not.
   readonly property string spendableLine: {
-    if (root.walletHidden) return "some of it is locked"
+    if (root.walletHidden || !svc.wallet) return "some of it is locked"
     var short = svc.wallet.unlocked_xmr_short || svc.wallet.unlocked_xmr
     return short ? String(short) + " XMR to spend" : "some of it is locked"
   }
@@ -618,7 +622,7 @@ Panel {
               // money (§2a.5); with amounts hidden the row keeps the time and drops the figure.
               Text {
                 textFormat: Text.PlainText; visible: root.lockedFunds; width: parent.width
-                text: (root.walletHidden || !svc.wallet.locked_xmr
+                text: (root.walletHidden || !(svc.wallet && svc.wallet.locked_xmr)
                        ? "locked for about " : String(svc.wallet.locked_xmr) + " XMR locked for about ")
                       + root.lockedMinutes + " min"
                 color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall
