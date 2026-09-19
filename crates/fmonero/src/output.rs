@@ -398,6 +398,29 @@ pub fn pad_right(text: &str, width: usize) -> String {
     }
 }
 
+/// Pad to `width` display columns, **with an ellipsis when the value is wider** (M6).
+///
+/// A note is free text, and a table column is not: this is what keeps `wallet history`'s new note
+/// column from pushing the row past the terminal it is measured against. Nothing clipped mid-word
+/// without a marker — the ellipsis IS the marker.
+pub fn fit(text: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if UnicodeWidthStr::width(text) <= width {
+        return pad(text, width);
+    }
+    let mut out = String::new();
+    for c in text.chars() {
+        if UnicodeWidthStr::width(out.as_str()) + 1 >= width {
+            break;
+        }
+        out.push(c);
+    }
+    out.push('…');
+    pad(&out, width)
+}
+
 /// Pad to `width` display columns (CJK- and emoji-safe).
 pub fn pad(text: &str, width: usize) -> String {
     let w = UnicodeWidthStr::width(text);
@@ -431,7 +454,10 @@ fn cell(v: &serde_json::Value) -> String {
 /// own summary on top. Phase 1b enriches the branches here; `main.rs` never changes.
 pub fn human(out: &Out, label: &str, value: &serde_json::Value) {
     match label {
-        "status" => return status_human(out, value),
+        // M7: two labels, one renderer. The label carries which variant ran, because the footer
+        // below has a different next step for each and the §5 document itself must not grow a key
+        // for it (agents parse that document).
+        "status" | "status --check-node" => return status_human(out, value),
         "wallet send" | "wallet sweep" => return money_human(out, value),
         "wallet history" => return history_human(out, value),
         "wallet balance" => return balance_human(out, value),
@@ -527,7 +553,10 @@ fn public_node_rows(out: &Out, node: &serde_json::Value) {
 }
 
 /// The node's two rows **with your own node** — every field here has a live source (§5).
-fn own_node_rows(out: &Out, node: &serde_json::Value) {
+/// `unit_active` is `None` where the caller's payload does not carry `units` — `node info`, which
+/// only ever reaches this function with a node that answered, so the off-branch below is not its
+/// case. `None` keeps the conservative wording rather than asserting "not running" (M1).
+fn own_node_rows(out: &Out, node: &serde_json::Value, unit_active: Option<bool>) {
     let badge = if node["reachable"] == serde_json::Value::Bool(true) {
         if node["synchronized"] == serde_json::Value::Bool(true) {
             out.paint("synced", Paint::Green)
@@ -535,7 +564,17 @@ fn own_node_rows(out: &Out, node: &serde_json::Value) {
             out.paint("syncing", Paint::Yellow)
         }
     } else {
-        out.paint("not answering", Paint::Dim)
+        // **M1: one predicate for one fact.** This row said `not answering` while the warning
+        // three lines below it said `Your node is not running.` — two wordings of one thing in one
+        // screen, and the TUI had already settled it. `node_off_words_from` is that predicate; the
+        // CLI renders from the JSON document, so it passes the two fields rather than a `Status`.
+        out.paint(
+            fmonero_core::node_off_words_from(
+                unit_active.unwrap_or(true),
+                node["layout"].as_str() == Some("system_unit"),
+            ),
+            Paint::Dim,
+        )
     };
     // `layout` is the JSON key and its values are internal words (§2o rule 5): the human row
     // says which node it is instead.
@@ -610,7 +649,11 @@ pub fn status_human(out: &Out, v: &serde_json::Value) {
     if node["layout"].as_str() == Some("remote") {
         public_node_rows(out, node);
     } else {
-        own_node_rows(out, node);
+        own_node_rows(
+            out,
+            node,
+            Some(v["units"]["node"]["active"] == serde_json::Value::Bool(true)),
+        );
     }
     // The wallet row, and **only what is known** (self-read, round 3): with nothing open it read
     // `wallet  not running  http://127.0.0.1:18083  —  balance — XMR` — a loopback URL, a dash
@@ -681,12 +724,30 @@ fn footers(label: &str, v: &serde_json::Value) -> Vec<String> {
     match label {
         // W3: with a public node the node rows are the cached check, and when there is no check
         // yet the one line that changes that is the useful thing to say.
+        // **M7: `--check-node` makes the NEXT run fresh, and the footer says so.** It printed
+        // `this public node has not been checked yet` / `Try: fmonero status --check-node` — and on
+        // a run that HAD just been given `--check-node` the next step named was the command that
+        // had just been typed, which in a sandbox took three runs before a verdict appeared. The
+        // design's intent was always "this starts one in the background"; nothing on screen said it.
         "status"
             if v["node"]["layout"].as_str() == Some("remote")
                 && v["node"]["remote_probe"].is_null() =>
         {
-            out.push("this public node has not been checked yet".to_string());
-            out.push("Try: fmonero status --check-node".to_string());
+            out.push("Nothing has checked this public node yet.".to_string());
+            out.push(
+                "Try: fmonero status --check-node   # starts one in the background".to_string(),
+            );
+        }
+        "status --check-node"
+            if v["node"]["layout"].as_str() == Some("remote")
+                && v["node"]["remote_probe"].is_null() =>
+        {
+            out.push(
+                "A check of this public node is running in the background. This answer is the \
+                 one that was already known."
+                    .to_string(),
+            );
+            out.push("Try: fmonero status   # in a moment, to see what it found".to_string());
         }
         "wallet history" => {
             if v["cached"] == serde_json::Value::Bool(true) {
@@ -702,13 +763,18 @@ fn footers(label: &str, v: &serde_json::Value) -> Vec<String> {
         "wallet list" => {
             if v["wallets"].as_array().is_some_and(|a| a.is_empty()) {
                 let dir = v["dir"].as_str().unwrap_or("<wallet.dir>");
-                out.push(format!("no wallets in {dir}"));
-                out.push("Try: fmonero wallet create <name> --yes".to_string());
+                // **M21: a sentence, and one `Try:`** (§9). It opened with the fragment
+                // `no wallets in <dir>` — lower case, no full stop, the only line in the program
+                // shaped like a log entry — and then printed two runnable commands where §9 asks
+                // for one. Restoring from a seed is the rarer of the two and is named in the
+                // sentence rather than as a second instruction.
+                out.push(format!("There are no wallets in {dir}."));
                 // The one command that brings an existing seed back (§4.1): `wallet restore`
                 // is cut from v0.1 precisely so no seed enters fmonero's process (§0, §2b.2).
                 out.push(format!(
-                    "Try: monero-wallet-cli --restore-deterministic-wallet --wallet-file {dir}/<name>   # then: fmonero wallet open <name>"
+                    "To bring an existing seed back, use monero-wallet-cli --restore-deterministic-wallet --wallet-file {dir}/<name>, then open it here."
                 ));
+                out.push("Try: fmonero wallet create <name> --yes".to_string());
             }
         }
         // §4.1: a missing log file is exit 0 with "no log yet". In JSON mode the payload is
@@ -804,15 +870,28 @@ fn history_human(out: &Out, v: &serde_json::Value) {
     // or the header — rule 9, on the one table where the numbers are money.
     // No flex: an amount column stretched to fill the terminal puts its values a long way from the
     // heading over them (round 4's own read).
-    let w = columns(&[16, 7, 10, 9, 8, 6], &[16, 7, 18, 12, 8, 6], 2, NO_FLEX);
+    //
+    // **M6: a note column.** `n` in the TUI writes a note, the TUI's filter line offers to search
+    // by one, and this table — the only list of payments the CLI has — had no column for it at all,
+    // so a note the owner wrote was invisible in both places at his terminal width.
+    // **M29: `spendable`, not `locked`.** The column was blank for an unlocked payment with nothing
+    // saying blank meant spendable, and it printed `locked` for a FAILED payment that will never
+    // unlock.
+    let w = columns(
+        &[16, 7, 10, 9, 8, 9, 8],
+        &[16, 7, 18, 12, 8, 9, 20],
+        2,
+        NO_FLEX,
+    );
     out.row(format!(
-        "{}  {}  {}  {}  {}  {}",
+        "{}  {}  {}  {}  {}  {}  {}",
         pad("date", w[0]),
         pad("what", w[1]),
         pad_right("amount XMR", w[2]),
         pad_right("fee XMR", w[3]),
         pad_right("confirms", w[4]),
-        "locked"
+        pad("spendable", w[5]),
+        "note"
     ));
     for t in rows {
         // `2026-09-16T14:01` is a machine timestamp cut in half; the `T` is not a word.
@@ -833,19 +912,32 @@ fn history_human(out: &Out, v: &serde_json::Value) {
                     .map(|k| k.words())
             })
             .unwrap_or("—");
-        let locked = match t["locked"].as_bool() {
-            Some(true) => "locked",
-            Some(false) => "",
-            None => "—",
+        // M29: one word in every state, and `never` for a payment that was never accepted.
+        let spendable = if t["type"].as_str() == Some("failed") {
+            "never"
+        } else {
+            match t["locked"].as_bool() {
+                Some(true) => "not yet",
+                Some(false) => "yes",
+                None => "—",
+            }
         };
+        // M4: eight decimals down the fee column, so `0.00000000` and `0.00003072` line their
+        // points up instead of `0.0000` sitting beside `0.00003072`. `fee_pico` is the integer
+        // §5 prints beside the string, so nothing is recomputed from the rendered text.
+        let fee = t["fee_pico"]
+            .as_u64()
+            .map(|p| fmonero_core::Piconero(p).to_xmr_min(fmonero_core::Piconero::FEE_DECIMALS))
+            .unwrap_or_else(|| cell(&t["fee_xmr"]));
         out.row(format!(
-            "{}  {}  {}  {}  {}  {}",
+            "{}  {}  {}  {}  {}  {}  {}",
             pad(&when, w[0]),
             pad(kind, w[1]),
             pad_right(&cell(&t["amount_xmr"]), w[2]),
-            pad_right(&cell(&t["fee_xmr"]), w[3]),
+            pad_right(&fee, w[3]),
             pad_right(&cell(&t["confirmations"]), w[4]),
-            locked
+            pad(spendable, w[5]),
+            fit(t["note"].as_str().unwrap_or(""), w[6])
         ));
     }
     // `high_water` is the snapshot's own bookkeeping and stays in `--json` (§2o rule 7).
@@ -1105,7 +1197,7 @@ fn node_info_human(out: &Out, v: &serde_json::Value) {
         }
         return;
     }
-    own_node_rows(out, node);
+    own_node_rows(out, node, None);
     if let Some(p) = v["txpool"].as_object() {
         // **`0 double spends` is gone** (X29): it is a phrase a reader looks up, it is zero on
         // every healthy node, and nothing on this screen tells them what to do about it. The count

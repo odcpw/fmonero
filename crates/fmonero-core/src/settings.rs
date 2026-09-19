@@ -487,7 +487,7 @@ const KEY_TABLE: &[(&str, &str, &str)] = &[
     (
         "wallet.dir",
         "~/.local/share/fmonero/wallets/<network>",
-        "The directory your wallet files are kept in. `fmonero wallet list` shows what is there.",
+        "The folder your wallet files are kept in. fmonero wallet list shows what is there.",
     ),
     (
         "wallet.port",
@@ -503,14 +503,16 @@ const KEY_TABLE: &[(&str, &str, &str)] = &[
     (
         "wallet.priority",
         "2",
-        "How much fee to pay unless you say otherwise: 0 or 1 cheapest, 2 normal, 3 fast, \
+        // M20: `fee level` is what the Send screen's chips and the send confirm call these four,
+        // and this description was the one surface that named them without the phrase.
+        "The fee level to use unless you say otherwise: 0 or 1 cheapest, 2 normal, 3 fast, \
          4 fastest.",
     ),
     (
         "wallet.autostart",
         "false",
-        "true starts the wallet service as soon as `fmonero tui` opens; false waits until you \
-         open or create a wallet. Nothing but `fmonero tui` reads it.",
+        "true starts the wallet service as soon as the fmonero tui window opens. false waits \
+         until you open or create a wallet. Nothing but the tui reads it.",
     ),
     (
         "timeouts.node_sec",
@@ -545,12 +547,12 @@ const KEY_TABLE: &[(&str, &str, &str)] = &[
     (
         "tui.poll_ms",
         "1000",
-        "How often `fmonero tui` refreshes what it shows, in milliseconds.",
+        "How often the fmonero tui window refreshes what it shows, in milliseconds.",
     ),
     (
         "tui.tick_ms",
         "120",
-        "How often the spinner in `fmonero tui` moves, in milliseconds.",
+        "How often the spinner in the fmonero tui window moves, in milliseconds.",
     ),
     (
         "tui.mouse",
@@ -1112,8 +1114,9 @@ impl Settings {
                     format!(
                         // §2o: the doctor prints this one, so it says which value is wrong,
                         // which one is right, and that its own fixer repairs it — never a flag.
+                        // M20: backticks print literally in a terminal.
                         "{} is not the port {} wallets use ({expected}). \
-                         `fmonero doctor --fix` puts it back.",
+                         fmonero doctor --fix puts it back.",
                         self.wallet.port, self.node.network
                     ),
                 ));

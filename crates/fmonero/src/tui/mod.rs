@@ -154,7 +154,9 @@ pub const KEYS: &[(&str, &str)] = &[
         "click tabs, rows, fields and every [key] chip. The wheel scrolls. Right-click is Esc.",
     ),
     ("u  d", "Node: start · stop your node"),
-    ("b", "Node: peers ⇄ bans"),
+    // M16: `peers ⇄ bans` was a symbol with no words in the one overlay that exists to explain
+    // the keys.
+    ("b", "Node: swap the peers table for the blocked addresses"),
     ("L", "Node: change how much your node logs (it asks first)"),
     ("p  f", "Node: check the listed nodes · get a fresh list"),
     (
@@ -353,6 +355,9 @@ pub(super) enum Modal {
     Prompt {
         what: Prompt,
         title: String,
+        /// The field's own label (M5): an unlabelled input row was the one thing in the modal a
+        /// person types into and the one thing with no name on it.
+        field: String,
         input: TextInput,
     },
     Qr {
@@ -670,7 +675,12 @@ impl Tui {
     pub(super) fn remote_check_words(&self) -> Option<&'static str> {
         let p = self.status.as_ref()?.node.remote_probe.as_ref()?;
         if !p.reachable {
-            return Some("no answer");
+            // **M3: the specific word, not `no answer` for all six.** This collapsed every failure
+            // while the picker's own column two panes away rendered `refused` from the same field
+            // — so the more useful word was the one hidden from the hero, the badge and the pane.
+            // `probe_reason_words` is the one table (§2n.4) and it already answers `no answer` for
+            // a reason it does not recognise.
+            return Some(fmonero_core::nodes::probe_reason_words(p.reason.as_deref()));
         }
         Some(match p.synchronized {
             Some(true) => "synced",
@@ -737,8 +747,11 @@ impl Tui {
             // daemon this model knew to be false. `down` survives only for the state it describes
             // — nothing of ours in flight and the poll still failing, which core has already split
             // into `wallet_idle` (deliberately not running, above) and `wallet_down`.
-            (false, _) if ours && s.wallet.unit_active => ("scanning", "syncing"),
-            (false, _) if ours => ("starting", "syncing"),
+            // **S9: one word for "fmonero is doing something", so the badge does not invent a
+            // second description.** `scanning` was printed while a wallet was being CREATED, in a
+            // frame whose status bar and whose Wallet pane both named the create. The badge is the
+            // three-cell summary of the frame; the label beside the spinner is where the detail is.
+            (false, _) if ours => ("working", "syncing"),
             // **V13: the service is running and it is not answering, and the screen said both.**
             // The Wallet screen read `wallet service: running` (which is `unit_active`) four rows
             // above a status bar reading `wallet not running` (which was `reachable`), and both
@@ -1127,7 +1140,7 @@ impl Tui {
 
     /// The rows the picker is showing, after the filter — the set `p` probes and `Enter` picks
     /// from, so what is on screen and what is acted on cannot differ.
-    fn picker_rows(&self) -> Vec<&fmonero_core::PublicNode> {
+    pub(super) fn picker_rows(&self) -> Vec<&fmonero_core::PublicNode> {
         let needle = self.picker.filter.value().trim().to_ascii_lowercase();
         self.picker
             .list
@@ -1660,11 +1673,20 @@ impl Tui {
             return Cmd::none();
         }
         if self.wallet.filter_open || self.logs.search_open || self.send.editing {
+            // **M22: Esc on the log search clears it.** It left the text in the field, so the next
+            // `/` appended to it — a second search for `zzz` read `/ Syncedzzz` and matched nothing
+            // for a reason nothing on screen explained. Esc leaves a search the same way it leaves
+            // everything else: with nothing kept.
+            let was_log = self.logs.search_open;
             self.wallet.filter_open = false;
             self.logs.search_open = false;
             self.wallet.filter.set_focused(false);
             self.logs.search.set_focused(false);
             self.send.editing = false;
+            if was_log {
+                self.logs.search = text_input(&self.theme);
+                return self.apply_search();
+            }
             return Cmd::none();
         }
         self.cancel_action()
@@ -1840,7 +1862,18 @@ impl Tui {
             hit::Button::AddNode => self.add_node_modal(),
             hit::Button::UseNode => self.use_selected_node(),
             hit::Button::PrevNode => self.previous_node(),
+            // M16: the same code path the `b` key takes.
+            hit::Button::SwapPeers => self.swap_peers_view(),
         }
+    }
+
+    /// `b` — swap the peers table for the blocked addresses, and back (M16's chip).
+    fn swap_peers_view(&mut self) -> Cmd<Msg> {
+        self.node.view = match self.node.view {
+            NodeView::Peers => NodeView::Bans,
+            NodeView::Bans => NodeView::Peers,
+        };
+        self.load_extras()
     }
 
     fn on_node_key(&mut self, k: KeyEvent) -> Cmd<Msg> {
@@ -1881,13 +1914,7 @@ impl Tui {
                 let next = (self.logs.level + 1) % 5;
                 return self.confirm(Confirm::LogLevel(next));
             }
-            KeyCode::Char('b') => {
-                self.node.view = match self.node.view {
-                    NodeView::Peers => NodeView::Bans,
-                    NodeView::Bans => NodeView::Peers,
-                };
-                return self.load_extras();
-            }
+            KeyCode::Char('b') => return self.swap_peers_view(),
             // `↑↓` move the **picker** on this screen: it is the pane a user acts on, and the
             // peers table is a read-only display whose selection nothing consumes.
             KeyCode::Down | KeyCode::Char('j') => self.move_picker(1),
@@ -1934,7 +1961,12 @@ impl Tui {
                 return self.task("new address", move |ctx| {
                     let w = WalletClient::from_ctx(ctx)?;
                     let a = w.create_address(account, "")?;
-                    Ok(format!("new address {}", a.address_index))
+                    // M21: a sentence, like every other toast — `Wallet closed.`, `Nothing to
+                    // cancel.`, `No payment selected.` This one read `new address 3`.
+                    Ok(format!(
+                        "Address #{} is ready. Press Q to show it as a QR code.",
+                        a.address_index
+                    ))
                 });
             }
             KeyCode::Char('l') => return self.prompt_label(),
@@ -2105,6 +2137,7 @@ impl Tui {
             Modal::Prompt {
                 what,
                 title,
+                field,
                 mut input,
             } => match k.code {
                 KeyCode::Escape => Cmd::none(),
@@ -2128,7 +2161,12 @@ impl Tui {
                 }
                 _ => {
                     input.handle_event(&Event::Key(k));
-                    self.modal = Some(Modal::Prompt { what, title, input });
+                    self.modal = Some(Modal::Prompt {
+                        what,
+                        title,
+                        field,
+                        input,
+                    });
                     Cmd::none()
                 }
             },
@@ -2423,20 +2461,26 @@ impl Tui {
             // gets a row of its own above it (`screens::note_fits`), up to two.
             self.note(
                 match what {
+                    // **M13: `f` gets a fresh list; it does not choose a node.** All three
+                    // refusals told the reader to press `f` "for another public node", which is
+                    // the third of three different descriptions of one key in one screen —
+                    // choosing one also needs a selection and Enter. They name the key that does
+                    // what they promise.
                     Confirm::NodeUp => {
                         "You are using a public node, so there is no node here to \
-                                        start. Press f for another public node, or l to use your \
-                                        own."
+                                        start. Pick a node below and press Enter, or press l to \
+                                        use your own."
                     }
                     Confirm::NodeDown => {
                         "You are using a public node, so there is no node here to \
-                                          stop. Press f for another public node, or l to use your \
-                                          own."
+                                          stop. Pick a node below and press Enter, or press l to \
+                                          use your own."
                     }
                     // `L` is not about which node to use at all, which is why one shared refusal
-                    // could never be right for it.
+                    // could never be right for it. **M13: no capitalised word** — `OWN` was the
+                    // only shouted word in the product.
                     Confirm::LogLevel(_) => {
-                        "This sets how much your OWN node logs, and you are \
+                        "This sets how much your own node logs, and you are \
                                              using a public node. Press l to use your own node \
                                              first."
                     }
@@ -2531,6 +2575,25 @@ impl Tui {
             .is_some_and(|s| s.wallet.unit_active && !s.wallet.open && s.wallet.name.is_none())
     }
 
+    /// **S9: the `W` chip's label, and it is not a two-way switch while something is running.**
+    ///
+    /// Eight seconds into creating a wallet the chip read *"Stop the wallet service  (nothing is
+    /// open, so nothing is interrupted)"* — true of the wallet handle and false of everything
+    /// else in the frame, which said `Creating mywallet 8s / 300s` on the status bar and `running,
+    /// but not answering yet` in the pane below. `toggle_wallet_daemon` already refused there; the
+    /// label was the half that lied, and a label that describes a refusal as harmless is worse
+    /// than the refusal.
+    pub(super) fn wallet_daemon_chip(&self) -> &'static str {
+        if self.action.is_some() {
+            return "Stop the wallet service  (not while something is running)";
+        }
+        if self.wallet_daemon_key_stops() {
+            "Stop the wallet service  (nothing is open, so nothing is interrupted)"
+        } else {
+            "Start the wallet service  (not needed: opening a wallet starts it)"
+        }
+    }
+
     /// `W` — start the wallet daemon, or stop it when it is idle.
     ///
     /// **The same key stops it, and only when the unit is active, no wallet is open and nothing is
@@ -2548,7 +2611,11 @@ impl Tui {
             return Cmd::none();
         }
         if self.action.is_some() {
-            self.note("Something is already running.", true);
+            // S9: what is running and what to do, not just that something is.
+            self.note(
+                "Something else is running. Wait for it to finish, or press Esc to stop it.",
+                true,
+            );
             return Cmd::none();
         }
         self.start(Action::WalletDaemonStop)
@@ -2568,6 +2635,7 @@ impl Tui {
             what: Prompt::Label {
                 index: row.address_index,
             },
+            field: "name ".to_string(),
             title: format!(" Name address {} ", row.address_index),
             input: text_input(&self.theme)
                 .with_value(row.label.clone())
@@ -2583,10 +2651,20 @@ impl Tui {
         };
         let txid = t.txid.clone();
         let value = t.note.clone();
+        // **M5: the modal names the payment the note belongs to.** It said only `Note for this
+        // payment`, over a list the modal itself covers — so a reader who had moved the selection
+        // could not tell which row he was about to annotate.
+        let which = format!(
+            " Note for the {} of {} XMR on {} ",
+            t.kind.words(),
+            t.amount.to_xmr_string(),
+            screens::short_time(t.timestamp)
+        );
         self.modal = Some(Modal::Prompt {
             what: Prompt::Note { txid },
+            field: "note ".to_string(),
             // X8, and `docs/COPY.md` §3.5 specified it a round ago: §2o.2 says `payment`.
-            title: " Note for this payment ".to_string(),
+            title: which,
             input: text_input(&self.theme).with_value(value).with_focused(true),
         });
         Cmd::none()
@@ -2650,13 +2728,32 @@ impl Tui {
         }
     }
 
+    /// **M22: a search that says what it found.**
+    ///
+    /// Typing `/ Synced` highlighted the matches and left every line on screen, with nothing saying
+    /// how many there were or that `n` and `N` step between them — so on three lines with one match
+    /// it looked as though the search had done nothing at all. The count and the keys are the answer,
+    /// and `0` is an answer too.
     fn apply_search(&mut self) -> Cmd<Msg> {
         let q = self.logs.search.value().trim().to_string();
-        let mut log = self.logs.viewer.borrow_mut();
-        if q.is_empty() {
-            log.clear_search();
-        } else {
-            log.search(&q);
+        let found = {
+            let mut log = self.logs.viewer.borrow_mut();
+            if q.is_empty() {
+                log.clear_search();
+                None
+            } else {
+                log.search(&q);
+                Some(log.search_info().map_or(0, |(_, total)| total))
+            }
+        };
+        match found {
+            None => self.note("Search cleared. Every line shows.", false),
+            Some(0) => self.note(format!("No line has \"{q}\" in it."), true),
+            Some(1) => self.note(format!("One line has \"{q}\" in it."), false),
+            Some(n) => self.note(
+                format!("{n} lines have \"{q}\" in them. n and N step between them."),
+                false,
+            ),
         }
         Cmd::none()
     }
@@ -2933,7 +3030,8 @@ impl Model for Tui {
                     }
                     Ok(Outcome::Built(plan)) => {
                         self.exit.store(0, Ordering::SeqCst);
-                        self.note("Checked. Nothing has been sent yet.", false);
+                        // M19: what was done, in the words the form and the Preview use.
+                        self.note("The fee is worked out. Nothing has been sent yet.", false);
                         self.send.typed.clear();
                         self.send.stage = Stage::Built(plan);
                         return Cmd::none();

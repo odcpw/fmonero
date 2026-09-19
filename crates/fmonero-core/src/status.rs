@@ -831,7 +831,9 @@ fn warnings(
                 s.node.url
             ),
             "fmonero node local --yes",
-            Some("Press f on the Node screen to choose another."),
+            // M13: `f` fetches a list. Choosing a node needs a selection and Enter, and three
+            // surfaces described one key three ways.
+            Some("On the Node screen, pick another node and press Enter."),
         );
         // **Round 4, S4: the one configuration the owner actually runs had no alarm in it.**
         //
@@ -850,7 +852,7 @@ fn warnings(
                     s.node.url
                 ),
                 "fmonero node list",
-                Some("Press f on the Node screen to pick another one."),
+                Some("On the Node screen, pick another node and press Enter."),
             );
         }
         // A trusted daemon receives the wallet's own unspent amounts INSIDE a request

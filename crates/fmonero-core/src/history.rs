@@ -413,6 +413,28 @@ pub fn locked(t: &Transfer, wh: Option<u64>, adjusted_now: Option<i64>) -> Optio
     Some(!(age_ok && spendtime_ok))
 }
 
+/// **Whether a payment can be spent, in one word, for every surface** (M29).
+///
+/// The TUI's column and `wallet history`'s both rendered [`locked`] as `locked` or as **nothing at
+/// all**, with no legend saying that an empty cell meant spendable — and both printed `locked` for
+/// a `failed` payment, which was never accepted and will never unlock. Four answers, one wording,
+/// one place:
+///
+/// * `never` — the payment failed. There is nothing to wait for.
+/// * `not yet` — accepted and still locked.
+/// * `yes` — spendable now.
+/// * `—` — fmonero does not know, because it has no wallet height or no clock to compare with.
+pub fn lock_words(t: &Transfer, wh: Option<u64>, adjusted_now: Option<i64>) -> &'static str {
+    if t.kind == TransferKind::Failed {
+        return "never";
+    }
+    match locked(t, wh, adjusted_now) {
+        Some(true) => "not yet",
+        Some(false) => "yes",
+        None => "—",
+    }
+}
+
 /// `Ok(None)` when the file is absent; never an error. Exists because the doctor's
 /// `history_cache_fresh` check (§7.1) must read the header and may not touch core's
 /// internals.

@@ -1087,8 +1087,9 @@ fn the_create_wallet_modal_consumes_tab_and_says_so() {
     // rendering assertion and not a status-bar one: a one-row footer clipped that line away, so
     // the rule was true only in DESIGN.md.
     let text = sim_text(&s, 110, 34);
+    // M23: `first` no longer dangles — what Tab normally does is change screens.
     assert!(
-        text.contains("Tab is off here. Press Esc first to discard this."),
+        flowed(&text).contains("Tab cannot change screens while this is open."),
         "{text}"
     );
 }
@@ -1532,7 +1533,9 @@ fn the_use_your_own_node_confirm_states_what_the_switch_does() {
         let text = sim_text(&s, cols, rows);
         assert!(text.contains("Use your own node"), "{cols}x{rows}:\n{text}");
         for want in [
-            "the wallet service will restart",
+            // M10: the service is not running in this fixture, so the modal must not promise a
+            // restart of it.
+            "will use your own node when it next starts",
             "Your own node is not running yet",
             "y to confirm",
         ] {
@@ -1741,8 +1744,17 @@ fn the_picker_selects_nothing_on_entry_and_refuses_the_configured_node() {
         text.contains("will not tell this node which amounts"),
         "{text}"
     );
-    assert!(text.contains("the wallet service will restart"), "{text}");
+    // M10: the service restarts only when it is running, and this fixture's is not.
+    assert!(
+        flowed(&text).contains("will use this node when it next starts"),
+        "{text}"
+    );
     assert!(text.contains("IP address"), "{text}");
+    // M12: what the last check of this node found, or that nothing has checked it.
+    assert!(
+        text.contains("checked") || text.contains("nothing has checked"),
+        "{text}"
+    );
 }
 
 /// Revision 8: the no-cache state is a panel with a focused `[f]` chip and the disclosure — not
@@ -2102,7 +2114,10 @@ fn the_wallet_badge_never_says_down_for_a_daemon_the_tui_is_itself_working() {
     for (active, action, want) in [
         (false, None, "not running"),
         (true, None, "not answering"),
-        (false, Some(subs::Action::WalletDaemonStart), "starting"),
+        // **S9: one word while fmonero is the reason the poll cannot answer.** It said
+        // `starting` for a start and `scanning` for a CREATE, in a frame whose status bar and
+        // whose Wallet pane both named the create — three descriptions of one thing.
+        (false, Some(subs::Action::WalletDaemonStart), "working"),
         (
             true,
             Some(subs::Action::WalletCreate {
@@ -2110,7 +2125,7 @@ fn the_wallet_badge_never_says_down_for_a_daemon_the_tui_is_itself_working() {
                 password: "x".into(),
                 language: "English".into(),
             }),
-            "scanning",
+            "working",
         ),
     ] {
         let dir = std::env::temp_dir().join(format!(
@@ -2614,7 +2629,8 @@ fn the_public_node_refusal_names_both_routes_on_screen() {
     for (k, want) in [
         ('u', "there is no node here to start"),
         ('d', "there is no node here to stop"),
-        ('L', "This sets how much your OWN node logs"),
+        // M13: no shouted word — `OWN` was the only capitalised one in the product.
+        ('L', "This sets how much your own node logs"),
     ] {
         s.inject_event(key(KeyCode::Char(k)));
         for (cols, rows) in [(120u16, 32u16), (150, 40)] {
@@ -2627,7 +2643,8 @@ fn the_public_node_refusal_names_both_routes_on_screen() {
                 "{cols}x{rows}: `{k}` must state its own situation:\n{text}"
             );
             assert!(
-                flat.contains("Press l to use your own node") || flat.contains("or l to use your"),
+                flat.contains("Press l to use your own node")
+                    || flat.contains("or press l to use your own"),
                 "{cols}x{rows}: `{k}` must name the key that fixes it:\n{text}"
             );
             for line in text.lines().filter(|l| l.contains("public node")) {

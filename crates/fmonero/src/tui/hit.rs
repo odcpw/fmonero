@@ -60,6 +60,10 @@ pub(super) enum Button {
     PrevNode,
     /// v5.6, §7a.4's `l`: go back to your own node.
     UseLocal,
+    /// Round 4's M16: the peers/blocked-addresses swap, which was a `b:` prefix inside a pane
+    /// title — a style used nowhere else in the product and the one place a reader met a key
+    /// without a chip around it.
+    SwapPeers,
     Help,
     NextScreen,
 }

@@ -1052,7 +1052,16 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
             } else {
                 fmonero_core::status(&ctx)?
             };
-            out.emit("status", serde_json::to_value(&s)?);
+            // M7: the label says which variant ran, so the footer can name the right next step
+            // instead of the command that has just been typed.
+            out.emit(
+                if check_node {
+                    "status --check-node"
+                } else {
+                    "status"
+                },
+                serde_json::to_value(&s)?,
+            );
             Ok(0)
         }
 

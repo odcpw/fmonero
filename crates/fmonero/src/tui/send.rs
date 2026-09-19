@@ -195,10 +195,25 @@ impl SendScreen {
                 Err(e) => return (e.to_string(), false),
             }
         };
+        // **M18: an empty Amount is not a mistake, it is the next thing to type.** With the cursor
+        // still in `To` and nothing typed into `Amount`, this line read `"" is not an amount. You
+        // typed nothing.` — an empty quoted string presented as something he had typed, about a
+        // field two rows below the cursor. `Piconero::parse`'s message is right for a CLI argument
+        // that was actually supplied and wrong for a form field nobody has reached.
+        if amount.is_empty() {
+            return (format!("{dest} · now type how much, in XMR."), false);
+        }
         match Piconero::parse(amount) {
             Ok(p) if p.0 == 0 => ("0 XMR is not an amount.".into(), false),
+            // **M19: `the check` is named.** Three lines on this screen used the noun and none of
+            // them said what it is — the wallet service works out the fee by preparing the payment
+            // without sending it, which is the one thing a person needs to know before pressing a
+            // key on a money screen.
             Ok(p) => (
-                format!("{dest} · {} XMR · Enter checks the fee", p.to_xmr_string()),
+                format!(
+                    "{dest} · {} XMR · Enter works out the fee. Nothing is sent yet.",
+                    p.to_xmr_string()
+                ),
                 true,
             ),
             Err(e) => (e.to_string(), false),
@@ -473,6 +488,20 @@ pub(super) fn view(m: &Tui, area: Rect, frame: &mut ftui::Frame, tier: Tier) {
         .render(row, frame);
         let box_ = Rect::new(row.x + 8, row.y, row.width.saturating_sub(8).max(1), 1);
         super::screens::hinted_input(th, input, hint, box_, frame);
+        // **M17: a field whose visible value is not its value says so.** A 95-character address in
+        // a 57-cell box shows its last 57 characters and the first 33 are off-screen with nothing
+        // marking it — on the field that decides who gets the money. The row already owns two lines,
+        // so the second one carries the fact. The Preview beside it still shows the address whole,
+        // and this line is what a narrower terminal gets instead.
+        let typed = input.value().width();
+        if row.height > 1 && typed > box_.width as usize {
+            Paragraph::new(Text::from_line(Line::styled(
+                format!("        {typed} characters typed. The box is showing the end of them."),
+                th.dimmed(),
+            )))
+            .wrap(WrapMode::None)
+            .render(Rect::new(row.x, row.y + 1, row.width, 1), frame);
+        }
         // §7a.2: a click focuses the field. The whole row is the target, label included, because
         // a user clicking "Amount" means the amount.
         m.hits.field(i, Rect::new(row.x, row.y, row.width, 1));
@@ -645,7 +674,9 @@ fn view_preview(m: &Tui, area: Rect, frame: &mut ftui::Frame) {
     ]));
     lines.push(Line::from_spans([
         Span::styled("Fee     ".to_string(), th.dimmed()),
-        Span::styled("known after the check".to_string(), th.dimmed()),
+        // M19: the noun `the check` was never defined on this screen. What the fee waits for is
+        // the wallet service preparing the payment, which is what Enter starts.
+        Span::styled("known once Enter prepares it".to_string(), th.dimmed()),
     ]));
     lines.push(Line::from_spans([
         Span::styled("Account ".to_string(), th.dimmed()),
