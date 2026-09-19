@@ -6992,10 +6992,13 @@ coordinate out of `hits` can prove routing and can never prove alignment.
 v5.6 that toast read `remote node mode — run: fmonero node local --yes` and the argument for it was
 §9's one-runnable-hint rule, applied to the TUI. §2o.1 reverses that argument: the TUI is where a user
 who does not want to manage a command line has come, and a panel they cannot type into is the worst
-possible place to print a command. The toast now reads **`You are using a public node. Press f for the
-list, or l to use your own node.`** — two in-app routes, one of which (`l`) v5.6 adds for exactly this
-reason (§7a.4). The `?` overlay marks those four keys `(not while you use a public node)` from the same
-table.
+possible place to print a command. The toast now reads **`Press f for the list, or l for your own.`**
+(`mod.rs:2383`, shortened by W14 so it is never cut) — two in-app routes, one of which (`l`) v5.6 adds
+for exactly this reason (§7a.4). The `?` overlay marks those four keys
+`(not while you use a public node)` from the same table. **Round 3's verification reports the toast as
+a defect rather than a fixture**: it is the hint with the situation removed, it is the same sentence
+for `u`, `d` and `L`, and rules 2 and 11 both want the situation first — see X5 of
+`## Plain-language round 3 verification (real output)` in DECISIONS.md.
 
 **v5.5 reversed half of the previous sentence: the TUI offers `node remote` through the picker. v5.6
 reverses the other half and offers `node local` too, on `l` (§7a.4), because §2o.1 leaves no third
