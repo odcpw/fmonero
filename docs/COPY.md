@@ -873,3 +873,75 @@ em-dash, with a self-test over three planted dashes and the three shapes of the 
 that must pass; and `txid`, which §2o.2 retires and the word list did not carry — the Wallet screen's
 filter hint read `filter by txid, address or note` through the whole v5.6 round. A `{field}` name is
 read as a substitution rather than as prose, so `"… · id {txid} · …"` is a sentence that says `id`.
+
+---
+
+## 10. Plain-language round 4 (2026-09-19): where the words and the facts had come apart
+
+A fresh reader took 144 captures of the v5.6.3 build on a real pty at 120x32 and 150x40 and found
+ten serious items and thirty minor ones. His own summary of the register is that the writing is good
+now, and that what stops the build is *"the last few places where the words and the facts have come
+apart"* — a sentence that is true of every row below. This section lists them by the surface they
+were found on. Every one is corrected in §3 above where §3 had a row for it.
+
+### 10.1 The three that blocked it
+
+| What it said | What it says now |
+|---|---|
+| **S1.** With a `.keys` file present and the folder unreadable, the Wallet screen read `[o] Open a wallet      (none on this machine yet. Press c to create one)` and the open modal `There are no wallets yet, in this folder:` — a false statement about his money, followed by the one action that writes a new wallet file where the old one lives. The CLI on the identical state was honest. Cause: `wallet_dir::list(&ctx).unwrap_or_default()`, four times | `Tui::reload_wallets` keeps the reason. The chip reads `(fmonero cannot read your wallet folder. Press o to see why)` and the modal carries core's own sentence, the folder, and `Press o again once you can read that folder.` |
+| **S2.** The Send confirm rendered `plan.total_amount` — the wallet service's reply — while the form two columns away showed what he typed, and nothing anywhere compared the two | `send::build` compares them and refuses with exit 3 `amount_mismatch`: *"You asked to send 0.2500 XMR and the wallet service prepared 0.1000 XMR. Nothing has been sent."* `fmonero-mock` echoes a request's destinations, so a capture cannot show a figure nobody typed |
+| **S4.** With `node.mode = remote` and the public node silent, `status` listed two `[info]` lines and `doctor` said `0 need attention, 0 not working` — while the row one line above both said `no answer` | `public_node_down` at **warn**, with `On the Node screen, pick another node and press Enter.`; and `node_reachable` answers from the cached check instead of skipping, so `doctor --only node` exits 11 |
+
+### 10.2 The rest of the serious list
+
+| What it said | What it says now |
+|---|---|
+| **S3.** Pane title ` Waiting to be mined · fees in XMR per byte ` over `their fees  0.000427 XMR` — a pool total, four orders of magnitude from a per-byte rate, under a title claiming the unit for it | ` Waiting to be mined `, then `they carry  0.000427 XMR in fees altogether`, then `XMR a byte  cheapest 0.00000002 · normal 0.00000008` |
+| **S5.** `Payments  6 · t: all` above `Nothing yet. Press R to check, / to filter, t to change what shows.` — the header saying six, the body saying none, and the first thing it names the one action that cannot help | three states: an empty wallet keeps that line; a text filter reads `No payment matches "zzzz". Press / to change it, or Esc to clear it.`; a kind filter reads `You have 6 payments, and none of them is sent. Press t to show them all.` |
+| **S6.** `fmonero: cannot read` / `<path>:` / `Permission denied (os error 13)`, and `fmonero: Input/output error (os error 5)` on a closed pty — the operating system's words in the MESSAGE slot that `with_detail`'s own comment reserves for `detail` | `Error::io` / `io_words`: one sentence per `ErrorKind`, the raw text in `detail`, and a `scripts/check.sh` step that refuses a `{e}` substitution in any user-facing literal |
+| **S7.** The log-level confirm said `Press n on the Node screen to read the log.` — `n` has no arm there at all | `Press 4 to read the log.` |
+| **S8.** The bar could print `fmonero status failed (exit 4)` and the program's first stderr line verbatim | one sentence and one route: `fmonero could not say how things are. Press d for the doctor.`, and a failed button reads the Error's own `action` |
+| **S9.** Eight seconds into a create: `[W] Stop the wallet service  (nothing is open, so nothing is interrupted)` over `running, but not answering yet` over `Creating mywallet 8s / 300s` | `(not while something is running)`, and the pane and the badge both take the running action's own label |
+| **S10.** `A payment was prepared and may already have gone out: cccc1111…ccdde2.` — an elided hex id ending the product's most serious warning, on a 380-pixel bar | the amount: `A payment of 0.2500 XMR was prepared and may already have gone out.` Every character of the id is in `--json`. The same deletion in the pending banner, the sent toast, the Send screen's row and the payment detail modal |
+
+### 10.3 The thirty minor ones
+
+| # | What it said | What it says now |
+|---|---|---|
+| M1 | `node  not answering  127.0.0.1:18081  your own node` three lines above `[warn] Your node is not running.` | `node_off_words_from`, so the CLI's own row shares the predicate its warnings use |
+| M2 | three duration shapes: `66h 23m` in the TUI, `2d 18h` on the bar, `running 3d 06h` in the CLI; and `1h 00m` beside `1d 0h` | one `fmonero_core::duration` with a days unit, two digits on every field after the first; `age` is it plus the preposition, `human_uptime` is it plus a clamp, `Model.age` is its JavaScript half |
+| M3 | a column headed `ping`, and a hero collapsing six check failures into `no answer` while the column beside it said `refused` | `checked`, and `remote_check_words` returns the specific word from `probe_reason_words` |
+| M4 | `fast 0.00000032 · fastest 0.000004` — the larger value in fewer digits; `0.0000` beside `0.00003072` in one fee column | `Piconero::to_xmr_min(FEE_DECIMALS)`: eight decimals down a fee column, still exact, never truncated |
+| M5 | the note and rename modals put `Enter saves · Esc cancels` **above** the only field, and the field had no label; the note modal never said which payment | the field above the keys line, labelled `note ` / `name `, and the title names the payment: ` Note for the sent of 0.2500 XMR on 09-16 10:00 ` |
+| M6 | the `NOTE` and `NAME` columns appeared only at 150x40, and `wallet history` had no note column at all | `history_cols` measures the note against the pane and gives it what is left before the fee; the addresses pane's name column starts at 48 columns; `wallet history` has a note column |
+| M7 | `status --check-node` printed `not checked yet` and `Try: fmonero status --check-node` — the command just typed | the flagged run says a check is running in the background and names `fmonero status`; the unflagged one explains what the flag does |
+| M8 | in public-node mode the Log screen promised `No log yet. Your node writes it once it runs.` | `This is your own node's log, and you are using a public node. Press 1, then l, to use your own node.` |
+| M9 | in local mode the picker still drew `[l] Use your own node`, which answers `You are already using your own node.` | the chip is not drawn in the mode it cannot act in |
+| M10 | with the node stopped, `d` opened ` Stop your node ` / `fmonero stops your node on this machine.`; with the wallet service down, `l` promised `the wallet service will restart`; and one sentence sat at the bullet indent without a bullet | both confirms describe the state they are in, and the sentence gets its own blank line |
+| M11 | `Select a node first, with ↑↓ or a click, then Enter.` under the ` Use this node ` confirm for the node just selected | `toast_hidden`: a toast does not survive into a modal, the send confirm or the help overlay |
+| M12 | ` Use this node ` said nothing about the row behind it reading `no answer` | `· when fmonero checked it, there was no answer: refused`, from the picker's own row |
+| M13 | `f` described three ways in one screen, and `OWN` was the only capitalised word in the product | `f` gets a fresh list, everywhere; choosing a node is a selection and Enter; no shouted word |
+| M14 | `can be read by others (0755). It should be 0700.` | what it means, and the fix line below it |
+| M15 | `the public node 127.0.0.1:18099` and `127.0.0.1` one line apart | the address as the user set it, both times |
+| M16 | `their fees`, `0 being rejected`, `limits`, `Peers  0 · b: bans`, `peers ⇄ bans`, `mainnet omarchy` | `they carry … in fees altogether`; the turned-away count only when it is not zero; `its limits`; a `[b]` chip under the pane; `Node: swap the peers table for the blocked addresses`; `network mainnet` and no theme name |
+| M17 | `To      DwVjeRVd…` — a 95-character address showing its last 57 with nothing saying so | the row's second line reads `95 characters typed. The box is showing the end of them.` |
+| M18 | `"" is not an amount. You typed nothing.` with the cursor two rows above | `mainnet address · now type how much, in XMR.` |
+| M19 | `known after the check`, `Enter checks the fee`, `Checked. Nothing has been sent yet.` — a noun the money screen never defined | `known once Enter prepares it`, `Enter works out the fee. Nothing is sent yet.`, `The fee is worked out. Nothing has been sent yet.` |
+| M20 | backticks printed literally in three `settings list` descriptions, and `wallet.priority` never used the words `fee level` | no backticks, and `The fee level to use unless you say otherwise` |
+| M21 | `no wallets in <dir>` and two `Try:` lines; the toast `new address 3` | `There are no wallets in <dir>.` with one `Try:`, and `Address #3 is ready. Press Q to show it as a QR code.` |
+| M22 | `/ Synced` changed nothing visible and said nothing; Esc kept the text, so the next `/` appended | `3 lines have "Synced" in them. n and N step between them.`, and Esc clears the field |
+| M23 | `Tab is off here. Press Esc first to discard this.`; the label `Repeat the password` among three nouns | `Tab cannot change screens while this is open. Esc closes it and keeps nothing.`; `Password again` |
+| M24 | the add-a-node field label `address` in lower case, and `Nodes you add here are treated as public.` | `Address`, and `fmonero will not tell a node you add here which amounts your wallet holds.` |
+| M25 | `2 fmonero could not read` — a count in front of the program's name | `2 could not be read` |
+| M26 | a button that failed showed the message and withheld every route, because only `hint` was considered | the Error's `action` is the in-app sentence, and it is read |
+| M27 | ` · checked 1m 35s ago` — a row starting with a bare separator; and `Public node · wallet closed` with no verdict, for the same restricted node | `answered · checked 1m 35s ago`, and `Public node · answered · wallet closed` |
+| M28 | `not shown by this node` about a node that is not running | `none while your node is off` |
+| M29 | `failed  …  locked`, and blank for a spendable payment with nothing saying what blank meant | a `SPENDABLE` column: `yes` · `not yet` · `never` · `—`, from `history::lock_words`, in the TUI's table, `wallet history` and the detail modal |
+| M30 | ` Receive · Esc closes `, a code, and 95 characters — no account number, no purpose | `Your address #0 · Primary account` above the code, and `Show this, or send the line above, to be paid.` under it |
+
+### 10.4 Three things this round deleted rather than reworded
+
+The payment detail modal's first row was the whole 64-character id; `unlocks at 0` was on every row;
+and `double spend false` was on every correct payment. All three are gone — the id to `--json`, the
+other two rendered only when they carry a fact. §2o has no rule that says "delete it", and it needs
+none: a row that says nothing is a row that pushes the rows that do say something off the bottom.
