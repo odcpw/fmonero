@@ -89,6 +89,34 @@ impl UnitState {
     }
 }
 
+/// One §5c `setup.actions` entry's `what`, **in words a person reads** (X2).
+///
+/// `what` is an agent-contract value: `tests/e2e.sh` selects rows with
+/// `select(.what == "wallet unit")` and §5c fixes the spelling, so it cannot become a sentence.
+/// What it *can* do is come with one. `setup`'s human rendering goes through here, and `--json`
+/// keeps the value unchanged — the same split §2o makes everywhere else, and the reason
+/// `scripts/check.sh` exempts these four literals by name rather than by guesswork.
+///
+/// A value this table does not know comes back as it is: a new action should read oddly once and
+/// be added here, rather than silently print a plausible wrong sentence.
+pub fn action_words(what: &str) -> String {
+    match what {
+        "node unit" => "how your node starts".to_string(),
+        "wallet unit" => "how the wallet service starts".to_string(),
+        "monerod.conf" => "your node's own settings".to_string(),
+        "CreateDir wallet.dir" => "the folder your wallets live in".to_string(),
+        "plugin symlink" => "the bar widget".to_string(),
+        "Omarchy menu entries" => "the Omarchy menu entries".to_string(),
+        other => match other.split_once(' ') {
+            Some(("CreateSymlink", rest)) => {
+                format!("a link to {}", rest.trim_start_matches("-> "))
+            }
+            Some(("RunArgv", rest)) => format!("ran: {rest}"),
+            _ => other.to_string(),
+        },
+    }
+}
+
 /// What [`install`] did, or would do, to one file. This **is** §5c's `setup.actions`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FileAction {
@@ -306,7 +334,7 @@ fn pure_refusal(sandboxed: bool, systemctl: &Systemctl, verb: &str) -> Option<Er
         // state instead of changing it. The comment names the seam, because the agent reading
         // this refusal is the one who has to set it.
         .with_hint(
-            "fmonero status --json   # set FMONERO_SYSTEMCTL_FIXTURE to act on a sandboxed unit",
+            "fmonero status --json   # or set FMONERO_SYSTEMCTL_FIXTURE to work on a test copy",
         ),
     )
 }
@@ -484,6 +512,7 @@ pub fn stop_after_failed_start(ctx: &Context, unit: &str, cancel: &CancelToken) 
 /// interval, so a `203/EXEC` — the answer when the Monero binary is absent — restarts every
 /// five seconds forever. §4.2 already describes the failure as retrying "into systemd's start
 /// limit"; these two lines are what make that true.
+// copy-exempt-begin: file content, not prose — these are the bytes systemd and monerod read
 pub fn render_node_unit(ctx: &Context) -> String {
     format!(
         "\
@@ -511,12 +540,14 @@ WantedBy=default.target
         conf = ctx.paths.monerod_conf().display(),
     )
 }
+// copy-exempt-end
 
 /// `~/.config/fmonero/monerod.conf` (§4.2, §2c). **Every path in it is ABSOLUTE**: boost's
 /// `program_options` does no specifier expansion, so a `%h` here would make `monerod` create
 /// a directory literally named `%h` and resync the chain from zero — a failure no mock can
 /// catch, which is why its guard is the permanent unit test
 /// [`tests::render_node_conf_has_no_systemd_specifiers`].
+// copy-exempt-begin: file content, not prose — these are the bytes systemd and monerod read
 pub fn render_node_conf(ctx: &Context, login: &Login) -> String {
     let net = ctx.settings.node.network;
     let mut s = String::new();
@@ -560,11 +591,13 @@ pub fn render_node_conf(ctx: &Context, login: &Login) -> String {
     }
     s
 }
+// copy-exempt-end
 
 /// The wallet unit (§4.2). `--wallet-dir` is rendered from `settings.wallet.dir` **and
 /// therefore always carries the network segment**, never from a template constant, and
 /// never as `%h/...`: the doctor's `wallet_dir_matches_unit` compares it against that
 /// setting literally.
+// copy-exempt-begin: file content, not prose — these are the bytes systemd and monerod read
 pub fn render_wallet_unit(ctx: &Context) -> String {
     let net = ctx.settings.node.network;
     let extra = match net {
@@ -612,6 +645,7 @@ WantedBy=default.target
         ssl = target.ssl,
     )
 }
+// copy-exempt-end
 
 /// The three daemon facts the wallet unit renders and `set_daemon` sends — derived in **one**
 /// place so the two cannot disagree (v5.2, §2m.3, §5b).
@@ -1142,7 +1176,7 @@ struct FixtureRow {
 fn fixture_row(path: &Path, unit: &str) -> Result<Option<FixtureRow>, Error> {
     let text = std::fs::read_to_string(path).map_err(|e| {
         Error::failure(format!(
-            "cannot read the systemctl fixture {}: {e}",
+            "cannot read the FMONERO_SYSTEMCTL_FIXTURE file {}: {e}",
             path.display()
         ))
     })?;
@@ -1180,7 +1214,7 @@ fn fixture_row(path: &Path, unit: &str) -> Result<Option<FixtureRow>, Error> {
 fn fixture_set_active(path: &Path, unit: &str, active: bool) -> Result<(), Error> {
     let text = std::fs::read_to_string(path).map_err(|e| {
         Error::failure(format!(
-            "cannot read the systemctl fixture {}: {e}",
+            "cannot read the FMONERO_SYSTEMCTL_FIXTURE file {}: {e}",
             path.display()
         ))
     })?;
@@ -1205,7 +1239,7 @@ fn fixture_set_active(path: &Path, unit: &str, active: bool) -> Result<(), Error
     }
     if !found {
         return Err(Error::backend(format!(
-            "the systemctl fixture {} has no line for {unit}",
+            "the FMONERO_SYSTEMCTL_FIXTURE file {} has no line for {unit}",
             path.display()
         ))
         .with_reason("unit_missing"));

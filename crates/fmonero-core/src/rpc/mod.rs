@@ -62,16 +62,21 @@ pub enum RpcError {
 /// client is the one that carries a credential and moves money, so exempting it would
 /// leave the rule true only where it costs nothing.
 pub fn require_loopback(url: &str) -> Result<(), Error> {
+    // **X2: three rule-7 words in one refusal, and the hint's comment carried two of them.**
+    // `check.sh`'s allow-list exempts a runnable command, and the half after the `#` is prose that
+    // slipped through in a file the grep did not read at all. The sentence says what a person can
+    // use here; the reason says why theirs was not accepted.
     let refuse = |why: &str| {
-        Error::usage(format!("{url} is not a loopback http URL: {why}"))
-            .with_reason("non_loopback_url")
-            .with_hint(
-                "fmonero wallet set-daemon <addr>   # a remote node is reached by monero-wallet-rpc, not by fmonero",
-            )
+        Error::usage(format!(
+            "fmonero can only talk to this machine, and {url} is somewhere else: {why}"
+        ))
+        .with_reason("non_loopback_url")
+        .with_hint("fmonero node remote <host:port> --yes   # to use a public node instead")
+        .with_action("Press f on the Node screen to choose a public node.")
     };
     let Some(rest) = url.strip_prefix("http://") else {
         return Err(refuse(
-            "fmonero speaks plaintext http to loopback only, and carries no TLS stack",
+            "an address here starts with http:// and names this machine",
         ));
     };
     // `host[:port]`, with an optional path we ignore here.
@@ -81,14 +86,18 @@ pub fn require_loopback(url: &str) -> Result<(), Error> {
     }
     if authority.contains('@') {
         return Err(refuse(
-            "credentials belong in the daemon's own login file (§2c)",
+            "a password does not belong in an address; fmonero keeps it in its own file",
         ));
     }
     let host = if let Some(end) = authority.strip_prefix('[') {
         // [::1]:18081
         match end.split_once(']') {
             Some((h, _)) => h.to_string(),
-            None => return Err(refuse("its IPv6 host is not bracketed")),
+            None => {
+                return Err(refuse(
+                    "an IPv6 address goes in square brackets, like [::1]:18081",
+                ))
+            }
         }
     } else {
         authority
@@ -103,7 +112,9 @@ pub fn require_loopback(url: &str) -> Result<(), Error> {
         return if ip.is_loopback() {
             Ok(())
         } else {
-            Err(refuse("only 127.0.0.0/8 and ::1 are accepted"))
+            Err(refuse(
+                "only this machine's own addresses are accepted, like 127.0.0.1",
+            ))
         };
     }
     if host.eq_ignore_ascii_case("localhost") {
@@ -119,11 +130,11 @@ pub fn require_loopback(url: &str) -> Result<(), Error> {
             return Ok(());
         }
         return Err(refuse(
-            "'localhost' resolves to an address that is not loopback",
+            "'localhost' points somewhere other than this machine here",
         ));
     }
     Err(refuse(
-        "only a literal loopback address (or localhost) is accepted",
+        "a name is not accepted here: write 127.0.0.1, or localhost",
     ))
 }
 
@@ -350,7 +361,21 @@ mod tests {
             let e = require_loopback(url).unwrap_err();
             assert_eq!(e.exit_code(), 2, "{url}");
             assert_eq!(e.reason(), Some("non_loopback_url"), "{url}");
-            assert!(e.hint().contains("set-daemon"), "{url}");
+            // X2: the hint is the route a person actually wants — the way to use a public node —
+            // and its old trailing comment was the prose §2o rule 7 forbids.
+            assert!(e.hint().contains("fmonero node remote"), "{url}");
+            assert!(
+                !e.hint().contains('#') || !e.hint().contains("monero-wallet-rpc"),
+                "{url}"
+            );
+            assert!(
+                e.action()
+                    .is_some_and(|a| a.contains("Press f on the Node screen")),
+                "{url}"
+            );
+            for word in ["loopback", "daemon", "TLS stack", "§"] {
+                assert!(!e.to_string().contains(word), "{url}: {e}");
+            }
         }
     }
 

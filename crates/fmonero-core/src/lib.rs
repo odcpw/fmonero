@@ -132,7 +132,7 @@ pub fn age(seconds: u64) -> String {
 /// person.
 ///
 /// Integer arithmetic, with the one decimal place carried by hand: §2a.5's enforcement is a grep
-/// for `as f64` across `crates/*/src`, and a formatter that makes that grep fire is a formatter
+/// for a float cast across `crates/*/src`, and a formatter that makes that grep fire is a formatter
 /// somebody later exempts — at which point the grep no longer protects the amount paths it exists
 /// for. Bytes are not money, but the grep cannot tell.
 pub fn bytes(n: u64) -> String {

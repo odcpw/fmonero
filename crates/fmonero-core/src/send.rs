@@ -406,13 +406,16 @@ pub fn relay(
                 // §2a.4's partial sweep: the metadata of the remaining entries is dropped
                 // (it was never written to disk), the record stays, and the message names
                 // what did go out.
+                // **X2: this string is pasted into the error's own SENTENCE** by
+                // `relay_failure`, so `broadcast` (rule 7) reached a person on the money path.
+                // The ids move to `detail`, where `--json` and `-v` keep them whole (W8).
                 let ids = relayed.join(", ");
                 let detail = if relayed.is_empty() {
-                    format!("0 of {total} broadcast")
+                    format!("none of the {total} payments has gone out")
                 } else {
-                    format!("{i} of {total} broadcast ({ids})")
+                    format!("{i} of {total} payments have gone out")
                 };
-                return Err(relay_failure(e, &detail, total));
+                return Err(relay_failure(e, &detail, total).with_detail(ids));
             }
         }
     }
@@ -422,8 +425,9 @@ pub fn relay(
     // the outgoing transfer and the resolve step then blocks every later send.
     if let Err(e) = w.store() {
         announce(&format!(
-            "warning: the transactions were broadcast but `store` failed ({e}); the wallet will \
-             re-derive them on its next refresh"
+            // X2: rule 7 (`broadcast`) and an implementation name as the subject.
+            "The payments have gone out, but this wallet could not write them down ({e}). It \
+             will find them again on its next refresh."
         ));
         let _ = state::set_last_error(ctx, &e, None);
     }
@@ -737,6 +741,18 @@ pub fn check_max_fee(plan: &Plan) -> Result<(), Error> {
     )))
 }
 
+/// §2o.2's four words for a `--priority`, in core so the CLI, the TUI and this line agree (X2).
+///
+/// `0` is an alias of `1` on the wire (§1b.4), so both read `cheapest`.
+pub fn fee_level_words(priority: u32) -> &'static str {
+    match priority {
+        0 | 1 => "cheapest",
+        2 => "normal",
+        3 => "fast",
+        _ => "fastest",
+    }
+}
+
 /// The one line `relay` announces before the first `relay_tx` (§2a.2), so the number that is
 /// paid is always displayed even though the fee may differ from a previous invocation's.
 fn announce_line(plan: &Plan) -> String {
@@ -744,17 +760,19 @@ fn announce_line(plan: &Plan) -> String {
         .total()
         .map(|t| t.to_xmr_string())
         .unwrap_or_else(|_| "?".to_string());
+    // **X2 and X8: `priority` and `transactions` on the line printed immediately before the
+    // money moves.** §2o.2 fixes `fee level` and its four words, and `payment`.
     format!(
-        "{} {} XMR to {} · fee {} XMR · total {} XMR · priority {} · account {}{}",
+        "{} {} XMR to {} · fee {} XMR · total {} XMR · {} fee level · account {}{}",
         if plan.is_sweep { "sweeping" } else { "sending" },
         plan.total_amount.to_xmr_string(),
         plan.dest,
         plan.total_fee.to_xmr_string(),
         total,
-        plan.priority,
+        fee_level_words(plan.priority),
         plan.account_index,
         if plan.txs.len() > 1 {
-            format!(" · {} transactions", plan.txs.len())
+            format!(" · {} payments", plan.txs.len())
         } else {
             String::new()
         }
@@ -783,9 +801,15 @@ pub fn refuse_if_send_in_flight(ctx: &Context) -> Result<(), Error> {
         .find(|t| !t.relayed)
         .map(|t| t.txid.clone())
         .unwrap_or_default();
+    // **X2: `in flight`, `built` and `relayed` in one sentence, about money** — and
+    // `record.kind.as_str()` is the internal word (`send` / `sweep`) where §2o.2 wants the verb.
     Err(Error::safety(format!(
-        "a previous {} may still be in flight: {unrelayed} of {} transaction(s) were built but not confirmed relayed",
-        record.kind.as_str(),
+        "An earlier {} may still be on its way: {unrelayed} of {} payments were prepared and \
+         fmonero never saw them go out.",
+        match record.kind {
+            PendingKind::Sweep => "sweep",
+            PendingKind::Send => "payment",
+        },
         record.txs.len()
     ))
     .with_reason("pending_send")

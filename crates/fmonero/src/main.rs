@@ -46,7 +46,8 @@ print the real fee, and send only with --yes.";
 
 const AFTER_HELP: &str =
     "Exit codes: 0 ok · 1 failure · 2 usage · 3 safety (needs --yes) · 4 backend ·
-5 upstream (a daemon errored or was killed at its deadline) · 6 not found · 7 ambiguous ·
+5 upstream (a background program errored or was killed at its deadline) · 6 not found ·
+7 ambiguous ·
 8 timeout · 9 wallet locked · 10 node syncing · 11/12/13 doctor · 14 insufficient funds ·
 15 invalid address · 16 tx rejected · 130 interrupted.
 
@@ -211,10 +212,10 @@ Without --wait a still-syncing node is exit 0 plus the node_syncing warning."
 background services again and restarts the wallet service if it was running. fmonero itself
 never talks to the public node; the wallet service does.
 
-A public node sees this machine's IP address and the timing of every request, supplies the
-decoys every transaction is built from, and can lie about the chain tip and the fee — so
-NEVER pass --trusted to one, and bound a send with --max-fee. TLS here is opportunistic and
-unauthenticated, and Tor is not in v0.1.
+A public node sees this machine's IP address and when you ask it anything, supplies the
+decoys every payment is made from, and can lie about the chain tip and the fee. So never pass
+--trusted to one, and bound a send with --max-fee. The encryption here is opportunistic and
+nothing checks the certificate, and Tor is not in v0.1.
 
   fmonero node remote node.example.com:18089 --yes      # a public node
   fmonero node local --yes                              # the way back"
@@ -231,15 +232,15 @@ unauthenticated, and Tor is not in v0.1.
     /// Public nodes from monero.fail, cached — and, with --probe, measured from here (§2n)
     #[command(
         after_help = "Uses the saved list and fetches a new one only when --refresh is
-given or the saved list is absent or older than 24 h. --probe then asks the top --limit candidates
-for get_info itself, 8 at a time with a 5 s deadline each.
+given or the saved list is absent or older than 24 h. --probe then checks the top --limit
+candidates from here, 8 at a time with a 5 s deadline each.
 
-Fetching the list tells monero.fail this machine's IP address. Probing tells each node you
-probe. Nothing is contacted automatically except the node already configured, and that only
-while the TUI's Node screen is showing. monero.fail's health figures are monero.fail's
-measurements from monero.fail's vantage point — not a recommendation, and not this machine's.
+Getting the list tells monero.fail this machine's IP address. Checking a node tells that node
+too. Nothing is contacted automatically except the node already configured, and that only
+while the TUI's Node screen is showing. monero.fail's figures are its own measurements. They
+are not a recommendation, and not this machine's.
 
-Needs curl, as a child process: fmonero's own HTTP client stays loopback-only.
+Needs curl, as a child process: fmonero's own HTTP client only ever talks to this machine.
 
   fmonero node list                       # the cache, instantly
   fmonero node list --refresh --probe     # refetch, then measure the top 20 from here
@@ -261,8 +262,8 @@ Needs curl, as a child process: fmonero's own HTTP client stays loopback-only.
     },
     /// Read or set the node's rate limits and peer counts
     #[command(
-        after_help = "With no arguments this only reads (out_peers/in_peers are queried with
-set:false). All limits are kB/s; -1 restores monerod's default."
+        after_help = "With no arguments this only reads, and changes nothing. All limits are
+kB/s, and -1 puts a limit back to the node's own default."
     )]
     Limit {
         /// Upload limit in kB/s (-1 = default)
@@ -287,7 +288,8 @@ enum WalletCmd {
     /// Open a wallet: start the unit if needed, open it, install the node credential, auto-refresh
     #[command(
         after_help = "The password comes from --password-file, then $FMONERO_WALLET_PASSWORD,
-then a TTY prompt with echo off. It never reaches argv (fmonero's or the daemon's)."
+then a prompt in the terminal with echo off. It is never passed on a command line, fmonero's
+or the wallet service's."
     )]
     Open {
         /// The wallet's name inside wallet.dir (no `/`)
@@ -350,8 +352,8 @@ is refused without --allow-empty-password. The seed is never printed: back it up
     /// Transfer history, from a local snapshot plus one incremental fetch
     #[command(
         after_help = "--in selects `in` AND `block` (coinbase) rows: they arrive in the same
-list. --cached issues NO RPC at all, and then `confirmations` and `locked` are null — zero
-RPC and a live confirmation count are mutually exclusive."
+list. --cached asks the wallet service nothing at all, and then `confirmations` and `locked`
+are null. Asking nothing and a live confirmation count cannot both be had."
     )]
     History {
         /// Account index
@@ -385,11 +387,11 @@ RPC and a live confirmation count are mutually exclusive."
     /// Send an exact amount to one recipient
     #[command(
         after_help = "Prepares the payment without sending it and prints the real fee first.
-Without --yes it prints that fee and exits 3. --dry-run beats --yes: it never sends. --max-fee refuses the
-relay when the built fee exceeds it. v0.1 builds exactly ONE transaction; when the wallet
-needs more the daemon answers TX_TOO_LARGE and the hint names `wallet sweep`.
+Without --yes it prints that fee and exits 3. --dry-run beats --yes: it never sends. --max-fee
+refuses to send when the prepared fee exceeds it. v0.1 prepares exactly ONE transaction; when
+the wallet needs more, the hint names `wallet sweep`.
 
-Verified against fmonero-mock only: no send has ever been broadcast from this build (§4b)."
+Tested against fmonero-mock only: no send has ever gone out from this version."
     )]
     Send {
         /// A Monero address, or @label from the address book
@@ -399,10 +401,10 @@ Verified against fmonero-mock only: no send has ever been broadcast from this bu
         /// Account index
         #[arg(long, value_name = "N")]
         account: Option<u32>,
-        /// 0-4: 0 = lowest (an alias of 1) · 1 low · 2 normal · 3 high · 4 highest
+        /// Fee level 0-4: 0 and 1 cheapest · 2 normal · 3 fast · 4 fastest
         #[arg(long, value_name = "0-4")]
         priority: Option<u32>,
-        /// A note stored with the transaction after it is relayed
+        /// A note stored with the payment once it has gone out
         #[arg(long, value_name = "TEXT")]
         note: Option<String>,
         /// Refuse the relay when the built total fee exceeds this
@@ -412,10 +414,10 @@ Verified against fmonero-mock only: no send has ever been broadcast from this bu
     /// Sweep an account to one recipient
     #[command(
         after_help = "Sweeps the whole account (bounded by --below) and may need several
-transactions; each is sent in order under one crash-safe record. There is no amount
-argument and no subaddress selector — every subaddress of the account is included.
+payments. Each is sent in order under one crash-safe record. There is no amount argument and
+no way to pick one address: every address of the account is included.
 
-Verified against fmonero-mock only: no sweep has ever been broadcast from this build (§4b)."
+Tested against fmonero-mock only: no sweep has ever gone out from this version."
     )]
     Sweep {
         /// A Monero address, or @label from the address book
@@ -423,7 +425,7 @@ Verified against fmonero-mock only: no sweep has ever been broadcast from this b
         /// Account index
         #[arg(long, value_name = "N")]
         account: Option<u32>,
-        /// 0-4: 0 = lowest (an alias of 1) · 1 low · 2 normal · 3 high · 4 highest
+        /// Fee level 0-4: 0 and 1 cheapest · 2 normal · 3 fast · 4 fastest
         #[arg(long, value_name = "0-4")]
         priority: Option<u32>,
         /// Only sweep outputs below this amount
@@ -960,7 +962,7 @@ fn refuse_with_plan(out: &Out, e: &Error, payload: serde_json::Value) -> i32 {
 fn print_qr(out: &Out, text: &str) -> Result<(), Error> {
     use qrcode::{Color, QrCode};
     let code = QrCode::new(text.as_bytes())
-        .map_err(|e| Error::failure(format!("cannot build a QR for that address: {e}")))?;
+        .map_err(|e| Error::failure(format!("cannot make a QR code for that address: {e}")))?;
     let width = code.width();
     let modules = code.to_colors();
     let dark = |x: usize, y: usize| -> bool {
@@ -1422,12 +1424,17 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                     let printable = before.as_ref().map(|d| d.nodes.len()).unwrap_or(0);
                     if !ctx.json {
                         if will_fetch {
-                            out.note("contacting monero.fail — this tells it your IP address");
+                            // X2, rule 12: an em-dash is not prose punctuation here, and this
+                            // is the disclosure that stands in front of a third-party fetch.
+                            out.note(
+                                "Getting the list from monero.fail. This tells it your IP address.",
+                            );
                         }
                         if probe {
                             let n = nodes::effective_limit(&opts, printable.max(1));
+                            // X2: rule 7 (`probing`) and rule 12 in one string.
                             out.note(format!(
-                                "probing up to {n} nodes — each learns your IP address"
+                                "Checking up to {n} nodes. Each one learns your IP address."
                             ));
                         }
                     }
@@ -1673,7 +1680,7 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                         .find(|a| a.address_index == i)
                         .map(|a| a.address.clone())
                         .ok_or_else(|| {
-                            Error::usage(format!("this account has no subaddress {i}"))
+                            Error::usage(format!("this account has no address {i}"))
                                 .with_reason("bad_args")
                                 .with_hint("fmonero wallet address --json")
                         })?,
@@ -2021,7 +2028,7 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                     // and it says so (§4.1). Any other failure is the daemon's answer.
                     Err(e) if e.exit_code() == 4 => {
                         let a = structural?;
-                        out.verbose_note(format!("wallet daemon unavailable: {e}"));
+                        out.verbose_note(format!("the wallet service could not check it: {e}"));
                         out.emit(
                             "wallet validate",
                             ok(serde_json::json!({
@@ -2381,7 +2388,10 @@ fn shell_quote(s: &str) -> String {
 fn check_wallet_name(name: &str) -> Result<(), Error> {
     if name.is_empty() || name.contains('/') {
         return Err(Error::usage(format!(
-            "'{name}' is not a wallet name: the daemon resolves <wallet.dir>/<name> and a name may not contain '/'"
+            // X2: rule 7 (`daemon`) and rule 6 (`<wallet.dir>/<name>` as the subject of a
+            // sentence). Rule 10's shape instead: what was typed, then what a good one looks like.
+            "'{name}' is not a wallet name. A name is one word with no '/' in it, and the wallet \
+             file of that name sits in your wallet folder."
         ))
         .with_reason("bad_args")
         .with_hint("fmonero wallet list"));
@@ -2394,7 +2404,9 @@ fn check_wallet_name(name: &str) -> Result<(), Error> {
 fn check_priority(priority: u32) -> Result<(), Error> {
     if priority > 4 {
         return Err(Error::usage(format!(
-            "priority {priority} is out of range: 0 = lowest (an alias of 1) · 1 low · 2 normal · 3 high · 4 highest"
+            // X2, §2o.2: the fee level's four words, not the wire's five numbers.
+            "--priority {priority} is not a fee level. Use 0 to 4: 0 and 1 are cheapest, \
+             2 normal, 3 fast, 4 fastest."
         ))
         .with_reason("bad_args")
         .with_hint("fmonero settings set wallet.priority 2"));

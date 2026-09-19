@@ -213,10 +213,9 @@ pub const KEYS: &[(&str, &str)] = &[
 /// screen's fee row and the send confirm all read from here, so the three cannot disagree.
 pub(super) const FEE_LEVELS: [&str; 4] = ["cheapest", "normal", "fast", "fastest"];
 
-/// A wire priority as its name.
-pub(super) fn fee_level_name(priority: u32) -> &'static str {
-    FEE_LEVELS[(priority.max(1) - 1).min(3) as usize]
-}
+/// A wire priority as its name — **from core**, so the line printed immediately before the money
+/// moves uses the same four words this screen does (X2).
+pub(super) use fmonero_core::send::fee_level_words as fee_level_name;
 
 /// `p`, `Ctrl+P` and `→` cycle **within the four named levels**: 0 and 1 are the same fee, so a
 /// five-step cycle spent one press doing nothing visible.

@@ -469,6 +469,16 @@ const ENV: &[EnvVar] = &[
         default: "",
         test_only: false,
     },
+    // X3, v5.6.3: the width the human CLI output wraps to. A shell exports it, a test sets it, and
+    // without either the width comes from the terminal itself and falls back to 100 on a pipe.
+    // It is documented rather than hidden because an agent capturing output at a fixed width is
+    // exactly the caller who needs to know it exists.
+    EnvVar {
+        name: "COLUMNS",
+        purpose: "wrap human output to this many columns (40-200); otherwise the terminal's own width, or 100 without one",
+        default: "",
+        test_only: false,
+    },
     EnvVar {
         name: "FMONERO_PROC_ROOT",
         purpose: "read /proc from here instead, for the node-layout fixtures; honoured ONLY when FMONERO_STATE_DIR is also set",

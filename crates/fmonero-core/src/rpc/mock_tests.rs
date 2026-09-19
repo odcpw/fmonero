@@ -739,7 +739,13 @@ fn a_refused_relay_leaves_the_record_and_names_what_was_broadcast() {
     let e = send::relay(&w.ctx, &client, plan, &|_| {}, &cancel).unwrap_err();
     assert_eq!(e.exit_code(), 16);
     assert_eq!(e.reason(), Some("relay_refused"));
-    assert!(e.to_string().contains("0 of 1 broadcast"), "{e}");
+    // X2: the sentence says it in words, and `broadcast` is gone from it.
+    assert!(
+        e.to_string()
+            .contains("none of the 1 payments has gone out"),
+        "{e}"
+    );
+    assert!(!e.to_string().contains("broadcast"), "{e}");
     assert!(e.hint().contains("clear-pending"), "{}", e.hint());
     let record = state::pending_send(&w.ctx).unwrap().unwrap();
     assert!(!record.txs[0].relayed);
@@ -1799,7 +1805,16 @@ fn node_up_refuses_a_foreign_holder_and_is_idempotent_for_our_own() {
     let e = crate::node_session::up(&ctx, None, &CancelToken::new()).unwrap_err();
     assert_eq!(e.exit_code(), 3);
     assert_eq!(e.reason(), Some("data_dir_in_use"));
-    assert!(e.to_string().contains(&child.to_string()), "{e}");
+    // X2: the process id moved to `detail`, where `--json` and `-v` keep it; the sentence names
+    // the folder, which is the thing a person can act on.
+    assert!(
+        e.detail().is_some_and(|d| d.contains(&child.to_string())),
+        "{e:?}"
+    );
+    assert!(
+        e.to_string().contains("Another program is already using"),
+        "{e}"
+    );
 
     // The same holder, now named as our unit's MainPID: exit 0, already running, no second
     // start — which is what §2i's "idempotent" means.

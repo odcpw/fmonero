@@ -471,9 +471,13 @@ impl WalletClient {
         if w.tx_metadata.is_empty() {
             // Without it there is nothing to relay: `relay_tx` wants a serialized
             // `wallet2::pending_tx`, not `tx_blob` (§1b.4).
+            // **X2, and it is on the money path.** Rules 6 and 7 in one sentence, in a file
+            // `check.sh` did not read. What the user needs to know is that nothing was sent.
             return Err(Error::failure(
-                "monero-wallet-rpc built a transaction but returned no tx_metadata, so it cannot be relayed",
-            ));
+                "The wallet service prepared this payment but did not give fmonero what it needs \
+                 to send it. Nothing has gone out.",
+            )
+            .with_detail("transfer: empty tx_metadata"));
         }
         Ok(BuiltTx {
             txid: w.tx_hash,
@@ -513,17 +517,24 @@ impl WalletClient {
         // would silently drop a transaction the record already promises to relay (§2a.4).
         let n = w.tx_hash_list.len();
         if n == 0 {
-            return Err(Error::tx_rejected("the sweep built no transaction")
-                .with_reason("not_possible")
-                .with_hint("fmonero wallet balance"));
+            return Err(
+                Error::tx_rejected("There is nothing in this account to sweep.")
+                    .with_reason("not_possible")
+                    .with_hint("fmonero wallet balance"),
+            );
         }
         if w.tx_metadata_list.len() != n
             || w.amount_list.len() != n
             || w.fee_list.len() != n
             || w.weight_list.len() != n
         {
-            return Err(Error::failure(format!(
-                "monero-wallet-rpc answered sweep_all with {n} txids but {} metadata, {} amounts, {} fees and {} weights",
+            // X2: the five array lengths are the detail an agent and `-v` want; what a person
+            // needs is that the answer did not add up and nothing was sent.
+            return Err(Error::failure(
+                "The wallet service gave an answer fmonero cannot use. Nothing has gone out.",
+            )
+            .with_detail(format!(
+                "sweep_all: {n} ids but {} metadata, {} amounts, {} fees and {} weights",
                 w.tx_metadata_list.len(),
                 w.amount_list.len(),
                 w.fee_list.len(),

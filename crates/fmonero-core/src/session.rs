@@ -314,14 +314,16 @@ pub mod node_session {
             match crate::units::main_pid(ctx, &unit)? {
                 Some(ours) if ours == pid => already_running = true,
                 _ => {
+                    // **X2: rules 6 and 7 in the sentence and again in the hint's comment.** The
+                    // process id is what an operator needs and it moves to `detail`.
                     return Err(Error::safety(format!(
-                        "monerod pid {pid} already has {} open",
+                        "Another program is already using {}. Two nodes on one chain folder \
+                         would corrupt it.",
                         ctx.settings.node.data_dir.display()
                     ))
                     .with_reason("data_dir_in_use")
-                    .with_hint(
-                        "fmonero status --json   # a monerod is already serving this data dir",
-                    ))
+                    .with_detail(format!("chain folder held by pid {pid}"))
+                    .with_hint("fmonero status --json"));
                 }
             }
         }
@@ -348,11 +350,16 @@ pub mod node_session {
                 } else {
                     crate::units::stop_after_failed_start(ctx, &unit, cancel)
                 };
+                // **X2: a unit name and an RPC method, in the message a person gets when
+                // `node up` times out.** §2o.2 names both explicitly; the unit and the method go
+                // to `detail`.
                 return Err(Error::timeout(format!(
-                    "{unit} did not answer get_info within {}s{stopped}",
+                    "Your node did not answer within {}s{stopped}",
                     ctx.timeouts.unit_probe.as_secs()
                 ))
-                .with_hint("fmonero status --json"));
+                .with_detail(format!("{unit}: no get_info answer"))
+                .with_hint("fmonero status --json")
+                .with_action("The Node screen shows whether it is still starting up."));
             }
             std::thread::sleep(Duration::from_millis(250));
         }

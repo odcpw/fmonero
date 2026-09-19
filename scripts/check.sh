@@ -336,7 +336,21 @@ literals_2o() {
   # `#[cfg(test)]` and everything after it is not a user-facing surface: a test that asserts the
   # OLD words are gone has to name them, and a grep that fires on its own assertions is a grep
   # nobody can keep. These files put their test module last, which is what makes the cut safe.
+  #
+  # **X2 adds one more cut, and it is the only one that is not about tests: `copy-exempt`.** Two of
+  # the seven files the round added format bytes that are not prose at all — the `.service` and
+  # `monerod.conf` templates `units.rs` renders, which MUST contain `[Unit]`, `systemd`, `monerod`
+  # and `--daemon-address` because that is what the programs reading them parse. A region between
+  # `// copy-exempt-begin: <reason>` and `// copy-exempt-end` is skipped, its reason is printed by
+  # the step below so every one of them is visible in the gate's own output, and a region with no
+  # reason after the colon fails. The lines are blanked rather than deleted so a literal that spans
+  # them cannot leave an unbalanced quote behind.
   sed '/^#\[cfg(test)\]/q' "$1" | awk '
+    /copy-exempt-begin/ { skip = 1; print ""; next }
+    /copy-exempt-end/   { skip = 0; print ""; next }
+    skip                { print ""; next }
+    { print }
+  ' | awk '
     {
       out = ""; inq = 0
       for (i = 1; i <= length($0); i++) {
@@ -371,35 +385,89 @@ literals_2o() {
 # **v5.6.2 adds `txid`** (W20's neighbour, found by reading): §2o.2 says say `id`, and the Wallet
 # screen's filter hint read `filter by txid, address or note` through the whole v5.6 round because
 # the word was in the vocabulary table and not in this list.
-BANNED_2O='(daemons?|units?|RPC|loopback|restricted|probes?|probed|layouts?|ssl|SSL|systemd|systemctl|relay(ed|ing)?|broadcast|mutator|nettype|txpool|mempool|subaddress|subaddr|priority|in flight|high water|txid|monerod|monero-wallet-rpc|\bargv\b|\bbreakers?\b|\bsnapshots?\b|\b(build|builds|built|building)\b|§)'
+BANNED_2O='(daemons?|units?|RPC|loopback|restricted|prob(e|es|ed|ing)|layouts?|ssl|SSL|systemd|systemctl|relay(ed|ing)?|broadcast|mutator|nettype|txpool|mempool|subaddress|subaddr|priority|in flight|high water|txid|monerod|monero-wallet-rpc|\bargv\b|\bbreakers?\b|\bsnapshots?\b|\b(build|builds|built|building)\b|§)'
 # Two exemptions, and each is the reason the grep is honest rather than decorative:
 #   * a **runnable command** is a command on purpose — §2o.1's four exceptions and every CLI hint;
 #   * a **single bare token** is an id, a key, a JSON value or an argv element, never prose — and
 #     v5.6 extends that to `--flag=value`, one whole argv element too, because the widget's
 #     `--app-id=fmonerodoctor` contains the string `monerod` and is not a sentence anybody reads.
-ALLOWED_2O='("(fmonero|omarchy|sudo|monero-wallet-cli|systemctl|which|wl-copy|chmod|df|timedatectl|cd)[ "]|^"(monerod|monero-wallet-rpc) --[A-Za-z0-9-]|In a terminal: |^"[A-Za-z0-9][A-Za-z0-9_.:@/+-]*"$|^"--[A-Za-z0-9-]+(=[A-Za-z0-9_.:@/+-]*)?"$)'
+# **v5.6.3 widens the bare-token shape by one character: a leading `/`.** `"/etc/monerod.conf"` is
+# an absolute path, which is the same thing as a bare token and not a sentence anybody reads.
+ALLOWED_2O='("(fmonero|omarchy|sudo|monero-wallet-cli|systemctl|which|wl-copy|chmod|df|timedatectl|cd)[ "]|^"(monerod|monero-wallet-rpc) --[A-Za-z0-9-]|In a terminal: |^"/?[A-Za-z0-9][A-Za-z0-9_.:@/+-]*"$|^"--[A-Za-z0-9-]+(=[A-Za-z0-9_.:@/+-]*)?"$)'
 # §2o's first paragraph governs "every string a person can read", and v5.5's step read four
 # surfaces. v5.6 adds the three V8/V9/V10 found outside them, each one command away from the owner:
 # the shared RPC error family (`rpc/jsonrpc.rs`), the settings descriptions `settings list` prints
 # (`settings.rs`), and the doctor's forty details and fix lines (`doctor/checks.rs`).
+#
+# **X2 adds seven more, and they are the reason this list is now "every file that formats a string
+# a person can see" rather than a list somebody maintains.** The round-3 verification read `node
+# list`, `wallet open` and `settings set` on a real terminal and found seven live violations in
+# files this grep had never opened: `main.rs` (the whole command surface, its `--help` prose and a
+# dozen runtime refusals), `session.rs` (what `node up` says when it times out), `rpc/mod.rs` (the
+# loopback refusal, whose hint carried three banned words in a trailing comment — the exact hole
+# v5.6.1 documented fixing, in a file the grep did not read), `rpc/wallet.rs` (two failures on the
+# money path), `send.rs` (the line printed immediately before the money moves), `units.rs` and
+# `nodes.rs`.
 COPY_SURFACES=()
 for f in "$BIN"/tui/mod.rs "$BIN"/tui/screens.rs "$BIN"/tui/send.rs "$BIN"/tui/subs.rs \
          "$BIN"/tui/theme.rs "$BIN"/tui/hit.rs "$BIN"/output.rs "$BIN"/doctor/checks.rs \
-         "$CORE"/status.rs "$CORE"/settings.rs "$CORE"/rpc/jsonrpc.rs \
+         "$BIN"/main.rs \
+         "$CORE"/status.rs "$CORE"/settings.rs "$CORE"/rpc/jsonrpc.rs "$CORE"/rpc/mod.rs \
+         "$CORE"/rpc/wallet.rs "$CORE"/session.rs "$CORE"/send.rs "$CORE"/units.rs \
+         "$CORE"/nodes.rs \
          plugin/oliver.monero/Panel.qml plugin/oliver.monero/Service.qml \
          plugin/oliver.monero/MoneroIcon.qml plugin/oliver.monero/Model.js; do
   [ -f "$f" ] && COPY_SURFACES+=("$f")
 done
+# Every `copy-exempt` region in the tree, printed, so a skipped region is visible in the gate's
+# output rather than only in a diff. A region whose marker carries no reason after the colon is a
+# failure: an exemption nobody has to justify is an exemption that spreads.
+EXEMPT_LINES="$(grep -rn 'copy-exempt-begin' "${COPY_SURFACES[@]}" 2>/dev/null || true)"
+EXEMPT_BAD="$(printf '%s\n' "$EXEMPT_LINES" | grep -v 'copy-exempt-begin: *[^ ]' || true)"
+if [ -n "${EXEMPT_LINES// /}" ]; then
+  printf '        copy-exempt regions (file content, never prose):\n'
+  printf '%s\n' "$EXEMPT_LINES" | sed 's/^/          /'
+fi
+if [ -n "${EXEMPT_BAD// /}" ]; then
+  fail "§2o: a copy-exempt region carries no reason"
+  printf '%s\n' "$EXEMPT_BAD" | sed 's/^/        /'
+fi
 # **A `{field}` is a substitution, not prose** (v5.6.2): the name inside the braces is a Rust
 # variable and no reader ever sees it, so `"… · id {txid} · …"` is a sentence that says `id`. The
 # names are stripped before the word match; the text around them is checked exactly as before.
 strip_fields() { printf '%s' "$1" | sed 's/{[^}]*}/{}/g'; }
+# **Three more things a reader never reads as prose** (X2), each narrow enough to name:
+#   * a `--flag` is an element of a command the user types (rule 6's own exception), so
+#     `--probe`, `--pool` and `--priority` in `--help` are not the words rule 7 bans;
+#   * an `FMONERO_*` environment variable is a name the caller sets — rule 5's carve-out for a
+#     settings key, in the other namespace;
+#   * the four settings keys whose own names contain a banned word. Rule 5 carves them out **by
+#     name**, so they are listed by name here rather than matched by a shape that would also
+#     swallow `monero-wallet-rpc.service`.
+strip_flags() { printf '%s' "$1" | sed 's/--[A-Za-z0-9][A-Za-z0-9-]*/--/g'; }
+strip_envs() { printf '%s' "$1" | sed 's/FMONERO_[A-Z0-9_]*/ENV/g'; }
+strip_keys() {
+  printf '%s' "$1" | sed -e 's/node\.unit/KEY/g' -e 's/wallet\.unit/KEY/g' \
+    -e 's/node\.remote_probe_sec/KEY/g' -e 's/timeouts\.transfer_sec/KEY/g'
+}
+strip_all() { strip_keys "$(strip_envs "$(strip_flags "$(strip_fields "$1")")")"; }
+# The §5c `setup.actions[].what` values, exempt **by name**. They are payload values an agent
+# branches on — `tests/e2e.sh` selects rows with `select(.what == "wallet unit")` — and `setup`'s
+# human rendering puts them through `units::action_words`, which is where the sentence a person
+# reads comes from. Four literals, listed, so a fifth has to be added deliberately.
+ALLOWED_LABELS='^"(node unit|wallet unit|wallet set-daemon|CreateDir wallet\.dir)"$'
 HITS_2O=""
 for f in "${COPY_SURFACES[@]}"; do
   while IFS= read -r lit; do
     [ -n "$lit" ] || continue
-    lit="$(strip_fields "$lit")"
-    if printf '%s\n' "$lit" | grep -qE "$ALLOWED_2O"; then
+    printf '%s\n' "$lit" | grep -qE "$ALLOWED_LABELS" && continue
+    # **The allow-list reads the literal as written; the strippers only feed the banned match.**
+    # `--version` and `--app-id=fmonerodoctor` ARE the shapes the allow-list recognises, so
+    # stripping their flags first turned `"monerod --version"` into `"monerod --"` and un-exempted
+    # the doctor's own two fix lines.
+    raw="$lit"
+    lit="$(strip_all "$lit")"
+    if printf '%s\n' "$raw" | grep -qE "$ALLOWED_2O"; then
       # **An allow-listed command's trailing comment is still prose** (v5.6.1). `fmonero …   # …`
       # and `sudo …   # …` are printed whole, comment included, and the allow-list exempted the
       # whole literal — which is how `# a restricted node is not ours to reconfigure` sat in a
@@ -541,6 +609,63 @@ if printf '%s\n' "$GOOD_LIT" | grep -qE "$ALLOWED_2O"; then
 else
   fail "self-test: §2o would reject its own documented exception"
 fi
+# **X2's own four self-tests**, one per mechanism the round added, each planted so its closure is
+# shown rather than asserted.
+#
+# 1. the `copy-exempt` region: a banned literal inside one is skipped, the same literal outside one
+#    fires. Without both halves the mechanism is a blanket nobody can see the edge of.
+SELF_EX="$SELFTEST/copy-exempt"
+mkdir -p "$SELF_EX"
+{
+  printf '%s\n' '// copy-exempt-begin: file content, not prose'
+  printf '%s\n' 'let unit = "[Unit]\nDescription=Monero daemon (fmonero)\n";'
+  printf '%s\n' '// copy-exempt-end'
+  printf '%s\n' 'let s = "the wallet daemon is not running";'
+} > "$SELF_EX/mixed.rs"
+EX_HITS=0
+while IFS= read -r lit; do
+  [ -n "$lit" ] || continue
+  printf '%s\n' "$(strip_all "$lit")" | grep -qE "$BANNED_2O" && EX_HITS=$((EX_HITS + 1))
+done < <(literals_2o "$SELF_EX/mixed.rs")
+if [ "$EX_HITS" = 1 ]; then
+  pass "self-test: copy-exempt hides the unit template and hides nothing else"
+else
+  fail "self-test: copy-exempt saw $EX_HITS banned literals where exactly 1 is outside the region"
+fi
+# 2. the flag stripper, both ways: `--probe` is an element of a command, `probing` is prose.
+printf '%s\n' 'let s = "--probe then checks the top --limit candidates from here";' > "$SELF_EX/flag.rs"
+printf '%s\n' 'let s = "probing up to 20 nodes";' > "$SELF_EX/flag-bad.rs"
+if ! printf '%s\n' "$(strip_all "$(literals_2o "$SELF_EX/flag.rs")")" | grep -qE "$BANNED_2O" &&
+   printf '%s\n' "$(strip_all "$(literals_2o "$SELF_EX/flag-bad.rs")")" | grep -qE "$BANNED_2O"; then
+  pass "self-test: §2o reads --probe as a flag and 'probing' as prose"
+else
+  fail "self-test: the --flag rule hides prose, or fires on a flag the user types"
+fi
+# 3. the settings-key and environment-variable carve-outs, and their prose neighbours.
+printf '%s\n' 'let s = "older than node.remote_probe_sec, and FMONERO_SYSTEMCTL_FIXTURE is set";' \
+  > "$SELF_EX/key.rs"
+printf '%s\n' 'let s = "older than the last probe, and systemctl was called";' > "$SELF_EX/key-bad.rs"
+if ! printf '%s\n' "$(strip_all "$(literals_2o "$SELF_EX/key.rs")")" | grep -qE "$BANNED_2O" &&
+   printf '%s\n' "$(strip_all "$(literals_2o "$SELF_EX/key-bad.rs")")" | grep -qE "$BANNED_2O"; then
+  pass "self-test: §2o exempts a settings key and an FMONERO_ variable by name, and nothing else"
+else
+  fail "self-test: the key/environment carve-out hides prose, or fires on a name the user types"
+fi
+# 4. the §5c label exemption is exactly four literals wide: `"node unit"` passes, a sentence that
+#    merely contains it does not.
+printf '%s\n' 'let a = "node unit"; let b = "the node unit is not running";' > "$SELF_EX/label.rs"
+LABEL_HITS=0
+while IFS= read -r lit; do
+  [ -n "$lit" ] || continue
+  printf '%s\n' "$lit" | grep -qE "$ALLOWED_LABELS" && continue
+  printf '%s\n' "$(strip_all "$lit")" | grep -qE "$BANNED_2O" && LABEL_HITS=$((LABEL_HITS + 1))
+done < <(literals_2o "$SELF_EX/label.rs")
+if [ "$LABEL_HITS" = 1 ]; then
+  pass "self-test: the §5c label exemption covers the value and not the sentence around it"
+else
+  fail "self-test: the label exemption matched $LABEL_HITS literals where exactly 1 must fire"
+fi
+
 # v5.6.1: and the comment half of an allow-listed command is not exempt with it.
 printf '%s\n' 'let s = "fmonero doctor   # a restricted node is not ours to reconfigure";' \
   > "$SELF_2O/comment.rs"
@@ -813,7 +938,7 @@ if [ "$FULL" = 1 ]; then
   # variable: the Phase 2 doctor added FMONERO_SYSTEMD_USER_DIR and nothing noticed.
   step "--full: the documented environment variables and the read ones are the same set (§5b)"
   DOCUMENTED="$("$ROOT/target/release/fmonero" capabilities --json 2>/dev/null \
-                | tr ',{}' '\n\n\n' | grep -oE '"FMONERO_[A-Z_]+"|"NO_COLOR"|"CI"' \
+                | tr ',{}' '\n\n\n' | grep -oE '"FMONERO_[A-Z_]+"|"NO_COLOR"|"CI"|"COLUMNS"' \
                 | tr -d '"' | sort -u)"
   if [ -z "$DOCUMENTED" ]; then
     fail "could not read capabilities.env — the round trip below would be vacuous"

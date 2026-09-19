@@ -1415,10 +1415,12 @@ fn setup_human(out: &Out, v: &serde_json::Value) {
             "skipped" => Paint::Red,
             _ => Paint::Dim,
         };
-        out.line(format!(
+        // X2: `what` is the §5c contract value an agent branches on; `units::action_words` is the
+        // sentence a person reads for it. `node unit` and `monerod.conf` were printed raw.
+        out.row(format!(
             "{} {}  {}",
             out.paint(&pad(&status, 9), paint),
-            cell(&a["what"]),
+            fmonero_core::units::action_words(&cell(&a["what"])),
             cell(&a["path"])
         ));
         // The diff is already redacted where it was rendered (§4.2): `units::install` and the
