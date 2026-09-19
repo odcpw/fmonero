@@ -3257,7 +3257,7 @@ wallet.
 | `settings list` · `get K` · `set K V` | | `~/.config/fmonero/config.toml` | on set | no | no | no |
 | `setup` | `[--units] [--plugin] [--menu] [--all] [--yes] [--dry-run]` | §4.2 | yes | **yes** | no | no |
 | `doctor` | `[--fix] [--only GROUP] [--dry-run] [--yes] [--save]`, `doctor undo RUN\|latest`, `doctor capabilities` | §7. `--fix` alone performs every fixer in v0.1 (classes A and B); `--yes` is accepted and ignored. | with `--fix` | – | no | no |
-| `tui` | `[--node\|--wallet\|--send\|--log]` | §7a. The four flags select the screen the TUI opens on, and are how the bar widget's buttons land the user where they asked to be (§6.3): **`--node` opens the Node screen with the public-node picker focused** — "focused" meaning the pane whose keys are live (`p`, `f`, `Enter`, `a`, `H`, `/`, `↑↓`), **not** a selected row: revision 4 selects nothing on entry, so a first click or a first `Enter` cannot activate anything — and **`--wallet` opens the Wallet screen — on its empty-state panel with `[o] Open wallet…` selected when no wallet is open** (§7a.5). Mutually exclusive; two of them is exit 2. They select a screen and nothing more: neither flag fetches, probes, starts a daemon or opens anything by itself, because a command-line flag that performs a mutation at startup is a mutation with no confirm step | – | – | – | – |
+| `tui` | `[--node\|--wallet\|--send\|--log]` | §7a. The four flags select the screen the TUI opens on, and are how the bar widget's buttons land the user where they asked to be (§6.3): **`--node` opens the Node screen with the public-node picker focused** — "focused" meaning the pane whose keys are live (`p`, `f`, `Enter`, `a`, `H`, `/`, `↑↓`), **not** a selected row: revision 4 selects nothing on entry, so a first click or a first `Enter` cannot activate anything — and **`--wallet` opens the Wallet screen — on its empty-state panel with `[o] Open a wallet` selected when no wallet is open** (§7a.5, and the chip's v5.6.1 label, corrected 2026-09-19). Mutually exclusive; two of them is exit 2. They select a screen and nothing more: neither flag fetches, probes, starts a daemon or opens anything by itself, because a command-line flag that performs a mutation at startup is a mutation with no confirm step | – | – | – | – |
 | `capabilities` | — | `agent::capabilities_json` | no | – | no | no |
 | `robot-docs` | `[SECTION]` | `agent::ROBOT_GUIDE` | no | – | no | no |
 | `version` | — | | no | – | no | no |
@@ -6845,10 +6845,17 @@ peers/bans/picker tables, Wallet's subaddress table and history list, the Log vi
 every Send form field; every modal button including the send confirm's; the wheel over any list;
 and **an on-screen button wherever a key hint exists today** — which is the owner's request read
 literally and is also the design rule: *if a screen tells the user to press a key, that text is the
-button.* So `[o] Open wallet…`, `[c] Create wallet…`, `[W] Start the wallet daemon`, `[p] Probe`,
-`[f] Refresh list`, `[a] Add a node`, `[Enter] Use this node`, `[u] Start node`, `[d] Stop node`,
-`[R] Refresh wallet`, `[Q] QR` are rendered as bracketed chips with a hit rect, in `theme`'s button
-style, and the bracketed key stays visible **inside** the chip. Two affordances, one label, no
+button.* So `[o] Open a wallet`, `[c] Create wallet…`, `[W] Start the wallet service`,
+`[p] Check these` / `[p] Check this node`, `[f] Get the list` / `[f] Get a fresh list` /
+`[f] Choose another node`, `[a] Add a node`, `[Enter] Use this node`, `[l] Use your own node`,
+`[H] Back to the last one`, `[u] Start your node`, `[d] Stop your node`,
+`[R] Check for payments`, `[Q] QR code`, `[x] Close wallet` are rendered as bracketed chips with a
+hit rect, in `theme`'s button style, and the bracketed key stays visible **inside** the chip.
+(**The labels above are the v5.6/v5.6.1 ones the code renders**, corrected here in the 2026-09-19
+verification rather than left as they stood: this list still read `[W] Start the wallet daemon` —
+a rendered chip carrying a §2o rule-7 word — plus `[p] Probe`, `[f] Refresh list`, `[u] Start
+node`, `[d] Stop node`, `[R] Refresh wallet` and `[Q] QR`, none of which the plain-language round
+left in the program.) Two affordances, one label, no
 divergence possible: a hint that is not clickable and a button that does not name its key are the two
 ways this drifts.
 
@@ -6987,7 +6994,9 @@ text, so the section follows it.)
 
 The `[f]` chip is the focused target (keyboard and mouse alike, §7a.2), **the footer line is
 suppressed entirely** rather than rendered against a `fetched_at` that does not exist, and the chip
-reads `Fetch the list` with no cache and `Refresh list` with one. It is in the `tests/tui_tmux.sh`
+reads `Get the list` with no cache and `Get a fresh list` with one (the two labels the code
+renders; this sentence said `Fetch the list` / `Refresh list` until the 2026-09-19 verification,
+which is the same drift the paragraph above it records for the panel's three lines). It is in the `tests/tui_tmux.sh`
 picker flow, because the footer as it would otherwise render — `0 nodes · list  old` — is a visibly
 broken string in the first thing a new user sees.
 
@@ -7143,9 +7152,19 @@ behind** (`status.wallet.blocks_behind > 0`, or, with a public node, `node.remot
 wallet.height > 0`), the Wallet screen renders two lines under the balance:
 
 ```
-  Syncing 63% · 240 000 blocks left
-  This keeps going in the background. You can close this window.
+  Syncing 63% · 240 000 blocks left.
+  Syncing in the background. You can close this window.
 ```
+
+(**The two lines above are the ones the program prints**, corrected in the 2026-09-19 verification:
+this mock read `Syncing 63% · 240 000 blocks left` / `This keeps going in the background. You can
+close this window.`, and `docs/COPY.md` §3.3 still does. The correction is stated rather than
+silently adopted because the code is not obviously the better text: decision 7's one fact is worded
+**three** ways across the surfaces that carry it — the TUI's `Syncing in the background. You can
+close this window.`, the widget's `This keeps going in the background.` and the `wallet_behind`
+warning's `It keeps going in the background, even after you close this window.` — which is §2o rule
+8 unmet, and the 2026-09-19 verification reports it as a defect for the next round to settle in one
+place rather than in this document.)
 
 The percent is `wallet.height / node height` and the count is their difference, where the node height
 is the live `get_info` with your own node and the **cached check** with a public node — the same
