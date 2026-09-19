@@ -114,6 +114,30 @@ impl Piconero {
         format!("{whole}.{digits}")
     }
 
+    /// **A glance figure: at most four decimals, and never more than you have** (v5.6, §6.4).
+    ///
+    /// `to_xmr_string` is exact, which makes a real balance thirteen characters of fraction —
+    /// `1.234567891234` — and the bar widget's five-word header 32 characters long
+    /// (DECISIONS V16). This is the short form for that one place, and it is **pre-rendered here
+    /// rather than shortened in QML**, because §2a.5 forbids arithmetic on a monetary value in
+    /// QML and cutting a decimal string is arithmetic.
+    ///
+    /// It **truncates** rather than rounds: `1.234567891234` is `1.2345`, not `1.2346`. Rounding
+    /// up would put a number on the owner's bar that is larger than his balance, which is a
+    /// small lie of exactly the kind this design refuses to tell about money — and the panel
+    /// below the header carries the exact figure for anyone who wants it. A non-zero amount that
+    /// truncates to nothing reads `< 0.0001` rather than `0.0000`, for the same reason.
+    pub fn to_xmr_short(self) -> String {
+        const SHORT_DECIMALS: u32 = 4;
+        let per_step = 10u64.pow(DECIMALS as u32 - SHORT_DECIMALS);
+        let steps = self.0 / per_step;
+        if steps == 0 && self.0 > 0 {
+            return "< 0.0001".to_string();
+        }
+        let scale = 10u64.pow(SHORT_DECIMALS);
+        format!("{}.{:04}", steps / scale, steps % scale)
+    }
+
     /// Addition that refuses to wrap — the only way money is summed (§5b `PendingStatus`).
     pub fn checked_add(self, other: Piconero) -> Result<Piconero, Error> {
         self.0
@@ -189,6 +213,29 @@ mod tests {
             assert_eq!(e.exit_code(), 2, "'{bad}' must be a usage error");
             assert_eq!(e.reason(), Some("bad_amount"), "'{bad}'");
         }
+    }
+
+    /// V16: the header's short form. Four decimals, truncated, and a non-zero amount that would
+    /// come out as `0.0000` says so instead.
+    #[test]
+    fn the_short_form_is_four_decimals_and_never_rounds_up() {
+        for (pico, want) in [
+            (1_234_567_891_234u64, "1.2345"),
+            (1_234_600_000_000, "1.2346"),
+            (500_000_000_000, "0.5000"),
+            (0, "0.0000"),
+            (1, "< 0.0001"),
+            (99_999_999, "< 0.0001"),
+            (100_000_000, "0.0001"),
+            (18_400_000_000_000_000, "18400.0000"),
+        ] {
+            assert_eq!(Piconero(pico).to_xmr_short(), want, "{pico}");
+        }
+        // Never longer than `1.2345`-plus-the-whole-part, which is the whole point: the header is
+        // five words wide (§6.4) and the exact figure is one row below it in the panel.
+        let exact = Piconero(1_234_567_891_234).to_xmr_string();
+        assert_eq!(exact, "1.234567891234");
+        assert!(Piconero(1_234_567_891_234).to_xmr_short().len() < exact.len());
     }
 
     #[test]

@@ -160,8 +160,14 @@ function headerLine(status, showAmounts, binaryMissing) {
   }
   if (walletBehind(status)) return "Wallet syncing " + walletSyncPct(status) + "%"
   if (w && w.open === true) {
-    return showAmounts === true && w.balance_xmr
-      ? "Wallet open · " + String(w.balance_xmr) + " XMR" : "Wallet open"
+    // **The SHORT field, never the exact one** (v5.6, §6.4, DECISIONS V16): a real balance is
+    // `1.234567891234`, which makes this header 32 characters against a 380-pixel panel, and
+    // §2a.5 forbids the QML from shortening it itself — that is arithmetic on a monetary value.
+    // `balance_xmr_short` is rendered in Rust (four decimals, truncated, never rounded up) and
+    // the panel's own Balance row still carries the exact figure.
+    var short = w.balance_xmr_short || w.balance_xmr
+    return showAmounts === true && short
+      ? "Wallet open · " + String(short) + " XMR" : "Wallet open"
   }
   if (n && n.layout === "remote") {
     var p = n.remote_probe

@@ -371,6 +371,47 @@ present "Model.headerLine is the hero's one string (§6.4)" Panel.qml 'Model.hea
 present "Model.walletSyncLabel carries decision 7's line" Panel.qml 'Model.walletSyncLabel'
 present "the node toggle is inert in remote mode" Service.qml 'if (remote) { localError'
 present "cursor reports the mode" Panel.qml 'remote: svc.remote'
+# V16: the header takes the SHORT balance from Status, because §2a.5 forbids the QML from
+# shortening the exact one itself.
+present "the header takes the pre-rendered short balance (§6.4, V16)" Model.js 'balance_xmr_short'
+if grep -qE 'balance_xmr[^_]' "$PLUGIN/Model.js" | grep -q 'toFixed\|substring\|slice'; then
+  bad "the widget must not shorten an amount itself (§2a.5)"
+else
+  ok "no QML or JS shortens an amount itself (§2a.5)"
+fi
+
+# --- 7c. WHICH QML THE SHELL IS RUNNING (DECISIONS V1) ------------------------
+#
+# The v5.6 redesign had never rendered on the owner's bar and no gate could tell: Quickshell holds
+# the loaded QML, a symlink does not hot-reload (§1.5), and `omarchy restart shell` is refused while
+# the session is locked. The live half below asserted only that `cursor` returned a JSON object —
+# and the proof that the panel was the PREVIOUS one, a section named `warnings` that the current
+# file does not build, was inside that assertion's own passing message, twice, unread.
+#
+# So: `Panel.qml` carries a version token, `cursor` reports it, and this is the token the checked-out
+# tree should have — the first eight hex digits of the sha256 of the four widget files with the
+# token's own line removed. An edit to any of them changes it, so the token cannot be left behind,
+# and the failure message is the value to paste.
+QML_WANT="qml-$(cat "$PLUGIN/Panel.qml" "$PLUGIN/Service.qml" "$PLUGIN/MoneroIcon.qml" \
+                   "$PLUGIN/Model.js" | grep -v 'property string panelVersion' \
+                | sha256sum | cut -c1-8)"
+QML_HAVE="$(grep -oE 'property string panelVersion: "[^"]+"' "$PLUGIN/Panel.qml" \
+            | grep -oE 'qml-[0-9a-f]+' | head -1)"
+if [[ $QML_HAVE == "$QML_WANT" ]]; then
+  ok "Panel.qml's version token matches its own contents ($QML_WANT)"
+else
+  bad "Panel.qml says $QML_HAVE; this tree is $QML_WANT — bump panelVersion"
+fi
+present "cursor carries the version token" Panel.qml 'version: root.panelVersion'
+# And the sections the cursor reports must be the ones THIS file builds. `warnings` was the name of
+# the pre-v5.6 panel's alarm section, so a shell still running it fails here by name.
+QML_SECTIONS="$(grep -oE '(s = \["header"\]|s\.push\("[a-z]+"\))' "$PLUGIN/Panel.qml" \
+                | grep -oE '"[a-z]+"' | tr -d '"' | sort -u | tr '\n' ' ')"
+if [[ -n ${QML_SECTIONS// /} ]]; then
+  ok "Panel.qml builds the sections: $QML_SECTIONS"
+else
+  bad "could not read navSections out of Panel.qml"
+fi
 
 # --- 8. reload the shell, read the journal, ask the widget ---------------------
 if [[ $STATIC_ONLY -eq 1 ]]; then
@@ -398,6 +439,26 @@ else
   # The widget answers its own IPC only when Panel.qml actually instantiated.
   if cursor=$(omarchy-shell "$ID" cursor 2>/dev/null) && [[ $cursor == \{* ]]; then
     ok "widget is loaded (cursor: $cursor)"
+    # V1, the assertion this gate was missing: the shell is running THIS tree's panel.
+    LIVE_VERSION="$(printf '%s' "$cursor" | jq -r '.version // "none"')"
+    if [[ $LIVE_VERSION == "$QML_WANT" ]]; then
+      ok "the running shell is this tree's panel ($LIVE_VERSION)"
+    else
+      bad "the shell is running $LIVE_VERSION, this tree is $QML_WANT — it has not reloaded (§1.5: \
+a symlink does not hot-reload; run \`omarchy restart shell\`, which is refused while the session is \
+locked)"
+    fi
+    # And its sections are the ones Panel.qml builds — `warnings` belongs to the pre-v5.6 panel.
+    LIVE_SECTIONS="$(printf '%s' "$cursor" | jq -r '.sections // [] | .[]' 2>/dev/null)"
+    UNKNOWN=""
+    for sec in $LIVE_SECTIONS; do
+      case " $QML_SECTIONS " in *" $sec "*) ;; *) UNKNOWN="$UNKNOWN $sec" ;; esac
+    done
+    if [[ -z ${UNKNOWN// /} ]]; then
+      ok "every section the shell reports is one Panel.qml builds ($(printf '%s' "$LIVE_SECTIONS" | tr '\n' ' '))"
+    else
+      bad "the shell reports section(s)$UNKNOWN, which Panel.qml does not build: it is a different panel"
+    fi
   else
     bad "widget did not answer IPC — it is not on the bar, or it failed to load"
   fi

@@ -425,7 +425,7 @@ the per-state row sets are specified there, with a text mock for each state.
 | `Model.js:82-88` `remoteLabel` | `remote: {shortAddr} · trusted` | renamed `nodeLabel`: `public node {shortAddr}` in remote mode, `your own node` in local | Vocabulary; the trust suffix is deleted with every other mention of the flag. |
 | `Model.js:104-118` `probeLabel` | `node {h} · synced · probed {age} ago` / `not probed yet` / `did not answer ({reason}) · {age} ago` | renamed `checkedLabel`: `block {h} · synced · checked {age} ago` / `not checked yet` / `no answer · checked {age} ago` | Vocabulary (probe), rule 5 (the raw reason), rule 9 (`block`). The age stays welded to the height, which was the one thing this function got right. |
 | `Model.js:127-133` `walletStateLabel` | `up` / `idle — starts when you open a wallet` / `not running` | `running` / `starts when you open a wallet` / `not running` | Vocabulary (`up`, `idle`), rule 12. |
-| `Model.js:134-146` `syncLabel` | `fmonero is not answering` / `No node configured` / `Node is not running` / `Synced` / `Syncing {p}%` / (remote) `remote: {addr}` | becomes `headerLine(status)`, at most five words, per §6.4: `fmonero not installed` / `No node set up yet` / `Your node is not running` / `Public node · synced · wallet closed` / `Wallet syncing 63%` / `Wallet open · 1.23 XMR` | The owner's complaint about the widget, in one function. The old label described the node and never the thing the user came to see. |
+| `Model.js:134-146` `syncLabel` | `fmonero is not answering` / `No node configured` / `Node is not running` / `Synced` / `Syncing {p}%` / (remote) `remote: {addr}` | becomes `headerLine(status)`, at most five words, per §6.4: `fmonero not installed` / `No node set up yet` / `Your node is not running` / `Public node · synced · wallet closed` / `Wallet syncing 63%` / `Wallet open · 1.2345 XMR` (v5.6.1: the **short** balance field, V16 — `1.23` is a string this formatter cannot emit) | The owner's complaint about the widget, in one function. The old label described the node and never the thing the user came to see. |
 | `Model.js:148-151` `heightLabel` | `Node · {grouped}` | `Block {grouped}` | Rule 9; the word `Node` was carried by the row's own label. |
 | `Model.js:154-159` `peersLabel` | `not available on a restricted node` | `not shown by this node` | Vocabulary. |
 | `Model.js:169-178` `pendingLabel` | `Send in flight: {x} XMR → {dest} · {n} of {m} relayed` | `Sending {x} XMR to {dest} · {n} of {m} sent` | Vocabulary (in flight, relayed). The `showBalance` gate is unchanged. |
@@ -442,7 +442,7 @@ the per-state row sets are specified there, with a text mock for each state.
 | `Panel.qml:446-449` | row `Net` | `Traffic` | Rule 5: `Net` is the JSON key. |
 | `Panel.qml:466` | `fmonero is not installed or not on PATH (~/.local/bin).` | `fmonero is not installed.` | Rule 6 (`PATH`); the path was a guess at the fix. |
 | `Panel.qml:506` | section header `WALLET` | unchanged | Already plain. |
-| `Panel.qml:514-521` | rows `Balance` / `Unlocked` | unchanged | Already plain. |
+| `Panel.qml:514-521` | rows `Balance` / `Unlocked` | unchanged | Already plain, and they keep the **exact** `balance_xmr`: the short form is the header's alone (v5.6.1, V16). |
 | `Panel.qml:525` | `↑ locked for {n} blocks` | `{x} XMR locked for about {m} min` | Rule 9, matching the TUI's line word for word. |
 | `Panel.qml:539` | `no address yet` | unchanged | Already plain. |
 | `Panel.qml:540` | `copy (c)` | unchanged | Already plain. |
@@ -708,6 +708,16 @@ and `plugin/oliver.monero/*.{qml,js}` for the §2o rule-7 word list — daemon, 
 restricted, probe, layout, ssl, systemd, relay, broadcast, nettype, txpool, subaddress, priority,
 in flight, high water — plus `§` and any `warning.id`-shaped token rendered outside `--json`.
 
+**v5.6.1 widens both halves** (§8, and DECISIONS V17 demonstrated the need rather than asserting
+it). The file list gains `crates/fmonero-core/src/rpc/jsonrpc.rs`,
+`crates/fmonero-core/src/settings.rs` and `crates/fmonero/src/doctor/checks.rs` — fifteen files.
+The word list gains `argv`, `breaker`, `snapshot` and `build`, each with word boundaries so that
+`rebuild` and `fn build_transfer` still pass, and `monerod` / `monero-wallet-rpc`, which were
+**allow-listed as commands** and thereby exempted the two worst prose strings in the program: the
+allow-list now keeps only the shape a command has, `^"monerod --…` / `^"monero-wallet-rpc --…`,
+which is what the doctor's two `--version` fix lines are and what prose never is. The self-test
+plants one literal per hole and asserts all three fire.
+
 Two things make that grep honest rather than decorative:
 
 - **an allow-list for command lines**: a literal that is a runnable command (it starts with
@@ -772,11 +782,15 @@ punctuation inside a sentence, and §3's table keeps every one of them. Rule 12 
 reading, not by the grep, for the same reason `build` is: a grep for `—` would fire on this
 document, on every comment that uses one and on the row separators of these very tables.
 
-**Two words the grep does not police, stated so nobody mistakes silence for coverage.** §2o rule 7
-bans `build` (of a transaction) and `layout`; `scripts/check.sh` greps for `layout` but **not** for
-`build`, because the word is unavoidable in the code around the strings and a grep that fires on
-`fn build_transfer` is a grep the next agent relaxes. Every `build` the table names was rewritten by
-hand and the tests pin the replacements. The grep's other blind spot is its own: a `//` **inside** a
+**Two words the grep did not police, stated so nobody mistakes silence for coverage — and v5.6.1
+polices both.** §2o rule 7 bans `build` (of a transaction) and `layout`; v5.6's step greps for
+`layout` but **not** for `build`, because the word is unavoidable in the code around the strings and
+a grep that fires on `fn build_transfer` is a grep the next agent relaxes. v5.6.1 adds it **with a
+word boundary**, which is the distinction the first attempt lacked: `"the build"` fires and
+`fn build_transfer`, `rebuild` and `building` do not (the grep reads string literals only, so the
+function name was never at risk — the risk was `Press R to rebuild it.`, which is a real string in
+`status.rs` and does not fire). Every `build` the table names was rewritten by hand and the tests
+pin the replacements. The grep's other blind spot is its own: a `//` **inside** a
 string literal on a continuation line reads as the start of a comment, so anything after it on that
 line is not examined. Both are in the step's own comment, where the person who hits them will read
 them.
@@ -785,3 +799,42 @@ them.
 `mempool` and `subaddr` — each of them a word §2o.2 retires and none of them in rule 7's own
 list — and two exemptions rather than one: a runnable command (rule 11's whole point) and **a
 single bare token**, because `"wallet_idle"` is a contract key and prose has spaces in it.
+
+---
+
+## 8. The plain-language fix-up (2026-09-19)
+
+The 2026-09-19 verification of this round read both surfaces as a non-technical user on a real pty
+and found **eighteen** things, three of them serious. Six of them are strings this document did not
+inventory at all, and that is the useful part: §6 listed fourteen surfaces, and four of the six live
+outside them.
+
+**Three surfaces added to §5's grep, because §2o's first paragraph always governed them.**
+
+| Surface | What it said | What it says now |
+|---|---|---|
+| `rpc/jsonrpc.rs` — the RPC error family (V8) | `monero-wallet-rpc is not answering: io: Connection refused (os error 111)`, and four more arms interpolating the binary name and the RPC method | `The wallet service is not answering.` / `The node is not answering.` and one plain sentence per arm, with the wire's own words moved to a new `detail` slot that only `--json` and `-v` render, and the in-app key in a new `action` slot the TUI shows |
+| `settings.rs` — the 26 key descriptions `settings list` prints (V9) | `local \| remote — which daemon monero-wallet-rpc is pointed at (§2m)`, and six more rows carrying a `§` number | what the setting does for the user, then which values are valid: `Where your wallet gets its blocks: local, a node on this machine, or remote, a public node someone else runs.` |
+| `doctor/checks.rs` — 54 details and fix lines (V10) | `{} and {} match units::render_* byte for byte`, `high water {}, {behind} behind the wallet's {wh}`, and fix lines naming `systemctl --user restart …` | one sentence each, block numbers grouped through the same formatter the TUI and the widget use, and **no fix line names systemctl**: each names `fmonero doctor --fix`, a command, or the keys `W` and `o` on the Wallet screen |
+
+**The §2m.2 address refusals moved with them** (V11), because the TUI's `a` modal now shows them
+under the field as the user types: `the port is required — monero-wallet-rpc fills a missing port
+with 80 or 443, never 18081` became `The port is required, like node.example.com:18089.`, and the
+one caller that told that case apart **by its prose** (`nodes::parse`, counting monero.fail's
+portless rows) now branches on `detail: "no_port"`.
+
+**Two rows of §3.1 and §3.3 were wrong about one fact each, and the fix is the same both times:
+one predicate, two renderings.** `wallet service: running` sat four rows above a status bar reading
+`wallet not running` (V13) and the Node hero's `Your node is not running` sat in the same frame as
+`node not answering` (V14). Both pairs were computed correctly from two different fields. A service
+that is up and silent now reads `not answering` on both surfaces, and a node that is off takes its
+two words from one function.
+
+**And three things this document cannot express, recorded because the next reader will look for
+them here.** A cut line now ends at a word boundary with `…` (V15) — the status bar's toast and the
+`?` overlay's rows were cut mid-word, and `A wallet is open. Press x to close i` is a complete
+sentence about a key that does not exist. Decision 7's own two lines were drawn outside every frame
+on the Wallet screen (V3) and are now inside its ` Balance ` pane. The `Use your own node` confirm
+(V4) stated nothing at all, and `Dialog` is why: it draws its message as one centred row, so the
+sentences after the first spilled past the border — it is an overlay now, the shape the picker's own
+confirm has.

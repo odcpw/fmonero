@@ -167,6 +167,16 @@ pub struct WalletStatus {
     pub blocks_behind: Option<i64>,
     pub balance_pico: Option<Piconero>,
     pub balance_xmr: Option<String>,
+    /// **v5.6: the same amount at four decimals, truncated** —
+    /// [`Piconero::to_xmr_short`](crate::amount::Piconero::to_xmr_short).
+    ///
+    /// It exists for the bar widget's five-word header (§6.4), which rendered
+    /// `Wallet open · 1.234567891234 XMR` — 32 characters, against an illustration that showed
+    /// `1.23` (DECISIONS V16). §2a.5 forbids QML from doing arithmetic on a monetary value and
+    /// shortening a decimal string is arithmetic, so the short form is rendered here, beside the
+    /// exact one, and the widget picks the field rather than the substring. Every other surface
+    /// keeps `balance_xmr`.
+    pub balance_xmr_short: Option<String>,
     pub unlocked_pico: Option<Piconero>,
     pub unlocked_xmr: Option<String>,
     pub blocks_to_unlock: Option<u64>,
@@ -401,6 +411,7 @@ impl WalletStatus {
             blocks_behind: None,
             balance_pico: None,
             balance_xmr: None,
+            balance_xmr_short: None,
             unlocked_pico: None,
             unlocked_xmr: None,
             blocks_to_unlock: None,
@@ -524,6 +535,7 @@ pub fn status(ctx: &Context) -> Result<Status, Error> {
                 if let Ok(b) = w.get_balance(account) {
                     wallet.balance_pico = Some(b.balance);
                     wallet.balance_xmr = Some(b.balance.to_xmr_string());
+                    wallet.balance_xmr_short = Some(b.balance.to_xmr_short());
                     wallet.unlocked_pico = Some(b.unlocked);
                     wallet.unlocked_xmr = Some(b.unlocked.to_xmr_string());
                     wallet.blocks_to_unlock = Some(b.blocks_to_unlock);

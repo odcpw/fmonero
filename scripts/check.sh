@@ -472,7 +472,10 @@ fi
 # and by nothing else, stated in DESIGN.md before the code was written (§6.1).
 # v5.6: 1529, and §6.1 writes the derivation out — the four per-file budgets (340 + 820 + 112 +
 # 225 = 1 497) plus manifest.json's 32 real lines, which this gate counts.
-QML_BUDGET=1529
+# v5.6.1: **1561**, and the arithmetic is in §6.1 before the code was written — the four per-file
+# budgets (340 + 845 + 112 + 232 = 1 529) plus the same 32. The two items are V1's version token,
+# which is what lets this suite tell which QML the shell is running, and V16's short balance field.
+QML_BUDGET=1561
 if [ -d plugin/oliver.monero ]; then
   QML_LINES="$(cat plugin/oliver.monero/*.qml plugin/oliver.monero/*.js plugin/oliver.monero/manifest.json 2>/dev/null | grep -c '')"
   if [ "$QML_LINES" -le "$QML_BUDGET" ]; then
@@ -493,9 +496,9 @@ if [ -d plugin/oliver.monero ]; then
     fi
   done <<'PERFILE'
 340 Service.qml
-820 Panel.qml
+845 Panel.qml
 112 MoneroIcon.qml
-225 Model.js
+232 Model.js
 PERFILE
 else
   printf '  skip  §6.1 line budget: plugin/oliver.monero does not exist yet\n'

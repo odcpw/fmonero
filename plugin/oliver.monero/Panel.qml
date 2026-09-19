@@ -17,6 +17,21 @@ Panel {
   ipcTarget: "oliver.monero"
   manageIpc: false
 
+  // **Which QML the shell is actually running** (v5.6.1, DECISIONS V1).
+  //
+  // The v5.6 redesign — the whole answer to the owner's *"the text in the widget isn't clear or
+  // useful"* — had never rendered on his bar: Quickshell holds the loaded QML, a symlink does not
+  // hot-reload (§1.5), `omarchy restart shell` is refused while the session is locked, and nothing
+  // could tell. `tests/plugin-smoke.sh` asserted only that `cursor` returned a JSON object, and the
+  // evidence that the panel was the PREVIOUS one — a section named `warnings`, which this file does
+  // not build — sat unread inside the passing assertion's own message.
+  //
+  // So the panel states its own version, the `cursor` payload carries it, and the gate compares it
+  // with the checked-out tree: a stale shell now fails the gate instead of decorating it. The token
+  // is the first eight hex digits of the sha256 of the four widget files with this line removed, so
+  // it cannot be left behind by an edit — the gate computes what it should be and says so.
+  readonly property string panelVersion: "qml-53ec60d4"
+
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent
   readonly property color dim: Qt.darker(foreground, 1.55)
@@ -306,7 +321,8 @@ Panel {
     function nodeDown(): string { svc.stopNode(); return "ok" }
     // Test hook: where the keyboard cursor is, without a screenshot.
     function cursor(): string {
-      return JSON.stringify({ section: root.focusSection, index: root.selectedIndex,
+      return JSON.stringify({ version: root.panelVersion,
+                              section: root.focusSection, index: root.selectedIndex,
                               active: root.cursorActive, opened: root.opened,
                               sections: root.navSections, alive: svc.alive,
                               binaryMissing: svc.binaryMissing, nodeUp: svc.nodeUp,

@@ -4234,6 +4234,7 @@ The call set is fixed and bounded:
     "height": 3541122,
     "blocks_behind": 0,
     "balance_pico": 1234567891234, "balance_xmr": "1.234567891234",
+    "balance_xmr_short": "1.2345",
     "unlocked_pico": 1234567891234, "unlocked_xmr": "1.234567891234",
     "blocks_to_unlock": 0,
     "time_to_unlock_sec": 0,
@@ -4611,6 +4612,9 @@ pub struct WalletStatus {
     pub open: bool, pub name: Option<String>, pub account_index: u32,
     pub primary_address: Option<String>, pub height: Option<u64>, pub blocks_behind: Option<i64>,
     pub balance_pico: Option<Piconero>, pub balance_xmr: Option<String>,
+    // v5.6.1, §6.4: four decimals, TRUNCATED, for the bar widget's five-word header. `< 0.0001`
+    // for a non-zero amount that would render `0.0000`. Every other surface keeps `balance_xmr`.
+    pub balance_xmr_short: Option<String>,
     pub unlocked_pico: Option<Piconero>, pub unlocked_xmr: Option<String>,
     pub blocks_to_unlock: Option<u64>, pub time_to_unlock_sec: Option<u64>,
     pub subaddress_count: Option<u32>, pub accounts: Option<u32>,
@@ -5750,6 +5754,24 @@ commit that makes it.
 | 10 | **The one non-additive change:** `send::SendRequest` is unchanged, but `tui::send`'s key handling no longer owns `Tab` — field movement moves to `Up`/`Down`/`Enter` (§7a.1) | Listed here even though it is not a core signature, because §5b.1's row 10 sets the precedent: a contract that moves without a signature moving still has to be written down. The Send form's `Tab` was the owner's first complaint, and the `?` overlay, `KEYS` and `tests/tui_tmux.sh` all assert the new binding. |
 | 11 | **v5.5 revisions, from the review of this amendment before any code was written.** `ProbeTarget` and the `probe_*` signatures (2) · `PublicNode.custom`, `NodeList.skipped_invalid`, `NodeList.notice_ack`, `nodes::ack_notice`, `nodes::add_custom` (2, 5, 7) · the picker's `a` modal loses its `--trusted` toggle (5) · `Action::NodeProbe` carries targets (2) | Eleven revisions were raised against §§2c/2n/7a and the two blockers were both real: the create-wallet modal had no key that moved between its four fields while §7a.1 made it one of the two modals that consume `Tab`, so the flow answering the owner's complaint (4) was unreachable from a keyboard; and §2n.3 asserted "the URL is built from a string this module parsed itself" while the probe argv was documented as carrying monero.fail's verbatim string, which is the one contradiction that decides whether §2c's relaxation holds at all. Both are fixed in the sections that made the claims, not in a footnote, and the signature consequences are the row above. The nine others — grep (vi)'s scope (3), the picker's first click (4), the `a` modal's schema (5), the `←→` controls' clickability (6), the consent record (7), the picker's empty state (8), the `from_buffer` citation (9), the `--max-filesize` floor (10), the seed hint's close step (11) and the budget arithmetic (12) — are each recorded at the paragraph they change, marked `v5.5, revision <n>`, so a later reader can find the argument rather than re-derive it. |
 
+### 5b.5a The v5.6.1 amendments, in full
+
+Four additions, each with one caller and each recorded because §5b is a freeze:
+
+- **`Piconero::to_xmr_short()`** — four decimals, truncated, `< 0.0001` for a non-zero amount that
+  would render `0.0000`. One caller: `status`, which puts it in `wallet.balance_xmr_short` for the
+  bar widget's header (§6.4). It never replaces `to_xmr_string`, which stays exact.
+- **`unix_from_rfc3339(&str) -> Option<i64>`** — the inverse of `rfc3339_from_unix`. One caller: the
+  TUI's Node hero, which wants `wallet.last_refresh_at` as an **age** rather than as a timestamp
+  (V5). Adding a second field to §5 for a value it already carries would have been the alternative.
+- **`Error::with_detail` / `Error::detail`** and **`Error::with_action` / `Error::action`** — the
+  technical half of a message, rendered only by `--json` and `-v`, and the in-app half, rendered by
+  the TUI where it would otherwise render nothing (§2o, §2o.1, V8). The failure envelope is
+  therefore nine keys rather than seven, both new ones always present and usually `null`.
+- **`units::start` / `units::stop` refuse under a sandbox** unless `FMONERO_SYSTEMCTL_FIXTURE` is
+  set — exit 3 `sandboxed_units`, the same refusal `install` raises, for the same reason (§2i, V18).
+  No signature changes; a caller that was allowed to start a real unit from a sandbox is not.
+
 ### 5b.5 The v5.6 amendment, in full
 
 One field, on one struct, and it is the whole of §2o.1's mechanism.
@@ -5856,10 +5878,32 @@ the assertion, because thirty payloads in a decisions log is bulk, not evidence.
 |---|---|---|
 | `manifest.json` | ~55 lines | schemaVersion 1, id `oliver.monero`, name "Monero", version, author, license, description, `kinds:["bar-widget"]`, `entryPoints.barWidget:"Panel.qml"`, `barWidget{displayName, description, category:"Finance", allowMultiple:false, defaultSection:"right", defaults{}, schema[]}` |
 | `Service.qml` | ≤ **340** (v5.6, was 420) | the state model (6.3), the two polls, the action queue |
-| `Panel.qml` | ≤ **820** (v5.6, was 800) | bar button + `KeyboardPanel` content (6.5) |
+| `Panel.qml` | ≤ **845** (v5.6.1, was 820) | bar button + `KeyboardPanel` content (6.5) |
 | `MoneroIcon.qml` | ≤ **112** (v5.6, was 96) | the Monero ⓜ glyph as `QtQuick.Shapes` + `PathSvg`; no image asset. The progress ring now draws the **wallet's** catch-up as well as a local node's sync (§6.4), which is one more arc and its percent source |
-| `Model.js` | ≤ **225** (v5.6, was 200) | pure formatters: `parseStatus(text)`, `shortAddr`, `age`, `rate`, `grouped`, **`headerLine(status)`** (v5.6 — §6.4's five-word header, from one first-match table), **`walletSyncLabel(status)`** (v5.6 — `Syncing 63% · 240 000 blocks left`), **`nodeLabel(node)`** (v5.6, renamed from `remoteLabel`), **`checkedLabel(node)`** (v5.6, renamed from `probeLabel`; still refuses to render a height without its age), `walletStateLabel`, `pendingLabel`, `peersLabel`, `worstSeverity`, `safeArgv` |
+| `Model.js` | ≤ **232** (v5.6.1, was 225) | pure formatters: `parseStatus(text)`, `shortAddr`, `age`, `rate`, `grouped`, **`headerLine(status)`** (v5.6 — §6.4's five-word header, from one first-match table), **`walletSyncLabel(status)`** (v5.6 — `Syncing 63% · 240 000 blocks left`), **`nodeLabel(node)`** (v5.6, renamed from `remoteLabel`), **`checkedLabel(node)`** (v5.6, renamed from `probeLabel`; still refuses to render a height without its age), `walletStateLabel`, `pendingLabel`, `peersLabel`, `worstSeverity`, `safeArgv` |
 | `README.md` | — | docs agent |
+
+**v5.6.1 raises two of the four, and states the arithmetic here before the code was written.**
+The measured v5.6 tree is **1 522** (`Panel` 820 · `Service` 339 · `MoneroIcon` 107 · `Model` 224 ·
+`manifest` 32) — `Panel.qml` was exactly at its ceiling — and the 2026-09-19 verification put two
+items in these files. **V1: the version token** (`panelVersion`, reported by `cursor`, +16 in
+`Panel.qml` with the paragraph explaining why a bar widget states its own version at all) — the
+redesign this section specifies had never rendered on the owner's bar, and neither gate could tell,
+because `tests/plugin-smoke.sh` asserted only that `cursor` returned an object. **V16: the short
+balance** (+6 in `Model.js`) — the header rendered `Wallet open · 1.234567891234 XMR`, 32 characters
+against a 380-pixel panel, because `to_xmr_string` trims to a **minimum of four** decimals and a real
+balance has twelve. So `Panel.qml` becomes **845** (measured 836) and `Model.js` **232** (measured
+230); `Service.qml` and `MoneroIcon.qml` are untouched at 340 and 112. `QML_BUDGET` becomes
+**1 561**: 340 + 845 + 112 + 232 = 1 529, plus `manifest.json`'s 32 real lines, which is the same
+derivation the paragraph above writes out.
+
+**And §6.4's header is the short field, not a shortened string** (v5.6.1). `Status` carries
+`wallet.balance_xmr_short` beside `wallet.balance_xmr` — `Piconero::to_xmr_short`, four decimals,
+**truncated rather than rounded**, and `< 0.0001` for a non-zero amount that would otherwise render
+`0.0000`. Truncation is the decision: rounding up would put a figure larger than the balance on the
+owner's bar, and the panel's own `Balance` row still carries the exact string. The QML picks the
+field; it does not shorten anything, because shortening a decimal string is arithmetic on a
+monetary value and §2a.5 forbids that in QML outright.
 
 Total QML under **1 529 lines** (v5.6): the four hard per-file budgets above sum to 1 497, plus
 `manifest.json`'s 32 real lines, which `scripts/check.sh` counts into the figure it compares. That
@@ -6045,7 +6089,7 @@ the only string the panel's hero renders:
 | `!alive` | `fmonero is not answering` |
 | `pending` | `Sending {total_amount_xmr} XMR` |
 | `walletBehind` | `Wallet syncing {p}%` |
-| `walletOpen` and `showBalance === "on"` | `Wallet open · {balance_xmr} XMR` |
+| `walletOpen` and `showBalance === "on"` | `Wallet open · {balance_xmr_short} XMR` — the **short** field (v5.6.1, V16): `to_xmr_string` trims to a minimum of four decimals, so a real balance is `1.234567891234` and this header was 32 characters long against every illustration of it |
 | `walletOpen` | `Wallet open` |
 | `remote` and the check says synced | `Public node · synced · wallet closed` |
 | `remote` | `Public node · wallet closed` |
@@ -6122,10 +6166,11 @@ refreshes, `t` opens the TUI, `c` copies the address, `d` opens the doctor.
   [ Open wallet… ]  [ Choose node… ]
 ```
 
-*2 — public node, wallet open, caught up:*
+*2 — public node, wallet open, caught up (the header carries the **short** balance and the `Balance`
+row the exact one — v5.6.1, V16; the same amount, `1.234567` truncated to four decimals):*
 
 ```
-  ⓜ  Wallet open · 1.234567 XMR
+  ⓜ  Wallet open · 1.2345 XMR
      refreshed 40s ago
 
   node     public node 185.220.101.63
@@ -6864,7 +6909,7 @@ coordinate out of `hits` can prove routing and can never prove alignment.
 
 | Screen | Data | Shows |
 |---|---|---|
-| **Node** (default) | `core::status(&ctx)` every 1 s; `node info` extras on entry and on `r`; `nodes::cached` on entry and `nodes::list` on `f` (§7a.4) | Hero: sync `MiniBar` with percent and `height / target_height`, ETA from two samples, nettype, version, hard-fork version. Detail: peers in/out with a `Table` of the top 10 connections (`get_connections`: host, state, height, pruning seed, up/down rate), a 60-sample `Sparkline` of `rx_bps`, mempool (txs, bytes, oldest, fee total), fee estimate with the four `fees[]` levels, net limits. On a node that only answers basic questions every pane it cannot fill renders `This node does not answer that.` — **without the method name** (v5.6, §2o rule 5) — never a zero, and never a poisoned `get_info` field (§5). Where another program on this machine runs the node the hero adds `Another program on this machine runs this node. fmonero can read it but not change it.` (v5.6, §2o) and `u`, `d`, `L` and the ban actions are disabled with that same sentence, which core and the TUI now share so the two cannot drift. **With a public node (v5.2, §2m; rewritten in v5.6) the screen is a different, much smaller one** and the 1 s poll makes no node call at all. **v5.5's version of it said five things were unavailable and one thing about the architecture, and that is what v5.6 replaces.** The hero reads `● Public node · <address>` on one line and, when a wallet is open, `this wallet  block <height> · checked <age> ago`. The two panes that read `not available with a remote node` — Net and Mempool · fees — **are gone**, and in their place is one pane, ` This node `, built from the cached check of §2n.4, which is the measurement fmonero already had and never showed here: `block 3 765 346` · `synced` or `syncing` · `answered in 240 ms` · `checked 2m ago`, and under them the chip `[f] Choose another node`. Its two other states are specified because both are reachable on a fresh machine: never checked renders `Not checked yet.` with `[p] Check this node`, and a failed check renders `No answer when checked 2m ago.` with `[f] Choose another node`. The row for the trust flag and the ssl mode is **deleted** (§2o forbids both words, fmonero never marks a public node trusted, and a row showing a value the user cannot change and did not choose is chrome), and so is the line `fmonero does not talk to this node — monero-wallet-rpc does…`, which was an architecture lecture standing where the user's answer belongs (§2o rule 2). **No sync `MiniBar`, no percent, no ETA from `get_info`**: those three are `null` with a public node and a gauge at 0 % is the rendered untruth §2j forbids. The check's height and its age always render **together**, for §5's reason: a four-hour-old `synced` says nothing about now. **v5.5: under the hero, in *both* modes, the public-node picker (§7a.4)** — in remote mode it is the screen's main pane and fills the space the peers table occupies locally; in local mode it sits below the peers table and is how someone finds an address to switch to. v5.5 gave the remote hero one line of the check; v5.6 promotes it to the ` This node ` pane above, where it is four facts and a way out rather than a footnote on a screen of disclaimers. |
+| **Node** (default) | `core::status(&ctx)` every 1 s; `node info` extras on entry and on `r`; `nodes::cached` on entry and `nodes::list` on `f` (§7a.4) | Hero: sync `MiniBar` with percent and `height / target_height`, ETA from two samples, nettype, version, hard-fork version. Detail: peers in/out with a `Table` of the top 10 connections (`get_connections`: host, state, height, pruning seed, up/down rate), a 60-sample `Sparkline` of `rx_bps`, mempool (txs, bytes, oldest, fee total), fee estimate with the four `fees[]` levels, net limits. On a node that only answers basic questions every pane it cannot fill renders `This node does not answer that.` — **without the method name** (v5.6, §2o rule 5) — never a zero, and never a poisoned `get_info` field (§5). Where another program on this machine runs the node the hero adds `Another program on this machine runs this node. fmonero can read it but not change it.` (v5.6, §2o) and `u`, `d`, `L` and the ban actions are disabled with that same sentence, which core and the TUI now share so the two cannot drift. **With a public node (v5.2, §2m; rewritten in v5.6) the screen is a different, much smaller one** and the 1 s poll makes no node call at all. **v5.5's version of it said five things were unavailable and one thing about the architecture, and that is what v5.6 replaces.** The hero reads `● Public node · <address>` on one line and, when a wallet is open, `this wallet  block 3 541 122 · refreshed <age> ago` — **grouped, and `refreshed` rather than `checked`** (v5.6.1, DECISIONS V5): the row printed `block 3541122 · checked 2026-09-19T00:20:07+02`, an ungrouped block number beside an RFC3339 timestamp used as prose and clipped mid-offset, with `checked` doing double duty for the node's own measurement two lines away. It now uses the same two formatters the ` This node ` pane beside it uses, and `wallet.last_refresh_at` is converted to an age through `unix_from_rfc3339` (v5.6.1, §5b). The two panes that read `not available with a remote node` — Net and Mempool · fees — **are gone**, and in their place is one pane, ` This node `, built from the cached check of §2n.4, which is the measurement fmonero already had and never showed here: `block 3 765 346` · `synced` or `syncing` · `answered in 240 ms` · `checked 2m ago`, and under them the chip `[f] Choose another node`. Its two other states are specified because both are reachable on a fresh machine: never checked renders `Not checked yet.` with `[p] Check this node`, and a failed check renders `No answer when checked 2m ago.` with `[f] Choose another node`. The row for the trust flag and the ssl mode is **deleted** (§2o forbids both words, fmonero never marks a public node trusted, and a row showing a value the user cannot change and did not choose is chrome), and so is the line `fmonero does not talk to this node — monero-wallet-rpc does…`, which was an architecture lecture standing where the user's answer belongs (§2o rule 2). **No sync `MiniBar`, no percent, no ETA from `get_info`**: those three are `null` with a public node and a gauge at 0 % is the rendered untruth §2j forbids. The check's height and its age always render **together**, for §5's reason: a four-hour-old `synced` says nothing about now. **v5.5: under the hero, in *both* modes, the public-node picker (§7a.4)** — in remote mode it is the screen's main pane and fills the space the peers table occupies locally; in local mode it sits below the peers table and is how someone finds an address to switch to. v5.5 gave the remote hero one line of the check; v5.6 promotes it to the ` This node ` pane above, where it is four facts and a way out rather than a footnote on a screen of disclaimers. |
 | **Wallet** | `get_balance`, `get_address`, `history::query`; `wallet_dir::list` and `units::state` when nothing is open | **When no wallet is open the whole screen is the empty-state panel of §7a.5** — three buttons and one status line, not an empty table. Otherwise: Header: balance / unlocked / `locked for N blocks (≈ M min)`. Left: subaddress `Table` built from `get_address.addresses[]` (index, label, address, used), with per-row balances joined in from `get_balance.per_subaddress` where present and `—` where absent (that list holds only funded subaddresses, §5); `Enter` = copy, `a` = new address, `l` = label. Right: a `VirtualizedList` of history rows (date, type badge, amount, fee, confirmations, note) with `/` filter and `t` cycling the type filter (all/in/out/block/pending/failed/pool). **`confirmations` and `locked` come from `history::confirmations` / `history::locked` (§5b) and are never recomputed here** — `output.rs` and this screen are two independently written callers of the `unlock_time` height/timestamp formula (§2a.3). `Enter` on a row opens a detail pane (txid, `destinations[]` from `Transfer::destinations` — §5b carries the field precisely so this pane can be built — payment id, unlock time, `subaddr_index` as `major/minor`, double-spend flag) and `n` edits its note. The `locked` column is labelled `locked (est.)` and shows `—` rather than a value on a `--cached` read (§4.1). |
 | **Send** | the §7a state machine | Three `TextInput`s (To, Amount, Note), a priority chip row showing the node's own `fees[]` for each level (`0` is drawn as an alias of the lowest chip, §1b.4), an account selector, and a live validation line. **One transaction only — sweep is CLI-only in v0.1** (§0): `all` in the Amount field is refused inline naming `fmonero wallet sweep`. |
 | **Log** | `node log` tail | `ftui`'s log viewer over the tail of `settings.node.log_file`, `/` to search, `f` to toggle follow, `L` to cycle the node's `set_log_level` 0–4 (needs `--yes`-equivalent: a confirm modal, because it is a mutation). |
@@ -6907,9 +6952,13 @@ is arithmetic and is stated at the end of this section** — v5.5.1) · **health
 **with its sample size**, because 100 % of 3 and 72 % of 94 are not comparable and a bare percent
 invites the comparison, §2n.1) · **height** (monero.fail's `last_height`) · **checked** (the age of
 `health_checked_at`, or the raw HTTP-date when it did not parse) · then, **only for rows this machine
-probed**, **ms** · **node height** · **synced**. The last three sit under a group heading `probed
-here`, and the four before them under `monero.fail says` — two headings so the table itself states
-§2n.2's distinction instead of relying on the user having read this document. A `web_compatible` row
+probed**, **ms** · **node height** · **synced**. **v5.6.1 names the columns instead of grouping them** (DECISIONS V7): the two group headings
+`monero.fail says` / `probed here` were never implemented, so both height columns rendered as
+`block` with nothing to say which was whose — and one of those two headings uses a word §2o rule 7
+removes. The columns are therefore **`their block`** (what monero.fail's list says) and
+**`block here`** (what this machine measured), which states §2n.2's distinction in the space the
+table already has and fits the 12-cell column. The health cell is **`72% of 18`**, this section's
+own text: `72% of 18 checks` is 15 cells in a 12-cell column, so every row ever drawn ended `ch`. A `web_compatible` row
 carries a dim `web` marker; a **`custom`** row (one the user typed, §2n.6) carries a dim `own` marker
 and renders `—` in all four `monero.fail says` columns, because monero.fail has never heard of it and
 a blank there would read as "not measured yet". The configured node carries `●` and is sorted first
@@ -6923,11 +6972,18 @@ port) · <k> skipped (bad address) · source monero.fail`, which is where `skipp
 rather than a table with no rows and a footer full of empty fields. In place of the table:
 
 ```
-  No public-node list yet.
+  No list of public nodes yet.
 
-  [f] Fetch the list        195 public nodes from monero.fail
-  Fetching tells monero.fail your IP address. Nothing else is contacted.
+  [f] Get the list          195 public nodes from monero.fail
+  Getting the list tells monero.fail your IP address. Nothing else is contacted.
 ```
+
+(**The wording above is the code's, not this section's original** — v5.6.1, and the correction is
+recorded rather than silently adopted: §7a.4 printed `No public-node list yet.` / `[f] Fetch the
+list` / `Fetching tells monero.fail your IP address`, and the implementation wrote the three lines
+above instead. `public-node list` is a compound noun for a thing the user thinks of as a list of
+nodes, and `Fetch` is what a program does while `Get` is what a person does. The code is the better
+text, so the section follows it.)
 
 The `[f]` chip is the focused target (keyboard and mouse alike, §7a.2), **the footer line is
 suppressed entirely** rather than rendered against a `fetched_at` that does not exist, and the chip
@@ -7048,7 +7104,7 @@ the whole screen:
 ```
   No wallet is open.
 
-  [o] Open wallet…        choose one of the 0 in ~/.local/share/fmonero/wallets/mainnet
+  [o] Open a wallet       (no wallets on this machine yet — press c to create one)
   [c] Create wallet…      a new one, kept on this machine
   [W] Start the wallet service   (not needed: opening or creating a wallet starts it)
 
@@ -7060,11 +7116,21 @@ the whole screen:
 the two long chip descriptions each said one fact in three clauses.)
 
 Every bracketed chip is a hit target (§7a.2). The wallet count is real — `wallet_dir::list` — so
-`Open wallet…` reads `0 wallets` on a fresh machine and the user can see *why* `o` will not help
-before pressing it. The service line is one of exactly four strings (v5.6 rewrites all four, §2o):
-`not running yet. It starts when you open or create a wallet.` (a public node, the service inactive,
-nothing open) · `not running` (your own node, the service inactive) · `starting…` (an `ensure_running`
-in flight) · `running` (the service is up). The node line is there because
+the user can see *why* `o` will not help before pressing it. **v5.6.1 rewrites the chip and deletes
+the balance pane above this panel** (DECISIONS V12): it read `[o] Open wallet…      choose one of
+the 1 in /home/oliver/.local/share/fmonero/wallets/mainnet`, where *one of the 1 in* is worse
+English than the `pick one of the 1 wallets in …` it replaced, and the ` Balance ` pane above it
+rendered `— XMR   unlocked — XMR` on a screen whose whole subject is that there is no balance. With
+one wallet the chip reads `Open a wallet     (1 wallet on this machine: moneroli)`, with none the
+line above, and with more names than fit, the count alone. The service line is one of exactly **five** strings (v5.6 rewrites four,
+v5.6.1 adds the fifth, §2o): `not running yet. It starts when you open or create a wallet.` (a public
+node, the service inactive, nothing open) · `not running` (your own node, the service inactive) ·
+`starting…` (an `ensure_running` in flight) · `running` (the service is up **and answering**) ·
+**`running, but not answering yet`** (it is up and the poll cannot reach it). The fifth exists
+because the fourth was a contradiction: `wallet service: running` sat four rows above a status bar
+reading `● wallet not running`, both computed correctly — one from `unit_active`, the other from
+`reachable` — and a person cannot reconcile them (DECISIONS V13). The status bar's badge says
+`not answering` for that state too, so the two rows are one fact in two lengths. The node line is there because
 "which node" and "is the daemon up" were the two questions the old screen answered in two different
 places, one of them a refusal.
 
