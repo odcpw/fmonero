@@ -1293,20 +1293,17 @@ fn list_pane(m: &Tui, area: Rect, frame: &mut Frame, wide: bool) {
     } else {
         (Button::SwapPeers, "b", "Show blocked addresses")
     };
-    let (area, chip_area) = if area.height > 4 {
-        let split = Flex::vertical()
-            .constraints([Constraint::Fill, Constraint::Fixed(1)])
-            .split(area);
-        (split[0], Some(split[1]))
-    } else {
-        (area, None)
-    };
-    if let Some(r) = chip_area {
-        chip_row(m, r, &[swap], frame);
-    }
+    // **Inside the pane, on its last interior row** — the ` This node ` pane puts `[p] Check this
+    // node` there and that is the pattern. The first version of this put it in the gap BELOW the
+    // pane, flush left and outside every frame, which is the one shape V3 deleted from the Wallet
+    // screen for being the only unframed text in the product.
     let empty = |text: &str, frame: &mut Frame| {
         if let Some(inner) = framed(area, th, &title, false, frame) {
-            para(text.to_string(), th.dimmed(), true).render(inner, frame);
+            let rows = Flex::vertical()
+                .constraints([Constraint::Fill, Constraint::Fixed(1)])
+                .split(inner);
+            para(text.to_string(), th.dimmed(), true).render(rows[0], frame);
+            chip_row(m, rows[1], &[swap], frame);
         }
     };
     if m.remote_mode() {
@@ -1366,6 +1363,7 @@ fn list_pane(m: &Tui, area: Rect, frame: &mut Frame, wide: bool) {
             &[25],
             frame,
         );
+        swap_chip(m, area, swap, frame);
         return;
     }
     if extras.connections.is_empty() {
@@ -1405,6 +1403,25 @@ fn list_pane(m: &Tui, area: Rect, frame: &mut Frame, wide: bool) {
         (&["HOST", "DOING", "BLOCK"], &[23, 14])
     };
     table(m, area, &title, rows, header, widths, frame);
+    swap_chip(m, area, swap, frame);
+}
+
+/// The `b` chip on the peers/blocked-addresses pane's **last interior row** (M16).
+///
+/// `table` draws the whole pane, so the chip is written over the row inside the bottom border —
+/// which is the row the table's own `Fill` leaves empty whenever the list is shorter than the pane,
+/// and the list is at most ten rows (`take(10)`) in a pane that is taller than that at both sizes.
+fn swap_chip(m: &Tui, area: Rect, swap: (Button, &str, &str), frame: &mut Frame) {
+    if area.height < 4 || area.width < 6 {
+        return;
+    }
+    let row = Rect::new(
+        area.x + 1,
+        area.bottom().saturating_sub(2),
+        area.width.saturating_sub(2),
+        1,
+    );
+    chip_row(m, row, &[swap], frame);
 }
 
 /// **Never rendered with a public node** (§7a.3, v5.6): v5.5's version of this pane was a
@@ -1860,6 +1877,11 @@ fn wallet_daemon_phrase(m: &Tui) -> String {
     // thing, in one frame. Whatever fmonero is doing right now, the label it is doing it under is
     // what every row says, so the three cannot disagree.
     if let Some(a) = m.action.as_ref().filter(|a| a.wallet_busy) {
+        // The row's own subject is already `wallet service`, so an action whose label names it
+        // again read `wallet service: Starting the wallet service…` (round 4's own read).
+        if a.label.contains("wallet service") {
+            return "starting…".into();
+        }
         return format!("{}…", a.label);
     }
     let Some(s) = m.status.as_ref() else {
@@ -2665,7 +2687,15 @@ fn create_modal(m: &Tui, form: &super::CreateForm, frame: &mut Frame) {
     let th = &m.theme;
     let (name, pass, again) = (&form.name, &form.pass, &form.again);
     let (lang, field, err) = (form.lang, form.field, form.err.as_deref());
-    let Some(inner) = overlay(m, frame, 66, 13, " Create a wallet ") else {
+    // **The footer is measured in WRAPPED rows** (round 4's own read of the captures, V15's
+    // lesson once more): M23's longer sentence is 76 characters in a 62-cell interior, and it was
+    // cut to `Esc closes it an` — a modal whose own explanation of the `Tab` exception did not
+    // survive the width the modal is drawn at.
+    const CREATE_W: u16 = 66;
+    let foot = "Tab cannot change screens while this is open. Esc closes it and keeps nothing.";
+    let foot_w = (CREATE_W as usize).saturating_sub(4).max(8);
+    let foot_rows = (wrap_words(foot, foot_w).len() as u16).max(1) + 1;
+    let Some(inner) = overlay(m, frame, CREATE_W, 11 + foot_rows, " Create a wallet ") else {
         return;
     };
     m.hits.modal(inner);
@@ -2680,7 +2710,7 @@ fn create_modal(m: &Tui, form: &super::CreateForm, frame: &mut Frame) {
             Constraint::Fixed(1),
             Constraint::Fixed(1),
             Constraint::Fixed(1),
-            Constraint::Fixed(2),
+            Constraint::Fixed(foot_rows),
             Constraint::Fill,
         ])
         .split(inner);
@@ -2724,27 +2754,19 @@ fn create_modal(m: &Tui, form: &super::CreateForm, frame: &mut Frame) {
     if let Some(why) = err {
         para(why.to_string(), th.err().bg(bg), true).render(rows[4], frame);
     }
-    lines_at(
-        vec![
-            Line::styled(
-                "↑↓ fields · Enter next, then create · Esc discards",
-                th.dimmed().bg(bg),
-            ),
-            // The one documented `Tab` exception, documented IN the modal (§7a.1).
-            // **X34: `Press Esc to discard first.` named no second thing** — first before what? It
-            // is Tab that is blocked, so the sentence says what Esc lets you do next.
-            // **M23: `first` was left dangling** — first before what? X34 replaced one unfinished
-            // sentence with another. What Tab normally does is change screens, so that is what the
-            // line says it cannot do here, and then what Esc is for.
-            Line::styled(
-                "Tab cannot change screens while this is open. Esc closes it and keeps nothing.",
-                th.warn().bg(bg),
-            ),
-        ],
-        rows[5],
-        false,
-        frame,
-    );
+    // The one documented `Tab` exception, documented IN the modal (§7a.1).
+    // **X34: `Press Esc to discard first.` named no second thing** — first before what? It is Tab
+    // that is blocked, so the sentence says what Esc lets you do next. **M23: `first` was left
+    // dangling** — X34 replaced one unfinished sentence with another. What Tab normally does is
+    // change screens, so that is what the line says it cannot do here, and then what Esc is for.
+    let mut foot_lines = vec![Line::styled(
+        "↑↓ fields · Enter next, then create · Esc discards",
+        th.dimmed().bg(bg),
+    )];
+    for part in wrap_words(foot, foot_w) {
+        foot_lines.push(Line::styled(part, th.warn().bg(bg)));
+    }
+    lines_at(foot_lines, rows[5], false, frame);
     let _ = rows[6];
 }
 
@@ -2954,7 +2976,7 @@ fn node_power_modal(m: &Tui, up: bool, frame: &mut Frame) {
     // length and a height counted in sentences leaves the keys under the bottom border (V15).
     let rows: usize = text
         .iter()
-        .map(|(t, _)| wrap_words(t, text_w).len().max(1))
+        .map(|(t, _)| wrap_bullet(t, text_w).len().max(1))
         .sum();
     let title = if up {
         " Start your node "
@@ -2972,7 +2994,7 @@ fn node_power_modal(m: &Tui, up: bool, frame: &mut Frame) {
             let wrapped = if t.is_empty() {
                 vec![String::new()]
             } else {
-                wrap_words(&t, text_w)
+                wrap_bullet(&t, text_w)
             };
             wrapped
                 .into_iter()
@@ -3023,7 +3045,7 @@ fn log_level_modal(m: &Tui, level: i8, frame: &mut Frame) {
     // The height is counted in WRAPPED rows, never in sentences (V15).
     let rows: usize = text
         .iter()
-        .map(|(t, _)| wrap_words(t, text_w).len().max(1))
+        .map(|(t, _)| wrap_bullet(t, text_w).len().max(1))
         .sum();
     let Some(inner) = overlay(
         m,
@@ -3042,7 +3064,7 @@ fn log_level_modal(m: &Tui, level: i8, frame: &mut Frame) {
             let wrapped = if t.is_empty() {
                 vec![String::new()]
             } else {
-                wrap_words(&t, text_w)
+                wrap_bullet(&t, text_w)
             };
             wrapped
                 .into_iter()
@@ -3116,7 +3138,7 @@ fn local_node_modal(m: &Tui, frame: &mut Frame) {
     text.push(("y to confirm · Esc cancels".to_string(), th.dimmed()));
     let rows: usize = text
         .iter()
-        .map(|(t, _)| wrap_words(t, text_w).len().max(1))
+        .map(|(t, _)| wrap_bullet(t, text_w).len().max(1))
         .sum();
     let Some(inner) = overlay(m, frame, WIDTH, rows as u16 + 4, " Use your own node ") else {
         return;
@@ -3129,7 +3151,7 @@ fn local_node_modal(m: &Tui, frame: &mut Frame) {
             let wrapped = if t.is_empty() {
                 vec![String::new()]
             } else {
-                wrap_words(&t, text_w)
+                wrap_bullet(&t, text_w)
             };
             wrapped
                 .into_iter()
@@ -3675,6 +3697,23 @@ pub(super) fn wrapped(s: &str, width: usize) -> Vec<String> {
 /// Word-wrap prose at a width, for the lines that carry a **runnable command**: a clipped
 /// `fmonero setup --units` reads as the complete and plausible `fmonero setup --unit`, which
 /// exits 2. `wrapped` hard-chunks and is for addresses; this breaks on spaces.
+/// [`wrap_words`], but a bullet's continuation lines are indented under its text (round 4's own
+/// read of the captures).
+///
+/// `· nothing is lost either way. The blockchain stays in /tmp/…/bitmonero` wrapped in the Stop
+/// confirm and the path landed flush with the modal's border, reading as a line of its own rather
+/// than as the rest of the bullet. Two spaces is exactly the width of `· `.
+pub(super) fn wrap_bullet(s: &str, width: usize) -> Vec<String> {
+    if !s.starts_with("· ") {
+        return wrap_words(s, width);
+    }
+    let mut out = wrap_words(s, width.max(3));
+    for line in out.iter_mut().skip(1) {
+        *line = format!("  {line}");
+    }
+    out
+}
+
 pub(super) fn wrap_words(s: &str, width: usize) -> Vec<String> {
     if width == 0 {
         return vec![String::new()];

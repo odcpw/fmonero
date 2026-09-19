@@ -776,6 +776,21 @@ fn node_layout(p: &Probes) -> Verdict {
     }
 }
 
+/// **One sentence for a node that is not answering, in the doctor too** (M1).
+///
+/// The `node` group had three wordings of this one fact in one run: the group note
+/// `Your node did not answer.` (the repeated detail of four skipped checks), the row detail
+/// `The node is not answering.` (the transport's own words) and, in `status` two commands away,
+/// `Your node is not running.` — which is the sentence core's own warning, the TUI's badge, its
+/// hero and its panes all use. `node_off_words_from` is that predicate; the doctor passes it the
+/// unit's state and whether another program owns the node, exactly as `status` does.
+fn node_off_sentence(p: &Probes) -> String {
+    format!(
+        "Your node is {}.",
+        fmonero_core::node_off_words_from(p.node_unit_state.active, p.layout == "system_unit")
+    )
+}
+
 fn node_reachable(p: &Probes) -> Verdict {
     // **S4: with a public node this is the one `node` check that has a source, and it must use
     // it.** It skipped `remote_node` like the rest of the group, so a `doctor --only node` run
@@ -830,10 +845,9 @@ fn node_reachable(p: &Probes) -> Verdict {
         // The message is already a sentence (§2o, V8), so the address goes after it rather than
         // in front of it: `http://127.0.0.1:18081 did not answer. The node is not answering.` was
         // the same fact twice, which is what happens when a detail concatenates two rewrites.
-        match p.node_error.as_deref() {
-            Some(why) => format!("{why} fmonero asked it on {}.", p.node_url),
-            None => format!("Your node did not answer on {}.", p.node_url),
-        },
+        // M1: the predicate's sentence, not the transport's own. A credential refusal has its
+        // own check (`node_auth`) and the raw transport text is in the run's saved probes.
+        format!("{} fmonero asked it on {}.", node_off_sentence(p), p.node_url),
     )
     .cmd("fmonero node up")
 }
@@ -847,7 +861,7 @@ fn node_unrestricted(p: &Probes) -> Verdict {
         return v;
     }
     if !p.node_reachable {
-        return Verdict::skip("node_unreachable", "Your node did not answer.");
+        return Verdict::skip("node_unreachable", node_off_sentence(p));
     }
     match p.node_restricted {
         Some(true) => Verdict::warn("node_restricted", "This node only answers basic questions.")
@@ -873,7 +887,7 @@ fn node_synced(p: &Probes) -> Verdict {
         return v;
     }
     if !p.node_reachable {
-        return Verdict::skip("node_unreachable", "Your node did not answer.");
+        return Verdict::skip("node_unreachable", node_off_sentence(p));
     }
     let height = p.node_height.unwrap_or_default();
     let target = p.node_target_height.unwrap_or_default();
@@ -911,7 +925,7 @@ fn node_peers(p: &Probes) -> Verdict {
         return v;
     }
     if !p.node_reachable {
-        return Verdict::skip("node_unreachable", "Your node did not answer.");
+        return Verdict::skip("node_unreachable", node_off_sentence(p));
     }
     // A restricted node reports 0 by construction (§1b.3), so a `warn` here would be a
     // false alarm on a perfectly healthy machine.
@@ -948,7 +962,7 @@ fn node_clock(p: &Probes) -> Verdict {
         return v;
     }
     let Some(adjusted) = p.node_adjusted_time else {
-        return Verdict::skip("node_unreachable", "Your node did not answer.");
+        return Verdict::skip("node_unreachable", node_off_sentence(p));
     };
     let skew = adjusted - p.now_unix;
     // **X27: `-230030s` and `±60s` are not times a person reads**, and `fmonero_core::age` is the
@@ -2157,7 +2171,8 @@ fn node_auth(p: &Probes) -> Verdict {
     if !p.node_reachable {
         return Verdict::skip(
             "node_unreachable",
-            "Your node did not answer, so nothing was asked of it.",
+            // M1: one wording.
+            format!("{} Nothing was asked of it.", node_off_sentence(p)),
         );
     }
     // What the WIRE did, never what a config file says: inferring this from

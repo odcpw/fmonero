@@ -772,8 +772,10 @@ fn footers(label: &str, v: &serde_json::Value) -> Vec<String> {
                 out.push(format!("There are no wallets in {dir}."));
                 // The one command that brings an existing seed back (§4.1): `wallet restore`
                 // is cut from v0.1 precisely so no seed enters fmonero's process (§0, §2b.2).
+                // A colon introducing a command is the shape `Try:` already teaches; a command
+                // inside a sentence is what round 4's own read of this footer objected to.
                 out.push(format!(
-                    "To bring an existing seed back, use monero-wallet-cli --restore-deterministic-wallet --wallet-file {dir}/<name>, then open it here."
+                    "To bring an existing seed back: monero-wallet-cli --restore-deterministic-wallet --wallet-file {dir}/<name>"
                 ));
                 out.push("Try: fmonero wallet create <name> --yes".to_string());
             }

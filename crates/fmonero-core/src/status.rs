@@ -907,7 +907,10 @@ fn warnings(
              the count of payments waiting is a minimum."
                 .into(),
             "fmonero doctor --only node",
-            None,
+            // **Round 4's own read of the widget: every `warn` row names a next step.** Five of
+            // them carried `None`, which is a blank second line on the bar — an alarm with nothing
+            // to do about it, in the one place §2o.1 exists for.
+            Some("Press 1 to see what this node does answer."),
         );
     }
     if s.node.synchronized == Some(false) {
@@ -929,7 +932,7 @@ fn warnings(
             Severity::Warn,
             "Your node is set to stay offline.".into(),
             "fmonero setup --units --yes",
-            None,
+            Some("Press d, then u, on the Node screen to start it afresh."),
         );
     }
     if s.node.outgoing_connections_count == Some(0)
@@ -941,7 +944,7 @@ fn warnings(
             Severity::Warn,
             "Your node has no peers yet.".into(),
             "fmonero node limit --out-peers 16",
-            None,
+            Some("It usually finds some within a minute. Press r to check again."),
         );
     }
     if let Some(free) = s.node.free_space {
@@ -958,7 +961,7 @@ fn warnings(
                     gigabytes(free)
                 ),
                 "fmonero doctor --only storage",
-                None,
+                Some("Free some space on that disk, or press d to stop your node."),
             );
         }
     }
@@ -977,7 +980,9 @@ fn warnings(
             Severity::Info,
             crate::FOREIGN_NODE_INFO.into(),
             "sudo systemctl status monerod",
-            None,
+            // An `info` row, and the widget does not render those at all (§6.5) — but the TUI's
+            // Notes pane does, and a line there without a next step is the same gap.
+            Some("Nothing to do. Press 1 to see what it is doing."),
         );
     }
     if !s.wallet.unit_active && !s.wallet.reachable {
@@ -1052,7 +1057,7 @@ fn warnings(
             Severity::Info,
             format!("{locked} XMR unlocks in about {mins} min."),
             "fmonero wallet balance",
-            None,
+            Some("Nothing to do. It unlocks on its own."),
         );
     }
     let in_flight = s
@@ -1107,7 +1112,10 @@ fn warnings(
                         "{subject} took too long to answer. fmonero will try again in {left}s."
                     ),
                     "fmonero doctor   # or re-run the command with --force",
-                    None,
+                    // The last of the nine `None` actions. This is a `severity: error`, which is
+                    // the one the bar paints urgent, so a blank second line there is the worst
+                    // case of the gap.
+                    Some("Press r to try again now."),
                 );
             }
         }
@@ -1118,7 +1126,7 @@ fn warnings(
             Severity::Warn,
             "Your node accepted fmonero without asking for a password.".into(),
             "fmonero setup --units --yes",
-            None,
+            Some("Only programs on this machine can reach it, so this is not urgent."),
         );
     }
     if let Some((_, net)) = state.last_open.as_ref() {
@@ -1133,7 +1141,7 @@ fn warnings(
                     ctx.settings.node.network
                 ),
                 "fmonero doctor --only wallet",
-                None,
+                Some("Press x to close this wallet if it is not the one you meant."),
             );
         }
     }
@@ -1345,6 +1353,40 @@ mod tests {
             !WARNING_IDS.contains(&"plugin_not_linked"),
             "that one is the doctor's (§5)"
         );
+    }
+
+    /// **Every warning names something the reader can do where they are** (§2o.1, and round 4's
+    /// own read of the widget).
+    ///
+    /// `Warning::action` is what the bar renders as a row's second line and what the TUI's Notes
+    /// pane shows; nine of the twenty-three carried `None`, which is a blank line under an alarm —
+    /// including `node_stalled` and `wallet_stalled`, the two `severity: error` rows the bar paints
+    /// urgent. The grep cannot see a missing string, so this is the test that can: it walks the
+    /// source of `warnings()` and refuses a `None` in the action position.
+    #[test]
+    fn every_warning_carries_an_in_app_action() {
+        let src = include_str!("status.rs");
+        let body = src
+            .split("fn warnings(")
+            .nth(1)
+            .expect("the function is in this file");
+        let body = body.split("\n/// ").next().unwrap_or(body);
+        // The `add` closure's last argument is the action. A bare `None,` on its own line in this
+        // function is that argument and nothing else: every other `None` here is inside a struct
+        // literal, which lives in `empty()` above.
+        let bare: Vec<&str> = body
+            .lines()
+            .map(str::trim)
+            .filter(|l| *l == "None," || *l == "None")
+            .collect();
+        assert!(
+            bare.is_empty(),
+            "{} warning(s) carry no in-app action (§2o.1)",
+            bare.len()
+        );
+        // And the count is the one the id list promises, so a warning added without an action
+        // cannot hide behind a passing grep.
+        assert_eq!(WARNING_IDS.len(), 23);
     }
 
     // ---- §5's `--check-node`: four bounds, a test each (v5.6) --------------------

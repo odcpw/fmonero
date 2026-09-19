@@ -26,7 +26,7 @@ pub fn list(ctx: &Context) -> Result<Vec<String>, Error> {
         Err(e) => {
             return Err(Error::io("read", "your wallet folder", dir, &e)
                 .with_reason("wallet_dir_unreadable")
-                .with_action("Press o again once you can read that folder.")
+                .with_action("Press o on the Wallet screen once you can read that folder.")
                 .with_hint("fmonero doctor --only wallet"))
         }
     };

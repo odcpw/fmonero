@@ -1,0 +1,5 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# scenario: --scenario thin. A get_info answer that carries `status: OK` and NOTHING ELSE that\n# §2n.4's probe reads. It exists for round 4's M27: a public node can answer a check and still\n# report neither a height nor a sync flag, and the bar rendered ` · checked 1m 35s ago` for that\n# document -- a row beginning with a bare separator -- while its header fell through to\n# `Public node · wallet closed` with no verdict at all. Every field the probe looks for is absent\n# rather than null, which is the harder case: serde's Option handles both, and absence is what a\n# node behind a proxy that rewrites the body actually produces.\n# NOT a claim about what any particular node does. It is the shape the PROBE must survive, and the\n# `Probe` type's own Options are what say it may.",
+  "status": "OK",
+  "untrusted": false
+}

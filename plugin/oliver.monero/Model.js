@@ -242,7 +242,10 @@ function peersLabel(node) {
   if (out === null || out === undefined) {
     // **M28: a node that is off is not a node withholding an answer.** This returned `not shown by
     // this node` for the own-node-off document, where the truth is that there is nothing running to
-    // ask — X23's shape, on the bar.
+    // ask — X23's shape, on the bar. And with a PUBLIC node it is neither: fmonero never asks one
+    // anything (§2m.3), so the row says whose question it is, in the TUI's own words for the pane
+    // that stands where this row would be.
+    if (node.layout === "remote") return "this is about your own node"
     if (node.reachable !== true) return "none while your node is off"
     return "not shown by this node"
   }
