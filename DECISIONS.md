@@ -12452,3 +12452,58 @@ This round's captures went to a **fresh** directory per run and the greps read
 last full run, the twenty-two-word grep plus `§`, `os error`, `error[`, `reason:`, `transaction` and
 any 64-hex id returns **nothing**; no line ends in `…`; every em-dash is an unknown-value cell; and
 the only letters touching a pane border are a pane's own text underneath an overlay.
+
+### Addendum: the gate sweep re-run at the final HEAD, and the last four findings
+
+The section above was written mid-round. Four more things came out of the two capture worlds the
+first harness got wrong — a genuinely remote-mode TUI and the payment detail modal, which the harness
+had been rendering in local mode and never opening — and the whole sweep was re-run after them.
+
+* `what  sending · block 0 · 09-16 14:01` — a block number of zero is `not in a block yet`, which is
+  §2j's rule that a zero may not stand in for unknown, on every sending, waiting and failed row.
+* `payment id 0000000000000000` — sixteen zeros is Monero's own "there is no payment id" sentinel,
+  so the row printed an identifier at a person that means nothing.
+* `destinations` / `0.1000 44Kbx4sJ…` — `paid to`, and the amount carries its unit (rule 9).
+* the Log screen's **title** named your own node's log file in the mode that has no node of your own,
+  which is M8's other half.
+
+```
+$ cargo fmt --check                                 rc=0
+$ cargo clippy --all-targets -- -D warnings         rc=0   (after cargo clean -p of the three crates)
+$ cargo test                                        139 + 192 + 3 + 0 passed, 0 failed
+$ scripts/check.sh --full                           rc=0   check.sh: PASS
+$ tests/e2e.sh --fast                               rc=0   597 passed, 0 failed, 3 skipped
+$ tests/e2e.sh --full                               rc=0   631 passed, 0 failed, 3 skipped
+$ tests/plugin-smoke.sh --static                    rc=0   71 passed, 0 failed
+$ tests/plugin-smoke.sh                             rc=1   74 passed, 2 failed
+$ tests/tui_tmux.sh                                 rc=0   38 passed, 0 failed
+$ tests/tui_tmux.sh --capture                       rc=0   42 passed, 0 failed
+```
+
+The two live plugin failures, verbatim, and they are the two round 4 predicted:
+
+```
+  FAIL  the shell is running none, this tree is qml-6550d06c — it has not reloaded (§1.5: a symlink
+        does not hot-reload; run `omarchy restart shell`, which is refused while the session is locked)
+  FAIL  the shell reports section(s) warnings, which Panel.qml does not build: it is a different panel
+```
+
+`omarchy restart shell` was attempted **once**: `Refusing to restart Omarchy shell while the session
+is locked.`
+
+**Captures read.** 114 of my own at 120x32 and 150x40 across three worlds (local with nothing running,
+local against `fmonero-mock` with a wallet open, and a cache of public nodes), 26 more in the two
+worlds the first harness got wrong, and the 14 `tui_tmux.sh --capture` writes. Over every one of them,
+restricted to the files that run wrote: the twenty-two-word grep plus `§`, `os error`, `error[`,
+`reason:`, `transaction` and any 64-character hex returns **nothing**; no line ends in `…`; every
+em-dash is an unknown-value cell; and the only letters touching a pane border belong to a pane
+underneath an overlay. 27 human CLI captures on a pty at 120 columns across three modes were read the
+same way; the only hits are `/usr/bin/monerod` inside an "is installed" detail, four settings **keys**,
+and runnable `Try:` commands — all three of which §2o carves out by name.
+
+**Nothing of the owner's moved.** After everything: both units `inactive`, `disabled`, `NRestarts=0`;
+`fmonero-monerod.service` 64580d70a2171950…, `fmonero-wallet-rpc.service` 920870797f0ab14a…,
+`monerod.conf` bed63c9603dc9f5c…, `config.toml` ac5f2f1bda4f1906…, `omarchy-menu.jsonc`
+230cb88cd25864cb… — all five the values this round started with; `node.mode` still `remote`,
+`node.remote` still `185.220.101.63:18081`; `~/.bitmonero` last modified 00:22; and `moneroli` and
+`moneroli.keys` still the only two files in `~/.local/share/fmonero/wallets/mainnet`, never opened.
