@@ -176,7 +176,10 @@ pub const KEYS: &[(&str, &str)] = &[
         "R  Q",
         "Wallet: check for payments · show the address as a QR code",
     ),
-    ("/  t", "Wallet: filter rows · change which kinds show"),
+    (
+        "/  t",
+        "Wallet: filter the rows · change which kinds of payment show",
+    ),
     (
         "←→  Enter",
         "Wallet: swap panes · copy an address · open a row",
@@ -187,7 +190,7 @@ pub const KEYS: &[(&str, &str)] = &[
          back in.",
     ),
     (
-        "modals: ↑↓  Enter",
+        "pop-ups: ↑↓  Enter",
         "move between a pop-up's fields · next, then confirm on the last one",
     ),
     (

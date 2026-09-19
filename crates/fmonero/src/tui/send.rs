@@ -573,20 +573,31 @@ pub(super) fn view(m: &Tui, area: Rect, frame: &mut ftui::Frame, tier: Tier) {
         _ => Line::styled(text, if ok { th.ok() } else { th.err() }),
     };
     let mut lines = vec![line];
-    lines.push(Line::styled(
-        format!(
-            "account {} · ↑↓ fields · ⇥ screens · @ address book · {}",
-            s.account,
-            if s.editing {
-                "Esc leaves the form"
-            } else {
-                "Enter returns to the form"
-            }
-        ),
-        th.dimmed(),
-    ));
+    // **A wrapped key line keeps a hanging indent** (X15's shape, found by round 4's own read of the
+    // captures): `WrapMode::Word` returned the continuation to column 0, so at 120 columns
+    // `· Esc leaves` ended one row and `the form` started the next flush left, reading as a new
+    // line of its own. The wrapping happens here and the paragraph is rendered unwrapped.
+    let footer = format!(
+        "account {} · ↑↓ fields · ⇥ screens · @ address book · {}",
+        s.account,
+        if s.editing {
+            "Esc leaves the form"
+        } else {
+            "Enter returns to the form"
+        }
+    );
+    let w = rows[4].width as usize;
+    for (i, part) in super::screens::wrap_words(&footer, w.saturating_sub(2).max(8))
+        .into_iter()
+        .enumerate()
+    {
+        lines.push(Line::styled(
+            if i == 0 { part } else { format!("  {part}") },
+            th.dimmed(),
+        ));
+    }
     Paragraph::new(Text::from_lines(lines))
-        .wrap(WrapMode::Word)
+        .wrap(WrapMode::None)
         .render(rows[4], frame);
 
     if let Some(preview) = preview {
@@ -608,12 +619,18 @@ fn view_preview(m: &Tui, area: Rect, frame: &mut ftui::Frame) {
     }
     let s = &m.send;
     let mut lines = vec![Line::styled("To".to_string(), th.dimmed())];
-    // The recipient is never elided: an elided address is how you send to the wrong one.
-    lines.extend(
-        wrapped(s.to.value(), inner.width as usize)
-            .into_iter()
-            .map(|l| Line::styled(l, th.text())),
-    );
+    // The recipient is never elided: an elided address is how you send to the wrong one. **And an
+    // empty field says so** (round 4's own read): `To` with nothing under it was a label and a blank
+    // where every other row of this pane shows `—` for a value it does not have yet (§5).
+    if s.to.value().trim().is_empty() {
+        lines.push(Line::styled("—".to_string(), th.dimmed()));
+    } else {
+        lines.extend(
+            wrapped(s.to.value(), inner.width as usize)
+                .into_iter()
+                .map(|l| Line::styled(l, th.text())),
+        );
+    }
     let amount = Piconero::parse(s.amount.value().trim()).ok();
     lines.push(Line::from_spans([
         Span::styled("Amount  ".to_string(), th.dimmed()),

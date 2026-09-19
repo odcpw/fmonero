@@ -66,27 +66,30 @@ pub fn require_loopback(url: &str) -> Result<(), Error> {
     // `check.sh`'s allow-list exempts a runnable command, and the half after the `#` is prose that
     // slipped through in a file the grep did not read at all. The sentence says what a person can
     // use here; the reason says why theirs was not accepted.
+    // One short sentence naming what was typed, then one saying what a good one looks like (rule 1,
+    // rule 10). Two drafts were read off a terminal before this one: the first was
+    // `fmonero can only talk to this machine, and http://8.8.8.8:18081 is somewhere else: only this
+    // machine's own addresses are accepted` — a colon inside a sentence that already had one in front
+    // of it — and the second began with `fmonero`, which the envelope's own `fmonero:` then stuttered.
     let refuse = |why: &str| {
-        Error::usage(format!(
-            "fmonero can only talk to this machine, and {url} is somewhere else: {why}"
-        ))
-        .with_reason("non_loopback_url")
-        .with_hint("fmonero node remote <host:port> --yes   # to use a public node instead")
-        .with_action("Press f on the Node screen to choose a public node.")
+        Error::usage(format!("{url} cannot be used here. {why}"))
+            .with_reason("non_loopback_url")
+            .with_hint("fmonero node remote <host:port> --yes   # to use a public node instead")
+            .with_action("Press f on the Node screen to choose a public node.")
     };
     let Some(rest) = url.strip_prefix("http://") else {
         return Err(refuse(
-            "an address here starts with http:// and names this machine",
+            "An address here starts with http:// and names this machine.",
         ));
     };
     // `host[:port]`, with an optional path we ignore here.
     let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
     if authority.is_empty() {
-        return Err(refuse("it names no host"));
+        return Err(refuse("It names no host."));
     }
     if authority.contains('@') {
         return Err(refuse(
-            "a password does not belong in an address; fmonero keeps it in its own file",
+            "A password does not belong in an address. fmonero keeps it in a file of its own.",
         ));
     }
     let host = if let Some(end) = authority.strip_prefix('[') {
@@ -95,7 +98,7 @@ pub fn require_loopback(url: &str) -> Result<(), Error> {
             Some((h, _)) => h.to_string(),
             None => {
                 return Err(refuse(
-                    "an IPv6 address goes in square brackets, like [::1]:18081",
+                    "An IPv6 address goes in square brackets, like [::1]:18081.",
                 ))
             }
         }
@@ -113,7 +116,7 @@ pub fn require_loopback(url: &str) -> Result<(), Error> {
             Ok(())
         } else {
             Err(refuse(
-                "only this machine's own addresses are accepted, like 127.0.0.1",
+                "Only this machine's own addresses are accepted, like 127.0.0.1.",
             ))
         };
     }
@@ -121,20 +124,20 @@ pub fn require_loopback(url: &str) -> Result<(), Error> {
         use std::net::ToSocketAddrs;
         let resolved: Vec<std::net::SocketAddr> = (host.as_str(), 0u16)
             .to_socket_addrs()
-            .map_err(|e| refuse(&format!("'localhost' does not resolve ({e})")))?
+            .map_err(|e| refuse(&format!("'localhost' does not resolve here ({e}).")))?
             .collect();
         if resolved.is_empty() {
-            return Err(refuse("'localhost' resolves to nothing"));
+            return Err(refuse("'localhost' resolves to nothing here."));
         }
         if resolved.iter().all(|a| a.ip().is_loopback()) {
             return Ok(());
         }
         return Err(refuse(
-            "'localhost' points somewhere other than this machine here",
+            "'localhost' points somewhere other than this machine here.",
         ));
     }
     Err(refuse(
-        "a name is not accepted here: write 127.0.0.1, or localhost",
+        "A name is not accepted here. Write 127.0.0.1, or localhost.",
     ))
 }
 

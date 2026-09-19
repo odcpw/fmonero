@@ -1740,8 +1740,11 @@ fn disk_space(p: &Probes) -> Verdict {
     Verdict::warn(
         "low_disk",
         format!(
-            "Only {gb:.0} GB free where {} lives. A smaller copy of the blockchain and room to \
-             work needs about {floor_gb:.0} GB, which is an estimate rather than a measurement.",
+            // Round 4's own read: `A smaller copy of the blockchain … needs about 120 GB` reads as
+            // though the smaller copy is the expensive one. 120 GB is the floor for a full copy
+            // plus room to work, and `node.prune` is what makes a smaller one an option.
+            "Only {gb:.0} GB free where {} lives. A full copy of the blockchain and room to work \
+             needs about {floor_gb:.0} GB, and that is an estimate rather than a measurement.",
             p.data_dir
         ),
     )

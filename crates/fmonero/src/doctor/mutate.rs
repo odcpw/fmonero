@@ -979,7 +979,11 @@ fn repaired_settings(p: &Probes) -> Result<Vec<u8>, Error> {
 #[derive(Debug, Deserialize)]
 struct ActionLine {
     seq: u64,
+    /// Read from `actions.jsonl` and **deliberately not rendered**: it is a check id, and §2o rule
+    /// 5 puts an id in `--json` and nowhere else. The journal on disk keeps it for the reader who
+    /// wants to know which check wrote a line.
     #[serde(default)]
+    #[allow(dead_code)]
     check: String,
     #[serde(default)]
     ok: bool,
@@ -1000,8 +1004,6 @@ pub struct UndoStep {
     /// Not part of §5c's key set; carried for the human rendering and skipped in JSON.
     #[serde(skip)]
     pub note: Option<String>,
-    #[serde(skip)]
-    pub check: String,
 }
 
 /// Resolve `latest` or a run id to its directory.
@@ -1087,12 +1089,14 @@ pub fn undo(ctx: &Context, dir: &Path) -> Result<Vec<UndoStep>, Error> {
                     action: kind,
                     path: target,
                     ok: false,
+                    // §2o rule 12 and rule 1: an em-dash joining two clauses, and a semicolon
+                    // joining two sentences, in the message a person reads after an interrupted
+                    // run. It is two sentences now.
                     note: Some(
                         backup.unwrap_or_default()
-                            + " — the run stopped between the journal entry and the write, so \
-                               whether it applied is unknown; nothing was undone",
+                            + ". The run stopped between writing the record and writing the file, \
+                               so whether it applied is not known. Nothing was undone.",
                     ),
-                    check: line.check,
                 });
             }
             continue;
@@ -1140,7 +1144,6 @@ pub fn undo(ctx: &Context, dir: &Path) -> Result<Vec<UndoStep>, Error> {
             path: target,
             ok,
             note,
-            check: line.check,
         });
     }
     Ok(steps)

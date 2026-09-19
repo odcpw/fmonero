@@ -105,40 +105,47 @@ fn wrap_to(text: &str, width: usize, hang: usize) -> Vec<String> {
     // hanging indent is measured from them.
     let indent: String = text.chars().take_while(|c| *c == ' ').collect();
     let body = &text[indent.len()..];
-    let hang_pad = " ".repeat(hang);
     if body.is_empty() {
         return vec![text.to_string()];
     }
+    // **A run of spaces inside the line is kept exactly** (round 4's own read of the captures): the
+    // first version of this loop treated the body as `split(' ')` and rebuilt one space between
+    // words, so `node    synced` came out `node   synced` and every two-space column gap in the
+    // program lost a column. The body is split into runs of spaces and runs of not-spaces, and a run
+    // of spaces is carried whole to the word that follows it.
+    let mut chunks: Vec<(bool, String)> = Vec::new();
+    for c in body.chars() {
+        let is_space = c == ' ';
+        match chunks.last_mut() {
+            Some((was_space, text)) if *was_space == is_space => text.push(c),
+            _ => chunks.push((is_space, c.to_string())),
+        }
+    }
+    let hang_pad = " ".repeat(hang);
     let mut lines: Vec<String> = Vec::new();
     let mut current = indent.clone();
     let mut current_width = indent.chars().count();
-    let mut first_word = true;
-    for word in body.split(' ') {
-        if word.is_empty() {
-            // A run of spaces inside the line (a column gap) belongs to the word that follows.
-            if !first_word {
-                current.push(' ');
-                current_width += 1;
-            }
+    let mut gap = String::new();
+    let mut any = false;
+    for (is_space, chunk) in chunks {
+        if is_space {
+            gap = chunk;
             continue;
         }
-        let w = visible_width(word);
-        let sep = usize::from(!first_word && !current.ends_with(' '));
-        if !first_word && current_width + sep + w > width {
+        let w = visible_width(&chunk);
+        let gap_w = gap.chars().count();
+        if any && current_width + gap_w + w > width {
             lines.push(current.trim_end().to_string());
             current = hang_pad.clone();
             current_width = hang;
-            current.push_str(word);
-            current_width += w;
-        } else {
-            if sep == 1 {
-                current.push(' ');
-                current_width += 1;
-            }
-            current.push_str(word);
-            current_width += w;
+        } else if any {
+            current.push_str(&gap);
+            current_width += gap_w;
         }
-        first_word = false;
+        current.push_str(&chunk);
+        current_width += w;
+        gap.clear();
+        any = true;
     }
     lines.push(current.trim_end().to_string());
     lines
@@ -154,9 +161,16 @@ pub fn wrapped_lines(text: &str) -> Vec<String> {
 /// Column widths for a table, from the terminal rather than from a constant (X3).
 ///
 /// `mins` is what a column may never go below — an address column's minimum is the address, because
-/// `docs/COPY.md` §4 forbids eliding one — and `prefs` is what it takes when there is room. Slack
-/// goes to `flex`; a shortfall is taken from the widest column that is still above its minimum, one
-/// column at a time, so the table narrows evenly instead of one column collapsing.
+/// `docs/COPY.md` §4 forbids eliding one — and `prefs` is what it takes when there is room. A
+/// shortfall is taken from the widest column that is still above its minimum, one column at a time,
+/// so the table narrows evenly instead of one column collapsing.
+///
+/// **Slack goes to `flex` only when a column is genuinely better wide.** `NO_FLEX` leaves it unspent,
+/// which is what a table of short values wants: round 4's own read of the captures found `node list`
+/// drawing an 80-column address column for 21-character addresses, because every spare column on a
+/// 120-column terminal had been handed to it.
+pub const NO_FLEX: usize = usize::MAX;
+
 pub fn columns(mins: &[usize], prefs: &[usize], gap: usize, flex: usize) -> Vec<usize> {
     debug_assert_eq!(mins.len(), prefs.len());
     let total = term_width();
@@ -381,6 +395,19 @@ pub fn human_uptime(secs: i64) -> String {
     }
 }
 
+/// Pad to `width` display columns on the LEFT, so a column of amounts lines its decimal points up.
+///
+/// Money reads down a column, not across it (round 4's own read of `wallet history`): left-aligned,
+/// `0.1000` and `0.00003072` put their points three cells apart.
+pub fn pad_right(text: &str, width: usize) -> String {
+    let w = UnicodeWidthStr::width(text);
+    if w >= width {
+        text.to_string()
+    } else {
+        format!("{}{text}", " ".repeat(width - w))
+    }
+}
+
 /// Pad to `width` display columns (CJK- and emoji-safe).
 pub fn pad(text: &str, width: usize) -> String {
     let w = UnicodeWidthStr::width(text);
@@ -532,13 +559,16 @@ fn own_node_rows(out: &Out, node: &serde_json::Value) {
         Some("none") => "no node is set up yet",
         _ => "your own node",
     };
+    // **`block —` says nothing** (X23's lesson, found by round 4's own read of this output): with
+    // nothing set up the first line of the first command read `not answering 127.0.0.1:18081 block —
+    // no node is set up yet`, and the dash sat between two facts that were already the answer.
+    let block = match node["height"].as_u64() {
+        Some(h) => format!("block {}  ", grouped(h)),
+        None => String::new(),
+    };
     out.line(format!(
-        "node    {badge}  {}  block {}  {whose}",
+        "node    {badge}  {}  {block}{whose}",
         cell(&node["url"]),
-        node["height"]
-            .as_u64()
-            .map(grouped)
-            .unwrap_or_else(|| "—".to_string())
     ));
     // **Nothing is said with dashes** (X23). With the node off every field below is `null`, and the
     // row read `synced —%  peers — out / — in  waiting —  blockchain —  running —` under a badge
@@ -782,19 +812,16 @@ fn history_human(out: &Out, v: &serde_json::Value) {
     // **The columns are the terminal's and the headers carry their unit** (X3, X20). They were six
     // constants adding up to 85 columns, and `amount` and `fee` were money with no unit in the cell
     // or the header — rule 9, on the one table where the numbers are money.
-    let w = columns(
-        &[16, 7, 10, 9, 8, 6],
-        &[16, 7, 18, 12, 8, 6],
-        2,
-        2, // the amount column takes the slack: it is the widest real value here
-    );
+    // No flex: an amount column stretched to fill the terminal puts its values a long way from the
+    // heading over them (round 4's own read).
+    let w = columns(&[16, 7, 10, 9, 8, 6], &[16, 7, 18, 12, 8, 6], 2, NO_FLEX);
     out.row(format!(
         "{}  {}  {}  {}  {}  {}",
         pad("date", w[0]),
         pad("what", w[1]),
-        pad("amount XMR", w[2]),
-        pad("fee XMR", w[3]),
-        pad("confirms", w[4]),
+        pad_right("amount XMR", w[2]),
+        pad_right("fee XMR", w[3]),
+        pad_right("confirms", w[4]),
         "locked"
     ));
     for t in rows {
@@ -825,9 +852,9 @@ fn history_human(out: &Out, v: &serde_json::Value) {
             "{}  {}  {}  {}  {}  {}",
             pad(&when, w[0]),
             pad(kind, w[1]),
-            pad(&cell(&t["amount_xmr"]), w[2]),
-            pad(&cell(&t["fee_xmr"]), w[3]),
-            pad(&cell(&t["confirmations"]), w[4]),
+            pad_right(&cell(&t["amount_xmr"]), w[2]),
+            pad_right(&cell(&t["fee_xmr"]), w[3]),
+            pad_right(&cell(&t["confirmations"]), w[4]),
             locked
         ));
     }
@@ -954,7 +981,22 @@ fn peers_human(out: &Out, v: &serde_json::Value) {
             // X29). `average ↓ ↑` had no time unit at all and the cells read `↓2.1 kB ↑0 B`, which
             // is a rate printed as a total; `STATE` rendered the node's own `synchronizing`
             // against `synced` everywhere else in the program (§2o.2).
-            let w = columns(&[20, 5, 12, 11, 9, 20], &[40, 6, 12, 11, 9, 22], 2, 0);
+            // The host column is the widest host in the answer, not a 40-cell guess, and `doing`
+            // is 14 because `trading blocks` is 14 — at 12 it pushed every other column right on
+            // the rows that carried it and left the table's own columns out of line (round 4's own
+            // read of this output).
+            let widest = rows
+                .iter()
+                .map(|c| UnicodeWidthStr::width(c["host"].as_str().unwrap_or("")))
+                .max()
+                .unwrap_or(16)
+                .clamp(16, 46);
+            let w = columns(
+                &[widest, 5, 14, 11, 9, 20],
+                &[widest, 6, 14, 11, 9, 22],
+                2,
+                NO_FLEX,
+            );
             out.row(out.paint(
                 &format!(
                     "  {}  {}  {}  {}  {}  {}",
@@ -962,7 +1004,7 @@ fn peers_human(out: &Out, v: &serde_json::Value) {
                     pad("port", w[1]),
                     pad("doing", w[2]),
                     pad("block", w[3]),
-                    pad("for", w[4]),
+                    pad("connected", w[4]),
                     "average per second"
                 ),
                 Paint::Dim,
@@ -1061,27 +1103,29 @@ fn node_info_human(out: &Out, v: &serde_json::Value) {
         // the whole of what this machine can know. Said once, in words, rather than implied by
         // twenty-six dashes — and **without contradicting the row above it** (X7): the figures
         // are real, they are just not from now.
-        if !node["remote_probe"].is_null() {
+        if node["remote_probe"].is_null() {
+            // Not "nothing ELSE" when nothing at all has been shown (round 4's own read).
+            out.line(
+                "        Nothing about a public node can be measured from this machine until it \
+                 is checked.",
+            );
+        } else {
             out.line("        These figures are from the last check, not from now.");
+            out.line("        Nothing else about a public node can be measured from this machine.");
         }
-        out.line("        Nothing else about a public node can be measured from this machine.");
         return;
     }
     own_node_rows(out, node);
-    out.line(format!(
-        "        version {} · {}",
-        cell(&node["version"]),
-        cell(&node["nettype"])
-    ));
     if let Some(p) = v["txpool"].as_object() {
         // **`0 double spends` is gone** (X29): it is a phrase a reader looks up, it is zero on
         // every healthy node, and nothing on this screen tells them what to do about it. The count
         // stays in `node info --json`, where an agent reads it.
-        let n = p["txs_total"].as_u64();
+        //
+        // **And the count is not repeated here** (round 4's own read): the row above already says
+        // `14 payments waiting to be mined`, and this line said it again two lines later. What only
+        // this command asks for is how much room they take and what they are paying.
         out.line(format!(
-            "        {} {} waiting to be mined  {}  fees {} XMR",
-            n.map(grouped).unwrap_or_else(|| "—".to_string()),
-            if n == Some(1) { "payment" } else { "payments" },
+            "        they take {} and carry {} XMR in fees",
             p["bytes_total"]
                 .as_u64()
                 .map(human_bytes)
@@ -1089,6 +1133,11 @@ fn node_info_human(out: &Out, v: &serde_json::Value) {
             cell(&p["fee_total_xmr"]),
         ));
     }
+    out.line(format!(
+        "        version {} · {}",
+        cell(&node["version"]),
+        cell(&node["nettype"])
+    ));
     if let Some(sync) = v["sync"].as_object() {
         // **Both of these are arrays**, and `cell` renders an array by joining its elements —
         // which printed every field of every peer as one row (self-read, round 3). What a reader
@@ -1134,18 +1183,18 @@ fn nodes_human(out: &Out, v: &serde_json::Value) {
     let w = if probed_any {
         columns(
             &[widest, 11, 11, 9, 8, 10, 6],
-            &[widest.max(44), 12, 12, 12, 8, 12, 6],
+            &[widest, 12, 12, 12, 8, 12, 6],
             2,
-            0,
+            NO_FLEX,
         )
     } else {
-        columns(&[widest, 11, 11, 9], &[widest.max(44), 12, 12, 12], 2, 0)
+        columns(&[widest, 11, 11, 9], &[widest, 12, 12, 12], 2, NO_FLEX)
     };
     out.row(format!(
         "  {}  {}  {}  {}{}",
         pad("address", w[0]),
         pad("reliability", w[1]),
-        pad("their block", w[2]),
+        pad_right("their block", w[2]),
         pad("last seen", w[3]),
         if probed_any {
             format!(
@@ -1229,7 +1278,7 @@ fn nodes_human(out: &Out, v: &serde_json::Value) {
             "{mark} {}  {}  {}  {}{}",
             pad(&address, w[0]),
             pad(&health, w[1]),
-            pad(
+            pad_right(
                 &r["health_last_height"]
                     .as_u64()
                     .map(grouped)
@@ -1477,6 +1526,27 @@ mod tests {
         assert_eq!(at_width("9000", term_width), 200);
     }
 
+    /// X3: a run of spaces inside a line is a column gap, and it survives the wrap exactly.
+    ///
+    /// The first version of this wrapper rebuilt one space between words, so `node    synced` came
+    /// out `node   synced` and every two-space gap in the program lost a column — found by reading
+    /// this round's own captures, which is the only way it could have been found.
+    #[test]
+    fn a_run_of_spaces_inside_a_line_is_kept_exactly() {
+        assert_eq!(
+            wrap_to("node    synced  127.0.0.1:18081  your own node", 100, 2),
+            vec!["node    synced  127.0.0.1:18081  your own node"]
+        );
+        // Including a run that follows a zero-width colour escape, which is what a painted `Try:`
+        // line is.
+        assert_eq!(
+            wrap_to("\x1b[2m    Try: fmonero doctor\x1b[0m", 100, 8),
+            vec!["\x1b[2m    Try: fmonero doctor\x1b[0m"]
+        );
+        // And the leading indent of a detail line.
+        assert_eq!(wrap_to("    a detail", 100, 6), vec!["    a detail"]);
+    }
+
     /// X3, the assertion the owner's complaint is about: **no word is ever split**, at any of the
     /// three widths, and every continuation line is indented past the first.
     #[test]
@@ -1541,10 +1611,15 @@ mod tests {
     /// address column never goes below its minimum, because an address is never elided.
     #[test]
     fn a_table_takes_its_widths_from_the_terminal_and_protects_the_address() {
-        // 100 columns: the preferred widths fit, and the slack goes to the address.
+        // 100 columns: the preferred widths fit, and the slack goes to the flexible column.
         let w = at_width("100", || columns(&[44, 11, 11, 9], &[44, 12, 12, 12], 2, 0));
         assert_eq!(w.iter().sum::<usize>() + 6, 100, "{w:?}");
         assert!(w[0] > 44, "the flexible column took the slack: {w:?}");
+        // …and `NO_FLEX` leaves it unspent, which is what a table of short values wants.
+        let w = at_width("100", || {
+            columns(&[44, 11, 11, 9], &[44, 12, 12, 12], 2, NO_FLEX)
+        });
+        assert_eq!(w, vec![44, 12, 12, 12], "{w:?}");
         // 80 columns: every column is at its minimum, and the address column holds it — a row one
         // column wider than the terminal is honest, an elided address is not.
         let w = at_width("80", || columns(&[44, 11, 11, 9], &[44, 12, 12, 12], 2, 0));

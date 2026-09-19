@@ -998,7 +998,8 @@ fn print_qr(out: &Out, text: &str) -> Result<(), Error> {
             });
         }
         line.push_str(close);
-        out.line(line);
+        // A QR code is a block of glyphs, not prose (X3): wrapping it would make it unscannable.
+        out.row(line);
     }
     Ok(())
 }

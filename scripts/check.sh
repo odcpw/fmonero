@@ -690,12 +690,14 @@ step "§7a  the TUI fits its line budget · §6.1 the plugin fits its own"
 # v5.6: 7600, and §7a says so before the code was written — the plain-language round's own
 # arithmetic is the ` This node ` pane, the `Context` reload and its three cases, and the fee-level
 # helpers (was 7200).
-# v5.6.3: 8500, itemised in §7a before the code was written (was 8300). Four of the ten items
+# v5.6.3: 8600, itemised in §7a (was 8300) — ten items before the code was written and four more
+# from reading the round's own captures, which is the step the whole effort exists for. Four of the
+# fourteen items
 # DELETE code, and the two largest are the two that stop a frame saying one thing six times.
 # v5.6.2: 8300, itemised in §7a before the code was written (was 7900). Three of the nine items
 # are **room** rather than text — the toast's own row, the picker footer's wrap, the `?` overlay's
 # — because a sentence cut to fit is a sentence the reader does not have.
-TUI_BUDGET=8500
+TUI_BUDGET=8600
 if [ -d "$BIN/tui" ]; then
   TUI_FILES=()
   for f in mod theme screens send subs hit; do

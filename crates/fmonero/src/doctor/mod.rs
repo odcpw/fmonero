@@ -211,7 +211,7 @@ fn undo(run: &str, ctx: &Context, out: &Out) -> anyhow::Result<i32> {
                 "reason": serde_json::Value::Null,
             });
             if out.json {
-                out.line(payload.to_string());
+                out.row(payload.to_string());
             } else {
                 if steps.is_empty() {
                     out.line("nothing to undo: that run changed nothing");
@@ -222,13 +222,15 @@ fn undo(run: &str, ctx: &Context, out: &Out) -> anyhow::Result<i32> {
                     } else {
                         out.paint("failed ", crate::output::Paint::Red)
                     };
-                    out.line(format!(
-                        "{tag} [{}] {} {} — {}",
-                        step.seq,
-                        step.check,
-                        step.action,
-                        step.note.as_deref().unwrap_or("")
-                    ));
+                    // §2o rule 5 and rule 12, in a surface no round had read: this printed the
+                    // check's **id** and joined the note with an em-dash. What a person undoing a
+                    // run needs is what was put back and where; the id stays in the run's own
+                    // `actions.jsonl`, and the seq in `doctor undo --json`.
+                    let note = match step.note.as_deref().filter(|n| !n.is_empty()) {
+                        Some(n) => format!(". {n}"),
+                        None => String::new(),
+                    };
+                    out.line(format!("{tag} {} {}{note}", step.action, step.path));
                 }
                 out.note(format!("run: {}", dir.display()));
             }
@@ -247,7 +249,7 @@ fn undo(run: &str, ctx: &Context, out: &Out) -> anyhow::Result<i32> {
                 "reason": e.to_string(),
             });
             if out.json {
-                out.line(payload.to_string());
+                out.row(payload.to_string());
             } else {
                 out.note(format!("refused: {e}"));
                 out.note(format!("hint: {}", e.hint()));
@@ -391,7 +393,10 @@ fn diagnose(args: DoctorArgs, ctx: Context, out: Out) -> anyhow::Result<i32> {
     }
 
     if out.json {
-        out.line(
+        // `row`, never `line` (X3): `line` wraps to the terminal, and a wrapped JSON document is a
+        // JSON document with unescaped newlines inside its strings. Every machine surface in this
+        // file goes through `row`.
+        out.row(
             serde_json::to_string(&report)
                 .map_err(|e| Error::failure(format!("cannot serialise the report: {e}")))?,
         );

@@ -356,15 +356,25 @@ fn status_left(m: &Tui) -> Vec<Span<'static>> {
         spans.push(Span::styled(format!(" node {node} "), th.text()));
     }
     if let Some(s) = &m.status {
+        // **A separator between the two figures** (round 4's own read of the captures): the bar read
+        // `block 3 541 122 16 out · 3 in`, where `3 541 122 16` is one number until you work out
+        // that it is two facts. `·` is the field separator this program uses everywhere else.
+        let mut fields: Vec<String> = Vec::new();
         if let Some(h) = s.node.height {
             // W7: `node synced 3541122` sat one row under a pane reading `block 3 541 122`.
-            spans.push(Span::styled(format!("block {} ", grouped(h)), th.dimmed()));
+            fields.push(format!("block {}", grouped(h)));
         }
         if let Some(out) = s.node.outgoing_connections_count {
             // The hero's own words, not `16↑3↓`: a reader takes those arrows for traffic
             // (self-read, round 3). §2o rule 8, one vocabulary.
             let inc = s.node.incoming_connections_count.unwrap_or(0);
-            spans.push(Span::styled(format!("{out} out · {inc} in "), th.dimmed()));
+            fields.push(format!("{out} out · {inc} in"));
+        }
+        if !fields.is_empty() {
+            spans.push(Span::styled(
+                format!("{} ", fields.join(" · ")),
+                th.dimmed(),
+            ));
         }
         spans.push(Span::styled("●", th.badge(wallet_tone)));
         spans.push(Span::styled(format!(" wallet {wallet} "), th.text()));
@@ -1923,12 +1933,39 @@ fn subaddress_pane(m: &Tui, area: Rect, frame: &mut Frame) {
     table(m, area, title, rows, header, fixed, frame);
 }
 
+/// Which columns of the payments table fit the pane it is drawn in (round 4).
+///
+/// Decided in **one** place so the heading row and every data row build from the same answer. The
+/// three that are never dropped are the ones a payment cannot be read without: when, what, and how
+/// much. `AMOUNT` keeps 14 cells because `1.234567891234` is 14 and a money value is never cut.
+#[derive(Copy, Clone)]
+struct HistoryCols {
+    confirms: bool,
+    locked: bool,
+    fee: bool,
+    note: bool,
+}
+
+/// The costs, in order of what a reader gives up last: `WHEN` + `WHAT` + `AMOUNT` is 34 cells,
+/// `CONFIRMS` adds 9, `LOCKED` 7, `FEE` 12 and `NOTE` 20 — 82 for all of them, in a pane that is 68
+/// wide at the Wide tier and 59 at 110 columns. A note is on the row's detail pane (`Enter`), which
+/// is where one long enough to matter has to be read anyway.
+fn history_cols(width: u16, wide: bool) -> HistoryCols {
+    let w = width as usize;
+    HistoryCols {
+        confirms: w >= 43,
+        locked: w >= 50,
+        fee: wide && w >= 62,
+        note: wide && w >= 82,
+    }
+}
+
 struct HistoryItem<'a> {
     row: &'a Transfer,
     th: &'a Theme,
     wh: Option<u64>,
     now: Option<i64>,
-    wide: bool,
+    cols: HistoryCols,
 }
 
 impl RenderItem for HistoryItem<'_> {
@@ -1937,29 +1974,34 @@ impl RenderItem for HistoryItem<'_> {
         // Never recomputed here: `history::confirmations` / `history::locked` are the one
         // implementation (§5b), and they take the WALLET's height.
         let conf = history::confirmations(t, self.wh).map_or("—".to_string(), |c| c.to_string());
-        let locked = match history::locked(t, self.wh, self.now) {
-            Some(true) => format!("{:<11}", "locked"),
-            Some(false) => format!("{:<11}", ""),
-            None => format!("{:<11}", "—"),
-        };
         let kind = t.kind.as_str();
         let mut text = format!(
-            "{:<12} {:<7} {:>14} {:>6} {}",
+            "{:<11} {:<7} {:>14}",
             short_time(t.timestamp),
             // The words, never the wire value: `block` is a mining reward and `pool` is waiting
             // to be mined (§2o rule 5, self-read round 3). The style below still keys on the wire
             // value, which is what `--json` carries.
             t.kind.words(),
             t.amount.to_xmr_string(),
-            conf,
-            locked
         );
-        if self.wide {
-            text.push_str(&format!(
-                "  {:>12}  {}",
-                t.fee.to_xmr_string(),
-                fit(&t.note, 18)
-            ));
+        if self.cols.confirms {
+            text.push_str(&format!(" {conf:>8}"));
+        }
+        if self.cols.locked {
+            // Never recomputed here: `history::confirmations` / `history::locked` are the one
+            // implementation (§5b), and they take the WALLET's height.
+            let locked = match history::locked(t, self.wh, self.now) {
+                Some(true) => "locked",
+                Some(false) => "",
+                None => "—",
+            };
+            text.push_str(&format!(" {locked:<6}"));
+        }
+        if self.cols.fee {
+            text.push_str(&format!("  {:>10}", t.fee.to_xmr_string()));
+        }
+        if self.cols.note {
+            text.push_str(&format!("  {:<18}", fit(&t.note, 18)));
         }
         let style = if selected {
             th.selected()
@@ -2006,12 +2048,25 @@ fn history_pane(m: &Tui, area: Rect, frame: &mut Frame, wide: bool) {
     // **X20: the unit is on the header of every money column** (§2o rule 9). `AMOUNT` and `FEE`
     // carried none in the cell or the header, on the one table in the program whose numbers are
     // money; the picker's columns got theirs in W20.
-    let mut header = format!(
-        "{:<12} {:<7} {:>14} {:>6} {}",
-        "WHEN", "WHAT", "AMOUNT XMR", "CONFIRMS", "LOCKED"
-    );
-    if wide {
-        header.push_str(&format!("  {:>12}  {}", "FEE XMR", "NOTE"));
+    // **X20, and round 4's own read of the captures: the columns are measured against the pane.**
+    // `AMOUNT` and `FEE` carried no unit anywhere (rule 9), and simply putting `XMR` on the two
+    // headings made the row wider than the pane it is drawn in — the `NOTE` heading vanished and the
+    // mining row's fee was cut to `0.00`, a money value clipped mid-number, which is worse than the
+    // missing unit it was meant to fix. `history_cols` is the one place the widths are decided, and
+    // the header and every row read it, so the two cannot drift apart again.
+    let cols = history_cols(inner.width, wide);
+    let mut header = format!("{:<11} {:<7} {:>14}", "WHEN", "WHAT", "AMOUNT XMR");
+    if cols.confirms {
+        header.push_str(&format!(" {:>8}", "CONFIRMS"));
+    }
+    if cols.locked {
+        header.push_str(&format!(" {:<6}", "LOCKED"));
+    }
+    if cols.fee {
+        header.push_str(&format!("  {:>10}", "FEE XMR"));
+    }
+    if cols.note {
+        header.push_str(&format!("  {:<18}", "NOTE"));
     }
     para(header, th.dimmed(), false).render(rows[1], frame);
     if let Some(e) = &m.wallet.rows_err {
@@ -2035,7 +2090,7 @@ fn history_pane(m: &Tui, area: Rect, frame: &mut Frame, wide: bool) {
             th,
             wh: m.wallet.wh,
             now: m.wallet.now,
-            wide,
+            cols,
         })
         .collect();
     let list = VirtualizedList::new(&items)
@@ -2409,10 +2464,12 @@ fn create_modal(m: &Tui, form: &super::CreateForm, frame: &mut Frame) {
     // W19: `seed lang` was an abbreviation where §7a.5 says `language`, and the four labels are
     // now one style — the Send screen's, which capitalises `To`, `Amount`, `Fee` and `Account`.
     for (i, (label, input)) in [
-        ("Name           ", name),
-        ("Password       ", pass),
         // **X34: `Repeat` alone did not say what to repeat**, in the one field a mistake makes a
-        // wallet nobody can open.
+        // wallet nobody can open — and the four labels are padded to ONE width, so the four input
+        // boxes start in one column. `Repeat the password` is five cells longer than `Password`, and
+        // left unpadded it moved its own field five cells right of the two above it.
+        ("Name                ", name),
+        ("Password            ", pass),
         ("Repeat the password ", again),
     ]
     .iter()
@@ -2434,7 +2491,7 @@ fn create_modal(m: &Tui, form: &super::CreateForm, frame: &mut Frame) {
         m,
         rows[3],
         Selector::Language,
-        "Seed language  ",
+        "Seed language       ",
         fmonero_core::settings::SEED_LANGUAGES[lang].1,
         field == 3,
         frame,

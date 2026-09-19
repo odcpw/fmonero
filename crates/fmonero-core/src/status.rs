@@ -923,9 +923,12 @@ fn warnings(
             add(
                 "node_low_disk",
                 Severity::Warn,
+                // Round 4's own read of the captures: `A smaller copy of the blockchain needs
+                // about 120 GB` reads as though the SMALLER copy is the expensive one. 120 GB is
+                // the floor this check compares against, and what it is a floor for is a full copy.
                 format!(
-                    "Only {} free on the disk your node uses. A smaller copy of the blockchain \
-                     needs about 120 GB, which is an estimate.",
+                    "Only {} free on the disk your node uses. A full copy of the blockchain needs \
+                     about 120 GB, and it keeps growing.",
                     gigabytes(free)
                 ),
                 "fmonero doctor --only storage",

@@ -1,7 +1,7 @@
 [ 1 Node ]  2 Wallet    3 Send    4 Log                                                                         omarchy
 ╭ Node ──────────────────────────────────────────────────────╮╭ This node ─────────────────────────────────────────────╮
-│ ● Public node · node.example.com:18089                     ││ No answer when checked 4s ago.                         │
-│                                                            ││ [f] Choose another node                                │
+│ ● Public node · no answer · node.example.com:18089         ││ No answer when checked 4s ago.                         │
+│                                                            ││ [f] Get the list                                       │
 │                                                            ││                                                        │
 │                                                            ││                                                        │
 │                                                            ││                                                        │
@@ -12,12 +12,12 @@
 ╰────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────────────────╯
 ╭ Public nodes ──────────────────────────────────────────────────────────╮╭ Notes ─────────────────────────────────────╮
 │ No list of public nodes yet.                                           ││ • You are using the public node            │
-│ [f] Get the list     ╭ Use your own node ─────────────────────────────────────────────────────╮9. It sees your IP    │
-│ Getting the list tell│                                                                        │ask it anything.      │
+│ [f] Get the list     ╭ Use your own node ─────────────────────────────────────────────────────╮089. It sees your IP  │
+│ Getting the list tell│                                                                        │u ask it anything.    │
 │ contacted.           │ fmonero will use the node on this machine.                             │ screen to choose     │
 │                      │                                                                        │                      │
 │                      │ · the wallet service will restart                                      │The wallet service    │
-│                      │ Your own node is not running yet. Switching will not start it. Press u │or create one.        │
+│                      │ Your own node is not running yet. Switching will not start it. Press u │n or create one.      │
 │                      │ after this.                                                            │allet, or c to create │
 │                      │                                                                        │                      │
 │                      │ y to confirm · Esc cancels                                             │                      │
@@ -35,6 +35,6 @@
 │                                                                        ││                                            │
 │                                                                        ││                                            │
 │                                                                        ││                                            │
-│                                                                        ││                                            │
 ╰────────────────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────╯
-● public node node.example.com:18089 ● wallet closed │ Press f for the list, or l for your own.        ⇥ screens  ? help
+You are using a public node, so there is no node here to start. Press f for another public node, or l to use your own.
+● no answer node.example.com:18089 ● wallet closed                                                     ⇥ screens  ? help

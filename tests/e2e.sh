@@ -1993,7 +1993,9 @@ step "§2n: the human form prints the §2n.5 disclosure on stderr, and --json do
 # Revision 7: the rendering attached to the ACT, not to a flag. `node list` with a warm cache and
 # no flags prints nothing, because it contacts nobody.
 script -qec "$FM node list --refresh" /dev/null > "$WORK/$CASE/human.txt" 2>&1 || true
-if grep -q 'contacting monero.fail' "$WORK/$CASE/human.txt"; then
+# X2 (v5.6.3): the disclosure carried a rule-12 em-dash — `contacting monero.fail — this tells it
+# your IP address` — and its sibling carried rule 7's `probing`. Both are sentences now.
+if grep -q 'Getting the list from monero.fail. This tells it your IP address.' "$WORK/$CASE/human.txt"; then
   ok "a fetching invocation discloses it"
 else
   bad "the fetch disclosure is missing" "$(head -3 "$WORK/$CASE/human.txt")"

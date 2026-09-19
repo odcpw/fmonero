@@ -341,7 +341,10 @@ if [ -n "$CAPTURE" ]; then
   printf '  skip  §7a.5 the empty state: the mock is stateless, so a closed wallet still answers\n'
 else
   WTEXT="$(pane)"
-  for needle in "[o] Open a wallet" "[c] Create wallet" "[W] Start the wallet service" "wallet service:"; do
+  # X36 (v5.6.3): the three chips are in one style now — a verb, an article, no ellipsis, and the
+  # note in brackets. `[c] Create wallet…` carried an ellipsis and no article beside `[o] Open a
+  # wallet`, which had an article and none.
+  for needle in "[o] Open a wallet" "[c] Create a wallet" "[W] Start the wallet service" "wallet service:"; do
     case "$WTEXT" in
       *"$needle"*) ok "§7a.5: the empty state carries '$needle'" ;;
       *) bad "the empty state is missing '$needle'" "$(printf '%s' "$WTEXT" | sed -n '5,12p')" ;;
@@ -385,7 +388,8 @@ esac
 # And `Tab` is held here, which is the one documented exception — said in the modal itself.
 tmux send-keys -t "$SESSION" Tab 2>/dev/null || true; sleep 0.8
 case "$(pane)" in
-  *"Esc to discard first"*) ok "§7a.1: the create modal holds Tab and says so in the modal" ;;
+  # X34: `Press Esc to discard first.` named no second thing — first before what?
+  *"Press Esc first to discard this."*) ok "§7a.1: the create modal holds Tab and says so in the modal" ;;
   *) bad "the create modal must consume Tab" "$(printf '%s' "$(pane)" | tail -4)" ;;
 esac
 tmux send-keys -t "$SESSION" Escape 2>/dev/null || true; sleep 0.5
@@ -469,10 +473,12 @@ tmux send-keys -t "$REMOTE_SESSION" u 2>/dev/null || true
 sleep 1
 RTEXT2="$(tmux capture-pane -p -t "$REMOTE_SESSION" 2>/dev/null || true)"
 case "$RTEXT2" in
-  # W14: the toast is short enough that BOTH routes fit the status bar at 120 columns — the old
-  # sentence was cut to `You are using a public node. Press…`, which named neither.
-  *"Press f for the list, or l for your own."*)
-    ok "u names both in-app ways out, whole (§2o.1, W14)" ;;
+  # W14: the toast fits whole at 120 columns — the old sentence was cut to `You are using a public
+  # node. Press…`, which named neither route. **X5 (v5.6.3): the situation comes first, and each of
+  # the three keys states its own.** One shared 40-column toast was rule 11's hint standing in for
+  # the sentence, and `L` was told to choose a node and never told why its own key was refused.
+  *"there is no node here to start. Press f for another public node, or l to use your own."*)
+    ok "u states its own situation and names both ways out, whole (§2o.1, W14, X5)" ;;
   *) bad "u did not name the in-app way out" "$(printf '%s' "$RTEXT2" | tail -3)" ;;
 esac
 case "$RTEXT2" in

@@ -1,8 +1,8 @@
   1 Node    2 Wallet  [ 3 Send ]  4 Log                                                               ⠸ mainnet omarchy
 ╭ Send ──────────────────────────────────────────────────────────────╮╭ Preview ───────────────────────────────────────╮
 │ To      an address, or @name from your address book                ││ To                                             │
-│                                                                    ││                                                │
-│ Amount  0.5 XMR                                                    ││ Amount  —                                      │
+│                                                                    ││ —                                              │
+│ Amount  how much, in XMR                                           ││ Amount  —                                      │
 │                                                                    ││ Fee     known after the check                  │
 │ Note    optional, kept with this wallet                            ││ Account 0                                      │
 │                                                                    ││ Unlocked 1.234567891234 XMR                    │
@@ -10,7 +10,7 @@
 │ Account ◂ 0 ▸ ←→ changes it                                        ││                                                │
 │ Enter who to pay and how much.                                     ││                                                │
 │ account 0 · ↑↓ fields · ⇥ screens · @ address book · Esc leaves    ││                                                │
-│ the form                                                           ││                                                │
+│   the form                                                         ││                                                │
 │                                                                    ││                                                │
 │                                                                    ││                                                │
 │                                                                    ││                                                │
@@ -37,4 +37,4 @@
 │                                                                    ││                                                │
 │                                                                    ││                                                │
 ╰────────────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────────╯
-● node synced block 3 541 122 16 out · 3 in ● wallet open 1.234567891234 XMR                           ⇥ screens  ? help
+● node synced block 3 541 122 · 16 out · 3 in ● wallet open 1.234567891234 XMR                         ⇥ screens  ? help

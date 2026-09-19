@@ -249,7 +249,8 @@ pub fn parse(s: &str) -> Result<Address, Error> {
         return Err(invalid(
             s,
             format!(
-                "Addresses are {LEN_STANDARD} characters and start with 4 or 8; this one is {}.",
+                // Rule 1: a semicolon joining two facts is two sentences.
+                "Addresses are {LEN_STANDARD} characters and start with 4 or 8. This one is {}.",
                 s.len()
             ),
         ));

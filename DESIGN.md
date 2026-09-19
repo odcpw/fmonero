@@ -6593,7 +6593,7 @@ places to update when monero.fail changes one field.
 
 ---
 
-## 7a. TUI (`fmonero tui`) — one agent, one pass, ≤ 8 500 lines across `src/tui/{mod,theme,screens,send,subs,hit}.rs` (`tests.rs` excluded)
+## 7a. TUI (`fmonero tui`) — one agent, one pass, ≤ 8 600 lines across `src/tui/{mod,theme,screens,send,subs,hit}.rs` (`tests.rs` excluded)
 
 **The budget is the measured figure, and it is a ceiling against growth rather than a target**
 (v5.1). v5 asked for 1 800 — fproton's 1 200 plus a fourth screen, a send state machine, two modals
@@ -6741,11 +6741,20 @@ items in these files, and **four of them delete code**:
 | **X12** — `list_chip`, minus the three inline chip tuples it replaces | ≈ +5 net |
 | **X8, X9, X11, X20, X22, X28, X34, X36** — eight strings and two one-line calls | ≈ +25 |
 
-That is **280 over 8 199 = 8 479**, and the ceiling is **8 500** rather than 8 480, for the reason
-v5.5 revision 12 gave and v5.6.2 quoted: an estimate that consumes 99.9 % of its own ceiling is the
-arithmetic that forces a dishonest trade. `TUI_BUDGET` becomes 8500. Every item is a defect a person
-read off a real terminal, four of them remove code, and the two largest are the two that stop a frame
-saying one thing six times.
+That is **280 over 8 199 = 8 479**. **And then the round read its own captures**, which is the step
+this whole effort exists for, and four more items came out of that reading:
+
+| item | estimate |
+|---|---|
+| the payments table's columns are **measured against the pane** (`HistoryCols`, `history_cols`, and the row built from the same answer): putting `XMR` on `AMOUNT` and `FEE` made the row eight cells wider than the pane, so the `NOTE` heading vanished and a mining row's fee was cut to `0.00` — a money value clipped mid-number | ≈ +45 |
+| the Send footer wraps with a hanging indent, and the Preview's `To` row shows `—` when nothing has been typed | ≈ +18 |
+| the status bar puts a `·` between the block number and the peer counts: it read `block 3 541 122 16 out · 3 in`, where `3 541 122 16` is one number until you work out that it is two facts | ≈ +10 |
+| the create modal's four labels are padded to one width, so the four fields start in one column | ≈ +3 |
+
+**8 479 + 76 = 8 555, measured 8 535**, and the ceiling is **8 600**. `TUI_BUDGET` becomes 8600.
+Every item is a defect a person read off a real terminal, four of the fourteen remove code, and the
+two largest are the two that stop a frame saying one thing six times and stop a money column being
+cut mid-number.
 
 **Runtime.** The ftui 0.7 Elm loop: one `struct Tui` implementing `ftui::Model`;
 **`App::fullscreen(tui).with_mouse().run()`** when `settings.tui.mouse` (v5.5, §7a.2), else the same
