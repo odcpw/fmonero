@@ -965,9 +965,9 @@ fn node_hero(m: &Tui, area: Rect, frame: &mut Frame) {
     };
     let mut lines: Vec<Line> = Vec::new();
     let mut gauge = None;
-    if let Some(e) = &m.status_err {
+    if let Some(why) = &m.status_err {
         lines.push(Line::styled(
-            format!("Could not read the status: {e}"),
+            format!("fmonero could not say how things are. {why}"),
             th.err(),
         ));
         lines.push(Line::styled("Press r to try again.", th.dimmed()));
@@ -1992,7 +1992,7 @@ fn subaddress_pane(m: &Tui, area: Rect, frame: &mut Frame) {
     let Some(set) = &m.wallet.addresses else {
         if let Some(inner) = framed(area, th, title, focused, frame) {
             let (text, style) = match &m.wallet.err {
-                Some(e) => (format!("{e}\nr retries"), th.err()),
+                Some(why) => (format!("{why}\nPress r to try again."), th.err()),
                 None => ("checking…".to_string(), th.dimmed()),
             };
             para(text, style, true).render(inner, frame);
@@ -2222,8 +2222,13 @@ fn history_pane(m: &Tui, area: Rect, frame: &mut Frame, wide: bool) {
         header.push_str(&format!("  {:>10}", "FEE XMR"));
     }
     para(header, th.dimmed(), false).render(rows[1], frame);
-    if let Some(e) = &m.wallet.rows_err {
-        para(format!("Could not read your payments: {e}"), th.err(), true).render(rows[2], frame);
+    if let Some(why) = &m.wallet.rows_err {
+        para(
+            format!("fmonero could not read your payments. {why}"),
+            th.err(),
+            true,
+        )
+        .render(rows[2], frame);
         return;
     }
     let shown = m.visible_history();

@@ -491,6 +491,55 @@ if [ -n "$HITS_2O" ]; then
 else
   pass "§2o rule 7: no banned word in the TUI, the CLI, the doctor, core or the widget (${#COPY_SURFACES[@]} files)"
 fi
+# ---------------------------------------------------------------- S6: the raw OS error
+#
+# **The durable half of round 4's S6, and it closes the blind spot X1 had.** `{e}` is a runtime
+# substitution: the banned-word grep above sees `"cannot read {}: {e}"`, finds no banned word in it
+# and passes — while what a person read was `cannot read /path: Permission denied (os error 13)`.
+# Thirty-odd sites had that shape, plus `impl From<std::io::Error>`, which put the operating
+# system's own words in the MESSAGE slot that `Error::with_detail`'s own comment says they must
+# never reach.
+#
+# The rule is a convention a grep can check: **a binding named `e`, `err` or `error` holds technical
+# text, and technical text never appears in a string a person reads.** `Error::io` / `io_words` build
+# the sentence and `with_detail(e.to_string())` carries the rest. Where what is interpolated IS
+# already a plain sentence — another `Error`'s own message, a probe's recorded text — the binding is
+# named `why`, which costs one word and makes the grep exact.
+#
+# Two exemptions, both narrow and both on the line itself: `with_detail(` is the slot the technical
+# text belongs in, and `RpcError::` is the transport carrier whose every value `jsonrpc.rs` renders
+# into a `detail` (one `match`, three arms, all of them `with_detail`).
+step "S6  no operating-system error text in a string a person reads"
+OS_SUBST='"[^"]*\{(e|err|error)(:[^}]*)?\}'
+OS_EXEMPT='with_detail\(|RpcError::'
+HITS_OS=""
+for f in "${COPY_SURFACES[@]}"; do
+  case "$f" in *.rs) ;; *) continue ;; esac
+  found="$(sed '/^#\[cfg(test)\]/q' "$f" | grep -n '"' | grep -vE "$OS_EXEMPT" | grep -E "$OS_SUBST" || true)"
+  [ -z "$found" ] && continue
+  HITS_OS="$HITS_OS$(printf '%s\n' "$found" | sed "s|^|$f:|")"$'\n'
+done
+if [ -n "${HITS_OS//[$'\n' ]/}" ]; then
+  fail "S6: a {e} substitution reaches a string a person reads (use Error::io / with_detail, or name the binding why)"
+  printf '%s' "$HITS_OS" | sed 's/^/        /'
+else
+  pass "S6: no {e} substitution in a user-facing string (${#COPY_SURFACES[@]} files)"
+fi
+# Its self-test: the shape that must fire, and the two that must not.
+SELF_OS="$SELFTEST/os-error"
+mkdir -p "$SELF_OS"
+{
+  printf '%s\n' 'let a = Error::failure(format!("cannot read {}: {e}", dir.display()));'
+  printf '%s\n' 'let b = Error::failure("fmonero could not read it.").with_detail(format!("{e}"));'
+  printf '%s\n' 'let c = format!("{why} fmonero asked it on {}.", url);'
+} > "$SELF_OS/probe.rs"
+OS_FIRED="$(grep -n '"' "$SELF_OS/probe.rs" | grep -vE "$OS_EXEMPT" | grep -cE "$OS_SUBST" || true)"
+if [ "$OS_FIRED" = 1 ]; then
+  pass "self-test: S6 fires on the {e}-in-a-message line and on neither the with_detail nor the {why} one"
+else
+  fail "self-test: S6 matched $OS_FIRED of the three planted lines; exactly the first must match"
+fi
+
 # ---------------------------------------------------------------- §2o rule 12, the em-dash
 #
 # **W4 mechanises rule 12**, which `docs/COPY.md` §7 said was "enforced by reading" — and reading
@@ -697,7 +746,9 @@ step "§7a  the TUI fits its line budget · §6.1 the plugin fits its own"
 # v5.6.2: 8300, itemised in §7a before the code was written (was 7900). Three of the nine items
 # are **room** rather than text — the toast's own row, the picker footer's wrap, the `?` overlay's
 # — because a sentence cut to fit is a sentence the reader does not have.
-TUI_BUDGET=8600
+# v5.6.4: **9100**, itemised in §7a before this line moved (was 8600) — twenty-three items from a
+# fresh reader's round, measured at 9 076. Two of them DELETE code: S10's ids and half of S9.
+TUI_BUDGET=9100
 if [ -d "$BIN/tui" ]; then
   TUI_FILES=()
   for f in mod theme screens send subs hit; do
@@ -723,7 +774,12 @@ fi
 # the same 32. `Panel.qml` +10 for X8 (`14 transactions` on the ` Waiting ` row) and `Model.js` +38
 # for X6 (one decimal byte formatter), X11 (one rounding, down), X13 (the public node's verdict on the
 # hero) and the notes for X10 and X30.
-QML_BUDGET=1604
+# v5.6.4: **1649**, itemised in §6.1 before this line moved — 360 + 850 + 112 + 295 = 1 617 plus
+# the same 32. `Service.qml` +12 for S8 (an exit code and the program's own stderr at a person) and
+# M26 (the in-app `action` a failed button never showed); `Model.js` +21 for M2 (one duration shape),
+# M27 (a row starting with a bare separator, and a header with no verdict) and M28 (the peers row
+# blaming a node that is off).
+QML_BUDGET=1649
 if [ -d plugin/oliver.monero ]; then
   QML_LINES="$(cat plugin/oliver.monero/*.qml plugin/oliver.monero/*.js plugin/oliver.monero/manifest.json 2>/dev/null | grep -c '')"
   if [ "$QML_LINES" -le "$QML_BUDGET" ]; then
@@ -743,10 +799,10 @@ if [ -d plugin/oliver.monero ]; then
       fail "§6.1: $file $have lines exceeds its $want-line budget"
     fi
   done <<'PERFILE'
-340 Service.qml
+360 Service.qml
 850 Panel.qml
 112 MoneroIcon.qml
-270 Model.js
+295 Model.js
 PERFILE
 else
   printf '  skip  §6.1 line budget: plugin/oliver.monero does not exist yet\n'

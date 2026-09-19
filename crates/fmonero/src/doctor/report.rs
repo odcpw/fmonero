@@ -493,8 +493,10 @@ pub fn fixable_plan(def: &CheckDef) -> Option<PlanKind> {
 
 /// Write `report.json` into the run directory, at 0600 (§2b.7).
 pub fn save(dir: &std::path::Path, report: &Report) -> Result<(), Error> {
-    let mut text = serde_json::to_string_pretty(report)
-        .map_err(|e| Error::failure(format!("cannot serialise the report: {e}")))?;
+    let mut text = serde_json::to_string_pretty(report).map_err(|e| {
+        Error::failure("fmonero could not write the doctor's report out.")
+            .with_detail(e.to_string())
+    })?;
     text.push('\n');
     fmonero_core::write_private(&dir.join("report.json"), text.as_bytes())
 }

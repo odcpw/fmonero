@@ -222,8 +222,13 @@ Item {
       // that warns a send may be in flight, and a failed poll dropping it made the warning
       // vanish at exactly the moment the balance beside it went stale.
       root.status = { ok: false, node: root.node, wallet: root.wallet, pending: root.pending }
-      var msg = String(stderrText || "").trim()
-      root.localError = msg !== "" ? msg.split("\n")[0] : "fmonero status failed (exit " + exitCode + ")"
+      // **S8: neither an exit number nor the program's own first stderr line.** This read
+      // `fmonero status failed (exit 4)` and, when stderr had anything at all, whatever its first
+      // line said — which is how `Input/output error (os error 5)` reached a 380-pixel bar. An exit
+      // code is an internal identifier (§2o rule 5) and a bar is the one surface that cannot
+      // explain one. One sentence and one route, and `fmonero doctor` is the button below.
+      var _unused = String(stderrText || "")
+      root.localError = "fmonero could not say how things are. Press d for the doctor."
     }
     if (root._desired !== -1) {
       if (root.alive && (root._desired === 1) === root.nodeUp) { root._desired = -1; desiredTimer.stop() }
@@ -275,9 +280,16 @@ Item {
         root._desired = -1
         var doc = Model.parseJson(String(actionOut.text || ""))
         var msg = doc && doc.error ? String(doc.error) : String(actionErr.text || "").trim().split("\n")[0]
-        // **The `hint` is deliberately not appended** (§2o.1): it is a shell command, and this
-        // panel is not a terminal. The message alone, and the buttons below it are the route.
-        root.localError = msg !== "" ? msg : "fmonero exited " + exitCode
+        // **S8 and M26: a sentence, and the in-app route beside it.** The `hint` is still not
+        // appended — it is a shell command and this panel is not a terminal (§2o.1) — but the
+        // error's **`action`** is the in-app sentence written for exactly this, and it was never
+        // read. Without it a failed button gave him a message and no route; with `exit 3` in
+        // place of the message it gave him an internal identifier (S8).
+        var act = doc && doc.action ? String(doc.action) : ""
+        var said = msg !== "" && msg.indexOf("os error") === -1
+          ? msg
+          : "That did not work."
+        root.localError = act !== "" ? said + " " + act : said
         root.actionStatus = root.localError
       } else {
         root.localError = ""

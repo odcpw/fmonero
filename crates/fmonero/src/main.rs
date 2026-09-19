@@ -961,8 +961,10 @@ fn refuse_with_plan(out: &Out, e: &Error, payload: serde_json::Value) -> i32 {
 /// a TTY — the payload is then the ordinary JSON (§4).
 fn print_qr(out: &Out, text: &str) -> Result<(), Error> {
     use qrcode::{Color, QrCode};
-    let code = QrCode::new(text.as_bytes())
-        .map_err(|e| Error::failure(format!("cannot make a QR code for that address: {e}")))?;
+    let code = QrCode::new(text.as_bytes()).map_err(|e| {
+        Error::failure("fmonero could not make a QR code for that address.")
+            .with_detail(e.to_string())
+    })?;
     let width = code.width();
     let modules = code.to_colors();
     let dark = |x: usize, y: usize| -> bool {
@@ -2038,7 +2040,8 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                     // and it says so (§4.1). Any other failure is the daemon's answer.
                     Err(e) if e.exit_code() == 4 => {
                         let a = structural?;
-                        out.verbose_note(format!("the wallet service could not check it: {e}"));
+                        let why = e.to_string();
+                        out.verbose_note(format!("the wallet service could not check it. {why}"));
                         out.emit(
                             "wallet validate",
                             ok(serde_json::json!({

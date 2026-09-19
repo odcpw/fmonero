@@ -289,12 +289,12 @@ fn plugin_step(ctx: &Context, args: &SetupArgs) -> Result<Vec<FileAction>, Error
     } else {
         if let Some(parent) = link.parent() {
             std::fs::create_dir_all(parent)
-                .map_err(|e| Error::failure(format!("cannot create {}: {e}", parent.display())))?;
+                .map_err(|e| Error::io("create", "the folder it needs", parent, &e))?;
         }
         // A pre-existing link to somewhere else is replaced; a real directory is not touched.
         if link.is_symlink() {
             std::fs::remove_file(&link)
-                .map_err(|e| Error::failure(format!("cannot replace {}: {e}", link.display())))?;
+                .map_err(|e| Error::io("replace", "the link it manages", &link, &e))?;
         } else if link.exists() {
             return Err(Error::safety(format!(
                 "{} exists and is not a symlink, so fmonero will not replace it",
@@ -303,7 +303,7 @@ fn plugin_step(ctx: &Context, args: &SetupArgs) -> Result<Vec<FileAction>, Error
             .with_hint(format!("mv {} {}.bak", link.display(), link.display())));
         }
         std::os::unix::fs::symlink(&source, &link)
-            .map_err(|e| Error::failure(format!("cannot link {}: {e}", link.display())))?;
+            .map_err(|e| Error::io("create", "the link it manages", &link, &e))?;
         actions.push(FileAction {
             what: format!("CreateSymlink -> {}", source.display()),
             path: link.clone(),

@@ -446,9 +446,13 @@ pub fn relay(
     // graceful stop or on this call, so without it a SIGKILL loses the wallet's own record of
     // the outgoing transfer and the resolve step then blocks every later send.
     if let Err(e) = w.store() {
+        // S6's grep convention: what is interpolated into a sentence a person reads is already a
+        // sentence, and the binding says so. `{e}` is reserved for the technical text, which
+        // `with_detail` is the only home for.
+        let why = e.to_string();
         announce(&format!(
             // X2: rule 7 (`broadcast`) and an implementation name as the subject.
-            "The payments have gone out, but this wallet could not write them down ({e}). It \
+            "The payments have gone out, but this wallet could not write them down. {why} It \
              will find them again on its next refresh."
         ));
         let _ = state::set_last_error(ctx, &e, None);
@@ -462,8 +466,9 @@ pub fn relay(
     if let Some(note) = plan.note.as_ref().filter(|n| !n.is_empty()) {
         let notes: Vec<String> = relayed.iter().map(|_| note.clone()).collect();
         if let Err(e) = w.set_tx_notes(&relayed, &notes) {
+            let why = e.to_string();
             announce(&format!(
-                "warning: the send succeeded but the note could not be stored ({e})"
+                "The payment has gone out. Its note could not be saved. {why}"
             ));
             let _ = state::set_last_error(ctx, &e, None);
         }
@@ -717,13 +722,15 @@ fn relay_failure(e: Error, detail: &str, total: usize) -> Error {
         e.reason(),
         Some("killed_at_deadline" | "stalled" | "unreachable" | "auth_refused")
     );
+    // S6's convention: the binding holding a sentence a person reads is named for that.
+    let why = e.to_string();
     if !unknown {
-        return Error::tx_rejected(format!("{e}; {detail}"))
+        return Error::tx_rejected(format!("{why} {detail}"))
             .with_reason("relay_refused")
             .with_hint(hint);
     }
     let text = format!(
-        "{e}; {detail}; the node never answered, so it is not known whether it received the \
+        "{why} {detail} The node never answered, so it is not known whether it received the \
          payment."
     );
     let out = if e.exit_code() == 4 {
@@ -929,7 +936,7 @@ pub fn take_send_lock(ctx: &Context) -> Result<std::fs::File, Error> {
             }
             _ => {
                 return Err(
-                    Error::failure(format!("cannot lock {}: {err}", path.display()))
+                    Error::io("lock", "the file that stops two sends at once", &path, &err)
                         .with_hint("fmonero doctor"),
                 )
             }

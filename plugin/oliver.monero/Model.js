@@ -81,14 +81,21 @@ function percent(p) {
   return v + "%"
 }
 
+// **The JavaScript half of `fmonero_core::duration`** (M2). Three formatters disagreed about one
+// quantity: core's `age` had no days unit, so 239 000 seconds read `66h 23m` in the TUI and
+// `2d 18h` here; `output.rs::human_uptime` had days and no `ago`; and this one padded only some of
+// its fields, so `age(3600)` was `1h 00m` and `age(86400)` was `1d 0h`. Every field after the
+// first is two digits, in all four branches, and `tests/plugin-smoke.sh` holds this function to
+// the Rust one's own output.
+function pad2(v) { return (v < 10 ? "0" : "") + v }
 function age(sec) {
   if (sec === null || sec === undefined) return "—"
   var s = Math.max(0, int(sec, 0))
   var d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600)
   var m = Math.floor((s % 3600) / 60), r = s % 60
-  if (d > 0) return d + "d " + h + "h"
-  if (h > 0) return h + "h " + (m < 10 ? "0" : "") + m + "m"
-  if (m > 0) return m + "m " + (r < 10 ? "0" : "") + r + "s"
+  if (d > 0) return d + "d " + pad2(h) + "h"
+  if (h > 0) return h + "h " + pad2(m) + "m"
+  if (m > 0) return m + "m " + pad2(r) + "s"
   return r + "s"
 }
 
@@ -119,13 +126,18 @@ function nodeLabel(node) {
 function checkedLabel(node) {
   var p = node && node.remote_probe ? node.remote_probe : null
   if (!p) return "not checked yet"
-  var when = " · checked " + age(int(p.age_sec, 0)) + " ago"
-  if (p.reachable !== true) return "no answer" + when
+  var when = "checked " + age(int(p.age_sec, 0)) + " ago"
+  if (p.reachable !== true) return "no answer · " + when
   var out = ""
   if (p.height !== null && p.height !== undefined) out += "block " + grouped(p.height)
   if (p.synchronized === true) out += (out === "" ? "" : " · ") + "synced"
   else if (p.synchronized === false) out += (out === "" ? "" : " · ") + "syncing"
-  return out + when
+  // **M27: never a row that begins with a bare separator.** A restricted public node answers with
+  // no height and no sync flag — which is the normal case — and this returned
+  // ` · checked 1m 35s ago`, a row starting with a dot and nothing before it. The TUI says
+  // `answered` for that state; so does this now.
+  if (out === "") out = "answered"
+  return out + " · " + when
 }
 
 // The wallet service's state as a person reads it (§2o.2). `up` and `idle` were the program's
@@ -208,7 +220,10 @@ function headerLine(status, showAmounts, binaryMissing) {
     if (p.reachable !== true) return "Public node · no answer"
     if (p.synchronized === true) return "Public node · synced · wallet closed"
     if (p.synchronized === false) return "Public node · syncing"
-    return "Public node · wallet closed"
+    // **M27: a verdict, even when the node did not give one.** A restricted public node answers
+    // with no sync flag, and this fell through to `Public node · wallet closed` — a header with no
+    // verdict at all, where the TUI in the same state says `answered`.
+    return "Public node · answered · wallet closed"
   }
   if (!n || n.layout === "none") return "No node set up yet"
   if (n.reachable !== true) return "Your node is not running"
@@ -224,7 +239,13 @@ function headerLine(status, showAmounts, binaryMissing) {
 function peersLabel(node) {
   if (!node) return "—"
   var out = node.outgoing_connections_count, inc = node.incoming_connections_count
-  if (out === null || out === undefined) return "not shown by this node"
+  if (out === null || out === undefined) {
+    // **M28: a node that is off is not a node withholding an answer.** This returned `not shown by
+    // this node` for the own-node-off document, where the truth is that there is nothing running to
+    // ask — X23's shape, on the bar.
+    if (node.reachable !== true) return "none while your node is off"
+    return "not shown by this node"
+  }
   return int(out, 0) + " out · " + int(inc, 0) + " in"
 }
 

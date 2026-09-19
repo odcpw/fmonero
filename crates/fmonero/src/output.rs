@@ -326,8 +326,9 @@ impl Out {
         } else {
             // One sentence, with `fmonero:` in front of it so a person reading a scrollback knows
             // which program is talking.
+            let why = e.to_string();
             for line in wrap_to(
-                &format!("{}: {e}", self.paint("fmonero", Paint::Red)),
+                &format!("{}: {why}", self.paint("fmonero", Paint::Red)),
                 term_width(),
                 2,
             ) {

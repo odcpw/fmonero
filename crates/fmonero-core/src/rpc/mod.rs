@@ -228,7 +228,10 @@ pub fn random_hex(n: usize) -> Result<String, Error> {
     let mut buf = vec![0u8; n];
     std::fs::File::open("/dev/urandom")
         .and_then(|mut f| f.read_exact(&mut buf))
-        .map_err(|e| Error::failure(format!("cannot read /dev/urandom: {e}")))?;
+        .map_err(|e| {
+            Error::failure("fmonero could not get random numbers from this machine.")
+                .with_detail(e.to_string())
+        })?;
     Ok(buf.iter().fold(String::with_capacity(n * 2), |mut s, b| {
         use std::fmt::Write;
         let _ = write!(s, "{b:02x}");

@@ -379,10 +379,12 @@ pub fn pending_send(ctx: &Context) -> Result<Option<PendingSend>, Error> {
     // A record fmonero cannot parse must **block**, not vanish: it is the interlock that
     // stops a double send, and "unparsable" is not "absent" (§2a.4).
     serde_json::from_slice(&bytes).map(Some).map_err(|e| {
+        // S6: the serde text is `detail`, not part of the sentence.
         Error::safety(format!(
-            "{} exists but cannot be read ({e}), so a send may be in flight",
+            "{} exists and fmonero cannot read it, so a payment may be in flight.",
             path.display()
         ))
+        .with_detail(e.to_string())
         .with_reason("pending_send")
         .with_hint("fmonero wallet history --limit 5   # then: fmonero wallet clear-pending --yes")
     })

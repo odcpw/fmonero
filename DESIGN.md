@@ -5900,11 +5900,39 @@ the assertion, because thirty payloads in a decisions log is bulk, not evidence.
 | File | Budget | Contents |
 |---|---|---|
 | `manifest.json` | ~55 lines | schemaVersion 1, id `oliver.monero`, name "Monero", version, author, license, description, `kinds:["bar-widget"]`, `entryPoints.barWidget:"Panel.qml"`, `barWidget{displayName, description, category:"Finance", allowMultiple:false, defaultSection:"right", defaults{}, schema[]}` |
-| `Service.qml` | ≤ **340** (v5.6, was 420) | the state model (6.3), the two polls, the action queue |
+| `Service.qml` | ≤ **360** (v5.6.4, was 340) | the state model (6.3), the two polls, the action queue |
 | `Panel.qml` | ≤ **850** (v5.6.3, was 845) | bar button + `KeyboardPanel` content (6.5) |
 | `MoneroIcon.qml` | ≤ **112** (v5.6, was 96) | the Monero ⓜ glyph as `QtQuick.Shapes` + `PathSvg`; no image asset. The progress ring now draws the **wallet's** catch-up as well as a local node's sync (§6.4), which is one more arc and its percent source |
-| `Model.js` | ≤ **270** (v5.6.3, was 232) | pure formatters: `parseStatus(text)`, `shortAddr`, `age`, `rate`, `grouped`, **`headerLine(status)`** (v5.6 — §6.4's five-word header, from one first-match table), **`walletSyncLabel(status)`** (v5.6 — `Syncing 63% · 240 000 blocks left`), **`nodeLabel(node)`** (v5.6, renamed from `remoteLabel`), **`checkedLabel(node)`** (v5.6, renamed from `probeLabel`; still refuses to render a height without its age), `walletStateLabel`, `pendingLabel`, `peersLabel`, `worstSeverity`, `safeArgv` |
+| `Model.js` | ≤ **295** (v5.6.4, was 270) | pure formatters: `parseStatus(text)`, `shortAddr`, `age`, `rate`, `grouped`, **`headerLine(status)`** (v5.6 — §6.4's five-word header, from one first-match table), **`walletSyncLabel(status)`** (v5.6 — `Syncing 63% · 240 000 blocks left`), **`nodeLabel(node)`** (v5.6, renamed from `remoteLabel`), **`checkedLabel(node)`** (v5.6, renamed from `probeLabel`; still refuses to render a height without its age), `walletStateLabel`, `pendingLabel`, `peersLabel`, `worstSeverity`, `safeArgv` |
 | `README.md` | — | docs agent |
+
+**v5.6.4 raises `Service.qml` and `Model.js`, and states the arithmetic here before the code was
+written.** The measured v5.6.3 tree is **1 591** (`Panel` 846 · `Service` 339 · `MoneroIcon` 107 ·
+`Model` 267 · `manifest` 32). Round 4's reading put five items in these two files and none in
+`Panel.qml`, which stays at 850.
+
+`Service.qml` **+12**, to **351** measured, for **S8 and M26** together. S8: the panel could print
+`fmonero status failed (exit 4)` and, whenever the program had written anything to stderr, its first
+line verbatim — which is how `Input/output error (os error 5)` reached a 380-pixel bar. An exit code
+is an internal identifier (§2o rule 5) and a bar is the one surface that cannot explain one, so both
+lines become one sentence with one in-app route. M26: the Error's **`action`** field — the in-app
+sentence §2o.1 exists for — was never read on the path where a button the owner just pressed fails,
+so a failed action gave him a message and no route. `hint` stays unread, because it is a shell
+command.
+
+`Model.js` **+21**, to **288** measured, from three findings. **M2**: `age` padded only some of its
+fields, so `age(3600)` was `1h 00m` and `age(86400)` was `1d 0h` — `pad2`, and the note saying this
+function is the JavaScript half of `fmonero_core::duration` (**+9**). **M27**: `checkedLabel` returned
+` · checked 1m 35s ago` for a restricted node that answers with no height and no sync flag — a row
+starting with a bare separator — and `headerLine` fell through to `Public node · wallet closed` with
+no verdict at all for the same document, where the TUI says `answered` (**+7**). **M28**: `peersLabel`
+answered `not shown by this node` for a node that is not running, where the truth is that there is
+nothing to ask — X23's shape, on the bar (**+5**).
+
+So `Service.qml` becomes **360** (measured 351) and `Model.js` **295** (measured 288); `Panel.qml` and
+`MoneroIcon.qml` are untouched at 850 and 112. `QML_BUDGET` becomes **1 649**:
+360 + 850 + 112 + 295 = 1 617, plus `manifest.json`'s 32 real lines — the same derivation every
+paragraph below writes out, and the reason both numbers are in this document before the gate changed.
 
 **v5.6.3 raises the same two again, and states the arithmetic here before the code was written.**
 The measured v5.6.2 tree is **1 544** (`Panel` 836 · `Service` 339 · `MoneroIcon` 107 · `Model` 230 ·
@@ -6593,7 +6621,38 @@ places to update when monero.fail changes one field.
 
 ---
 
-## 7a. TUI (`fmonero tui`) — one agent, one pass, ≤ 8 600 lines across `src/tui/{mod,theme,screens,send,subs,hit}.rs` (`tests.rs` excluded)
+## 7a. TUI (`fmonero tui`) — one agent, one pass, ≤ 9 100 lines across `src/tui/{mod,theme,screens,send,subs,hit}.rs` (`tests.rs` excluded)
+
+**v5.6.4 raises it to 9 100, and the arithmetic is here before the gate moved.** The measured v5.6.3
+tree is **8 535** (`mod` 3 063 · `screens` 3 409 · `send` 889 · `subs` 534 · `hit` 436 · `theme` 204),
+and round 4's reading put twenty-three items into these files. They are, with what each one is:
+
+* **S1, +34** (`mod` +22, `screens` +12) — `Tui::reload_wallets`, one place where the TUI learns what
+  wallets exist, plus `wallets_err`; and the two renderings that must not say "none on this machine
+  yet" about a folder fmonero was not allowed to read. Four `unwrap_or_default()` call sites collapse
+  into one function, so the net text is the honest sentence and its note.
+* **S3, +30** (`screens`) — the pool pane: a title that no longer claims a per-byte unit for the row
+  under it, `they carry … XMR in fees altogether`, `0 being rejected` said only when it is not zero,
+  and `XMR a byte` on the four rates that really are per byte.
+* **S5, +26** (`screens`) — three empty states where one string served an empty wallet, an empty kind
+  filter and an empty text filter.
+* **S7, +4** · **S9, +30** (`mod` +22, `screens` −8) — the `W` chip's label from one predicate that
+  knows about an action in flight, and `wallet_daemon_phrase` reading that action's own label so a
+  create is described once rather than three ways.
+* **S10, −6** — deleting the elided id from the pending banner, the sent toast, the Send screen's row
+  and the payment detail modal costs fewer lines than it saves.
+* **M3, +18** · **M5, +34** · **M6, +38** · **M8, +14** · **M9, +14** · **M10, +52** · **M11, +22** ·
+  **M12, +46** · **M13, +12** · **M16, +40** · **M17, +16** · **M18, +18** · **M19, +6** ·
+  **M22, +30** · **M23, +8** · **M24, +14** · **M25, +6** · **M29, +18** · **M30, +38** — each named
+  in `docs/COPY.md` and in the code at its site. The four largest are the ones that buy a frame which
+  no longer contradicts itself: M10 and M12 (three confirms that described what was not happening and
+  said nothing about the node's last check), M6 (`history_cols` measuring a note column against the
+  pane instead of a constant) and M30 (a QR modal that names its address and says what it is for).
+
+That is **+541 measured**, to **9 076**, and the ceiling is 9 100 — the measured figure rounded up,
+as v5.1 set the rule. Two of the twenty-three DELETE code (S10, part of S9), which is the shape a
+round of this kind should have more of.
+
 
 **The budget is the measured figure, and it is a ceiling against growth rather than a target**
 (v5.1). v5 asked for 1 800 — fproton's 1 200 plus a fourth screen, a send state machine, two modals

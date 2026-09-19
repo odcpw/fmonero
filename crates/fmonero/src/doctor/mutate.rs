@@ -241,7 +241,7 @@ fn mkdir_private(path: &Path) -> Result<(), Error> {
         .recursive(true)
         .mode(0o700)
         .create(path)
-        .map_err(|e| Error::failure(format!("cannot create {}: {e}", path.display())))
+        .map_err(|e| Error::io("create", "one of its own folders", path, &e))
 }
 
 // ------------------------------------------------------------------ the run directory
@@ -274,7 +274,14 @@ impl RunDir {
             .append(true)
             .mode(0o600)
             .open(dir.join("actions.jsonl"))
-            .map_err(|e| Error::failure(format!("cannot open actions.jsonl: {e}")))?;
+            .map_err(|e| {
+                Error::io(
+                    "write",
+                    "its record of what it changed",
+                    &dir.join("actions.jsonl"),
+                    &e,
+                )
+            })?;
         let run = RunDir { id, dir, actions };
         run.point_latest(ctx)?;
         prune(ctx);
@@ -290,19 +297,21 @@ impl RunDir {
         let tmp = latest.with_extension(format!("tmp.{}", std::process::id()));
         let _ = std::fs::remove_file(&tmp);
         std::os::unix::fs::symlink(&self.dir, &tmp)
-            .map_err(|e| Error::failure(format!("cannot create {}: {e}", tmp.display())))?;
+            .map_err(|e| Error::io("create", "a link to its newest run", &tmp, &e))?;
         std::fs::rename(&tmp, &latest).map_err(|e| {
             let _ = std::fs::remove_file(&tmp);
-            Error::failure(format!("cannot move {} into place: {e}", tmp.display()))
+            Error::io("move", "a link to its newest run", &tmp, &e)
         })
     }
 
     fn append(&mut self, line: &serde_json::Value) -> Result<(), Error> {
+        // S6: the operating system's words are `detail` everywhere, this file included.
+        let what = "its record of what it changed";
         writeln!(self.actions, "{line}")
-            .map_err(|e| Error::failure(format!("cannot append to actions.jsonl: {e}")))?;
+            .map_err(|e| Error::io("write", what, &self.dir.join("actions.jsonl"), &e))?;
         self.actions
             .sync_all()
-            .map_err(|e| Error::failure(format!("cannot fsync actions.jsonl: {e}")))
+            .map_err(|e| Error::io("save", what, &self.dir.join("actions.jsonl"), &e))
     }
 
     /// Backups live at `backups/<absolute path without its leading slash>`.
@@ -474,7 +483,7 @@ impl<'a> Mutator<'a> {
             }
             fmonero_core::write_private(&dest, old)?;
             let written = std::fs::read(&dest)
-                .map_err(|e| Error::failure(format!("cannot re-read the backup: {e}")))?;
+                .map_err(|e| Error::io("read", "the backup it just made", &dest, &e))?;
             if written != old {
                 return Err(Error::doctor_refused(format!(
                     "the backup of {} does not match the file; nothing was changed",
@@ -551,7 +560,7 @@ impl<'a> Mutator<'a> {
         std::fs::DirBuilder::new()
             .mode(mode)
             .create(path)
-            .map_err(|e| Error::failure(format!("cannot create {}: {e}", path.display())))?;
+            .map_err(|e| Error::io("create", "the folder this fix needs", path, &e))?;
         let line = serde_json::json!({
             "seq": seq, "check": check, "class": class.name(), "started_at": started_at,
             "ok": true,
@@ -592,10 +601,10 @@ impl<'a> Mutator<'a> {
         }
         if let Some(parent) = link.parent() {
             std::fs::create_dir_all(parent)
-                .map_err(|e| Error::failure(format!("cannot create {}: {e}", parent.display())))?;
+                .map_err(|e| Error::io("create", "the folder this fix needs", parent, &e))?;
         }
         std::os::unix::fs::symlink(target, link)
-            .map_err(|e| Error::failure(format!("cannot link {}: {e}", link.display())))?;
+            .map_err(|e| Error::io("create", "the link this fix needs", link, &e))?;
         let line = serde_json::json!({
             "seq": seq, "check": check, "class": class.name(), "started_at": started_at,
             "ok": true,
@@ -690,14 +699,14 @@ fn write_at_mode(path: &Path, bytes: &[u8], mode: u32) -> Result<(), Error> {
         .create_new(true)
         .mode(mode)
         .open(&tmp)
-        .map_err(|e| Error::failure(format!("cannot create {}: {e}", tmp.display())))?;
+        .map_err(|e| Error::io("create", "a file it is about to write", &tmp, &e))?;
     f.write_all(bytes)
         .and_then(|()| f.sync_all())
-        .map_err(|e| Error::failure(format!("cannot write {}: {e}", tmp.display())))?;
+        .map_err(|e| Error::io("write", "a file it is about to put in place", &tmp, &e))?;
     drop(f);
     std::fs::rename(&tmp, path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
-        Error::failure(format!("cannot replace {}: {e}", path.display()))
+        Error::io("replace", "one of its own files", path, &e)
     })
 }
 
@@ -966,10 +975,11 @@ fn repaired_settings(p: &Probes) -> Result<Vec<u8>, Error> {
         return Settings::default().to_toml_bytes();
     }
     let doc = super::probes::read_settings_document(text);
-    if let Some(e) = doc.parse_error {
-        return Err(Error::doctor_refused(format!(
-            "config.toml no longer parses: {e}"
-        )));
+    if let Some(why) = doc.parse_error {
+        return Err(Error::doctor_refused(
+            "fmonero can no longer make sense of your settings file, so it changed nothing.",
+        )
+        .with_detail(why));
     }
     doc.settings.to_toml_bytes()
 }
@@ -1175,9 +1185,10 @@ fn restore_file(ctx: &Context, dir: &Path, inverse: &serde_json::Value) -> Resul
     let backup = dir.join(rel);
     let bytes = std::fs::read(&backup).map_err(|e| {
         Error::doctor_refused(format!(
-            "the backup {} is missing or unreadable ({e}); {target} was left alone",
+            "fmonero cannot read the backup {}, so {target} was left alone.",
             backup.display()
         ))
+        .with_detail(e.to_string())
     })?;
     if let Some(want) = inverse.get("sha256").and_then(|s| s.as_str()) {
         let got = sha256(&bytes);
@@ -1214,7 +1225,7 @@ fn quarantine(ctx: &Context, dir: &Path, inverse: &serde_json::Value) -> Result<
         mkdir_private(parent)?;
     }
     std::fs::rename(path, &dest)
-        .map_err(|e| Error::failure(format!("cannot move {target} aside: {e}")))?;
+        .map_err(|e| Error::io("move", "the file it is undoing", path, &e))?;
     Ok(format!("moved to {}", dest.display()))
 }
 
@@ -1233,11 +1244,13 @@ fn remove_dir(ctx: &Context, inverse: &serde_json::Value) -> Result<String, Erro
         .map(|mut it| it.next().is_none())
         .unwrap_or(false);
     if !empty {
+        // §2o rule 4: no section number in front of a reader.
         return Ok(format!(
-            "{target} is no longer empty; left in place (§7: rmdir only while empty)"
+            "{target} is no longer empty, so it was left in place."
         ));
     }
-    std::fs::remove_dir(path).map_err(|e| Error::failure(format!("cannot rmdir {target}: {e}")))?;
+    std::fs::remove_dir(path)
+        .map_err(|e| Error::io("remove", "the folder it is undoing", path, &e))?;
     Ok(format!("removed {target}"))
 }
 
@@ -1252,7 +1265,7 @@ fn remove_symlink(ctx: &Context, inverse: &serde_json::Value) -> Result<String, 
         Err(_) => Ok("already absent".to_string()),
         Ok(meta) if meta.file_type().is_symlink() => {
             std::fs::remove_file(path)
-                .map_err(|e| Error::failure(format!("cannot remove {link}: {e}")))?;
+                .map_err(|e| Error::io("remove", "the link it is undoing", path, &e))?;
             Ok(format!("removed the link {link}"))
         }
         Ok(_) => Err(Error::doctor_refused(format!(

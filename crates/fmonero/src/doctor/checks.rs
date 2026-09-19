@@ -735,10 +735,12 @@ fn node_layout(p: &Probes) -> Verdict {
     if let Some(v) = need_monerod(p) {
         return v;
     }
-    if let Some(e) = &p.layout_error {
+    // The probe's own text is already a sentence a person reads (it is an `Error`'s), so the
+    // binding says so: `{e}` is reserved for the technical text `with_detail` carries (S6).
+    if let Some(why) = &p.layout_error {
         return Verdict::warn(
             "layout_probe_failed",
-            format!("Could not work out which node fmonero uses: {e}"),
+            format!("fmonero could not work out which node it uses. {why}"),
         );
     }
     match p.layout.as_str() {
@@ -829,7 +831,7 @@ fn node_reachable(p: &Probes) -> Verdict {
         // in front of it: `http://127.0.0.1:18081 did not answer. The node is not answering.` was
         // the same fact twice, which is what happens when a detail concatenates two rewrites.
         match p.node_error.as_deref() {
-            Some(e) => format!("{e} fmonero asked it on {}.", p.node_url),
+            Some(why) => format!("{why} fmonero asked it on {}.", p.node_url),
             None => format!("Your node did not answer on {}.", p.node_url),
         },
     )
@@ -985,10 +987,10 @@ fn node_data_dir_single_writer(p: &Probes) -> Verdict {
     if let Some(v) = need_monerod(p) {
         return v;
     }
-    if let Some(e) = &p.data_dir_probe_error {
+    if let Some(why) = &p.data_dir_probe_error {
         return Verdict::skip(
             "probe_failed",
-            format!("Could not check {}. {e}", p.data_dir),
+            format!("fmonero could not check {}. {why}", p.data_dir),
         );
     }
     match p.data_dir_holder {
@@ -1027,7 +1029,7 @@ fn wallet_rpc_reachable(p: &Probes) -> Verdict {
     Verdict::warn(
         "wallet_unreachable",
         match p.wallet_error.as_deref() {
-            Some(e) => format!("{e} fmonero asked it on {}.", p.wallet_url),
+            Some(why) => format!("{why} fmonero asked it on {}.", p.wallet_url),
             None => format!("The wallet service did not answer on {}.", p.wallet_url),
         },
     )
@@ -1848,10 +1850,12 @@ fn state_valid(p: &Probes) -> Verdict {
     }
     match &p.state_parse_error {
         None => Verdict::pass(format!("{} is readable.", p.state_file.path)),
-        Some(e) => Verdict::warn(
+        // S6: the serde message named a byte offset and a Rust type. A `Verdict` has no detail
+        // slot, so the sentence carries the fact and the fix line below carries the answer.
+        Some(_) => Verdict::warn(
             "unparsable",
             format!(
-                "fmonero could not read what it remembered in {}. {e}",
+                "fmonero could not read what it remembered in {}.",
                 p.state_file.path
             ),
         )
@@ -1863,13 +1867,14 @@ fn settings_valid(p: &Probes) -> Verdict {
     if !p.settings_file.exists {
         return Verdict::pass("You have changed no settings, so every one is at its default.");
     }
-    if let Some(e) = &p.settings_parse_error {
+    if p.settings_parse_error.is_some() {
         // The half that decides whether the one command that repairs config.toml can run at
         // all on a machine whose config.toml is broken.
         return Verdict::warn(
             "unparsable",
+            // S6: the toml message named a line and a column.
             format!(
-                "fmonero could not read your settings file {}. {e}",
+                "fmonero could not make sense of your settings file {}.",
                 p.settings_file.path
             ),
         )
