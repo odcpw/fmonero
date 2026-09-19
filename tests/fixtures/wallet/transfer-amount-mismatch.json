@@ -1,0 +1,23 @@
+{
+  "_provenance": "# derived from monero v0.18.5.1 source, not captured from a run\n# A COPY OF transfer-do-not-relay.json WITH ONE FIELD CHANGED, selected by `--scenario amount-mismatch`.\n# `amount` (and `amounts_by_dest`) is 0.2 XMR where every caller of this fixture asks for 0.1, so the\n# one comparison DESIGN.md \u00a72a.2a makes -- the amount the wallet service prepared against the amount the\n# user asked for (round 4, S2) -- has a test that can fail. The mock echoes a request's destinations\n# back for a bare `transfer` precisely so an ordinary build cannot trip that comparison; a scenario is\n# therefore the only way to produce the answer a real wallet-rpc would have to be broken to give.\n# Everything else -- tx_hash, tx_metadata, fee, weight -- is byte for byte the original's, because the\n# point of the case is the single disagreeing field.",
+  "tx_hash": "a1e7b3c05d928f4617ac0e3b85d2f719c46b0a8e3f512d7409bc6ea18d35047f",
+  "tx_key": "",
+  "amount": 200000000000,
+  "amounts_by_dest": {
+    "amounts": [
+      200000000000
+    ]
+  },
+  "fee": 30720000,
+  "weight": 1531,
+  "tx_blob": "",
+  "tx_metadata": "ef4d955e7664584ed33d0d1a0754da8b3c55cfeb651a3051a39abee0526b13772dca872bb65336df9aadaf95b884ce770d630c0f0bc309aeadbfcfd940ec13b0b4525699e0426ab42c89474296bb690227f2ced6ee6fe8a86308d1ceb503ae6eca4b509248ab44342ab852e13b3d00c1991084aae0a48b963598e6f837d440d6eff1d8aaf98b3985e0a9b012a38da8daca092f48b65624954fc42231310961f65f2f49886613810766453e74c28412570150203772db46032de0fbd613c48acf8445ff0153cf24e326491b00b9fb5b57ba2490b1d1f57b032f23aea33aa9bd2bb85a6c128ee8245d69e99a41d4fc223429e759a8246153ae5502d12bf1ec8810",
+  "multisig_txset": "",
+  "unsigned_txset": "",
+  "spent_key_images": {
+    "key_images": [
+      "d20f8a3c51e64b9702ad1c5e83f4b60197c2d0a53e81f47b6905cea2d31f8b47",
+      "6a5e1c390bd748f21e05ac3b7d924f68015eb3c2a70d941f6bc0e2a538d17f49"
+    ]
+  }
+}

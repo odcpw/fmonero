@@ -844,7 +844,7 @@ fn install_with(ctx: &Context, dry_run: bool, rotate: bool) -> Result<Vec<FileAc
             std::fs::DirBuilder::new()
                 .mode(0o700)
                 .create(&dir)
-                .map_err(|e| Error::failure(format!("cannot create {}: {e}", dir.display())))?;
+                .map_err(|e| Error::io("create", "your wallet folder", &dir, &e))?;
             actions.push(FileAction {
                 what: "CreateDir wallet.dir".to_string(),
                 path: dir,
@@ -957,7 +957,7 @@ fn write_at_mode(path: &Path, bytes: &[u8], mode: u32) -> Result<(), Error> {
     use std::os::unix::fs::OpenOptionsExt;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
-            .map_err(|e| Error::failure(format!("cannot create {}: {e}", parent.display())))?;
+            .map_err(|e| Error::io("create", "the folder it needs", parent, &e))?;
     }
     let tmp = path.with_extension("fmonero-tmp");
     let _ = std::fs::remove_file(&tmp);
@@ -966,14 +966,14 @@ fn write_at_mode(path: &Path, bytes: &[u8], mode: u32) -> Result<(), Error> {
         .create_new(true)
         .mode(mode)
         .open(&tmp)
-        .map_err(|e| Error::failure(format!("cannot create {}: {e}", tmp.display())))?;
+        .map_err(|e| Error::io("create", "a file it is about to write", &tmp, &e))?;
     f.write_all(bytes)
         .and_then(|()| f.sync_all())
-        .map_err(|e| Error::failure(format!("cannot write {}: {e}", tmp.display())))?;
+        .map_err(|e| Error::io("write", "a file it is about to put in place", &tmp, &e))?;
     drop(f);
     std::fs::rename(&tmp, path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
-        Error::failure(format!("cannot replace {}: {e}", path.display()))
+        Error::io("replace", "one of its own files", path, &e)
     })
 }
 
@@ -1174,12 +1174,8 @@ struct FixtureRow {
 }
 
 fn fixture_row(path: &Path, unit: &str) -> Result<Option<FixtureRow>, Error> {
-    let text = std::fs::read_to_string(path).map_err(|e| {
-        Error::failure(format!(
-            "cannot read the FMONERO_SYSTEMCTL_FIXTURE file {}: {e}",
-            path.display()
-        ))
-    })?;
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| Error::io("read", "the FMONERO_SYSTEMCTL_FIXTURE file", path, &e))?;
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -1212,12 +1208,8 @@ fn fixture_row(path: &Path, unit: &str) -> Result<Option<FixtureRow>, Error> {
 /// `<is-active>` column** of the named line (§2i). Without them nothing could reach
 /// `Layout::UserUnit` with a running unit in a test.
 fn fixture_set_active(path: &Path, unit: &str, active: bool) -> Result<(), Error> {
-    let text = std::fs::read_to_string(path).map_err(|e| {
-        Error::failure(format!(
-            "cannot read the FMONERO_SYSTEMCTL_FIXTURE file {}: {e}",
-            path.display()
-        ))
-    })?;
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| Error::io("read", "the FMONERO_SYSTEMCTL_FIXTURE file", path, &e))?;
     let mut out = String::with_capacity(text.len());
     let mut found = false;
     for line in text.lines() {
@@ -1245,7 +1237,7 @@ fn fixture_set_active(path: &Path, unit: &str, active: bool) -> Result<(), Error
         .with_reason("unit_missing"));
     }
     std::fs::write(path, out)
-        .map_err(|e| Error::failure(format!("cannot write {}: {e}", path.display())))
+        .map_err(|e| Error::io("write", "the FMONERO_SYSTEMCTL_FIXTURE file", path, &e))
 }
 
 fn unit_file_exists(ctx: &Context, unit: &str) -> Result<bool, Error> {

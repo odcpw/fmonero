@@ -243,7 +243,8 @@ pub fn spawn_detached(argv: &[&str], out: &std::path::Path) -> Result<(), Error>
         .truncate(true)
         .mode(0o600)
         .open(out)
-        .map_err(|e| Error::failure(format!("cannot open {}: {e}", out.display())))?;
+        // S6: the operating system's words go to `detail`, never into the sentence.
+        .map_err(|e| Error::io("write", "the file it logs to", out, &e))?;
     Command::new(program)
         .args(args)
         // §2b.1: the wallet password never reaches a child that has no use for it.
@@ -259,7 +260,9 @@ pub fn spawn_detached(argv: &[&str], out: &std::path::Path) -> Result<(), Error>
                 Error::backend(format!("{program} is not installed"))
                     .with_hint(format!("omarchy pkg add {program}"))
             } else {
-                Error::backend(format!("cannot run {program}: {e}"))
+                // S6: `{e}` here is `Permission denied (os error 13)` and worse.
+                Error::backend(format!("fmonero could not start {program}."))
+                    .with_detail(e.to_string())
             }
         })
 }
@@ -294,7 +297,9 @@ pub fn run_with_deadline(
                 Error::backend(format!("{program} is not installed"))
                     .with_hint(format!("omarchy pkg add {program}"))
             } else {
-                Error::backend(format!("cannot run {program}: {e}"))
+                // S6: `{e}` here is `Permission denied (os error 13)` and worse.
+                Error::backend(format!("fmonero could not start {program}."))
+                    .with_detail(e.to_string())
             }
         })?;
     let pid = child.id();
@@ -319,7 +324,12 @@ pub fn run_with_deadline(
         match child.try_wait() {
             Ok(Some(st)) => break st,
             Ok(None) => {}
-            Err(e) => return Err(Error::failure(format!("waiting for {program}: {e}"))),
+            Err(e) => {
+                return Err(Error::failure(format!(
+                    "fmonero lost track of {program} while it ran."
+                ))
+                .with_detail(e.to_string()))
+            }
         }
         if cancel.map(|c| c.is_cancelled()).unwrap_or(false) {
             cancelled = true;
@@ -341,12 +351,18 @@ pub fn run_with_deadline(
                     break;
                 }
                 Ok(None) => pipes.pump(POLL),
-                Err(e) => return Err(Error::failure(format!("waiting for {program}: {e}"))),
+                Err(e) => {
+                    return Err(Error::failure(format!(
+                        "fmonero lost track of {program} while it ran."
+                    ))
+                    .with_detail(e.to_string()))
+                }
             }
         }
-        break child
-            .wait()
-            .map_err(|e| Error::failure(format!("waiting for {program}: {e}")))?;
+        break child.wait().map_err(|e| {
+            Error::failure(format!("fmonero lost track of {program} while it ran."))
+                .with_detail(e.to_string())
+        })?;
     };
 
     // The child is reaped. Collect whatever is still in flight, but only for

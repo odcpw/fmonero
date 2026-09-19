@@ -261,6 +261,28 @@ pub fn build(
     require_node_current(ctx, w, gate, cancel)?;
     // 8. The build, once, with do_not_relay (§2a.2, §2a.3).
     let tx = w.build_transfer(&TransferRequest::for_send(req, &dest), cancel)?;
+    // **8a. The amount that was built must be the amount that was asked for** (round 4, S2).
+    //
+    // Every screen downstream of here renders `plan.total_amount` — the wallet service's own
+    // reply — and nothing compared it with `req.amount`, so the confirm a person types `send`
+    // into could show a different figure from the form he typed it on, in one frame, with
+    // nothing flagging the difference. A single-destination `transfer` returns the sum of its
+    // destinations (`wallet_rpc_server.cpp`'s `single_transfer_response.amount`), so for this
+    // request the two are equal or something is wrong with the answer — and §2a's rule is that
+    // fmonero refuses rather than sends what it cannot explain. Exit 3, before `--yes` is even
+    // consulted, and the message names both figures because which one is wrong is not ours to
+    // guess.
+    if tx.amount != req.amount {
+        return Err(Error::safety(format!(
+            "You asked to send {} XMR and the wallet service prepared {} XMR. Nothing has been \
+             sent.",
+            req.amount.to_xmr_string(),
+            tx.amount.to_xmr_string()
+        ))
+        .with_reason("amount_mismatch")
+        .with_action("Press Esc, then check the amount and try again.")
+        .with_hint("fmonero wallet balance"));
+    }
     let plan = Plan {
         total_amount: tx.amount,
         total_fee: tx.fee,
@@ -840,7 +862,7 @@ pub fn take_send_lock(ctx: &Context) -> Result<std::fs::File, Error> {
         .write(true)
         .mode(0o600)
         .open(&path)
-        .map_err(|e| Error::failure(format!("cannot open {}: {e}", path.display())))?;
+        .map_err(|e| Error::io("open", "the file that stops two sends at once", &path, &e))?;
     // **`flock` fails for more than one reason, and only one of them means "somebody else has
     // it".** `EINTR` is the one that bites: `flock` is interruptible, and a signal arriving on
     // this thread — `SIGCHLD` from any reaped child, which this process produces on every

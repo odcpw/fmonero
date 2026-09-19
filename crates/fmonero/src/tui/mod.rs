@@ -2911,10 +2911,8 @@ impl Model for Tui {
                     Ok(Outcome::Relayed(txids)) => {
                         self.exit.store(0, Ordering::SeqCst);
                         let first = txids.first().cloned().unwrap_or_default();
-                        self.note(
-                            format!("Sent. Payment {}.", fmonero_core::short_id(&first)),
-                            false,
-                        );
+                        // S10: no id in a toast. The screen it jumps to is the answer.
+                        self.note("Sent. The payment is at the top of your payments.", false);
                         self.send.clear();
                         self.send.stage = Stage::Sent(first);
                         self.screen = Screen::Wallet;

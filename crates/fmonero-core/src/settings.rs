@@ -884,16 +884,21 @@ impl Settings {
     pub fn load(paths: &Paths) -> Result<Settings, Error> {
         let path = paths.config_file();
         let mut s: Settings = match std::fs::read_to_string(&path) {
+            // S6: the toml crate's own message named a line and a column, in the slot a
+            // person reads. The sentence says which file and what to do; `detail` keeps the rest.
             Ok(text) => toml::from_str(&text).map_err(|e| {
-                Error::usage(format!("{}: {e}", path.display()))
-                    .with_hint("fmonero settings list   # shows the effective values")
+                Error::usage(format!(
+                    "fmonero could not make sense of your settings file {}.",
+                    path.display()
+                ))
+                .with_detail(e.to_string())
+                .with_hint("fmonero settings list   # shows the effective values")
             })?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Settings::default(),
+            // S6.
             Err(e) => {
-                return Err(Error::failure(format!(
-                    "cannot read {}: {e}",
-                    path.display()
-                )))
+                return Err(Error::io("read", "your settings file", &path, &e)
+                    .with_hint("fmonero doctor --only storage"))
             }
         };
         // The three defaults this machine computes rather than the table stating them: the
@@ -1072,7 +1077,10 @@ impl Settings {
     pub fn to_toml_bytes(&self) -> Result<Vec<u8>, Error> {
         toml::to_string_pretty(self)
             .map(String::into_bytes)
-            .map_err(|e| Error::failure(format!("cannot serialise settings: {e}")))
+            .map_err(|e| {
+                Error::failure("fmonero could not write your settings out.")
+                    .with_detail(e.to_string())
+            })
     }
 
     /// Write `config.toml` at mode 0600 through tmp + `rename(2)` (§2b.7).

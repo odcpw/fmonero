@@ -144,8 +144,10 @@ impl StateDoc {
     /// [`with_state`], because that writes the file itself and would bypass the backup, the
     /// sha256 pair and `actions.jsonl`, and therefore `doctor undo` (§7.1).
     pub fn to_bytes(&self) -> Result<Vec<u8>, Error> {
-        let mut bytes = serde_json::to_vec_pretty(self)
-            .map_err(|e| Error::failure(format!("cannot serialise state.json: {e}")))?;
+        let mut bytes = serde_json::to_vec_pretty(self).map_err(|e| {
+            Error::failure("fmonero could not write out what it remembers.")
+                .with_detail(e.to_string())
+        })?;
         bytes.push(b'\n');
         Ok(bytes)
     }
@@ -364,10 +366,11 @@ pub fn pending_send(ctx: &Context) -> Result<Option<PendingSend>, Error> {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => {
-            return Err(Error::failure(format!(
-                "cannot read {}: {e}",
-                path.display()
-            )))
+            // S6: the record that blocks a second send, in plain English.
+            return Err(
+                Error::io("read", "its record of a payment in flight", &path, &e)
+                    .with_hint("fmonero doctor --only storage"),
+            );
         }
     };
     if bytes.iter().all(u8::is_ascii_whitespace) {
@@ -389,8 +392,10 @@ pub fn pending_send(ctx: &Context) -> Result<Option<PendingSend>, Error> {
 /// per send, by `send::relay`, before the first `relay_tx` (§2a.3, §2a.4).
 pub fn set_pending_send(ctx: &Context, p: &PendingSend) -> Result<(), Error> {
     ctx.paths.ensure_dirs()?;
-    let mut bytes = serde_json::to_vec_pretty(p)
-        .map_err(|e| Error::failure(format!("cannot serialise the pending record: {e}")))?;
+    let mut bytes = serde_json::to_vec_pretty(p).map_err(|e| {
+        Error::failure("fmonero could not write out its record of a payment in flight.")
+            .with_detail(e.to_string())
+    })?;
     bytes.push(b'\n');
     crate::write_private(&ctx.paths.pending_file(), &bytes)?;
     // `write_private` fsyncs the file; the rename itself is only durable once the directory
@@ -433,10 +438,12 @@ pub fn clear_pending_send(ctx: &Context) -> Result<(), Error> {
             Ok(())
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(Error::failure(format!(
-            "cannot remove {}: {e}",
-            path.display()
-        ))),
+        Err(e) => Err(Error::io(
+            "clear",
+            "its record of a payment in flight",
+            &path,
+            &e,
+        )),
     }
 }
 
@@ -488,7 +495,7 @@ impl FileLock {
             .write(true)
             .mode(0o600)
             .open(path)
-            .map_err(|e| Error::failure(format!("cannot open {}: {e}", path.display())))?;
+            .map_err(|e| Error::io("open", "the file it locks while it works", path, &e))?;
         let started = std::time::Instant::now();
         loop {
             // SAFETY: `f` is an open file descriptor for the whole call.

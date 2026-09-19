@@ -517,6 +517,9 @@ fn fixture(r: &Routes, method: &str, params: &Value) -> Option<Value> {
     if method == "relay_tx" {
         return relay_tx(r, params);
     }
+    if method == "transfer" {
+        return transfer(r, params);
+    }
     load(
         r,
         FIXTURE_ALIAS
@@ -560,6 +563,33 @@ fn validate_address(r: &Routes, params: &Value) -> Option<Value> {
         }
     }
     load(r, "validate_address-invalid")
+}
+
+/// `transfer` answers the amount it was **asked** for (round 4, S2).
+///
+/// The fixture carries `amount: 100000000000`, and the mock served it whatever the request said —
+/// so a send of 0.25 XMR against this mock came back as a plan for 0.1 XMR, which is the shape the
+/// round-4 reader found on the confirm screen. A real wallet-rpc sums the request's destinations
+/// into `single_transfer_response.amount` (`wallet_rpc_server.cpp`), so a mock that does not echo
+/// cannot exercise the one comparison `send::build` now makes, and every capture taken against it
+/// shows a figure nobody typed. The fee, the weight, the txid and the metadata stay the fixture's:
+/// those a mock genuinely cannot compute.
+fn transfer(r: &Routes, params: &Value) -> Option<Value> {
+    let mut v = load(r, FIXTURE_ALIAS.iter().find(|(m, _)| *m == "transfer")?.1)?;
+    let amounts: Vec<u64> = params
+        .get("destinations")
+        .and_then(Value::as_array)
+        .map(|d| {
+            d.iter()
+                .map(|x| x.get("amount").and_then(Value::as_u64).unwrap_or(0))
+                .collect()
+        })
+        .unwrap_or_default();
+    if !amounts.is_empty() {
+        v["amount"] = json!(amounts.iter().sum::<u64>());
+        v["amounts_by_dest"] = json!({ "amounts": amounts });
+    }
+    Some(v)
 }
 
 /// `relay_tx` answers the txid of the transaction whose `tx_metadata` it was handed.

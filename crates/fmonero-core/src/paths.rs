@@ -100,7 +100,7 @@ pub fn ensure_private_dir(dir: &std::path::Path) -> Result<(), Error> {
         .recursive(true)
         .mode(0o700)
         .create(dir)
-        .map_err(|e| Error::failure(format!("cannot create {}: {e}", dir.display())))
+        .map_err(|e| Error::io("create", "one of its own folders", dir, &e))
 }
 
 impl Paths {

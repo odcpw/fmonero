@@ -397,8 +397,10 @@ pub fn cached(ctx: &Context) -> Result<Option<NodeList>, Error> {
 
 fn save(ctx: &Context, doc: &NodeList) -> Result<(), Error> {
     ctx.paths.ensure_dirs()?;
-    let mut bytes = serde_json::to_vec_pretty(doc)
-        .map_err(|e| Error::failure(format!("cannot serialise the public node list: {e}")))?;
+    let mut bytes = serde_json::to_vec_pretty(doc).map_err(|e| {
+        Error::failure("fmonero could not save the list of public nodes.")
+            .with_detail(e.to_string())
+    })?;
     bytes.push(b'\n');
     crate::write_private(&ctx.paths.public_nodes(), &bytes)
 }
@@ -594,11 +596,10 @@ fn parse_http_date(s: &str) -> Option<i64> {
 }
 
 fn bad_doc(e: serde_json::Error) -> Error {
-    Error::upstream(format!(
-        "monero.fail returned something that is not JSON: {e}"
-    ))
-    .with_reason("rpc_error")
-    .with_hint("fmonero node list   # the cached list still works")
+    Error::upstream("monero.fail sent back something fmonero could not read.")
+        .with_detail(e.to_string())
+        .with_reason("rpc_error")
+        .with_hint("fmonero node list   # the cached list still works")
 }
 
 /// Join the candidate set to the health lookup. Separated so the fixtures can drive it.

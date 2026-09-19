@@ -305,12 +305,13 @@ fn tab_strip(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
 /// a panel nobody can type into. The Wallet screen — one key away, and it is named — is where
 /// the payment and its confirmations are.
 fn pending_banner_text(p: &fmonero_core::PendingStatus) -> String {
-    let txid: String = p
-        .txs
-        .first()
-        .map_or("—".into(), |t| fmonero_core::short_id(&t.txid));
+    // **No id here** (round 4, S10). It was elided to fifteen characters, which is a value a
+    // reader can neither paste, nor type into the Payments filter, nor read out to anyone — it
+    // added alarm and nothing else to the one banner that is already alarming. The amount, the
+    // destination and the counter are the three facts he can recognise, and the last clause is
+    // what to do next. Every character of the id is in `--json`.
     format!(
-        "SENDING {} XMR to {} · {} of {} sent · id {txid} · press 2 for the wallet",
+        "SENDING {} XMR to {} · {} of {} sent · press 2 for the wallet",
         p.total_amount_xmr,
         short_addr(&p.dest),
         p.relayed_count,

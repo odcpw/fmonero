@@ -239,6 +239,39 @@ fn the_send_path_builds_once_and_relays_that_exact_transaction() {
     assert!(state::pending_send(&w.ctx).unwrap().is_none());
 }
 
+/// **Round 4, S2: the amount the wallet service prepared must be the amount that was asked for.**
+///
+/// Until this check the confirm screen a person types `send` into rendered `plan.total_amount` —
+/// the service's own reply — while the form two columns away showed what he had typed, and nothing
+/// anywhere compared the two. `--scenario amount-mismatch` is a `transfer` answer for 0.2 XMR to a
+/// request for 0.1, which no correct wallet-rpc gives; the build refuses with exit 3, names both
+/// figures, and nothing is relayed.
+#[test]
+fn a_build_that_comes_back_with_a_different_amount_is_refused_before_anything_is_sent() {
+    let w = World::new("amount-mismatch", &[], &["--scenario", "amount-mismatch"]);
+    let client = w.wallet();
+    let node = w.node();
+    let e = send::build(
+        &w.ctx,
+        &client,
+        send::NodeGate::Local(&node),
+        &a_send(DEST),
+        &CancelToken::new(),
+    )
+    .expect_err("a plan for the wrong amount must not be returned");
+    assert_eq!(e.exit_code(), 3, "{e}");
+    assert_eq!(e.reason(), Some("amount_mismatch"), "{e}");
+    let text = e.to_string();
+    assert!(text.contains("0.1000"), "the amount asked for: {text}");
+    assert!(text.contains("0.2000"), "the amount prepared: {text}");
+    assert!(text.contains("Nothing has been sent"), "{text}");
+    assert_eq!(
+        w.count(&w.wallet_log, "relay_tx"),
+        0,
+        "a refused build relays nothing"
+    );
+}
+
 /// §2a.8: the recorded bodies carry **no** `unlock_time` and **no** `payment_id` — and
 /// §2a.10: every recorded `sweep_all` carries `subaddr_indices_all: true`.
 #[test]

@@ -494,15 +494,15 @@ fn menu_step(ctx: &Context, args: &SetupArgs) -> Result<Vec<FileAction>, Error> 
         // `fs::copy` calls `set_permissions` from the source metadata after creating the file.
         // `write_private` sets 0600 at `O_EXCL` creation time and never chmods.
         let bytes = std::fs::read(&path)
-            .map_err(|e| Error::failure(format!("cannot read {}: {e}", path.display())))?;
+            .map_err(|e| Error::io("read", "the file it is about to back up", &path, &e))?;
         fmonero_core::write_private(&backup, &bytes)?;
     }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
-            .map_err(|e| Error::failure(format!("cannot create {}: {e}", parent.display())))?;
+            .map_err(|e| Error::io("create", "the folder it needs", parent, &e))?;
     }
     std::fs::write(&path, merged.as_bytes())
-        .map_err(|e| Error::failure(format!("cannot write {}: {e}", path.display())))?;
+        .map_err(|e| Error::io("write", "one of its own files", &path, &e))?;
     Ok(vec![FileAction {
         what: format!(
             "{} Omarchy menu entries (backup: {})",

@@ -375,24 +375,14 @@ pub use fmonero_core::grouped;
 /// three surfaces of the same program.
 pub use fmonero_core::bytes as human_bytes;
 
-/// `3d 04h`, `2h 07m`, `45s`.
+/// `3d 04h`, `2h 07m`, `45s` — **[`fmonero_core::duration`]**, which is the same formatter the
+/// ages use (M2).
+///
+/// This was the third duration shape in the program: it had a days unit that `fmonero_core::age`
+/// lacked, so one quantity measured in the same seconds read `2d 18h` here and `66h 23m` two panes
+/// away. All it adds now is the clamp, because an uptime arrives as a signed difference.
 pub fn human_uptime(secs: i64) -> String {
-    let secs = secs.max(0) as u64;
-    let (d, h, m, s) = (
-        secs / 86400,
-        (secs % 86400) / 3600,
-        (secs % 3600) / 60,
-        secs % 60,
-    );
-    if d > 0 {
-        format!("{d}d {h:02}h")
-    } else if h > 0 {
-        format!("{h}h {m:02}m")
-    } else if m > 0 {
-        format!("{m}m {s:02}s")
-    } else {
-        format!("{s}s")
-    }
+    fmonero_core::duration(secs.max(0) as u64)
 }
 
 /// Pad to `width` display columns on the LEFT, so a column of amounts lines its decimal points up.

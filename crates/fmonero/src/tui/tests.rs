@@ -756,18 +756,20 @@ fn the_send_screen_builds_once_and_relays_that_exact_transaction() {
         sim.model().send.to.value().is_empty(),
         "the form must clear"
     );
-    // W8: the toast carries the id **shortened**, and the whole one is in the payment row and in
-    // `--json`. A 64-character id in a status bar is a status bar with nothing else on it.
+    // **S10: no id in the toast at all**, shortened or whole. It names where the payment is
+    // instead, which is the only thing a reader can act on from a status bar.
     assert!(
-        sim.model()
-            .note
-            .contains(&fmonero_core::short_id(BUILT_TXID)),
+        sim.model().note.contains("at the top of your payments"),
         "{}",
         sim.model().note
     );
     assert!(
-        !sim.model().note.contains(BUILT_TXID),
-        "the whole id belongs in --json: {}",
+        !sim.model().note.contains(BUILT_TXID)
+            && !sim
+                .model()
+                .note
+                .contains(&fmonero_core::short_id(BUILT_TXID)),
+        "an id belongs in --json: {}",
         sim.model().note
     );
     // The relay announced the paid line through the sink, into the Log pane (§2a.2, §2g).

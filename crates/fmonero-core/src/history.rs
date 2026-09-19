@@ -422,10 +422,9 @@ pub fn header(ctx: &Context) -> Result<Option<CacheHeader>, Error> {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => {
-            return Err(Error::failure(format!(
-                "cannot read {}: {e}",
-                path.display()
-            )))
+            // S6: plain sentence, operating-system words in `detail`.
+            return Err(Error::io("read", "its saved list of payments", &path, &e)
+                .with_hint("fmonero wallet history --refresh"));
         }
     };
     // A file that does not decode has no header to report, and postcard is not
@@ -494,8 +493,9 @@ fn read_snapshot(ctx: &Context) -> Snapshot {
 
 fn write_snapshot(ctx: &Context, s: &Snapshot) -> Result<(), Error> {
     ctx.paths.ensure_dirs()?;
-    let bytes = postcard::to_stdvec(s)
-        .map_err(|e| Error::failure(format!("cannot encode the history snapshot: {e}")))?;
+    let bytes = postcard::to_stdvec(s).map_err(|e| {
+        Error::failure("fmonero could not save its list of payments.").with_detail(e.to_string())
+    })?;
     // 0600: the snapshot holds the whole transfer history, with addresses and notes (§2b.7).
     crate::write_private(&ctx.paths.history_cache(), &bytes)
 }

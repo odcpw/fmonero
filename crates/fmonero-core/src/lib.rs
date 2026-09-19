@@ -37,7 +37,7 @@ pub mod wallet_dir;
 pub use address::{AddrForm, AddrKind, Address, NetType, PREFIXES};
 pub use amount::Piconero;
 pub use context::{Context, Systemctl};
-pub use error::{Error, EXIT_CODES, REASONS};
+pub use error::{io_words, Error, EXIT_CODES, REASONS};
 pub use history::{Destination, HistoryQuery, SubaddrIndex, Transfer, TransferKind};
 pub use nodes::{ListOpts, NodeList, Probe, ProbeTarget, PublicNode};
 pub use paths::Paths;
@@ -51,9 +51,9 @@ pub use settings::{
 };
 pub use state::{Daemon, PendingKind, PendingSend, PendingTx, StateDoc};
 pub use status::{
-    node_off_words, LastError, NetStatus, NodeStatus, PendingStatus, PendingTxStatus,
-    RemoteProbeStatus, Severity, Staleness, Status, UnitsStatus, WalletStatus, Warning,
-    WALLET_BEHIND_BLOCKS, WARNING_IDS,
+    node_off_words, node_off_words_from, LastError, NetStatus, NodeStatus, PendingStatus,
+    PendingTxStatus, RemoteProbeStatus, Severity, Staleness, Status, UnitsStatus, WalletStatus,
+    Warning, WALLET_BEHIND_BLOCKS, WARNING_IDS,
 };
 
 /// The tool's name, as it appears in argv, hints and the plugin.
@@ -106,20 +106,43 @@ pub fn grouped(n: u64) -> String {
     out
 }
 
-/// How long ago something happened, in the words every surface uses: `5h 42m ago`, `3m 07s ago`,
-/// `12s ago` (§2o.2's "checked 2m ago").
+/// A length of time, in the two units a person needs: `2d 18h`, `5h 42m`, `3m 07s`, `12s`.
+///
+/// **One implementation for the whole program, and days are part of it** (M2). There were three
+/// shapes: this one had no days unit, so a wallet that last saw a block ten days ago read
+/// `240h 12m`; `output.rs::human_uptime` had days and no `ago`; and the bar widget's `Model.age`
+/// had days but padded only some of its fields, so `age(3600)` was `1h 00m` and `age(86400)` was
+/// `1d 0h`. Every field after the first is two digits, in all four branches, in both languages —
+/// `tests/plugin-smoke.sh` holds `Model.age` to this function's own output.
+///
+/// The largest two units that carry information, never three: `2d 18h 31m` is a reading exercise,
+/// and the third field is noise at every scale a person cares about here.
+pub fn duration(seconds: u64) -> String {
+    let (d, h, m, s) = (
+        seconds / 86400,
+        (seconds % 86400) / 3600,
+        (seconds % 3600) / 60,
+        seconds % 60,
+    );
+    if d > 0 {
+        format!("{d}d {h:02}h")
+    } else if h > 0 {
+        format!("{h}h {m:02}m")
+    } else if m > 0 {
+        format!("{m}m {s:02}s")
+    } else {
+        format!("{s}s")
+    }
+}
+
+/// How long ago something happened, in the words every surface uses: `2d 18h ago`, `5h 42m ago`,
+/// `3m 07s ago`, `12s ago` (§2o.2's "checked 2m ago").
 ///
 /// **One implementation** (W12): the TUI had this and the doctor divided by 60 itself, so a
 /// five-and-a-half-hour-old list read `342 min ago` in the doctor and `5h 42m ago` on the screen.
+/// It is [`duration`] plus the preposition, so an age and an uptime can never disagree (M2).
 pub fn age(seconds: u64) -> String {
-    let (h, m, s) = (seconds / 3600, (seconds % 3600) / 60, seconds % 60);
-    if h > 0 {
-        format!("{h}h {m:02}m ago")
-    } else if m > 0 {
-        format!("{m}m {s:02}s ago")
-    } else {
-        format!("{s}s ago")
-    }
+    format!("{} ago", duration(seconds))
 }
 
 /// A size on disk or on the wire: `1.5 GB`, `842 kB`, `0 B` (X6).
@@ -263,14 +286,14 @@ pub fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<(), Error> 
         .create_new(true)
         .mode(0o600)
         .open(&tmp)
-        .map_err(|e| Error::failure(format!("cannot create {}: {e}", tmp.display())))?;
+        .map_err(|e| Error::io("create", "a file it is about to write", &tmp, &e))?;
     f.write_all(bytes)
         .and_then(|()| f.sync_all())
-        .map_err(|e| Error::failure(format!("cannot write {}: {e}", tmp.display())))?;
+        .map_err(|e| Error::io("write", "a file it is about to put in place", &tmp, &e))?;
     drop(f);
     std::fs::rename(&tmp, path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
-        Error::failure(format!("cannot replace {}: {e}", path.display()))
+        Error::io("replace", "one of its own files", path, &e)
     })
 }
 
@@ -373,6 +396,12 @@ mod tests {
         assert_eq!(age(20_520), "5h 42m ago");
         assert_eq!(age(187), "3m 07s ago");
         assert_eq!(age(0), "0s ago");
+        // M2: days, and every field after the first padded to two digits.
+        assert_eq!(age(239_000), "2d 18h ago");
+        assert_eq!(age(86_400), "1d 00h ago");
+        assert_eq!(duration(3_600), "1h 00m");
+        assert_eq!(duration(239_000), "2d 18h");
+        assert_eq!(duration(0), "0s");
         let id = "bbbb1111222233334444555566667777888899990000aaaabbbbccccddddeeee";
         assert_eq!(short_id(id), "bbbb1111…ddeeee");
         assert_eq!(short_id("short"), "short");

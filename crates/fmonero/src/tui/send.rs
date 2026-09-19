@@ -562,12 +562,12 @@ pub(super) fn view(m: &Tui, area: Rect, frame: &mut ftui::Frame, tier: Tier) {
             th.warn(),
         ),
         Stage::Relaying => Line::styled("Sending. This cannot be stopped.".to_string(), th.warn()),
-        // **X9: the whole 64-character id, on the one screen where it matters most.** The toast
-        // beside it already said `Sent. Payment cccc1111…ccdde2.`, and this row printed the
-        // un-shortened value — W8's defect, on the money path. The whole id is in
-        // `wallet history --json` and in the payment row `wallet history` prints.
-        Stage::Sent(txid) => Line::styled(
-            format!("Sent. Payment {}.", fmonero_core::short_id(txid)),
+        // **No id at all now** (round 4, S10; X9 had shortened it, W8 had printed all 64
+        // characters). An elided id is not a value: it cannot be pasted, filtered on or read
+        // out. What the reader wants after a send is where the payment is, and it is one row
+        // below on the screen this line sits at the bottom of.
+        Stage::Sent(_) => Line::styled(
+            "Sent. The payment is at the top of your payments.".to_string(),
             th.ok(),
         ),
         _ => Line::styled(text, if ok { th.ok() } else { th.err() }),

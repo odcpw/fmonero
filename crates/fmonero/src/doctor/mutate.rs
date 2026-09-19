@@ -1043,8 +1043,16 @@ pub fn resolve_run(ctx: &Context, run: &str) -> Result<PathBuf, Error> {
 /// run's `quarantine/`.
 pub fn undo(ctx: &Context, dir: &Path) -> Result<Vec<UndoStep>, Error> {
     let path = dir.join("actions.jsonl");
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| Error::not_found(format!("cannot read {}: {e}", path.display())))?;
+    // S6.
+    let text = std::fs::read_to_string(&path).map_err(|e| {
+        Error::not_found(fmonero_core::io_words(
+            "read",
+            "the record of what the doctor changed",
+            &path,
+            &e,
+        ))
+        .with_detail(e.to_string())
+    })?;
     let mut lines: Vec<ActionLine> = Vec::new();
     for line in text.lines() {
         if line.trim().is_empty() {

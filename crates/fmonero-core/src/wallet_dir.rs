@@ -18,11 +18,16 @@ pub fn list(ctx: &Context) -> Result<Vec<String>, Error> {
         // on a freshly installed machine is a GREEN row (§4b), and its own output names the
         // command that creates the first wallet.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        // **S6 and S1.** This read `cannot read <dir>: Permission denied (os error 13)` with a
+        // hint that only printed the path back, and the TUI then threw the whole error away and
+        // told the owner he had no wallet (S1). The sentence is plain now, the operating system's
+        // words are in `detail`, and the hint names the command that shows what is wrong with a
+        // folder rather than the one that repeats its name.
         Err(e) => {
-            return Err(
-                Error::failure(format!("cannot read {}: {e}", dir.display()))
-                    .with_hint("fmonero settings get wallet.dir"),
-            )
+            return Err(Error::io("read", "your wallet folder", dir, &e)
+                .with_reason("wallet_dir_unreadable")
+                .with_action("Press s to see which folder fmonero is looking in.")
+                .with_hint("fmonero doctor --only wallet"))
         }
     };
     let mut names: Vec<String> = entries

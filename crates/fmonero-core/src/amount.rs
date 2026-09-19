@@ -105,14 +105,32 @@ impl Piconero {
     /// prints beside it: `1_234_567_891_234` → `"1.234567891234"`,
     /// `500_000_000_000` → `"0.5000"`, `0` → `"0.0000"`.
     pub fn to_xmr_string(self) -> String {
+        self.to_xmr_min(MIN_DECIMALS)
+    }
+
+    /// The same string with a **wider floor**, for a column of small figures (M4).
+    ///
+    /// `to_xmr_string` trims to four decimals, which is right in a sentence and wrong down a
+    /// column: a fee column printed `0.0000` beside `0.00003072`, and the node's four per-byte fee
+    /// levels came out `cheapest 0.00000002 · normal 0.00000008 · fast 0.00000032 · fastest
+    /// 0.000004` — the largest of the four rendered in the fewest digits, on the row a person uses
+    /// to choose between them. A fee column asks for eight.
+    ///
+    /// **Still exact and still never truncated**: `min_decimals` is a floor on the trimming, not a
+    /// precision. A figure that needs twelve digits prints twelve, and the column is then ragged
+    /// rather than wrong — which is the right way round for money.
+    pub fn to_xmr_min(self, min_decimals: usize) -> String {
         let whole = self.0 / Self::PER_XMR;
         let frac = self.0 % Self::PER_XMR;
         let mut digits = format!("{frac:0width$}", width = DECIMALS);
-        while digits.len() > MIN_DECIMALS && digits.ends_with('0') {
+        while digits.len() > min_decimals.min(DECIMALS) && digits.ends_with('0') {
             digits.pop();
         }
         format!("{whole}.{digits}")
     }
+
+    /// The floor a column of **fees** uses, so eight decimals is one number in one place (M4).
+    pub const FEE_DECIMALS: usize = 8;
 
     /// **A glance figure: at most four decimals, and never more than you have** (v5.6, §6.4).
     ///
@@ -292,6 +310,29 @@ mod tests {
                 "{text} has {decimals} decimals"
             );
         }
+    }
+
+    /// M4: a column floor widens the trimming and changes nothing else — every value still
+    /// round trips, and a figure that needs more digits than the floor keeps them.
+    #[test]
+    fn a_column_floor_pads_the_small_figures_and_never_cuts_a_large_one() {
+        assert_eq!(Piconero(0).to_xmr_min(8), "0.00000000");
+        assert_eq!(Piconero(30_720_000).to_xmr_min(8), "0.00003072");
+        assert_eq!(Piconero(20_000).to_xmr_min(8), "0.00000002");
+        assert_eq!(Piconero(4_000_000).to_xmr_min(8), "0.00000400");
+        // The four per-byte levels of the node's own estimate line up, which is the row this
+        // exists for.
+        for v in [20_000u64, 80_000, 320_000, 4_000_000] {
+            assert_eq!(Piconero(v).to_xmr_min(8).len(), 10, "{v}");
+        }
+        // Exactness wins over the column: twelve significant decimals stay twelve.
+        assert_eq!(Piconero(1_234_567_891_234).to_xmr_min(8), "1.234567891234");
+        // And the four-decimal floor is what `to_xmr_string` already was.
+        assert_eq!(Piconero(500_000_000_000).to_xmr_min(4), "0.5000");
+        assert_eq!(
+            Piconero(500_000_000_000).to_xmr_min(4),
+            Piconero(500_000_000_000).to_xmr_string()
+        );
     }
 
     #[test]

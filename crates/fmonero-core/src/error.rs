@@ -89,6 +89,10 @@ pub const EXIT_CODES: &[(i32, &str, &str)] = &[
 pub const REASONS: &[(i32, &str)] = &[
     // 1 — the one exit-1 path where retrying is the wrong reflex (§2a.9).
     (1, "txid_mismatch"),
+    // round 4, S1: the wallet folder is there and fmonero could not read it. Its own reason
+    // because every surface must be able to tell that apart from "there are no wallets" — the
+    // TUI said the second for the first and offered to create one.
+    (1, "wallet_dir_unreadable"),
     // 2
     (2, "bad_args"),
     (2, "unknown_key"),
@@ -107,6 +111,10 @@ pub const REASONS: &[(i32, &str)] = &[
     (3, "data_dir_in_use"),
     (3, "wallet_exists"),
     (3, "full_chain_refused"),
+    // round 4, S2: the wallet service prepared an amount that is not the one that was asked
+    // for. Exit 3 because nothing may be sent, and its own reason because the agent reflex on
+    // exit 3 — add `--yes` and retry — is exactly the wrong one here.
+    (3, "amount_mismatch"),
     // 4
     (4, "not_installed"),
     (4, "unit_missing"),
@@ -608,15 +616,70 @@ impl Error {
     }
 }
 
+/// **What went wrong with a file, in plain English, with the operating system's own words kept
+/// for `--json` and `-v`** (round 4, S6; §2o rule 7).
+///
+/// `Permission denied (os error 13)` reached the owner in the MESSAGE slot from thirty-odd
+/// `format!("cannot read {path}: {e}")` sites and from `impl From<std::io::Error>`, which is
+/// exactly what [`Error::with_detail`]'s own comment says belongs in `detail` and never in front
+/// of a person. `os error` is a runtime substitution, so `scripts/check.sh`'s banned-word grep
+/// could not see it — the durable half of the fix is that grep (it now refuses `{e}` inside a
+/// message) and this pair of functions is what the sites call instead.
+///
+/// `verb` is what fmonero was doing (`read`, `write`, `create`), `what` names the thing in the
+/// user's words (`your wallet folder`, `the log file`) and must follow a verb without an article
+/// of its own being wrong.
+#[must_use]
+pub fn io_words(verb: &str, what: &str, path: &std::path::Path, e: &std::io::Error) -> String {
+    use std::io::ErrorKind as K;
+    let p = path.display();
+    match e.kind() {
+        K::PermissionDenied => format!("fmonero is not allowed to {verb} {what} {p}."),
+        K::NotFound => format!("fmonero could not find {what} {p}."),
+        K::NotADirectory => format!("{p} is not a folder, and fmonero needs {what} there."),
+        K::IsADirectory => format!("{p} is a folder, and fmonero needs a file for {what}."),
+        K::StorageFull => format!("The disk is full, so fmonero could not {verb} {what} {p}."),
+        K::TimedOut | K::Interrupted => {
+            format!("fmonero gave up trying to {verb} {what} {p}.")
+        }
+        _ => format!("fmonero could not {verb} {what} {p}."),
+    }
+}
+
+impl Error {
+    /// [`io_words`] as an exit-1 [`Error`], with the raw text in `detail` (S6).
+    ///
+    /// The caller adds the hint, because the command that helps depends on which file it was.
+    #[must_use]
+    pub fn io(verb: &str, what: &str, path: &std::path::Path, e: &std::io::Error) -> Error {
+        Error::failure(io_words(verb, what, path, e)).with_detail(e.to_string())
+    }
+}
+
+/// The bare conversion, for the `?` sites that have no path to name.
+///
+/// It still keeps the operating system's words out of the sentence (S6): the message says what
+/// kind of thing went wrong and `detail` carries the rest.
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Error {
-        Error::failure(e.to_string())
+        use std::io::ErrorKind as K;
+        let words = match e.kind() {
+            K::PermissionDenied => "fmonero was not allowed to read or write a file it needs.",
+            K::NotFound => "fmonero could not find a file it needs.",
+            K::StorageFull => "The disk is full.",
+            K::BrokenPipe => "Whatever fmonero was writing to has gone away.",
+            K::TimedOut => "That took too long.",
+            _ => "fmonero could not read or write a file it needs.",
+        };
+        Error::failure(words).with_detail(e.to_string())
     }
 }
 
 impl From<serde_json::Error> for Error {
     fn from(e: serde_json::Error) -> Error {
-        Error::failure(format!("JSON: {e}"))
+        // S6: a serde message is the technical half by nature, so it goes where every other
+        // technical string goes.
+        Error::failure("fmonero could not make sense of some JSON.").with_detail(e.to_string())
     }
 }
 

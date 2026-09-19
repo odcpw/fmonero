@@ -35,26 +35,26 @@ pub fn tail(path: &Path, lines: usize, grep: Option<&str>) -> Result<Tail, Error
             })
         }
         Err(e) => {
-            return Err(
-                Error::failure(format!("cannot read {}: {e}", path.display()))
-                    .with_hint("fmonero settings get node.log_file"),
-            )
+            // S6: plain sentence, operating-system words in `detail`.
+            return Err(Error::io("read", "your node's log file", path, &e)
+                .with_action("Press 4 to open the Log screen once your node is running.")
+                .with_hint("fmonero doctor --only storage"));
         }
     };
     let size = f
         .metadata()
-        .map_err(|e| Error::failure(format!("cannot stat {}: {e}", path.display())))?
+        .map_err(|e| Error::io("measure", "your node's log file", path, &e))?
         .len();
     // Bounded read: never more than 4 MiB from the end, however many lines were asked for.
     // A `node log --lines 1000000` on a gigabyte log is a command that must still return.
     let want = size.min(MAX_TAIL_BYTES);
     let truncated_by_bytes = want < size;
     f.seek(SeekFrom::Start(size - want))
-        .map_err(|e| Error::failure(format!("cannot seek {}: {e}", path.display())))?;
+        .map_err(|e| Error::io("read", "your node's log file", path, &e))?;
     let mut buf = Vec::with_capacity(want as usize);
     f.take(want)
         .read_to_end(&mut buf)
-        .map_err(|e| Error::failure(format!("cannot read {}: {e}", path.display())))?;
+        .map_err(|e| Error::io("read", "your node's log file", path, &e))?;
     let text = String::from_utf8_lossy(&buf);
     let mut all: Vec<&str> = text.lines().collect();
     // The first line of a window that started mid-file is a fragment, not a line.

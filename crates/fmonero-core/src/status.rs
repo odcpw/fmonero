@@ -241,6 +241,10 @@ pub const WARNING_IDS: &[&str] = &[
     "remote_node",
     "remote_node_trusted",
     "node_down",
+    // round 4, S4: the configured PUBLIC node did not answer when it was last checked. Its own
+    // id because `node_down` tests `node.reachable`, which is `null` in remote mode by design —
+    // so the owner's own configuration was the one with no alarm in it at all.
+    "public_node_down",
     "node_restricted",
     "node_syncing",
     "node_offline",
@@ -829,6 +833,26 @@ fn warnings(
             "fmonero node local --yes",
             Some("Press f on the Node screen to choose another."),
         );
+        // **Round 4, S4: the one configuration the owner actually runs had no alarm in it.**
+        //
+        // `node_down` is gated on `reachable == Some(false)` and `reachable` is `null` with a
+        // public node (§2m.3), so with `node.mode = remote` and the public node silent, `status`
+        // listed two `info` lines, the bar's dot stayed calm and `doctor` said `0 need attention`
+        // — while the row one line above all three said `no answer`. The cached check is the
+        // measurement that exists here (§2n.4), and a check that came back with nothing is a
+        // fact, not a null.
+        if s.node.remote_probe.as_ref().is_some_and(|p| !p.reachable) {
+            add(
+                "public_node_down",
+                Severity::Warn,
+                format!(
+                    "The public node {} did not answer when fmonero last checked it.",
+                    s.node.url
+                ),
+                "fmonero node list",
+                Some("Press f on the Node screen to pick another one."),
+            );
+        }
         // A trusted daemon receives the wallet's own unspent amounts INSIDE a request
         // (`wallet2.cpp:12281-12282`, §1b.9 item 4). A private literal is the case the flag
         // exists for; a DNS name is never treated as private, because classifying one means
@@ -1034,21 +1058,23 @@ fn warnings(
         .as_ref()
         .is_some_and(|p| p.txs.iter().any(|t| !t.relayed));
     if in_flight || pending_unreadable {
-        // **The id is shortened here and whole in `--json`** (W8): 64 hexadecimal characters
-        // rendered as prose is the shape this warning had on a bar 380 pixels wide, and it is
-        // the most serious warning the program has. `pending.txs[].txid` carries the whole of
-        // it for the agent that needs it.
-        // **The colon only when an id follows it** (X33). With an unreadable `pending.json` the
-        // sentence read `… may already have gone out: the recorded payment.` — a colon introducing
-        // something that is not an id, in the one state the reader most needs explained. Two
-        // sentences, and the second says what fmonero does not know.
-        let text = match s
-            .pending
-            .as_ref()
-            .and_then(|p| p.txs.iter().find(|t| !t.relayed))
-            .map(|t| crate::short_id(&t.txid))
-        {
-            Some(id) => format!("A payment was prepared and may already have gone out: {id}."),
+        // **The id is gone from this sentence and whole in `--json`** (round 4, S10, replacing
+        // W8's shorten-rather-than-delete).
+        //
+        // W8 shortened 64 hexadecimal characters to `cccc1111…ccdde2` and left them ending the
+        // product's most serious warning on a bar 380 pixels wide. Elided, it is an identifier a
+        // person can neither paste, nor search the Payments filter with, nor read out to anybody:
+        // it adds alarm and nothing else, and `Press 2 to look at your payments.` beside it was
+        // already the whole of what he can act on. What he CAN recognise is the amount, so that is
+        // what the sentence carries — with its unit (§2o rule 9). `pending.txs[].txid` still holds
+        // every character of the id for the agent that needs one.
+        let text = match s.pending.as_ref().filter(|_| in_flight) {
+            Some(p) => format!(
+                "A payment of {} XMR was prepared and may already have gone out.",
+                p.total_amount_xmr
+            ),
+            // With an unreadable `pending.json` there is no amount either, and the second
+            // sentence says what fmonero does not know rather than leaving a gap (X33).
             None => "A payment was prepared and may already have gone out. fmonero cannot read \
                      which one it was."
                 .to_string(),
@@ -1156,7 +1182,17 @@ fn gigabytes(bytes: u64) -> String {
 /// another program on this machine owns is treated as up, because fmonero does not start or stop
 /// it (§2i) and "not running" would read as an instruction to.
 pub fn node_off_words(s: &Status) -> &'static str {
-    if s.units.node.active || s.node.layout == units::Layout::SystemUnit {
+    node_off_words_from(
+        s.units.node.active,
+        s.node.layout == units::Layout::SystemUnit,
+    )
+}
+
+/// The same predicate for a caller that has the two facts and not a [`Status`] — the CLI's
+/// `status` renders from the JSON document, and its own top row said `not answering` three lines
+/// above this function's `Your node is not running.` (M1).
+pub fn node_off_words_from(unit_active: bool, another_program_owns_it: bool) -> &'static str {
+    if unit_active || another_program_owns_it {
         "not answering"
     } else {
         "not running"
@@ -1300,8 +1336,9 @@ mod tests {
             let back: Severity = serde_json::from_value(serde_json::json!(wire)).unwrap();
             assert_eq!(back, s);
         }
-        // Nineteen before v5.2; §2m adds `remote_node` (info) and `remote_node_trusted` (warn).
-        assert_eq!(WARNING_IDS.len(), 22);
+        // Nineteen before v5.2; §2m adds `remote_node` (info) and `remote_node_trusted` (warn);
+        // round 4's S4 adds `public_node_down` (warn).
+        assert_eq!(WARNING_IDS.len(), 23);
         assert!(
             !WARNING_IDS.contains(&"plugin_not_linked"),
             "that one is the doctor's (§5)"

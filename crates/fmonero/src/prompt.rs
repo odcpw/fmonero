@@ -71,21 +71,31 @@ pub fn wallet_password(password_file: Option<&Path>, confirm: bool) -> Result<St
 /// includes other local users (§2c).
 fn from_file(path: &Path) -> Result<String, Error> {
     use std::os::unix::fs::PermissionsExt;
+    // S6: the operating system's own words go to `detail`, not into the sentence.
     let meta = std::fs::metadata(path).map_err(|e| {
-        Error::not_found(format!("cannot read {}: {e}", path.display()))
-            .with_hint("fmonero wallet open <name> --password-file <path>")
+        Error::not_found(fmonero_core::io_words(
+            "read",
+            "the password file",
+            path,
+            &e,
+        ))
+        .with_detail(e.to_string())
+        .with_hint("fmonero wallet open <name> --password-file <path>")
     })?;
     let mode = meta.permissions().mode() & 0o777;
     if mode & 0o077 != 0 {
+        // M14's shape: a file mode in octal is two numbers a reader cannot act on. What it
+        // means is that other people using this machine can read the password.
         return Err(Error::safety(format!(
-            "{} is mode {:04o}: a password file may have no group and no other permission bit",
-            path.display(),
-            mode
+            "Other users of this machine can read {}. A password file must be readable by you \
+             alone.",
+            path.display()
         ))
+        .with_detail(format!("mode {mode:04o}"))
         .with_hint(format!("chmod 600 {}", path.display())));
     }
     let text = std::fs::read_to_string(path)
-        .map_err(|e| Error::failure(format!("cannot read {}: {e}", path.display())))?;
+        .map_err(|e| Error::io("read", "the password file", path, &e))?;
     Ok(strip_one_newline(&text).to_string())
 }
 
@@ -138,21 +148,22 @@ impl Tty {
 
     fn ask(&mut self, prompt: &str) -> Result<String, Error> {
         // The prompt goes to the terminal, never to stdout.
-        let mut out = self
-            .file
-            .try_clone()
-            .map_err(|e| Error::failure(format!("cannot write to the terminal: {e}")))?;
+        let mut out = self.file.try_clone().map_err(|e| {
+            Error::failure("fmonero could not write to this terminal.").with_detail(e.to_string())
+        })?;
         out.write_all(prompt.as_bytes())
             .and_then(|()| out.flush())
-            .map_err(|e| Error::failure(format!("cannot write to the terminal: {e}")))?;
-        let input = self
-            .file
-            .try_clone()
-            .map_err(|e| Error::failure(format!("cannot read from the terminal: {e}")))?;
+            .map_err(|e| {
+                Error::failure("fmonero could not write to this terminal.")
+                    .with_detail(e.to_string())
+            })?;
+        let input = self.file.try_clone().map_err(|e| {
+            Error::failure("fmonero could not read from this terminal.").with_detail(e.to_string())
+        })?;
         let mut line = String::new();
-        let read = BufReader::new(input)
-            .read_line(&mut line)
-            .map_err(|e| Error::failure(format!("cannot read from the terminal: {e}")))?;
+        let read = BufReader::new(input).read_line(&mut line).map_err(|e| {
+            Error::failure("fmonero could not read from this terminal.").with_detail(e.to_string())
+        })?;
         if read == 0 {
             // Ctrl+D at the prompt.
             return Err(Error::Interrupted);
