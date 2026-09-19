@@ -262,7 +262,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Node,
         class: Class::D,
         severity: Severity::Warn,
-        title: "Public nodes are not set as trusted",
+        title: "A public node is told nothing about your amounts",
         detect: remote_node_untrusted,
     },
     CheckDef {
@@ -400,7 +400,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Units,
         class: Class::B,
         severity: Severity::Info,
-        title: "Neither service starts on its own; fmonero starts them when needed",
+        title: "Neither service starts on its own",
         detect: unit_enabled_state,
     },
     CheckDef {
@@ -443,7 +443,7 @@ pub const CHECKS: &[CheckDef] = &[
         severity: Severity::Info,
         // One vocabulary (§2o rule 8): every other surface says "a smaller copy of the
         // blockchain", including this check's own detail (self-read, round 3).
-        title: "Your node keeps a smaller copy of the blockchain when you asked it to",
+        title: "Your node keeps the size of blockchain you asked for",
         detect: prune_configured,
     },
     // ---- install ------------------------------------------------------------
@@ -912,17 +912,29 @@ fn node_clock(p: &Probes) -> Verdict {
         return Verdict::skip("node_unreachable", "Your node did not answer.");
     };
     let skew = adjusted - p.now_unix;
+    // **X27: `-230030s` and `±60s` are not times a person reads**, and `fmonero_core::age` is the
+    // formatter every other surface uses for exactly this. `age` ends in "ago", which is wrong for
+    // a gap rather than an elapsed time, so the "ago" comes off and the direction is a word.
+    let gap = |secs: i64| {
+        fmonero_core::age(secs.unsigned_abs())
+            .trim_end_matches(" ago")
+            .to_string()
+    };
     if skew.abs() <= CLOCK_SKEW_SEC {
         return Verdict::pass(format!(
-            "This machine's clock is within {skew}s of the Monero network's."
+            "This machine's clock is within {} of the Monero network's.",
+            gap(skew)
         ));
     }
     Verdict::fail(
         "clock_skew",
         format!(
-            "This machine's clock is {skew}s away from the Monero network's, and \
-             ±{CLOCK_SKEW_SEC}s is the most fmonero accepts. A clock this far out gets the times \
-             your money unlocks at wrong and stops other machines talking to yours."
+            "This machine's clock is {} {} the Monero network's, and {} is the most fmonero \
+             accepts. A clock this far out gets the times your money unlocks at wrong and stops \
+             other machines talking to yours.",
+            gap(skew),
+            if skew < 0 { "behind" } else { "ahead of" },
+            gap(CLOCK_SKEW_SEC)
         ),
     )
     .cmd("timedatectl set-ntp true")
@@ -1293,30 +1305,39 @@ fn units_present(p: &Probes) -> Verdict {
     // and "drifted" share one severity and one fixer (§7.1) but must read differently,
     // because the user-facing meaning differs completely: absent means "run setup",
     // drifted means "something changed these".
-    for (name, exists, matches) in [
-        (&p.node_unit_name, p.node_unit.exists, p.node_unit_matches),
+    for (name, subject, exists, matches) in [
+        (
+            &p.node_unit_name,
+            "Your node",
+            p.node_unit.exists,
+            p.node_unit_matches,
+        ),
         (
             &p.wallet_unit_name,
+            "The wallet service",
             p.wallet_unit.exists,
             p.wallet_unit_matches,
         ),
     ] {
+        let _ = name;
         if !exists {
-            // V10: `the fmonero-monerod.service service is not set up yet` was a file name
-            // used as prose, and a stutter. The name is the value of a settings key
-            // (`node.unit`, `wallet.unit`), which rule 5 exempts; the word around it is not.
-            bad.push(format!("{name} has not been written yet."));
+            // **X37: both unit files were named as prose** — `fmonero-monerod.service has not been
+            // written yet. fmonero-wallet-rpc.service has not been written yet.` §2o.2 says a
+            // systemd user unit is never named and is part of *your node* / *the wallet service*,
+            // and every other row in this group already reads that way. The file names are in
+            // `doctor --json`, and in `settings list` under the keys that hold them.
+            bad.push(format!("{subject} has not been set up yet."));
         } else if !matches {
             bad.push(format!(
-                "{name} is not the file fmonero writes, so something has changed it."
+                "{subject} does not start the way fmonero writes it, so something has changed it."
             ));
         }
     }
     if bad.is_empty() {
-        return Verdict::pass(format!(
-            "{} and {} are exactly the files fmonero writes.",
-            p.node_unit_name, p.wallet_unit_name
-        ));
+        return Verdict::pass(
+            "Your node and the wallet service both start exactly the way fmonero sets them up."
+                .to_string(),
+        );
     }
     Verdict::warn("unit_drift", bad.join(" "))
         .fixable(PlanKind::WriteBothUnits, "fmonero doctor --fix")

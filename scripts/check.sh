@@ -690,10 +690,12 @@ step "§7a  the TUI fits its line budget · §6.1 the plugin fits its own"
 # v5.6: 7600, and §7a says so before the code was written — the plain-language round's own
 # arithmetic is the ` This node ` pane, the `Context` reload and its three cases, and the fee-level
 # helpers (was 7200).
+# v5.6.3: 8500, itemised in §7a before the code was written (was 8300). Four of the ten items
+# DELETE code, and the two largest are the two that stop a frame saying one thing six times.
 # v5.6.2: 8300, itemised in §7a before the code was written (was 7900). Three of the nine items
 # are **room** rather than text — the toast's own row, the picker footer's wrap, the `?` overlay's
 # — because a sentence cut to fit is a sentence the reader does not have.
-TUI_BUDGET=8300
+TUI_BUDGET=8500
 if [ -d "$BIN/tui" ]; then
   TUI_FILES=()
   for f in mod theme screens send subs hit; do
@@ -715,7 +717,11 @@ fi
 # v5.6.1: **1561**, and the arithmetic is in §6.1 before the code was written — the four per-file
 # budgets (340 + 845 + 112 + 232 = 1 529) plus the same 32. The two items are V1's version token,
 # which is what lets this suite tell which QML the shell is running, and V16's short balance field.
-QML_BUDGET=1561
+# v5.6.3: **1604**, itemised in §6.1 before the code was written — 340 + 850 + 112 + 270 = 1 572 plus
+# the same 32. `Panel.qml` +10 for X8 (`14 transactions` on the ` Waiting ` row) and `Model.js` +38
+# for X6 (one decimal byte formatter), X11 (one rounding, down), X13 (the public node's verdict on the
+# hero) and the notes for X10 and X30.
+QML_BUDGET=1604
 if [ -d plugin/oliver.monero ]; then
   QML_LINES="$(cat plugin/oliver.monero/*.qml plugin/oliver.monero/*.js plugin/oliver.monero/manifest.json 2>/dev/null | grep -c '')"
   if [ "$QML_LINES" -le "$QML_BUDGET" ]; then
@@ -736,9 +742,9 @@ if [ -d plugin/oliver.monero ]; then
     fi
   done <<'PERFILE'
 340 Service.qml
-845 Panel.qml
+850 Panel.qml
 112 MoneroIcon.qml
-232 Model.js
+270 Model.js
 PERFILE
 else
   printf '  skip  §6.1 line budget: plugin/oliver.monero does not exist yet\n'

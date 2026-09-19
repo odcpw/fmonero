@@ -517,15 +517,23 @@ if [ -n "$CAPTURE" ]; then
   # `|| true` on both greps: this script runs under `set -e`, and "no match" is the answer this
   # assertion wants rather than a failure of the script.
   BARE_DIGITS=""
+  # **The count is the number of files this loop actually read** (round 4). It was
+  # `ls "$CAPTURE"/*.txt | wc -l`, which counts two files the assertion never examines: `log.txt`,
+  # skipped two lines below because it carries the node's own bytes, and `scenario.txt`, which this
+  # script writes itself and which is therefore present on every run after the first. So the passing
+  # message claimed one or two more screens than were read — a number nobody could reproduce by
+  # counting the captures, in the one message that says how much the assertion covered.
+  SCREENS=0
   for f in "$CAPTURE"/*.txt; do
-    case "$f" in *"/log.txt") continue ;; esac
+    case "$f" in *"/log.txt" | *"/scenario.txt") continue ;; esac
+    SCREENS=$((SCREENS + 1))
     hit="$( { grep -oE '(^|[^0-9.:])[0-9]{7,}( piconero)?' "$f" || true; } \
             | { grep -v piconero || true; } | { grep -oE '[0-9]{7,}' || true; } \
             | sort -u | tr '\n' ' ')"
     if [ -n "$hit" ]; then BARE_DIGITS="$BARE_DIGITS$f: $hit"$'\n'; fi
   done
   if [ -z "$BARE_DIGITS" ]; then
-    ok "W7: no ungrouped block number in any capture ($(ls "$CAPTURE"/*.txt | wc -l) screens)"
+    ok "W7: no ungrouped block number in any capture ($SCREENS screens read)"
   else
     bad "an ungrouped number reached a screen" $BARE_DIGITS
   fi

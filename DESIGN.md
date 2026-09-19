@@ -2731,8 +2731,9 @@ So:
    against different parties.
    **And the CLI gets the fourth rendering, on the surface that performs the act.** `node list` in
    **human mode** prints the one-line disclosure **on stderr whenever this invocation actually
-   fetches or probes** — `contacting monero.fail — this tells it your IP address` and
-   `probing <N> nodes — each learns your IP address` — which covers the hole `--refresh`/`--probe`
+   fetches or probes** — `Getting the list from monero.fail. This tells it your IP address.` and
+   `Checking up to <N> nodes. Each one learns your IP address.` (v5.6.3, X2: both carried a rule-12
+   em-dash and the second carried rule 7's `probing`) — which covers the hole `--refresh`/`--probe`
    being "the explicit consent" left open: the bare form fetches too, when the cache is absent or a
    day old, and README's own first quickstart line is `fmonero node list --probe`, which fetches and
    probes twenty nodes before the reader reaches the paragraph where the disclosure lives. `--json`
@@ -3236,7 +3237,7 @@ wallet.
 | `node unban` | `HOST` | `set_bans [{host, ban:false, seconds:0}]`. **Layout `user_unit` only** (§2i). **In remote mode: exit 4 `backend`, `reason: remote_node`, hint `fmonero node local --yes`, before any RPC or `systemctl` spawn (§2m.3, §4).** | yes | – | – | yes |
 | `node limit` | `[--up KBPS] [--down KBPS] [--out-peers N] [--in-peers N]` | no args → `NodeClient::{get_limit, peers_count}`, both read-only (any layout); with args → `NodeMutators::{set_limit, set_peers_count}`, which exist only on a type the **layout `user_unit`** gate hands out (§2i). `-1` restores the default. **In remote mode: exit 4 `backend`, `reason: remote_node`, hint `fmonero node local --yes`, before any RPC or `systemctl` spawn (§2m.3, §4).** | with args | – | – | yes |
 | `node remote` | `ADDR [--trusted] [--yes] [--dry-run]` | **`node_mode::set_remote` (§5b, §2m.5)** — the persistent form of `wallet set-daemon`, in nine steps: parse ADDR against §2m.2's grammar (exit 2 `bad_remote_address`) → `--dry-run` prints the plan and the unit diff and exits 0, **without needing `--yes`** and **before the two money guards below**, exactly as `setup --dry-run` does → the §2a.11 `send.lock` (exit 3 `send_in_progress`) → the §2a.4 `pending_send` entry check (exit 3 `pending_send`) — the two guards every other money-adjacent path carries, here because this is the command that changes which node a pending send would be *resolved* against (§2m.5) → the `--yes` gate (exit 3 `needs_yes`, hint = the user's own command with `--yes` appended verbatim) → **one** `Settings::save` writing `node.remote`, `node.remote_trusted` and `node.mode = remote` together, so a crash cannot leave the §2m.1 invariant broken → `units::install` re-rendering both units and `monerod.conf` → `systemctl --user restart <wallet.unit>` **iff `units::state` said it was active before the render** (a running `monero-wallet-rpc` holds `--daemon-address` in its argv) → when a wallet was open, `state::clear_last_open` and `wallet_must_reopen: "<name>"` in the payload with `hint: fmonero wallet open <name>`. Starts no daemon and never runs `node up`: §2i's single-writer precondition is the only thing allowed to start `monerod`. Idempotent — a second run reports every action `unchanged`, restarts nothing, exits 0. Payload shape: §5c | yes | **yes** | no | no |
-| `node list` | `[--refresh] [--probe] [--limit N] [--all]` | **v5.5, §2n.** `nodes::list(ctx, ListOpts)` (§5b): serve `cache_dir/public-nodes.json` if it exists, **fetching only** when `--refresh` is given or the cache is absent or older than 24 h; then, with `--probe`, `get_info` the top `--limit` candidates by monero.fail health (8 concurrent, `-m 5`, cancellable). Prints one row per node — address, scheme, `web_compatible`, monero.fail health (`ratio` as a percent with its sample size, `last_height`, `last_checked`) and, when probed, `height`/`synchronized`/`restricted`/`latency_ms` — plus `cache_age_sec`, `skipped_no_port` and the `source`. `--limit` defaults to **20** and bounds *both* what is printed and what is probed, so a bare `--probe` contacts twenty strangers and not a hundred and fifty-eight; `--all` prints every usable candidate (and, with `--probe`, probes them all, which the human-mode output says out loud before it starts). The configured node sorts first, then by health, then by latency among probed (§2n.6). **Reads no wallet, moves no money, starts no daemon and works in both modes** — a list of remote nodes is exactly as meaningful in local mode, where it is how someone decides to switch. Needs `curl` (exit 4 `curl_missing`, §2n.3). **In human mode it prints the §2n.5 disclosure on stderr whenever this invocation actually fetches or probes** — `contacting monero.fail — this tells it your IP address` / `probing <N> nodes — each learns your IP address` — which is the rendering attached to the act rather than to a flag, and covers the bare form that fetches because the cache is absent or a day old (v5.5, revision 7); `--json` is silent, because the envelope already carries `refreshed` and `probed`. Not mutating in the `--yes` sense, but it *writes the cache*, which is why `M` is `yes`. Payload shape: §5c | yes (the cache) | no | no | no |
+| `node list` | `[--refresh] [--probe] [--limit N] [--all]` | **v5.5, §2n.** `nodes::list(ctx, ListOpts)` (§5b): serve `cache_dir/public-nodes.json` if it exists, **fetching only** when `--refresh` is given or the cache is absent or older than 24 h; then, with `--probe`, `get_info` the top `--limit` candidates by monero.fail health (8 concurrent, `-m 5`, cancellable). Prints one row per node — address, scheme, `web_compatible`, monero.fail health (`ratio` as a percent with its sample size, `last_height`, `last_checked`) and, when probed, `height`/`synchronized`/`restricted`/`latency_ms` — plus `cache_age_sec`, `skipped_no_port` and the `source`. `--limit` defaults to **20** and bounds *both* what is printed and what is probed, so a bare `--probe` contacts twenty strangers and not a hundred and fifty-eight; `--all` prints every usable candidate (and, with `--probe`, probes them all, which the human-mode output says out loud before it starts). The configured node sorts first, then by health, then by latency among probed (§2n.6). **Reads no wallet, moves no money, starts no daemon and works in both modes** — a list of remote nodes is exactly as meaningful in local mode, where it is how someone decides to switch. Needs `curl` (exit 4 `curl_missing`, §2n.3). **In human mode it prints the §2n.5 disclosure on stderr whenever this invocation actually fetches or probes** — `Getting the list from monero.fail. This tells it your IP address.` / `Checking up to <N> nodes. Each one learns your IP address.` (v5.6.3, X2) — which is the rendering attached to the act rather than to a flag, and covers the bare form that fetches because the cache is absent or a day old (v5.5, revision 7); `--json` is silent, because the envelope already carries `refreshed` and `probed`. Not mutating in the `--yes` sense, but it *writes the cache*, which is why `M` is `yes`. Payload shape: §5c | yes (the cache) | no | no | no |
 | `node local` | `[--yes] [--dry-run]` | **`node_mode::set_local` (§5b, §2m.5)** — the same nine steps with `node.mode = local` and no ADDR. `node.remote` and `node.remote_trusted` are **left as they are** (§2m.1): they are inert in local mode and the address is the one thing the user would have to retype. Ends by naming `fmonero node up` when the node unit is inactive. Payload shape: §5c | yes | **yes** | no | no |
 | `wallet list` | — | `wallet_dir::list` (§5b): `*.keys` basenames in `settings.wallet.dir`, sorted; no RPC, no wallet bytes read (§2b.6). A NAME containing `/` is exit 2 (§1b.5). An empty list (and a `-23 NO_WALLET_DIR`) prints, besides `fmonero wallet create <name> --yes`, the one command that brings an existing seed back: `hint: monero-wallet-cli --restore-deterministic-wallet --wallet-file <wallet.dir>/<name>   # then: fmonero wallet open <name>` (§0 cuts `wallet restore`). | no | – | no | no |
 | `wallet open` | `NAME [--password-file P]` | `wallet_session::open` (§5b) — the single implementation of the §4.2 sequence, shared with the TUI's open modal: `units::ensure_running` — which probes first, and only when the probe fails runs §2i's preflight (exit 4 `unit_missing` / `not_installed`) and then the start, so an answering daemon needs no unit and no binary while an absent one is refused in milliseconds rather than at a 30 s deadline (v5.1) —, then `open_wallet{filename, password}` (§2b.1), **then** exactly one `set_daemon{address, trusted, ssl_support, username, password}` whose four arguments come from `units::daemon_target(ctx)` and therefore differ by mode (§2m.3 — in remote mode the two credential fields are omitted, always), then `auto_refresh{enable:true, period:20}` (§2d). The order is not free: `on_set_daemon` answers `-13 NOT_OPEN` with no wallet loaded (`wallet_rpc_server.cpp:4692`), so issuing it first would fail silently and leave the wallet unable to reach fmonero's own authenticated node. Records `state::set_last_open(name, net)` — the wallet's own nettype, read from its primary address, being the §2a.6 send-path authority — so `status` can name it. A NAME containing `/` is exit 2 (§1b.5); a missing `<wallet.dir>/<NAME>.keys` is exit **6 `not_found`**, checked locally because wallet-rpc collapses that case into the same `-1` a wrong password gives (§1b.4). | yes | no | – | no |
@@ -5900,10 +5901,39 @@ the assertion, because thirty payloads in a decisions log is bulk, not evidence.
 |---|---|---|
 | `manifest.json` | ~55 lines | schemaVersion 1, id `oliver.monero`, name "Monero", version, author, license, description, `kinds:["bar-widget"]`, `entryPoints.barWidget:"Panel.qml"`, `barWidget{displayName, description, category:"Finance", allowMultiple:false, defaultSection:"right", defaults{}, schema[]}` |
 | `Service.qml` | ≤ **340** (v5.6, was 420) | the state model (6.3), the two polls, the action queue |
-| `Panel.qml` | ≤ **845** (v5.6.1, was 820) | bar button + `KeyboardPanel` content (6.5) |
+| `Panel.qml` | ≤ **850** (v5.6.3, was 845) | bar button + `KeyboardPanel` content (6.5) |
 | `MoneroIcon.qml` | ≤ **112** (v5.6, was 96) | the Monero ⓜ glyph as `QtQuick.Shapes` + `PathSvg`; no image asset. The progress ring now draws the **wallet's** catch-up as well as a local node's sync (§6.4), which is one more arc and its percent source |
-| `Model.js` | ≤ **232** (v5.6.1, was 225) | pure formatters: `parseStatus(text)`, `shortAddr`, `age`, `rate`, `grouped`, **`headerLine(status)`** (v5.6 — §6.4's five-word header, from one first-match table), **`walletSyncLabel(status)`** (v5.6 — `Syncing 63% · 240 000 blocks left`), **`nodeLabel(node)`** (v5.6, renamed from `remoteLabel`), **`checkedLabel(node)`** (v5.6, renamed from `probeLabel`; still refuses to render a height without its age), `walletStateLabel`, `pendingLabel`, `peersLabel`, `worstSeverity`, `safeArgv` |
+| `Model.js` | ≤ **270** (v5.6.3, was 232) | pure formatters: `parseStatus(text)`, `shortAddr`, `age`, `rate`, `grouped`, **`headerLine(status)`** (v5.6 — §6.4's five-word header, from one first-match table), **`walletSyncLabel(status)`** (v5.6 — `Syncing 63% · 240 000 blocks left`), **`nodeLabel(node)`** (v5.6, renamed from `remoteLabel`), **`checkedLabel(node)`** (v5.6, renamed from `probeLabel`; still refuses to render a height without its age), `walletStateLabel`, `pendingLabel`, `peersLabel`, `worstSeverity`, `safeArgv` |
 | `README.md` | — | docs agent |
+
+**v5.6.3 raises the same two again, and states the arithmetic here before the code was written.**
+The measured v5.6.2 tree is **1 544** (`Panel` 836 · `Service` 339 · `MoneroIcon` 107 · `Model` 230 ·
+`manifest` 32). Round 4 put five items in these two files, all of them from the plain-language
+verification's own findings.
+
+`Panel.qml` **+10**, to **846** measured: X8's ` Waiting ` row said `14 transactions` where §2o.2 says
+`payment` and where the TUI's own waiting pane and `node info` both say *payments* — the row is
+pluralised now, the restricted node's `(at least N)` becomes `or more`, and the five-line note says
+why three surfaces kept the word through three rounds (rule 7's list never carried it).
+
+`Model.js` **+34**, to **264** measured, from four findings at once. X6: `bytes` divided by **1024**
+and labelled the result `KiB` while `output.rs` divided by 1000 and said `kB`, so one waiting pool read
+`21.4 kB` in the CLI and `20.9 KiB` on the bar — it is the decimal formatter now, integer arithmetic
+with the one decimal place carried by hand so the two halves cannot drift through a rounding mode
+either (**+9** with its note). X11: a new `percent`, rounded **down**, because the hero floored and
+core's warning rounded and one frame read `Your node syncing 33%` over `Your node is 34% synced.`
+(**+12** with its note, and three call sites become one-liners). X13: the hero said `Public node ·
+public.example.net:18089` with no verdict when the check had not answered — the four-branch table
+(**+6**). X10 and X30: two notes, no code — `shortAddr` came off `node.url`, because
+`public.e…:18089` names no node and the picker's own rule is address-first-and-never-elided, and
+`peersLabel` drops its arrows so the bar, the TUI's status bar and `status` all read `16 out · 3 in`
+(**+7**).
+
+So `Panel.qml` becomes **850** (measured 846) and `Model.js` **270** (measured 264); `Service.qml` and
+`MoneroIcon.qml` are untouched at 340 and 112. `QML_BUDGET` becomes **1 604**:
+340 + 850 + 112 + 270 = 1 572, plus `manifest.json`'s 32 real lines — the same derivation the
+paragraphs below write out, and the reason both numbers are in this document before the gate is
+changed.
 
 **v5.6.1 raises two of the four, and states the arithmetic here before the code was written.**
 The measured v5.6 tree is **1 522** (`Panel` 820 · `Service` 339 · `MoneroIcon` 107 · `Model` 224 ·
@@ -6213,8 +6243,8 @@ row the exact one — v5.6.1, V16; the same amount, `1.234567` truncated to four
      1 487 002 / 3 541 122
 
   node     your own node
-  Peers    ↑ 12 out · ↓ 3 in
-  Waiting  14 transactions
+  Peers    12 out · 3 in
+  Waiting  14 payments
 
   wallet   Wallet closed
 
@@ -6228,8 +6258,8 @@ row the exact one — v5.6.1, V16; the same amount, `1.234567` truncated to four
      240 000 blocks left
 
   node     your own node
-  Peers    ↑ 16 out · ↓ 3 in
-  Waiting  14 transactions
+  Peers    16 out · 3 in
+  Waiting  14 payments
 
   Balance   1.234567 XMR
   Unlocked  1.234567 XMR
@@ -6563,7 +6593,7 @@ places to update when monero.fail changes one field.
 
 ---
 
-## 7a. TUI (`fmonero tui`) — one agent, one pass, ≤ 8 300 lines across `src/tui/{mod,theme,screens,send,subs,hit}.rs` (`tests.rs` excluded)
+## 7a. TUI (`fmonero tui`) — one agent, one pass, ≤ 8 500 lines across `src/tui/{mod,theme,screens,send,subs,hit}.rs` (`tests.rs` excluded)
 
 **The budget is the measured figure, and it is a ceiling against growth rather than a target**
 (v5.1). v5 asked for 1 800 — fproton's 1 200 plus a fourth screen, a send state machine, two modals
@@ -6692,6 +6722,30 @@ identified an estimate consuming 99.9 % of its own ceiling as the arithmetic tha
 trade, and 8 193 of 8 200 is one line short of being that. `TUI_BUDGET` becomes 8300. Nothing here
 is a new feature: two of the nine items **delete** a helper (`elide`) and a modal message, and the
 three that cost the most are the three that stop cutting a sentence the user needs.
+
+**v5.6.3 raises it to 8 500, and states the arithmetic here before the code was written.** The
+measured tree at the start of round 4 is **8 199** (`mod` 3 011 · `screens` 3 135 · `send` 862 ·
+`subs` 534 · `hit` 436 · `theme` 204), 101 under the v5.6.2 ceiling. The thirty-seven findings put ten
+items in these files, and **four of them delete code**:
+
+| item | estimate |
+|---|---|
+| **X4** — the log level becomes an overlay (`log_level_modal` and its routing arm), minus `confirm_dialog`, minus the generic `Confirm` render arm, minus `Modal::Confirm`'s now-dead `Dialog` and `DialogState` and the two builders that filled them | ≈ +35 net |
+| **X23** — the hero draws its three measurement rows only while the node is running, and the Net, Peers and waiting panes each say what is missing from THEM rather than restating the node's state; `node_off_sentence` goes with the last caller | ≈ +40 |
+| **X16, X35** — `list_modal` wraps a row and hangs its continuation, and its keys line has four shapes instead of one `Enter chooses` said of a free-text field | ≈ +40 |
+| **X29** — the peer state through one table shared with `node peers`, the two traffic rows in words with a unit on every number, `0 double spends` deleted | ≈ +45 |
+| **X32** — `chips_height`, a `chip_row` that takes the next row instead of dropping a chip, and the picker's chip array lifted so its height can be measured | ≈ +30 |
+| **X5** — three refusals where there was one, each stating its own situation | ≈ +20 |
+| **X13** — `remote_check_words`, read by the badge, the hero and the pane | ≈ +20 |
+| **X15** — the Notes bullets wrap here instead of in `WrapMode::Word`, so a continuation keeps its indent | ≈ +20 |
+| **X12** — `list_chip`, minus the three inline chip tuples it replaces | ≈ +5 net |
+| **X8, X9, X11, X20, X22, X28, X34, X36** — eight strings and two one-line calls | ≈ +25 |
+
+That is **280 over 8 199 = 8 479**, and the ceiling is **8 500** rather than 8 480, for the reason
+v5.5 revision 12 gave and v5.6.2 quoted: an estimate that consumes 99.9 % of its own ceiling is the
+arithmetic that forces a dishonest trade. `TUI_BUDGET` becomes 8500. Every item is a defect a person
+read off a real terminal, four of them remove code, and the two largest are the two that stop a frame
+saying one thing six times.
 
 **Runtime.** The ftui 0.7 Elm loop: one `struct Tui` implementing `ftui::Model`;
 **`App::fullscreen(tui).with_mouse().run()`** when `settings.tui.mouse` (v5.5, §7a.2), else the same

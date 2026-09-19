@@ -187,6 +187,11 @@ fn human_lines(out: &Out, report: &Report) -> Vec<String> {
     const VERDICT_COL: usize = 70;
     let mut lines: Vec<String> = Vec::new();
     let mut group = String::new();
+    // **X24: a sentence that is true of a whole group is said once, under the group's heading.**
+    // One public-node run printed nine identical details — seven rows of `Your node` and two of
+    // `Your wallet`, all reading `You are using the public node …, so there is nothing of your own
+    // to check here.` The phrase beside each title (`not checked: …`) already makes the rows
+    // scannable; the sentence itself belongs to the group.
     for check in &report.checks {
         if check.group != group {
             group = check.group.clone();
@@ -197,6 +202,9 @@ fn human_lines(out: &Out, report: &Report) -> Vec<String> {
                 .find(|g| g.name() == group)
                 .map_or(group.clone(), |g| g.title().to_string());
             lines.push(out.paint(&heading, Paint::Dim));
+            for note in group_notes(report, &group) {
+                lines.push(out.paint(&format!("  {note}"), Paint::Dim));
+            }
         }
         let (verdict, paint) = verdict_phrase(check);
         let head = format!("  {} ", check.title);
@@ -206,7 +214,8 @@ fn human_lines(out: &Out, report: &Report) -> Vec<String> {
             out.paint(&".".repeat(dots), Paint::Dim),
             out.paint(&verdict, paint)
         ));
-        if !check.detail.is_empty() {
+        // X24: printed once above, as the group's own note.
+        if !check.detail.is_empty() && !group_notes(report, &group).contains(&check.detail) {
             lines.push(format!("    {}", check.detail));
         }
         if let Some(cmd) = &check.fix_cmd {
@@ -273,6 +282,30 @@ fn human_lines(out: &Out, report: &Report) -> Vec<String> {
         }
     }
     lines
+}
+
+/// The details **more than one check in this group reports word for word** (X24), in the order they
+/// first appear.
+///
+/// The case it exists for is a precondition that silences a whole group: with a public node, seven
+/// node checks and two wallet checks all report the same sentence, and nine copies of it is the
+/// shape a reader stops reading. Two identical details are already a repetition, so the threshold is
+/// two.
+fn group_notes(report: &Report, group: &str) -> Vec<String> {
+    let mut seen: Vec<(String, usize)> = Vec::new();
+    for c in report.checks.iter().filter(|c| c.group == group) {
+        if c.detail.is_empty() {
+            continue;
+        }
+        match seen.iter_mut().find(|(d, _)| *d == c.detail) {
+            Some((_, n)) => *n += 1,
+            None => seen.push((c.detail.clone(), 1)),
+        }
+    }
+    seen.into_iter()
+        .filter(|(_, n)| *n > 1)
+        .map(|(d, _)| d)
+        .collect()
 }
 
 /// One row's verdict, as a phrase a person reads, and the colour it is painted (W1).

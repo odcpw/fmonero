@@ -684,14 +684,6 @@ impl Tui {
         }
     }
 
-    /// The same three words as a sentence, for the panes that have no answer to draw (W9).
-    pub(super) fn node_off_sentence(&self) -> String {
-        match self.node_off_words() {
-            "starting" => "Your node is starting up.".to_string(),
-            words => format!("Your node is {words}."),
-        }
-    }
-
     pub(super) fn node_badge(&self) -> &'static str {
         self.node_state().0
     }

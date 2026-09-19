@@ -70,12 +70,15 @@ function rate(bps) {
 // floored and core's warning rounded, so one frame read `Your node syncing 33%` over `Your node is
 // 34% synced.` Rounded down is the half that cannot lie: only a node that is actually there
 // reads `100%`.
+// Through `int()`, which truncates towards zero — and that IS the floor for a percentage. §2a.5's
+// QML half (tests/plugin-smoke.sh) forbids the two float parsers outright, and a formatter that
+// makes that grep fire is a formatter somebody later exempts, at which point the grep no longer
+// protects the amounts it exists for.
 function percent(p) {
-  var v = Number(p)
-  if (!isFinite(v)) v = 0
+  var v = int(p, 0)
   if (v < 0) v = 0
   if (v > 100) v = 100
-  return Math.floor(v) + "%"
+  return v + "%"
 }
 
 function age(sec) {
