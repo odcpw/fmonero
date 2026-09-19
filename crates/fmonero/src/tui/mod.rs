@@ -346,6 +346,9 @@ pub(super) struct LogUi {
     pub follow: bool,
     /// The TUI's own 0→4→0 cycle pointer for `L`: the daemon never reports its level.
     level: i8,
+    /// What **fmonero** last set the level to in this session, or `None`. The node never reports
+    /// its own, so this is the only thing the confirm may state as a fact (§2j).
+    set_level: Option<i8>,
     pub search: TextInput,
     pub search_open: bool,
 }
@@ -447,10 +450,14 @@ pub(super) enum Confirm {
     NodeUp,
     NodeDown,
     /// The next level in the 0–4 cycle. A mutation, so it asks first (§7a).
-    /// The level it is now, and the level `y` would set (round 4 iteration 3): the modal said
-    /// only the second, so a reader could not tell whether confirming changed anything.
+    /// The level `y` would set, and **the level fmonero last set, when it has set one** (round 4
+    /// iteration 3). The modal named only the target, so a reader could not tell whether confirming
+    /// changed anything — and naming `from` unconditionally would have been worse: the node does not
+    /// report its level, so on a fresh window fmonero's own pointer is 0 and a modal reading *"Your
+    /// node writes level 0 now"* would be a claim about the node it cannot make (§2j). `None` until
+    /// this session has set one.
     LogLevel {
-        from: i8,
+        from: Option<i8>,
         to: i8,
     },
     /// v5.6, §7a.4's `l`: go back to your own node. It asks first for the same reason
@@ -616,6 +623,7 @@ impl Tui {
                 empty: true,
                 follow: true,
                 level: 0,
+                set_level: None,
                 search: text_input(&theme),
                 search_open: false,
             },
@@ -1984,7 +1992,7 @@ impl Tui {
             KeyCode::Char('L') => {
                 let next = (self.logs.level + 1) % 5;
                 return self.confirm(Confirm::LogLevel {
-                    from: self.logs.level,
+                    from: self.logs.set_level,
                     to: next,
                 });
             }
@@ -2100,7 +2108,7 @@ impl Tui {
             KeyCode::Char('L') => {
                 let next = (self.logs.level + 1) % 5;
                 return self.confirm(Confirm::LogLevel {
-                    from: self.logs.level,
+                    from: self.logs.set_level,
                     to: next,
                 });
             }
@@ -2187,6 +2195,7 @@ impl Tui {
                         // The daemon does not report its level, so the cycle pointer is the
                         // TUI's own and advances when the call is sent, not when it lands.
                         self.logs.level = level;
+                        self.logs.set_level = Some(level);
                         self.task("change how much your node logs", move |ctx| {
                             let n = NodeClient::from_ctx(ctx)?;
                             n.mutators(ctx)?.set_log_level(level)?;

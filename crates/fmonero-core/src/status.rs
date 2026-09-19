@@ -1108,10 +1108,13 @@ fn warnings(
             .time_to_unlock_sec
             .map(|sec| sec.div_ceil(60))
             .unwrap_or(blocks * 2);
-        let locked = match (s.wallet.balance_pico, s.wallet.unlocked_pico) {
-            (Some(b), Some(u)) => Piconero(b.0.saturating_sub(u.0)).to_xmr_string(),
-            _ => "some".to_string(),
-        };
+        // The pre-rendered field, not a second subtraction (round 4 iteration 3): `locked_xmr` is
+        // where this figure is computed, once, and every surface reads it.
+        let locked = s
+            .wallet
+            .locked_xmr
+            .clone()
+            .unwrap_or_else(|| "some".to_string());
         add(
             "wallet_locked_funds",
             Severity::Info,

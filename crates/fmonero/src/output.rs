@@ -630,12 +630,9 @@ fn own_node_rows(out: &Out, node: &serde_json::Value, unit_active: Option<bool>)
         None => String::new(),
     };
     out.line(
-        format!(
-            "node    {badge}  {}  {block}{whose}",
-            cell(&node["url"]),
-        )
-        .trim_end()
-        .to_string(),
+        format!("node    {badge}  {}  {block}{whose}", cell(&node["url"]),)
+            .trim_end()
+            .to_string(),
     );
     // **Nothing is said with dashes** (X23). With the node off every field below is `null`, and the
     // row read `synced —%  peers — out / — in  waiting —  blockchain —  running —` under a badge
@@ -766,7 +763,7 @@ pub fn status_human(out: &Out, v: &serde_json::Value) {
         // `0.5000 XMR locked for about 12 min`, and this list then printed
         // `[info] 0.5000 XMR unlocks in about 12 min.` — one fact, two wordings, three rows apart.
         // The same exclusion the widget's problems section makes for a warning its hero renders.
-        if w["id"].as_str() == Some("funds_locked") && wallet["locked_xmr"].is_string() {
+        if w["id"].as_str() == Some("wallet_locked_funds") && wallet["locked_xmr"].is_string() {
             continue;
         }
         let severity = w["severity"].as_str().unwrap_or("info");

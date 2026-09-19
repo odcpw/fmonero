@@ -985,10 +985,26 @@ fn node_hero(m: &Tui, area: Rect, frame: &mut Frame) {
         lines.push(Line::styled("Press r to try again.", th.dimmed()));
     } else if let Some(s) = &m.status {
         let n = &s.node;
-        lines.push(Line::from_spans([
-            Span::styled("● ", th.badge(m.node_tone())),
-            Span::styled(m.node_phrase(), th.title()),
-        ]));
+        // **The hero's first line wraps, and an address is never cut** (round 4 iteration 3). It
+        // was one unwrapped `Line`, and at 120 columns this pane is 60 wide: `● Public node ·
+        // nothing listening · public.example.net:18089` came out as
+        // `● Public node · nothing listening · public.example.net:180` — the node's own address,
+        // clipped mid-port, with no marker, on the line whose subject IS that address. The pane has
+        // rows to spare in every state that reaches this, and `wrap_words` never splits a word, so
+        // the address moves whole to the next row rather than losing its last three characters.
+        for (i, part) in wrap_words(&m.node_phrase(), (inner.width as usize).saturating_sub(2))
+            .into_iter()
+            .enumerate()
+        {
+            if i == 0 {
+                lines.push(Line::from_spans([
+                    Span::styled("● ", th.badge(m.node_tone())),
+                    Span::styled(part, th.title()),
+                ]));
+            } else {
+                lines.push(Line::styled(format!("  {part}"), th.title()));
+            }
+        }
         // In remote mode the hero is a different, much smaller one (§2m.3, §7a): no gauge, no
         // percent, no ETA, no peers, no version. All of them are `null` here, and a gauge at
         // 0 % is the rendered untruth §2j forbids.
@@ -2649,18 +2665,11 @@ fn log_screen(m: &Tui, area: Rect, frame: &mut Frame) {
              use your own node."
                 .to_string()
         } else {
-            // **The path is elided with a marker, like the title one row above it** (round 4
-            // iteration 3): `para(…, wrap = true)` word-wraps, and a path is one word, so a long
-            // one was clipped at the pane edge with nothing to say it had been — one row under a
-            // title that does mark its own elision with `…`.
-            format!(
-                "No log yet. Your node writes it once it runs.\n{}",
-                fit(
-                    &m.logs.path.display().to_string(),
-                    (rows[1].width as usize).max(8)
-                )
-                .trim_end()
-            )
+            // **The path is in the title and nowhere else** (round 4 iteration 3). This printed it
+            // again two rows under a title that already carries it — one fact, twice, in one frame
+            // — and `para(…, wrap = true)` word-wraps, so a path (which is one word) was clipped at
+            // the pane edge with no marker while the title above it elided its own copy with `…`.
+            "No log yet. Your node writes it once it runs.".to_string()
         };
         para(text, th.dimmed(), true).render(rows[1], frame);
         return;
@@ -3202,15 +3211,25 @@ fn node_power_modal(m: &Tui, up: bool, frame: &mut Frame) {
 /// The scale was the part nobody had explained, so it gets a line of its own rather than a clause
 /// squeezed in beside the keys: 0 is silent, 4 is everything, and the middle is where a person
 /// looking for a reason should be.
-fn log_level_modal(m: &Tui, from: i8, to: i8, frame: &mut Frame) {
+fn log_level_modal(m: &Tui, from: Option<i8>, to: i8, frame: &mut Frame) {
     let th = &m.theme;
     const WIDTH: u16 = 74;
     let text_w = WIDTH.min(frame.bounds().width).saturating_sub(4).max(1) as usize;
     let mut text: Vec<(String, Style)> = vec![
         (
-            // **Both levels** (round 4 iteration 3): it named only the one `y` would set, so a
-            // reader could not tell whether confirming changed anything at all.
-            format!("Your node writes level {from} now. This changes it to level {to}."),
+            // **Both levels, and only what fmonero knows** (round 4 iteration 3). It named only the
+            // one `y` would set, so a reader could not tell whether confirming changed anything —
+            // and the node never reports the level it is on, so naming one unconditionally would
+            // put a claim fmonero cannot make on a confirm (§2j). Once this window has set one, it
+            // says so; until then it says it does not know.
+            match from {
+                Some(had) => {
+                    format!("fmonero set your node to level {had}. This changes it to level {to}.")
+                }
+                None => format!(
+                    "This sets your node to level {to}. It does not report the level it is on now."
+                ),
+            },
             th.accented(),
         ),
         (String::new(), th.text()),

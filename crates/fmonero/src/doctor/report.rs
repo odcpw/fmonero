@@ -234,14 +234,14 @@ fn human_lines(out: &Out, report: &Report) -> Vec<String> {
                 // measures a line's own leading spaces to decide where its continuations hang, and
                 // a painted string begins with an escape, so every wrapped line in this table
                 // returned to column 2 instead of hanging under its own text.
-                lines.push(format!("    {}", out.paint(&format!("Try: {cmd}"), Paint::Dim)));
+                lines.push(format!(
+                    "    {}",
+                    out.paint(&format!("Try: {cmd}"), Paint::Dim)
+                ));
             }
         }
         if let Some(outcome) = &check.fix_outcome {
-            lines.push(format!(
-                "    {}",
-                out.paint(fix_words(outcome), Paint::Dim)
-            ));
+            lines.push(format!("    {}", out.paint(fix_words(outcome), Paint::Dim)));
         }
         for action in &check.actions {
             let tag = match action.outcome.as_str() {
