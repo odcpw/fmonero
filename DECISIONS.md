@@ -10914,7 +10914,7 @@ moved, so §2k's manifest freeze holds.
   command that can say anything about Arch's node, `status` is read-only, and the alternative is a fix
   line with no fix in it.
 
-  ### The gates, command by command, at `28d0b57` on this machine
+  ### The gates, command by command, at `fc2ca2e` on this machine
 
   ```
   $ cargo fmt --all --check                                    exit 0
