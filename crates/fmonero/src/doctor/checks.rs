@@ -850,9 +850,11 @@ fn node_synced(p: &Probes) -> Verdict {
             Verdict::warn(
                 "node_syncing",
                 format!(
-                    "Syncing: block {} of {} ({pct:.0}%).",
+                    "Syncing: block {} of {} ({}).",
                     crate::output::grouped(height),
-                    crate::output::grouped(denom)
+                    crate::output::grouped(denom),
+                    // X11: one rounding, from core.
+                    fmonero_core::percent(pct)
                 ),
             )
             .cmd("fmonero node up --wait --wait-timeout 86400")

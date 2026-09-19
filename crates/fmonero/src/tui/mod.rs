@@ -30,7 +30,6 @@ use std::time::{Duration, Instant, SystemTime};
 use clap::Args;
 use ftui::runtime::{Every, SubId, Subscription};
 use ftui::widgets::input::TextInput;
-use ftui::widgets::modal::{Dialog, DialogState};
 use ftui::widgets::table::TableState;
 use ftui::widgets::virtualized::VirtualizedListState;
 use ftui::widgets::{LogViewer, LogViewerState, LogWrapMode, TabsState};
@@ -332,10 +331,14 @@ pub(super) enum NodeView {
 }
 
 pub(super) enum Modal {
+    /// **Just the `what`** (X4). It used to carry a `Dialog` and its `DialogState` as well, built
+    /// for a renderer that no longer exists: `Dialog` draws its message as one centred row in a
+    /// fixed 58-column box, so W2 and V4 moved three of the four confirms to overlays and X4 moved
+    /// the fourth — the log level, whose three middle messages were 60 characters and were cut
+    /// mid-word at every width. Each overlay registers its own button with `hits`, so nothing read
+    /// the two fields any more.
     Confirm {
         what: Confirm,
-        dialog: Box<Dialog>,
-        state: RefCell<DialogState>,
     },
     OpenWallet {
         names: Vec<String>,
@@ -618,8 +621,19 @@ impl Tui {
         }
         // Remote mode answers first (§2m.3): `reachable` and `synchronized` are both `null`
         // there, so every badge below would paint "not answering" for a wallet that is working.
+        //
+        // **X13: the cached check's verdict belongs here too.** With a public node that had been
+        // checked and had not answered, the badge read `● public node …` with no verdict at all and
+        // the hero the same: the one fact the reader needed was in the ` This node ` pane and
+        // nowhere else, because W9's one predicate covers your own node only. The words are the
+        // same three the pane and `status` use, from §5's `node.remote_probe`.
         if self.remote_mode() {
-            return ("public node", "up");
+            return match self.remote_check_words() {
+                Some(words @ "no answer") => (words, "down"),
+                Some(words @ "syncing") => (words, "syncing"),
+                Some(words) => (words, "up"),
+                None => ("public node", "up"),
+            };
         }
         match (s.node.reachable, s.node.synchronized) {
             (Some(true), Some(true)) => ("synced", "up"),
@@ -632,6 +646,23 @@ impl Tui {
             // and both surfaces read it.
             _ => (self.node_off_words(), "down"),
         }
+    }
+
+    /// **X13: the verdict of the last check of the configured public node, in three words.**
+    ///
+    /// `None` when there is no check yet, so a caller can say "not checked yet" in its own shape.
+    /// The badge, the hero and the ` This node ` pane all read this, which is what makes the frame
+    /// say one thing: before it, only the pane had a verdict.
+    pub(super) fn remote_check_words(&self) -> Option<&'static str> {
+        let p = self.status.as_ref()?.node.remote_probe.as_ref()?;
+        if !p.reachable {
+            return Some("no answer");
+        }
+        Some(match p.synchronized {
+            Some(true) => "synced",
+            Some(false) => "syncing",
+            None => "answered",
+        })
     }
 
     /// The words for a node that is not answering — **three of them now** (W9), from one
@@ -728,7 +759,13 @@ impl Tui {
             return "checking…".into();
         };
         if self.remote_mode() {
-            return format!("Public node · {}", s.node.url);
+            // X13: the verdict, from the same predicate the badge reads. `Public node ·
+            // public.example.net:18089` with a check that had not answered was the hero saying
+            // nothing about the one thing that was wrong.
+            return match self.remote_check_words() {
+                Some(words) => format!("Public node · {words} · {}", s.node.url),
+                None => format!("Public node · not checked yet · {}", s.node.url),
+            };
         }
         if s.node.reachable != Some(true) {
             // V14, and W9's third word: the same predicate the badge and the panes read. While
@@ -740,7 +777,8 @@ impl Tui {
         }
         match (s.node.synchronized, s.node.sync_percent) {
             (Some(true), _) => "Synced".into(),
-            (_, Some(p)) => format!("Syncing {p:.0}%"),
+            // X11: one rounding, from core.
+            (_, Some(p)) => format!("Syncing {}", fmonero_core::percent(p)),
             _ => "Running".into(),
         }
     }
@@ -1315,7 +1353,7 @@ impl Tui {
     /// that is what makes leaving safe enough to be the default.
     fn switch_screen(&mut self, forward: bool) -> Cmd<Msg> {
         if self.send.confirming() || matches!(self.modal, Some(Modal::CreateWallet(_))) {
-            self.note("Esc to discard first.", true);
+            self.note("Press Esc first to discard this.", true);
             return Cmd::none();
         }
         self.show_help = false;
@@ -1591,7 +1629,7 @@ impl Tui {
             return Cmd::none();
         }
         if self.send.confirming() || matches!(self.modal, Some(Modal::CreateWallet(_))) {
-            self.note("Esc to discard first.", true);
+            self.note("Press Esc first to discard this.", true);
             return Cmd::none();
         }
         if self.modal.is_some() {
@@ -2339,20 +2377,10 @@ impl Tui {
     /// `confirm`'s first act is to refuse in public-node mode and this is the one confirm that
     /// only exists there.
     fn confirm_local(&mut self) -> Cmd<Msg> {
-        let mut state = DialogState::new();
-        state.focused_button = Some(0);
         // **V4: the words are in `screens::local_node_modal`**, which draws them as the overlay
-        // §7a.4 specifies — three sentences, and `Dialog` renders one centred row. The `Dialog`
-        // here is what the key handler and the mouse's `ModalButton` share with every other
-        // confirm; its message is never drawn.
+        // §7a.4 specifies — three sentences, and `Dialog` renders one centred row.
         self.modal = Some(Modal::Confirm {
             what: Confirm::NodeLocal,
-            dialog: Box::new(screens::confirm_dialog(
-                &self.theme,
-                " Use your own node ",
-                "",
-            )),
-            state: RefCell::new(state),
         });
         Cmd::none()
     }
@@ -2364,50 +2392,45 @@ impl Tui {
         // to go back to your own. The switch still asks first: it restarts the wallet service and
         // closes the wallet this session is holding (§2m.5).
         if self.remote_mode() {
-            // **W14: short enough to be read whole.** The status bar has ~37 columns left for a
-            // toast at 120, and this sentence was cut to `You are using a public node. Press…` at
-            // both widths — so the two in-app routes it exists to name were never on screen. The
-            // situation is on the Node screen in front of the user; what the toast owes them is
-            // the two keys.
-            // 40 columns, measured against the narrowest room the bar has for a toast: the
-            // left segment carries two badges and the node's address, which leaves 44 columns
-            // at 120 with a 22-character address, and every column over that is a cut sentence.
-            self.note("Press f for the list, or l for your own.", true);
+            // **X5: the situation first, and one refusal per key.** This was one 40-column toast
+            // for three keys — `Press f for the list, or l for your own.` — which is rule 11's
+            // hint standing in for the sentence, and which told a user who pressed `L` to choose a
+            // node without ever saying why the log level could not be changed. W14's own fix
+            // removed the width constraint that forced it: a toast too long for the status bar
+            // gets a row of its own above it (`screens::note_fits`), up to two.
+            self.note(
+                match what {
+                    Confirm::NodeUp => {
+                        "You are using a public node, so there is no node here to \
+                                        start. Press f for another public node, or l to use your \
+                                        own."
+                    }
+                    Confirm::NodeDown => {
+                        "You are using a public node, so there is no node here to \
+                                          stop. Press f for another public node, or l to use your \
+                                          own."
+                    }
+                    // `L` is not about which node to use at all, which is why one shared refusal
+                    // could never be right for it.
+                    Confirm::LogLevel(_) => {
+                        "This sets how much your OWN node logs, and you are \
+                                             using a public node. Press l to use your own node \
+                                             first."
+                    }
+                    // `l` itself is the way back and is never refused here.
+                    Confirm::NodeLocal => "Press l to use your own node.",
+                },
+                true,
+            );
             return Cmd::none();
         }
         if !matches!(units::may_mutate_node(&self.ctx), Ok(true)) {
             self.note(fmonero_core::FOREIGN_NODE_READ_ONLY, true);
             return Cmd::none();
         }
-        // **W2: `NodeUp` and `NodeDown` are overlays now**, like `NodeLocal`, and their words are
-        // in `screens::node_power_modal`. The `Dialog` built here is what the key handler and the
-        // mouse's `ModalButton` share with every confirm; its message is never drawn for these
-        // three, because `Dialog` renders a message as one centred row and each of them has
-        // several sentences to state (V4).
-        let (title, message) = match what {
-            Confirm::NodeUp => (" Start your node ", ""),
-            Confirm::NodeDown => (" Stop your node ", ""),
-            Confirm::NodeLocal => (" Use your own node ", ""),
-            // One row is enough here — it has one fact to state — but it states the same two
-            // keys as every other confirm (self-read, round 3: it named `y` and not `Esc`).
-            Confirm::LogLevel(l) => (
-                " How much your node logs ",
-                match l {
-                    0 => "Set it to 0, the quietest. y to confirm · Esc cancels",
-                    1 => "Set it to 1, where 0 is quietest. y to confirm · Esc cancels",
-                    2 => "Set it to 2, where 0 is quietest. y to confirm · Esc cancels",
-                    3 => "Set it to 3, where 0 is quietest. y to confirm · Esc cancels",
-                    _ => "Set it to 4, the noisiest. y to confirm · Esc cancels",
-                },
-            ),
-        };
-        let mut state = DialogState::new();
-        state.focused_button = Some(0);
-        self.modal = Some(Modal::Confirm {
-            what,
-            dialog: Box::new(screens::confirm_dialog(&self.theme, title, message)),
-            state: RefCell::new(state),
-        });
+        // **All four confirms are overlays** (W2, V4, X4): each one has more than one sentence to
+        // state, and `screens.rs` owns the words for every one of them.
+        self.modal = Some(Modal::Confirm { what });
         Cmd::none()
     }
 
@@ -2537,7 +2560,8 @@ impl Tui {
         let value = t.note.clone();
         self.modal = Some(Modal::Prompt {
             what: Prompt::Note { txid },
-            title: " Note for this transfer ".to_string(),
+            // X8, and `docs/COPY.md` §3.5 specified it a round ago: §2o.2 says `payment`.
+            title: " Note for this payment ".to_string(),
             input: text_input(&self.theme).with_value(value).with_focused(true),
         });
         Cmd::none()
@@ -2951,7 +2975,12 @@ impl Model for Tui {
                         self.picker.progress = None;
                         let reached = pairs.iter().filter(|(_, p)| p.reachable).count();
                         self.note(
-                            format!("Checked {} nodes. {reached} answered.", pairs.len()),
+                            // X14: the third un-pluralised toast, after the self-read fixed two.
+                            format!(
+                                "Checked {} {}. {reached} answered.",
+                                pairs.len(),
+                                if pairs.len() == 1 { "node" } else { "nodes" }
+                            ),
                             false,
                         );
                         // The cache is the authority (`nodes::record_probes` wrote it), so the

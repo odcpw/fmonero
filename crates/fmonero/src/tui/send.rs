@@ -110,7 +110,10 @@ const FIELDS: [(Field, &str, &str); 3] = [
     ),
     // The piconero form stays accepted and stays in `--help`; as the empty field's example it
     // taught a reader that amounts look like that (§2o rule 9).
-    (Field::Amount, "Amount", "0.5 XMR"),
+    // **X22: an empty-field hint that cannot be read as a typed value.** `0.5 XMR` is exactly what
+    // a real amount looks like, in the one field where reading the hint as the value costs money;
+    // `To` and `Note` both read unmistakably as hints beside it.
+    (Field::Amount, "Amount", "how much, in XMR"),
     (Field::Note, "Note", "optional, kept with this wallet"),
 ];
 
@@ -559,7 +562,14 @@ pub(super) fn view(m: &Tui, area: Rect, frame: &mut ftui::Frame, tier: Tier) {
             th.warn(),
         ),
         Stage::Relaying => Line::styled("Sending. This cannot be stopped.".to_string(), th.warn()),
-        Stage::Sent(txid) => Line::styled(format!("sent · {txid}"), th.ok()),
+        // **X9: the whole 64-character id, on the one screen where it matters most.** The toast
+        // beside it already said `Sent. Payment cccc1111…ccdde2.`, and this row printed the
+        // un-shortened value — W8's defect, on the money path. The whole id is in
+        // `wallet history --json` and in the payment row `wallet history` prints.
+        Stage::Sent(txid) => Line::styled(
+            format!("Sent. Payment {}.", fmonero_core::short_id(txid)),
+            th.ok(),
+        ),
         _ => Line::styled(text, if ok { th.ok() } else { th.err() }),
     };
     let mut lines = vec![line];

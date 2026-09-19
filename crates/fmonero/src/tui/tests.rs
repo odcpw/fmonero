@@ -307,8 +307,33 @@ fn the_narrow_tier_collapses_the_tab_strip() {
 fn the_offline_node_screen_says_what_to_press_and_never_shows_a_zero_height() {
     let text = sim_text(&sim(offline_model(Screen::Node)), 120, 40);
     assert!(text.contains("Your node is not running"), "{text}");
-    // §5's shape rule: unknown is `—`, never a zero standing in for unknown.
-    assert!(text.contains('—'), "{text}");
+    assert!(text.contains("Press u to start it"), "{text}");
+    // **X23: and not a row of dashes under it.** §5's rule is that unknown is `—` and never a zero;
+    // with the node off there is no measurement to label at all, so the three rows that read
+    // `last block —` / `peers — out · — in` / `version — · —` are not drawn, and the hero's own
+    // sentence is the whole answer. The shape §6.5 deleted from the widget and W3 from `status`.
+    for gone in ["last block", "— out · — in"] {
+        assert!(
+            !text.contains(gone),
+            "with the node off, `{gone}` carries nothing:\n{text}"
+        );
+    }
+    // And the node's own state is stated **once** in the frame, not in every pane that has no
+    // answer: it filled the hero, the badge, the Net pane, the waiting pane, the Peers pane and a
+    // Notes bullet — six times. The badge is the statement; the hero's second row is the action;
+    // each pane says what is missing from IT. (The wallet service's own row is a different fact and
+    // is allowed to say so.)
+    assert_eq!(
+        text.matches("Your node is not running").count(),
+        1,
+        "one statement per frame (X23):\n{text}"
+    );
+    assert!(
+        text.contains("No traffic while your node is off.")
+            && text.contains("No peers while your node is off.")
+            && text.contains("Nothing waiting while your node is off."),
+        "each pane says what is missing from it (X23):\n{text}"
+    );
 }
 
 #[test]
@@ -322,7 +347,7 @@ fn the_offline_wallet_screen_offers_the_open_key() {
     // balance pane that rendered `— XMR   unlocked — XMR` above this panel is gone with it.
     assert!(text.contains("[o] Open a wallet"), "{text}");
     assert!(!text.contains("unlocked — XMR"), "{text}");
-    assert!(text.contains("[c] Create wallet…"), "{text}");
+    assert!(text.contains("[c] Create a wallet"), "{text}");
     assert!(text.contains("[W] Start the wallet service"), "{text}");
     assert!(text.contains("wallet service:"), "{text}");
 }
@@ -1053,13 +1078,13 @@ fn the_create_wallet_modal_consumes_tab_and_says_so() {
     let before = s.model().screen;
     s.inject_event(key(KeyCode::Tab));
     assert_eq!(s.model().screen, before, "the create modal holds Tab");
-    assert_eq!(s.model().note, "Esc to discard first.");
+    assert_eq!(s.model().note, "Press Esc first to discard this.");
     // And it is documented IN the modal — on its own line under the controls, which is a
     // rendering assertion and not a status-bar one: a one-row footer clipped that line away, so
     // the rule was true only in DESIGN.md.
     let text = sim_text(&s, 110, 34);
     assert!(
-        text.contains("Tab is off here. Press Esc to discard first."),
+        text.contains("Tab is off here. Press Esc first to discard this."),
         "{text}"
     );
 }
@@ -1338,7 +1363,7 @@ fn the_wallet_empty_state_keeps_all_three_chips_at_every_tier() {
         let text = sim_text(&s, w, h);
         for want in [
             "[o] Open a wallet",
-            "[c] Create wallet",
+            "[c] Create a wallet",
             "[W] Start the wallet service",
         ] {
             assert!(text.contains(want), "{want} missing at {w}x{h}:\n{text}");
@@ -2232,11 +2257,11 @@ fn switching_nodes_moves_every_surface_within_one_poll() {
     );
     // 2. the Node hero and 3. the status bar, both of which read the poll's Status document.
     assert!(
-        text.contains(&format!("Public node · {NODE_B}")),
+        text.contains(&format!("Public node · synced · {NODE_B}")),
         "the hero still names the old node:\n{text}"
     );
     assert!(
-        text.contains(&format!("● public node {NODE_B}")),
+        text.contains(&format!("● synced {NODE_B}")),
         "the status bar still names the old node:\n{text}"
     );
     // 4. the picker's `●`, which compares each row against the address in force.
@@ -2276,10 +2301,11 @@ fn a_settings_change_from_outside_is_noticed_on_the_next_poll() {
     let text = sim_text(&s, 120, 44);
     assert_eq!(s.model().ctx.settings.node.remote, NODE_B);
     assert!(
-        text.contains(&format!("Public node · {NODE_B}")),
+        text.contains(&format!("Public node · synced · {NODE_B}")),
         "the hero still names the old node:\n{text}"
     );
-    assert!(text.contains(&format!("● public node {NODE_B}")), "{text}");
+    // X13: the badge carries the verdict too, from the same predicate.
+    assert!(text.contains(&format!("● synced {NODE_B}")), "{text}");
     assert!(text.contains("block 3 765 346"), "{text}");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -2578,17 +2604,29 @@ fn the_public_node_refusal_names_both_routes_on_screen() {
     ctx.settings.node.mode = fmonero_core::NodeMode::Remote;
     ctx.settings.node.remote = "xmr-node.cakewallet.com:18081".into();
     let mut s = sim(model(&ctx, Screen::Node));
-    for k in ['u', 'd', 'L'] {
+    // **X5: the situation first, and one refusal per key.** One 40-column toast served all three,
+    // which is rule 11's hint standing in for the sentence — and a user who pressed `L` was told to
+    // choose a node and never told why the log level could not be changed.
+    for (k, want) in [
+        ('u', "there is no node here to start"),
+        ('d', "there is no node here to stop"),
+        ('L', "This sets how much your OWN node logs"),
+    ] {
         s.inject_event(key(KeyCode::Char(k)));
         for (cols, rows) in [(120u16, 32u16), (150, 40)] {
             let text = sim_text(&s, cols, rows);
+            let flat = flowed(&text);
             // On the bar when it fits beside the badges, on its own row when it does not — and
             // whole either way, which is the finding.
             assert!(
-                flowed(&text).contains("Press f for the list, or l for your own."),
-                "{cols}x{rows}: `{k}` must name both routes whole:\n{text}"
+                flat.contains(want),
+                "{cols}x{rows}: `{k}` must state its own situation:\n{text}"
             );
-            for line in text.lines().filter(|l| l.contains("Press f for")) {
+            assert!(
+                flat.contains("Press l to use your own node") || flat.contains("or l to use your"),
+                "{cols}x{rows}: `{k}` must name the key that fixes it:\n{text}"
+            );
+            for line in text.lines().filter(|l| l.contains("public node")) {
                 assert!(
                     !line.contains('…'),
                     "{cols}x{rows}: the refusal was cut: {line}"

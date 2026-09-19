@@ -1032,7 +1032,7 @@ fn peers_human(out: &Out, v: &serde_json::Value) {
 /// `monerod` reports `synchronizing`, `normal`, `idle`, `standby` and `before_handshake`, and this
 /// table printed them raw: `synchronizing` in the `STATE` column against `synced` on every other
 /// surface, and `before_handshake` at a person. §2o.2 fixes `catching up` for the first.
-fn peer_state_words(state: Option<&str>) -> String {
+pub fn peer_state_words(state: Option<&str>) -> String {
     match state {
         Some("synchronizing") => "catching up".to_string(),
         Some("normal") => "trading blocks".to_string(),

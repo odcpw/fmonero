@@ -8,7 +8,6 @@ use ftui::text::{Line, Span, Text};
 use ftui::widgets::block::Block;
 use ftui::widgets::borders::BorderType;
 use ftui::widgets::input::TextInput;
-use ftui::widgets::modal::Dialog;
 use ftui::widgets::paragraph::Paragraph;
 use ftui::widgets::progress::{MiniBar, MiniBarColors};
 use ftui::widgets::sparkline::Sparkline;
@@ -149,9 +148,19 @@ pub(super) fn view(m: &Tui, frame: &mut Frame) {
             what: super::Confirm::NodeDown,
             ..
         }) => node_power_modal(m, false, frame),
-        Some(Modal::Confirm { dialog, state, .. }) => {
-            StatefulWidget::render(dialog.as_ref(), b, frame, &mut state.borrow_mut());
-        }
+        // **X4: the last confirm `Dialog` still drew, and it was cut mid-word at every width.**
+        // `Dialog::confirm`'s box is a fixed 58 columns and three of the five messages are 60
+        // characters, so `y to confirm · Esc cance` was on screen at 120x32 and at 150x40 alike,
+        // with six blank rows under the cut — V15's lesson exactly. An overlay, like the three
+        // above it.
+        Some(Modal::Confirm {
+            what: super::Confirm::LogLevel(level),
+            ..
+        }) => log_level_modal(m, *level, frame),
+        // **No generic `Confirm` arm any more** (X4): all four confirms are overlays, because
+        // `Dialog` draws its message as one centred row in a fixed 58-column box and every one of
+        // them has more than one sentence to state. The `Dialog` value is still built — the key
+        // handler and the mouse's `ModalButton` share its state — and it is no longer drawn.
         Some(Modal::OpenWallet {
             names,
             sel,
@@ -161,8 +170,14 @@ pub(super) fn view(m: &Tui, frame: &mut Frame) {
             let rows: Vec<String> = if names.is_empty() {
                 // §2o.1: one key creates a wallet, so the empty state names the key, not the
                 // command it would have printed into a modal nobody can type into.
+                //
+                // **X16: the folder on its own line.** `No wallets in /tmp/…/data/fmonero/w` was
+                // cut at both sizes with no marker, and the part lost was the folder's own name —
+                // the only thing in the sentence a reader could act on. `list_modal` wraps a row
+                // now; splitting the sentence in two also means the path starts at a known column.
                 vec![
-                    format!("No wallets in {}.", m.ctx.settings.wallet.dir.display()),
+                    "There are no wallets yet, in this folder:".into(),
+                    m.ctx.settings.wallet.dir.display().to_string(),
                     "Press c to create one.".into(),
                 ]
             } else {
@@ -378,6 +393,22 @@ fn status_left_width(m: &Tui) -> usize {
     status_left(m).iter().map(|s| s.content.width()).sum()
 }
 
+/// **X12: one key, one label, on every pane of the Node screen.** `f` is `start_fetch` wherever it
+/// is pressed here, and it was labelled `Choose another node` in the ` This node ` pane and
+/// `Get the list` in the ` Public nodes ` pane — two chips with the same key and different
+/// meanings, in one frame. Choosing a node is `Enter` on a row, and that chip says so.
+fn list_chip(m: &Tui) -> (Button, &'static str, &'static str) {
+    (
+        Button::RefreshList,
+        "f",
+        if m.picker.list.is_some() {
+            "Get a fresh list"
+        } else {
+            "Get the list"
+        },
+    )
+}
+
 /// Does the whole toast fit on the status bar beside the badges (W14)?
 ///
 /// The same arithmetic `status_line` lays out with: `19` is the width of the `⇥ screens  ? help`
@@ -565,12 +596,7 @@ fn picker_pane(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
             .constraints([Constraint::Fixed(1), Constraint::Fixed(1), Constraint::Fill])
             .split(inner);
         para("No list of public nodes yet.".to_string(), th.text(), false).render(rows[0], frame);
-        chips(
-            m,
-            rows[1],
-            &[(Button::RefreshList, "f", "Get the list")],
-            frame,
-        );
+        chips(m, rows[1], &[list_chip(m)], frame);
         lines_at(
             vec![
                 Line::styled(
@@ -721,11 +747,22 @@ fn picker_pane(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
         .map(|t| wrap_words(t, body.width as usize))
         .unwrap_or_default();
     let footer_h = (footer_lines.len().clamp(1, 3)) as u16;
+    // X32: the chip row takes the rows its chips need at this width, up to two.
+    let picker_chips: [(Button, &str, &str); 6] = [
+        (Button::Probe, "p", "Check these"),
+        list_chip(m),
+        (Button::UseNode, "Enter", "Use this node"),
+        (Button::AddNode, "a", "Add a node"),
+        (Button::PrevNode, "H", "Back to the last one"),
+        // v5.6, §2o.1: the destination the old refusal named as a shell command.
+        (Button::UseLocal, "l", "Use your own node"),
+    ];
+    let chip_h = chips_height(&picker_chips, body.width).min(2);
     let rows = Flex::vertical()
         .constraints([
             Constraint::Fill,
             Constraint::Fixed(footer_h),
-            Constraint::Fixed(1),
+            Constraint::Fixed(chip_h),
         ])
         .split(body);
     // **The address is never elided at any tier** (§7a.4), so columns are dropped from the RIGHT
@@ -800,28 +837,7 @@ fn picker_pane(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
             frame,
         );
     }
-    chip_row(
-        m,
-        rows[2],
-        &[
-            (Button::Probe, "p", "Check these"),
-            (
-                Button::RefreshList,
-                "f",
-                if m.picker.list.is_some() {
-                    "Get a fresh list"
-                } else {
-                    "Get the list"
-                },
-            ),
-            (Button::UseNode, "Enter", "Use this node"),
-            (Button::AddNode, "a", "Add a node"),
-            (Button::PrevNode, "H", "Back to the last one"),
-            // v5.6, §2o.1: the destination the old refusal named as a shell command.
-            (Button::UseLocal, "l", "Use your own node"),
-        ],
-        frame,
-    );
+    chip_row(m, rows[2], &picker_chips, frame);
 }
 
 /// The picker's footer (§2n.1, W6) — what the list is, how old it is, and **what was left out**.
@@ -949,15 +965,16 @@ fn node_hero(m: &Tui, area: Rect, frame: &mut Frame) {
             // `Starting your node…` and a status bar counting the seconds — advice to press the
             // key that was running. A service that is up and silent gets the same treatment: it
             // is not started by pressing start.
+            // **X23: the badge one row above already says the state**, so this row is the action
+            // alone. `● Your node is not running` over `Your node is not running. Press u to start
+            // it.` was the same sentence twice in two adjacent rows.
             let text = if m.monero_missing() {
                 "Monero is not installed on this machine.  In a terminal: omarchy pkg add monero"
             } else {
                 match m.node_off_words() {
                     "starting" => "This can take a moment. Esc stops waiting.",
-                    "not answering" => {
-                        "Your node is running but not answering yet. Press r to check again."
-                    }
-                    _ => "Your node is not running. Press u to start it.",
+                    "not answering" => "It has not answered yet. Press r to check again.",
+                    _ => "Press u to start it.",
                 }
             };
             lines.extend(
@@ -979,38 +996,49 @@ fn node_hero(m: &Tui, area: Rect, frame: &mut Frame) {
             lines.push(kv(
                 th,
                 "blocks",
-                format!("{:13}{pct:.0}%  {here} / {target}", ""),
+                // X11: one rounding for the whole program, from core.
+                format!("{:13}{}  {here} / {target}", "", fmonero_core::percent(pct)),
             ));
             if let Some(eta) = m.sync_eta() {
                 lines.push(kv(th, "done in", eta));
             }
         }
-        lines.push(kv(
-            th,
-            "last block",
-            n.top_block_age_sec
-                .map_or("—".into(), |a| age(a.max(0) as u64)),
-        ));
-        lines.push(kv(
-            th,
-            "peers",
-            format!(
-                "{} out · {} in",
-                opt(n.outgoing_connections_count),
-                opt(n.incoming_connections_count)
-            ),
-        ));
-        // The hard-fork version is an internal number no user acts on; it stays in
-        // `node info --json` (§2o).
-        lines.push(kv(
-            th,
-            "version",
-            format!(
-                "{} · {}",
-                n.version.clone().unwrap_or_else(|| "—".into()),
-                n.nettype.clone().unwrap_or_else(|| "—".into())
-            ),
-        ));
+        // **X23: three rows of dashes under a hero that has already said why.** With your own node
+        // off this drew `last block —` / `peers — out · — in` / `version — · —` beneath
+        // `Your node is not running. Press u to start it.` — the shape §6.5 deleted from the widget
+        // and W3 deleted from `status`.
+        //
+        // While the node is RUNNING all three are drawn, dashes included: a restricted node is
+        // running and answers none of them, and the hero's own note two lines below is what
+        // explains those dashes (§5's rule that unknown is `—` and never a zero).
+        if n.reachable == Some(true) {
+            lines.push(kv(
+                th,
+                "last block",
+                n.top_block_age_sec
+                    .map_or("—".into(), |a| age(a.max(0) as u64)),
+            ));
+            lines.push(kv(
+                th,
+                "peers",
+                format!(
+                    "{} out · {} in",
+                    opt(n.outgoing_connections_count),
+                    opt(n.incoming_connections_count)
+                ),
+            ));
+            // The hard-fork version is an internal number no user acts on; it stays in
+            // `node info --json` (§2o).
+            lines.push(kv(
+                th,
+                "version",
+                format!(
+                    "{} · {}",
+                    n.version.clone().unwrap_or_else(|| "—".into()),
+                    n.nettype.clone().unwrap_or_else(|| "—".into())
+                ),
+            ));
+        }
         if n.layout == Layout::SystemUnit {
             // One sentence, shared with core, so the refusal and the hero cannot drift (§2o).
             lines.extend(
@@ -1124,7 +1152,7 @@ fn this_node_pane(m: &Tui, area: Rect, frame: &mut Frame) {
                 format!("No answer when checked {}.", age(p.age_sec.max(0) as u64)),
                 th.warn(),
             ));
-            (Button::RefreshList, "f", "Choose another node")
+            list_chip(m)
         }
         Some(p) => {
             lines.push(Line::styled(
@@ -1149,7 +1177,7 @@ fn this_node_pane(m: &Tui, area: Rect, frame: &mut Frame) {
                 format!("checked {}", age(p.age_sec.max(0) as u64)),
                 th.dimmed(),
             ));
-            (Button::RefreshList, "f", "Choose another node")
+            list_chip(m)
         }
     };
     let used = lines.len() as u16;
@@ -1203,7 +1231,13 @@ fn list_pane(m: &Tui, area: Rect, frame: &mut Frame, wide: bool) {
             // The one predicate wins over the transport's own words: `The node is not answering.`
             // is what a refused connection says, and it stood in three panes beside a hero
             // reading `Your node is not running` (W9).
-            m.node_off_sentence()
+            // **X23: and the pane says what is missing from IT**, so the frame states the node's
+            // own state once, in the hero.
+            if bans {
+                "No bans to show while your node is off.".to_string()
+            } else {
+                "No peers while your node is off.".to_string()
+            }
         } else {
             m.node
                 .err
@@ -1248,17 +1282,28 @@ fn list_pane(m: &Tui, area: Rect, frame: &mut Frame, wide: bool) {
             // `3 541 122`. · The pruning seed is **gone** from the row: `KEEPS 0` and `KEEPS 384`
             // decide nothing a reader can act on, which is the argument `docs/COPY.md` §3.9 already
             // made for `node peers`' own human output. It stays in `node peers --json`.
-            let mut cells = vec![fit(&c.host, 22), c.state.clone(), grouped(c.height)];
+            // **X29: the node's own `synchronizing` reached this column** against `synced`
+            // everywhere else in the program (§2o.2 fixes `catching up`), and so did
+            // `before_handshake`. One table, shared with `node peers`' own output.
+            let mut cells = vec![
+                fit(&c.host, 22),
+                crate::output::peer_state_words(Some(&c.state)),
+                grouped(c.height),
+            ];
             if wide {
-                cells.push(format!("{}/{}", bytes(c.avg_download), bytes(c.avg_upload)));
+                // X29: `2.1 kB/0 B` under a header reading `AVG ↓/↑` is a rate with no time unit.
+                cells.push(format!("{} / {}", rate(c.avg_download), rate(c.avg_upload)));
             }
             TableRow::new(cells)
         })
         .collect();
     let (header, widths): (&[&str], &[u16]) = if wide {
-        (&["HOST", "STATE", "BLOCK", "AVG ↓/↑"], &[23, 14, 11])
+        (
+            &["HOST", "DOING", "BLOCK", "AVERAGE DOWN / UP"],
+            &[23, 14, 11],
+        )
     } else {
-        (&["HOST", "STATE", "BLOCK"], &[23, 14])
+        (&["HOST", "DOING", "BLOCK"], &[23, 14])
     };
     table(m, area, &title, rows, header, widths, frame);
 }
@@ -1280,20 +1325,51 @@ fn net_pane(m: &Tui, area: Rect, frame: &mut Frame, sparkline: bool) {
         .is_some_and(|s| s.node.reachable != Some(true));
     let net = m.status.as_ref().map(|s| &s.node.net).filter(|_| !off);
     let Some(n) = net else {
-        para(m.node_off_sentence(), th.dimmed(), false).render(inner, frame);
+        // **X23: one statement per frame.** This repeated the hero's own sentence, as did the
+        // waiting pane and the peers pane, so `Your node is not running.` stood in a frame six
+        // times. A pane says what is missing from IT; the hero says why.
+        para(
+            if off {
+                "No traffic while your node is off.".to_string()
+            } else {
+                m.node
+                    .err
+                    .clone()
+                    .unwrap_or_else(|| "checking the traffic…".into())
+            },
+            th.dimmed(),
+            false,
+        )
+        .render(inner, frame);
         return;
     };
     let rows = Flex::vertical()
         .constraints([Constraint::Fixed(2), Constraint::Fill])
         .split(inner);
+    // **X29: `↓ ↑  0 B/s  0 B/s` and `speed limits ↑2048 ↓8192 kB/s` had no words at all**, and the
+    // second put its unit once at the end of two numbers going in opposite directions. Both rows
+    // say which way the traffic is going, and every number carries its own unit.
     let bps = |v: Option<u64>| v.map_or("—".to_string(), rate);
+    let limit = |v: Option<i64>| match v {
+        Some(n) if n < 0 => "no limit".to_string(),
+        Some(n) => format!("{n} kB/s"),
+        None => "—".to_string(),
+    };
     lines_at(
         vec![
-            kv(th, "↓ ↑", format!("{}   {}", bps(n.rx_bps), bps(n.tx_bps))),
             kv(
                 th,
-                "speed limits",
-                format!("↑{} ↓{} kB/s", opt(n.limit_up_kbps), opt(n.limit_down_kbps)),
+                "right now",
+                format!("{} down · {} up", bps(n.rx_bps), bps(n.tx_bps)),
+            ),
+            kv(
+                th,
+                "limits",
+                format!(
+                    "{} down · {} up",
+                    limit(n.limit_down_kbps),
+                    limit(n.limit_up_kbps)
+                ),
             ),
         ],
         rows[0],
@@ -1342,29 +1418,37 @@ fn pool_pane(m: &Tui, area: Rect, frame: &mut Frame) {
                 th,
                 "waiting",
                 format!(
-                    "{} payments · {} · oldest {oldest}",
+                    "{} {} · {} · oldest {oldest}",
                     p.txs_total,
+                    if p.txs_total == 1 {
+                        "payment"
+                    } else {
+                        "payments"
+                    },
                     bytes(p.bytes_total)
                 ),
             ));
+            // **X29: `0 double spends` is gone.** It is a phrase a reader looks up, it is zero on
+            // every healthy node, and nothing on this pane tells them what to do about it. It stays
+            // in `node info --json`, where an agent reads it.
             lines.push(kv(
                 th,
                 "their fees",
                 format!(
-                    "{} XMR · {} failing · {} double spends",
+                    "{} XMR · {} being rejected",
                     p.fee_total.to_xmr_string(),
-                    p.num_failing,
-                    p.num_double_spends
+                    p.num_failing
                 ),
             ));
         }
         None => lines.push(Line::styled(
-            // W9, as in the peers pane: the node's own state, in the one wording.
+            // W9, as in the peers pane; X23: what is missing from THIS pane, not the node's state
+            // for the fourth time in one frame.
             if m.status
                 .as_ref()
                 .is_some_and(|s| s.node.reachable != Some(true))
             {
-                m.node_off_sentence()
+                "Nothing waiting while your node is off.".to_string()
             } else {
                 m.node
                     .err
@@ -1446,15 +1530,31 @@ fn warnings_pane(m: &Tui, area: Rect, frame: &mut Frame) {
         // **The id is gone and the action replaces the hint** (§2o rule 5, §2o.1): every
         // warning used to be printed with its internal identifier in front of it and a shell
         // command under it, in a panel nobody can type into.
-        lines.push(Line::from_spans([
-            Span::styled("• ", style),
-            Span::styled(w.text.clone(), th.text()),
-        ]));
+        //
+        // **X15: a bullet that wraps keeps its hanging indent.** `WrapMode::Word` returns every
+        // continuation line to column 0, so at 120 columns `Press o on the Wallet screen to open a`
+        // was indented two and `wallet.` was not — a wrapped bullet read as a new bullet, and every
+        // bullet long enough to wrap did it. The wrapping happens here instead, at the pane's own
+        // width, and the paragraph is rendered unwrapped.
+        let text_w = (inner.width as usize).saturating_sub(2).max(8);
+        for (i, part) in wrap_words(&w.text, text_w).into_iter().enumerate() {
+            if i == 0 {
+                lines.push(Line::from_spans([
+                    Span::styled("• ", style),
+                    Span::styled(part, th.text()),
+                ]));
+            } else {
+                lines.push(Line::styled(format!("  {part}"), th.text()));
+            }
+        }
         if let Some(action) = w.action.as_deref() {
-            lines.push(Line::styled(format!("  {action}"), th.dimmed()));
+            for (i, part) in wrap_words(action, text_w).into_iter().enumerate() {
+                let _ = i;
+                lines.push(Line::styled(format!("  {part}"), th.dimmed()));
+            }
         }
     }
-    lines_at(lines, inner, true, frame);
+    lines_at(lines, inner, false, frame);
 }
 
 // ---------------------------------------------------------------- Wallet
@@ -1552,17 +1652,15 @@ fn wallet_empty(m: &Tui, area: Rect, frame: &mut Frame) {
     // what the user is looking for, and the directory is one `fmonero settings get wallet.dir`
     // away for the one reader who wants it.
     let open_label = match m.wallets.len() {
-        0 => {
-            "Open a wallet     (no wallets on this machine yet. Press c to create one)".to_string()
-        }
+        0 => "Open a wallet      (none on this machine yet. Press c to create one)".to_string(),
         n => {
             let names = m.wallets.join(", ");
             let plural = if n == 1 { "wallet" } else { "wallets" };
-            let listed = format!("Open a wallet     ({n} {plural} on this machine: {names})");
+            let listed = format!("Open a wallet      ({n} {plural} on this machine: {names})");
             if listed.width() <= inner.width as usize {
                 listed
             } else {
-                format!("Open a wallet     ({n} {plural} on this machine)")
+                format!("Open a wallet      ({n} {plural} on this machine)")
             }
         }
     };
@@ -1583,10 +1681,13 @@ fn wallet_empty(m: &Tui, area: Rect, frame: &mut Frame) {
         rows[2],
         &[
             (Button::OpenWallet, "o", open_label.as_str()),
+            // **X36: one style for the three chips on this screen.** This one carried an ellipsis
+            // and no article while the one above it had an article and no ellipsis — W19 put the
+            // create modal's own four labels in one style and left these in two.
             (
                 Button::CreateWallet,
                 "c",
-                "Create wallet…    a new one, kept on this machine",
+                "Create a wallet    (a new one, kept on this machine)",
             ),
             // **W15: the label follows the state.** In the state §7a.5 says `W` stops the
             // service — it is running and nothing is open — this chip still read `Start`, and
@@ -1596,9 +1697,9 @@ fn wallet_empty(m: &Tui, area: Rect, frame: &mut Frame) {
                 Button::WalletDaemon,
                 "W",
                 if m.wallet_daemon_key_stops() {
-                    "Stop the wallet service    (nothing is open, so nothing is interrupted)"
+                    "Stop the wallet service  (nothing is open, so nothing is interrupted)"
                 } else {
-                    "Start the wallet service   (not needed: opening a wallet starts it)"
+                    "Start the wallet service  (not needed: opening a wallet starts it)"
                 },
             ),
         ],
@@ -1810,10 +1911,14 @@ fn subaddress_pane(m: &Tui, area: Rect, frame: &mut Frame) {
             TableRow::new(cells)
         })
         .collect();
+    // X20: `BALANCE` is money and carries its unit.
     let (header, fixed): (&[&str], &[u16]) = if wide {
-        (&["#", "NAME", "ADDRESS (✓ used)", "BALANCE"], &[3, 11, 22])
+        (
+            &["#", "NAME", "ADDRESS (✓ used)", "BALANCE XMR"],
+            &[3, 11, 22],
+        )
     } else {
-        (&["#", "ADDRESS (✓ used)", "BALANCE"], &[3, 22])
+        (&["#", "ADDRESS (✓ used)", "BALANCE XMR"], &[3, 22])
     };
     table(m, area, title, rows, header, fixed, frame);
 }
@@ -1898,12 +2003,15 @@ fn history_pane(m: &Tui, area: Rect, frame: &mut Frame, wide: bool) {
     // Built with the row's own format string, so the header cannot drift out of alignment with
     // its values. `est.` is gone from `LOCKED`: every value in that column is an estimate, and
     // saying so once in the detail modal is enough (§2o).
+    // **X20: the unit is on the header of every money column** (§2o rule 9). `AMOUNT` and `FEE`
+    // carried none in the cell or the header, on the one table in the program whose numbers are
+    // money; the picker's columns got theirs in W20.
     let mut header = format!(
         "{:<12} {:<7} {:>14} {:>6} {}",
-        "WHEN", "WHAT", "AMOUNT", "CONFIRMS", "LOCKED"
+        "WHEN", "WHAT", "AMOUNT XMR", "CONFIRMS", "LOCKED"
     );
     if wide {
-        header.push_str(&format!("  {:>12}  {}", "FEE", "NOTE"));
+        header.push_str(&format!("  {:>12}  {}", "FEE XMR", "NOTE"));
     }
     para(header, th.dimmed(), false).render(rows[1], frame);
     if let Some(e) = &m.wallet.rows_err {
@@ -2114,27 +2222,49 @@ pub(super) fn list_modal(
     // "Enter · Esc cancels" row) with the input on a row of its own below them. Sizing for
     // `rows.len()` put the input on top of the hint, so the label and note prompts — which pass
     // no rows and a title with no key text — showed an editable field and no keys at all.
-    let h = rows.len() as u16 + 5 + u16::from(input.is_some());
-    let Some(inner) = overlay(m, frame, 68, h, title) else {
+    // **X16: a row wider than the modal wraps**, rather than being cut with no marker. The one that
+    // did it was the open-a-wallet empty state, whose row is a path: `No wallets in
+    // /tmp/…/data/fmonero/w` at both sizes, with the folder's own name the part that was lost.
+    const MODAL_W: u16 = 68;
+    let text_w = (MODAL_W as usize).saturating_sub(4).max(8);
+    let wrapped: Vec<Vec<String>> = rows.iter().map(|r| wrap_words(r, text_w)).collect();
+    let drawn: usize = wrapped.iter().map(Vec::len).sum();
+    let h = drawn as u16 + 5 + u16::from(input.is_some());
+    let Some(inner) = overlay(m, frame, MODAL_W, h, title) else {
         return;
     };
     let bg = th.selection;
-    let mut lines: Vec<Line> = rows
-        .iter()
-        .enumerate()
-        .map(|(i, r)| {
-            let style = if i == sel {
-                th.selected()
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, parts) in wrapped.into_iter().enumerate() {
+        let style = if i == sel {
+            th.selected()
+        } else {
+            th.text().bg(bg)
+        };
+        for (j, part) in parts.into_iter().enumerate() {
+            // A continuation keeps a hanging indent, so a wrapped row cannot read as a second one.
+            let text = if j == 0 {
+                format!(" {part} ")
             } else {
-                th.text().bg(bg)
+                format!("   {part} ")
             };
-            Line::styled(format!(" {r} "), style)
-        })
-        .collect();
-    lines.push(Line::styled(
-        "Enter chooses · Esc cancels",
-        th.dimmed().bg(bg),
-    ));
+            lines.push(Line::styled(text, style));
+        }
+    }
+    // **X35: `Enter chooses` was said of a free-text field**, on rename, note and add-node alike —
+    // and of the open-a-wallet empty state, where there is nothing to choose (X16). Four shapes,
+    // one line each, from the arguments this function already has.
+    let keys = match (rows.is_empty(), input.is_some(), sel == usize::MAX) {
+        // A prompt: one free-text field and nothing else.
+        (true, true, _) => "Enter saves · Esc cancels",
+        // Rows, and no selection is possible: the empty state.
+        (false, _, true) => "Esc closes",
+        // Rows plus a field: the wallet list with its password.
+        (false, true, false) => "Enter opens · Esc cancels",
+        (false, false, false) => "Enter chooses · Esc cancels",
+        (true, false, _) => "Esc closes",
+    };
+    lines.push(Line::styled(keys, th.dimmed().bg(bg)));
     lines_at(lines, inner, false, frame);
     if let Some((input, label)) = input {
         let row = inner.bottom().saturating_sub(1);
@@ -2178,16 +2308,42 @@ fn chips(m: &Tui, area: Rect, items: &[(Button, &str, &str)], frame: &mut Frame)
 
 /// The chips of a key row, laid out horizontally — for the picker's footer, where they sit on one
 /// line beside each other rather than stacked.
+/// How many rows a chip row needs at this width (X32).
+///
+/// The picker has six chips and they are 120 columns wide together, so at the owner's own terminal
+/// size the fourth one — `[a] Add a node` — and the two after it were simply not drawn: that route
+/// had no affordance at all at 120 and one at 150. A chip that does not fit gets the next row.
+fn chips_height(items: &[(Button, &str, &str)], width: u16) -> u16 {
+    let mut rows = 1u16;
+    let mut x = 0u16;
+    for (_, key, label) in items {
+        let w = format!("[{key}] {label}").width() as u16 + 1;
+        if x > 0 && x + w > width {
+            rows += 1;
+            x = 0;
+        }
+        x += w;
+    }
+    rows
+}
+
 fn chip_row(m: &Tui, area: Rect, items: &[(Button, &str, &str)], frame: &mut Frame) {
     let th = &m.theme;
     let mut x = area.x;
+    let mut y = area.y;
     for (button, key, label) in items {
         let text = format!("[{key}] {label}");
         let w = text.width() as u16 + 1;
-        if x + w > area.right() {
+        if x > area.x && x + w > area.right() {
+            // **X32: the next row, not silently nothing.** A chip is the only affordance its route
+            // has; dropping it hides the route.
+            y += 1;
+            x = area.x;
+        }
+        if y >= area.bottom() || x + w > area.right() + 1 {
             return;
         }
-        let rect = Rect::new(x, area.y, w - 1, 1);
+        let rect = Rect::new(x, y, w - 1, 1);
         para(text, th.selected(), false).render(rect, frame);
         m.hits.button(*button, rect);
         x += w;
@@ -2255,7 +2411,9 @@ fn create_modal(m: &Tui, form: &super::CreateForm, frame: &mut Frame) {
     for (i, (label, input)) in [
         ("Name           ", name),
         ("Password       ", pass),
-        ("Repeat         ", again),
+        // **X34: `Repeat` alone did not say what to repeat**, in the one field a mistake makes a
+        // wallet nobody can open.
+        ("Repeat the password ", again),
     ]
     .iter()
     .enumerate()
@@ -2291,8 +2449,10 @@ fn create_modal(m: &Tui, form: &super::CreateForm, frame: &mut Frame) {
                 th.dimmed().bg(bg),
             ),
             // The one documented `Tab` exception, documented IN the modal (§7a.1).
+            // **X34: `Press Esc to discard first.` named no second thing** — first before what? It
+            // is Tab that is blocked, so the sentence says what Esc lets you do next.
             Line::styled(
-                "Tab is off here. Press Esc to discard first.",
+                "Tab is off here. Press Esc first to discard this.",
                 th.warn().bg(bg),
             ),
         ],
@@ -2443,6 +2603,73 @@ fn node_power_modal(m: &Tui, up: bool, frame: &mut Frame) {
     m.hits.modal(inner);
     let bg = th.selection;
     let lines: Vec<Line> = text
+        .into_iter()
+        .flat_map(|(t, style)| {
+            let wrapped = if t.is_empty() {
+                vec![String::new()]
+            } else {
+                wrap_words(&t, text_w)
+            };
+            wrapped
+                .into_iter()
+                .map(move |l| Line::styled(l, style.bg(bg)))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    lines_at(lines, inner, false, frame);
+    m.hits
+        .modal_button(Rect::new(inner.x, inner.bottom().saturating_sub(1), 12, 1));
+}
+
+/// **X4: how much your node logs, as an overlay rather than a 58-column `Dialog`.**
+///
+/// The scale was the part nobody had explained, so it gets a line of its own rather than a clause
+/// squeezed in beside the keys: 0 is silent, 4 is everything, and the middle is where a person
+/// looking for a reason should be.
+fn log_level_modal(m: &Tui, level: i8, frame: &mut Frame) {
+    let th = &m.theme;
+    const WIDTH: u16 = 74;
+    let text_w = WIDTH.min(frame.bounds().width).saturating_sub(4).max(1) as usize;
+    let mut text: Vec<(String, Style)> = vec![
+        (
+            format!("Your node will write level {level} to its log file."),
+            th.accented(),
+        ),
+        (String::new(), th.text()),
+        ("· 0 is almost silent".to_string(), th.text()),
+        (
+            "· 1 is the usual amount, and is what fmonero sets up".to_string(),
+            th.text(),
+        ),
+        (
+            "· 4 writes everything, and fills the disk fast".to_string(),
+            th.text(),
+        ),
+        (String::new(), th.text()),
+        (
+            "Press n on the Node screen to read the log.".to_string(),
+            th.text(),
+        ),
+        (String::new(), th.text()),
+        ("y to confirm · Esc cancels".to_string(), th.dimmed()),
+    ];
+    // The height is counted in WRAPPED rows, never in sentences (V15).
+    let rows: usize = text
+        .iter()
+        .map(|(t, _)| wrap_words(t, text_w).len().max(1))
+        .sum();
+    let Some(inner) = overlay(
+        m,
+        frame,
+        WIDTH,
+        rows as u16 + 4,
+        " How much your node logs ",
+    ) else {
+        return;
+    };
+    m.hits.modal(inner);
+    let bg = th.selection;
+    let lines: Vec<Line> = std::mem::take(&mut text)
         .into_iter()
         .flat_map(|(t, style)| {
             let wrapped = if t.is_empty() {
@@ -2733,13 +2960,6 @@ fn qr_modal(m: &Tui, address: &str, frame: &mut Frame) {
 }
 
 /// The plain confirm modal — node up/down and the log level. `y` activates it, as §7a asks.
-pub(super) fn confirm_dialog(th: &Theme, title: &str, message: &str) -> Dialog {
-    Dialog::confirm(title.to_string(), message.to_string())
-        .button_style(th.text())
-        .primary_button_style(th.accented())
-        .focused_button_style(th.selected())
-}
-
 /// The `?` overlay (§7a: **it is the keymap**) — **wrapped, never elided** (W13).
 ///
 /// V15 gave every cut line an `…`, which made the overlay honest and still unreadable: 11 of its
@@ -2765,7 +2985,15 @@ fn help(m: &Tui, frame: &mut Frame) {
         // cannot drift from the policy actually in force (§7a.2's reason for making it a
         // setting and not a flag).
         let action = if disabled {
-            format!("{a}  (not while you use a public node)")
+            // **X28: two parentheticals in a row.** `L  Node: change how much your node logs (it
+            // asks first) (not while you use a public node)` — the same shape the self-read fixed
+            // for `version_supported`. The key's own parenthetical goes when this one applies: it
+            // cannot ask first if it cannot run at all.
+            let stem = match a.split_once(" (") {
+                Some((head, _)) => head,
+                None => *a,
+            };
+            format!("{stem}. Not while you use a public node.")
         } else if *k == "mouse" && !m.ctx.settings.tui.mouse {
             // The settings key stays: it is a name the user types, which is §2o rule 5's
             // own carve-out. What goes is the shell command (§2o.1).
