@@ -111,6 +111,16 @@ pub(super) fn view(m: &Tui, frame: &mut Frame) {
             what: super::Confirm::NodeLocal,
             ..
         }) => local_node_modal(m, frame),
+        // W2: `u` and `d` state what they do, in the shape `l` got in v5.6.1. `Dialog` draws its
+        // message as one centred row, which is why these two were a title and a keys line.
+        Some(Modal::Confirm {
+            what: super::Confirm::NodeUp,
+            ..
+        }) => node_power_modal(m, true, frame),
+        Some(Modal::Confirm {
+            what: super::Confirm::NodeDown,
+            ..
+        }) => node_power_modal(m, false, frame),
         Some(Modal::Confirm { dialog, state, .. }) => {
             StatefulWidget::render(dialog.as_ref(), b, frame, &mut state.borrow_mut());
         }
@@ -819,10 +829,22 @@ fn node_hero(m: &Tui, area: Rect, frame: &mut Frame) {
             // Word-wrapped, not clipped: the hero is rendered `WrapMode::None` for its `kv`
             // rows, and at 150 columns this 75-character line came out as
             // `fmonero setup --unit` — a command that looks complete and exits 2.
+            //
+            // **W9: three states, and the advice follows the state.** While `u` runs this said
+            // `Your node is not running. Press u to start it.` under a hero already reading
+            // `Starting your node…` and a status bar counting the seconds — advice to press the
+            // key that was running. A service that is up and silent gets the same treatment: it
+            // is not started by pressing start.
             let text = if m.monero_missing() {
                 "Monero is not installed on this machine.  In a terminal: omarchy pkg add monero"
             } else {
-                "Your node is not running. Press u to start it."
+                match m.node_off_words() {
+                    "starting" => "This can take a moment. Esc stops waiting.",
+                    "not answering" => {
+                        "Your node is running but not answering yet. Press r to check again."
+                    }
+                    _ => "Your node is not running. Press u to start it.",
+                }
             };
             lines.extend(
                 wrap_words(text, inner.width as usize)
@@ -1054,11 +1076,24 @@ fn list_pane(m: &Tui, area: Rect, frame: &mut Frame, wide: bool) {
         return;
     }
     let Some(extras) = extras else {
-        let text = m
-            .node
-            .err
-            .clone()
-            .unwrap_or_else(|| "checking the node…".into());
+        // W9: `checking the node…` is true while a first answer is on its way and false once the
+        // document says the node is off — and the pane sat on it beside a hero that had already
+        // said so. The sentence comes from the one predicate; the error, when there is one, wins.
+        let off = m
+            .status
+            .as_ref()
+            .is_some_and(|s| s.node.reachable != Some(true));
+        let text = if off {
+            // The one predicate wins over the transport's own words: `The node is not answering.`
+            // is what a refused connection says, and it stood in three panes beside a hero
+            // reading `Your node is not running` (W9).
+            m.node_off_sentence()
+        } else {
+            m.node
+                .err
+                .clone()
+                .unwrap_or_else(|| "checking the node…".into())
+        };
         empty(&text, frame);
         return;
     };
@@ -1120,8 +1155,16 @@ fn net_pane(m: &Tui, area: Rect, frame: &mut Frame, sparkline: bool) {
     let Some(inner) = framed(area, th, " Net ", false, frame) else {
         return;
     };
-    let Some(n) = m.status.as_ref().map(|s| &s.node.net) else {
-        para("Your node is not answering.", th.dimmed(), false).render(inner, frame);
+    // W9, and §6.5's rule that a row carrying no information for this state does not belong on
+    // the screen: with the node off this pane drew `↓ ↑  —  —` over `speed limits ↑— ↓— kB/s`,
+    // four dashes and a unit, beside a hero that had already said why.
+    let off = m
+        .status
+        .as_ref()
+        .is_some_and(|s| s.node.reachable != Some(true));
+    let net = m.status.as_ref().map(|s| &s.node.net).filter(|_| !off);
+    let Some(n) = net else {
+        para(m.node_off_sentence(), th.dimmed(), false).render(inner, frame);
         return;
     };
     let rows = Flex::vertical()
@@ -1188,14 +1231,29 @@ fn pool_pane(m: &Tui, area: Rect, frame: &mut Frame) {
             ));
         }
         None => lines.push(Line::styled(
-            m.node
-                .err
-                .clone()
-                .unwrap_or_else(|| "checking what is waiting…".into()),
+            // W9, as in the peers pane: the node's own state, in the one wording.
+            if m.status
+                .as_ref()
+                .is_some_and(|s| s.node.reachable != Some(true))
+            {
+                m.node_off_sentence()
+            } else {
+                m.node
+                    .err
+                    .clone()
+                    .unwrap_or_else(|| "checking what is waiting…".into())
+            },
             th.dimmed(),
         )),
     }
-    if let Some(f) = m.status.as_ref().map(|s| &s.node.fee) {
+    // Only when there is a fee to show: `fee levels  —  XMR per byte` is a label, a dash and a
+    // unit (W9's sibling, §6.5).
+    if let Some(f) = m
+        .status
+        .as_ref()
+        .map(|s| &s.node.fee)
+        .filter(|f| f.fees_pico.is_some())
+    {
         // The four levels by the **names the Send screen offers**, so the two screens agree
         // (§2o): the old row labelled them by their priority index, which is a number nobody
         // chooses between.
@@ -2151,6 +2209,95 @@ fn use_node_modal(m: &Tui, address: &str, wallet_open: Option<&str>, frame: &mut
         th.dimmed().bg(bg),
     ));
     lines_at(lines, inner, true, frame);
+    m.hits
+        .modal_button(Rect::new(inner.x, inner.bottom().saturating_sub(1), 12, 1));
+}
+
+/// The `u` and `d` confirms (W2) — **the two keys that start and stop a background service on
+/// this machine, and until now the modal said neither.**
+///
+/// Both were one `Dialog` row reading `y confirms · Esc cancels`, identical to the character in
+/// every capture since V4 named them. `u` begins syncing a blockchain into `node.data_dir`, takes
+/// up to `timeouts.open`, and keeps going after this window closes; `d` stops the service a wallet
+/// gets its blocks from. Same shape as `local_node_modal` and `use_node_modal`: what happens, then
+/// the consequences in order, then the keys.
+fn node_power_modal(m: &Tui, up: bool, frame: &mut Frame) {
+    let th = &m.theme;
+    const WIDTH: u16 = 74;
+    let text_w = WIDTH.min(frame.bounds().width).saturating_sub(4).max(1) as usize;
+    let data_dir = m.ctx.settings.node.data_dir.display().to_string();
+    let mut text: Vec<(String, Style)> = Vec::new();
+    if up {
+        text.push((
+            "fmonero starts your node on this machine.".to_string(),
+            th.accented(),
+        ));
+        text.push((String::new(), th.text()));
+        text.push((
+            format!("· it keeps its copy of the blockchain in {data_dir}"),
+            th.text(),
+        ));
+        text.push((
+            format!(
+                "· that needs about {} GB of disk, and the first sync takes hours",
+                fmonero_core::status::DISK_FLOOR_BYTES / 1_000_000_000
+            ),
+            th.text(),
+        ));
+        text.push((
+            "· your wallet can only see new payments once the node has them".to_string(),
+            th.text(),
+        ));
+        text.push((fmonero_core::SYNC_KEEPS_GOING.to_string(), th.dimmed()));
+    } else {
+        text.push((
+            "fmonero stops your node on this machine.".to_string(),
+            th.accented(),
+        ));
+        text.push((String::new(), th.text()));
+        text.push((
+            format!("· nothing is lost. The blockchain stays in {data_dir}"),
+            th.text(),
+        ));
+        text.push((
+            "· until it runs again, your wallet cannot see new payments".to_string(),
+            th.text(),
+        ));
+        text.push(("· press u to start it again".to_string(), th.text()));
+    }
+    text.push((String::new(), th.text()));
+    text.push(("y to confirm · Esc cancels".to_string(), th.dimmed()));
+    // The height is counted in WRAPPED rows, not in sentences: `node.data_dir` is a path of any
+    // length and a height counted in sentences leaves the keys under the bottom border (V15).
+    let rows: usize = text
+        .iter()
+        .map(|(t, _)| wrap_words(t, text_w).len().max(1))
+        .sum();
+    let title = if up {
+        " Start your node "
+    } else {
+        " Stop your node "
+    };
+    let Some(inner) = overlay(m, frame, WIDTH, rows as u16 + 4, title) else {
+        return;
+    };
+    m.hits.modal(inner);
+    let bg = th.selection;
+    let lines: Vec<Line> = text
+        .into_iter()
+        .flat_map(|(t, style)| {
+            let wrapped = if t.is_empty() {
+                vec![String::new()]
+            } else {
+                wrap_words(&t, text_w)
+            };
+            wrapped
+                .into_iter()
+                .map(move |l| Line::styled(l, style.bg(bg)))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    lines_at(lines, inner, false, frame);
     m.hits
         .modal_button(Rect::new(inner.x, inner.bottom().saturating_sub(1), 12, 1));
 }

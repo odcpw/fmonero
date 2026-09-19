@@ -437,6 +437,9 @@ struct ActionSlot {
     /// [`Action::wallet_busy`], recorded here because the `Action` moves into `slot` and the
     /// subscription takes it (FINDING D).
     wallet_busy: bool,
+    /// This action is the node starting (W9), for the same reason and recorded the same way: the
+    /// hero says `Starting your node…` while it runs, instead of advising the key that is running.
+    starting_node: bool,
 }
 
 /// The rows `history::query` returned, plus the WALLET height and local clock it derived —
@@ -633,18 +636,30 @@ impl Tui {
         }
     }
 
-    /// The two words for a node that is not there, and the predicate that chooses between them
-    /// (v5.6.1, V14). Read by the status bar's badge and by the Node screen's hero, so the two
-    /// cannot disagree in one frame.
+    /// The words for a node that is not answering — **three of them now** (W9), from one
+    /// predicate, read by the status bar's badge, the Node screen's hero, the three panes that
+    /// stand in for a missing answer and (through [`fmonero_core::node_off_words`]) the Notes row.
+    ///
+    /// `starting` is the TUI's own third state: core cannot know that this program is at this
+    /// moment running `u`. Without it the hero said `Your node is not answering` over
+    /// `Your node is not running. Press u to start it.` while the status bar ran
+    /// `⠸ starting the node 3s / 30s` — three claims about one node, one of them advising the key
+    /// that was already running.
     pub(super) fn node_off_words(&self) -> &'static str {
-        let up = self
-            .status
-            .as_ref()
-            .is_some_and(|s| s.units.node.active || s.node.layout == units::Layout::SystemUnit);
-        if up {
-            "not answering"
-        } else {
-            "not running"
+        if self.action.as_ref().is_some_and(|a| a.starting_node) {
+            return "starting";
+        }
+        match self.status.as_ref() {
+            Some(s) => fmonero_core::node_off_words(s),
+            None => "not answering",
+        }
+    }
+
+    /// The same three words as a sentence, for the panes that have no answer to draw (W9).
+    pub(super) fn node_off_sentence(&self) -> String {
+        match self.node_off_words() {
+            "starting" => "Your node is starting up.".to_string(),
+            words => format!("Your node is {words}."),
         }
     }
 
@@ -718,7 +733,11 @@ impl Tui {
             return format!("Public node · {}", s.node.url);
         }
         if s.node.reachable != Some(true) {
-            // V14: the same two words the badge uses, from the same predicate.
+            // V14, and W9's third word: the same predicate the badge and the panes read. While
+            // `u` runs the hero says so rather than naming the key that is running.
+            if self.node_off_words() == "starting" {
+                return "Starting your node…".into();
+            }
             return format!("Your node is {}", self.node_off_words());
         }
         match (s.node.synchronized, s.node.sync_percent) {
@@ -961,6 +980,13 @@ impl Tui {
         self.try_start(action).unwrap_or_else(|_| Cmd::none())
     }
 
+    /// Put an action in flight without a subscription behind it, so a test can read the frame the
+    /// user sees while one runs (W9). The same `start` the keys call.
+    #[cfg(test)]
+    pub(super) fn start_for_test(&mut self, action: Action) {
+        let _ = self.start(action);
+    }
+
     /// `start`, but it hands the action **back** when it refuses.
     ///
     /// Both guards below consume the `Action` and send no `Msg::ActionDone`, so a caller that
@@ -995,6 +1021,7 @@ impl Tui {
             deadline_sec: action.deadline_sec(&self.ctx),
             cancellable: action.cancellable(),
             wallet_busy: action.wallet_busy(),
+            starting_node: matches!(action, Action::NodeUp),
             started: Instant::now(),
             slot: Arc::new(Mutex::new(Some(action))),
         });
@@ -2346,10 +2373,15 @@ impl Tui {
             self.note(fmonero_core::FOREIGN_NODE_READ_ONLY, true);
             return Cmd::none();
         }
+        // **W2: `NodeUp` and `NodeDown` are overlays now**, like `NodeLocal`, and their words are
+        // in `screens::node_power_modal`. The `Dialog` built here is what the key handler and the
+        // mouse's `ModalButton` share with every confirm; its message is never drawn for these
+        // three, because `Dialog` renders a message as one centred row and each of them has
+        // several sentences to state (V4).
         let (title, message) = match what {
-            Confirm::NodeUp => (" Start your node ", "y confirms · Esc cancels"),
-            Confirm::NodeDown => (" Stop your node ", "y confirms · Esc cancels"),
-            Confirm::NodeLocal => (" Use your own node ", "y confirms · Esc cancels"),
+            Confirm::NodeUp => (" Start your node ", ""),
+            Confirm::NodeDown => (" Stop your node ", ""),
+            Confirm::NodeLocal => (" Use your own node ", ""),
             Confirm::LogLevel(l) => (
                 " How much your node logs ",
                 match l {

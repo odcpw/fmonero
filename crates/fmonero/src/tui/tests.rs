@@ -2313,3 +2313,117 @@ fn a_sandboxed_log_screen_never_opens_the_machines_own_chain_folder() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// **W2.** `u` and `d` start and stop a background service on this machine, and both confirms
+/// were `y confirms · Esc cancels` and nothing else — identical, to the character, to the capture
+/// V4 was written from. Read at both sizes, in local mode, so the assertion is what a person sees.
+#[test]
+fn the_start_and_stop_confirms_state_what_they_do() {
+    let w = World::new("confirm-node-power");
+    // `confirm` refuses unless this machine's node is fmonero's own (§2i), so the sandbox gets a
+    // unit file of its own — in its OWN `systemd_user_dir`, never the machine's (§4.2).
+    std::fs::create_dir_all(&w.ctx.paths.systemd_user_dir).expect("sandbox systemd dir");
+    std::fs::write(
+        w.ctx.paths.systemd_user_dir.join(&w.ctx.settings.node.unit),
+        b"[Unit]\n",
+    )
+    .expect("a unit file to detect");
+    for (k, want) in [
+        (
+            'u',
+            vec![
+                "Start your node",
+                "fmonero starts your node on this machine.",
+                "keeps its copy of the blockchain in",
+                "120 GB",
+                "the first sync takes hours",
+                "y to confirm",
+            ],
+        ),
+        (
+            'd',
+            vec![
+                "Stop your node",
+                "fmonero stops your node on this machine.",
+                "nothing is lost",
+                "cannot see new payments",
+                "press u to start it again",
+                "y to confirm",
+            ],
+        ),
+    ] {
+        let mut s = sim(model(&w.ctx, Screen::Node));
+        s.inject_event(key(KeyCode::Char(k)));
+        for (cols, rows) in [(120u16, 32u16), (150, 40)] {
+            let text = sim_text(&s, cols, rows);
+            for line in &want {
+                assert!(
+                    text.contains(line),
+                    "{cols}x{rows}: the `{k}` confirm does not say {line:?}:\n{text}"
+                );
+            }
+            // The chain folder is named, and it is the sandbox's own (W21).
+            assert!(
+                text.contains(
+                    &w.ctx
+                        .settings
+                        .node
+                        .data_dir
+                        .display()
+                        .to_string()
+                        .chars()
+                        .take(20)
+                        .collect::<String>()
+                ),
+                "{cols}x{rows}: the confirm must name the chain folder:\n{text}"
+            );
+            // Nothing is clipped: every row of the overlay ends inside its own border.
+            assert!(
+                !text.contains('…'),
+                "{cols}x{rows}: something in the confirm was elided:\n{text}"
+            );
+        }
+    }
+}
+
+/// **W9.** One predicate for the node's three states, on every surface that renders one.
+///
+/// The frame the verification read said `● Your node is not answering` over `Your node is not
+/// running. Press u to start it.` while the status bar ran `⠸ starting the node 3s / 30s · Esc
+/// cancels` — three claims about one node, and the middle one advising the key that was already
+/// running. `Tui::node_off_words` is the predicate; core's `node_off_words` is the half the Notes
+/// row reads.
+#[test]
+fn the_node_has_one_set_of_words_for_being_off_and_never_advises_the_running_key() {
+    let mut s = sim(offline_model(Screen::Node));
+    assert_eq!(s.model().node_off_words(), "not running");
+    for (cols, rows) in [(120u16, 32u16), (150, 40)] {
+        let text = sim_text(&s, cols, rows);
+        assert!(
+            text.contains("Your node is not running"),
+            "{cols}x{rows}:\n{text}"
+        );
+        assert!(
+            !text.contains("not answering"),
+            "{cols}x{rows}: two words for one state in one frame:\n{text}"
+        );
+    }
+    // While `u` runs: the hero says so, and nothing in the frame advises pressing it.
+    s.model_mut().start_for_test(subs::Action::NodeUp);
+    assert_eq!(s.model().node_off_words(), "starting");
+    for (cols, rows) in [(120u16, 32u16), (150, 40)] {
+        let text = sim_text(&s, cols, rows);
+        assert!(
+            text.contains("Starting your node…"),
+            "{cols}x{rows}: the hero must say what is happening:\n{text}"
+        );
+        assert!(
+            !text.contains("Press u to start it"),
+            "{cols}x{rows}: the hero advised the key that is already running:\n{text}"
+        );
+        assert!(
+            !text.contains("Your node is not running"),
+            "{cols}x{rows}: it is starting, not stopped:\n{text}"
+        );
+    }
+}

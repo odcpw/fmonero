@@ -854,12 +854,22 @@ fn warnings(
     // every one of them tests a field that has no source there (§2m.3). The others fall out for
     // free: each compares against `Some(x)` and the field is `None`.
     if s.node.layout != units::Layout::None && s.node.reachable == Some(false) {
+        // **W9: two words, one predicate, and the advice follows it.** A service that is not
+        // running is not running; one that is running and silent is not answering — and telling a
+        // reader to press the key that starts a service which is already started is advice that
+        // cannot work. [`node_off_words`] is the predicate, shared with the TUI's badge, its hero
+        // and its panes.
+        let running = node_off_words(s) == "not answering";
         add(
             "node_down",
             Severity::Warn,
-            "Your node is not answering.".into(),
+            format!("Your node is {}.", node_off_words(s)),
             "fmonero node up",
-            Some("Press u on the Node screen to start it."),
+            Some(if running {
+                "It may still be starting up. Press r to check again."
+            } else {
+                "Press u on the Node screen to start it."
+            }),
         );
     }
     if s.node.restricted == Some(true) {
@@ -1119,6 +1129,22 @@ fn warnings(
 /// estimate is false precision.
 fn gigabytes(bytes: u64) -> String {
     format!("{} GB", bytes / 1_000_000_000)
+}
+
+/// The two words for a node that is not answering, from **one** predicate (W9).
+///
+/// `not running` and `not answering` are different facts and a reader cannot reconcile them in one
+/// frame: v5.6.1 fixed the badge and the hero and left three panes, this warning and its advice
+/// saying the other thing. The question is whether the service is up — if it is, the node is there
+/// and silent (still opening its database, most often), and if it is not, it is simply off. A node
+/// another program on this machine owns is treated as up, because fmonero does not start or stop
+/// it (§2i) and "not running" would read as an instruction to.
+pub fn node_off_words(s: &Status) -> &'static str {
+    if s.units.node.active || s.node.layout == units::Layout::SystemUnit {
+        "not answering"
+    } else {
+        "not running"
+    }
 }
 
 /// §1.3's floor for a pruned chain plus headroom, as bytes. **An estimate, not measured on
