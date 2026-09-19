@@ -188,8 +188,9 @@ pub const KEYS: &[(&str, &str)] = &[
     ),
     (
         "Send: ↑↓  Enter",
-        "next/previous field · check it. Tab leaves the form, Esc leaves a field, Enter goes \
-         back in.",
+        // M19's noun, here too: `check it` was the third undefined use of it on the money path.
+        "next/previous field · work out the fee. Tab leaves the form, Esc leaves a field, Enter \
+         goes back in.",
     ),
     (
         "pop-ups: ↑↓  Enter",

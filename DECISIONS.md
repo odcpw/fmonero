@@ -12173,3 +12173,282 @@ moved, so §2k's manifest freeze holds.
     than print a plausible wrong sentence. `setup.rs` is not in `COPY_SURFACES`: the round-3
     verification did not read `setup`, and adding a file to that grep without reading its output
     first is how a list becomes a list nobody has seen fire.
+
+---
+
+## Plain-language round 4, iteration 2 (real output): S1–S10 and M1–M30 closed, and the twenty this round's own read found
+
+A fresh reader took 144 captures of v5.6.3 on a real pty at 120x32 and 150x40 and returned ten
+serious items and thirty minor ones. His verdict was **NOT READY**, and his reason was narrower than
+the list: *"the writing is genuinely good now, and it is the last few places where the words and the
+facts have come apart that stop it."* Every one of the forty is closed below. Reading this round's own
+output then found **twenty more**, which is what the step is for.
+
+`docs/COPY.md` §10 is the row-by-row table. This section is what the gates and the captures actually
+printed.
+
+### The three he called blockers
+
+**S1 — the TUI told him his wallet did not exist and offered to make a new one.** `wallet_dir::list`'s
+error was thrown away at four call sites by `.unwrap_or_default()`, so a folder fmonero was not
+allowed to read became a folder with no wallets in it. `Tui::reload_wallets` is the one place the TUI
+learns what wallets exist and it keeps the reason. On the identical state, before and after:
+
+```
+$ fmonero wallet list
+fmonero: fmonero is not allowed to read your wallet folder /tmp/…/locked/mainnet.
+  Press o on the Wallet screen once you can read that folder.
+  Try: fmonero doctor --only wallet
+[exit 1]
+```
+
+and the chip on the Wallet screen reads
+`[o] Open a wallet      (fmonero cannot read your wallet folder. Press o to see why)` where it used to
+read `(none on this machine yet. Press c to create one)`. Reason `wallet_dir_unreadable`, so every
+surface can tell that apart from an empty folder.
+
+**S2 — the send confirm showed the amount the wallet built and nothing compared it with the amount he
+typed.** `send::build` compares them, exit 3 `amount_mismatch`, before `--yes` is consulted:
+
+```
+$ fmonero wallet send 42ey…AWDm 0.25 --dry-run --yes
+To        42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm
+Amount    0.2500 XMR (250000000000 piconero)
+Fee       0.00003072 XMR (30720000 piconero)
+Total     0.25003072 XMR (250030720000 piconero)
+Account   0   Fee level normal
+dry run: nothing was sent
+[exit 0]
+```
+
+That capture is the fix twice over: `fmonero-mock` now echoes a `transfer` request's destinations, as
+a real wallet-rpc does, so the figure on the confirm is the figure that was asked for — and
+`--scenario amount-mismatch` is the fixture that still lies, which is what gives the comparison a test
+that can fail:
+
+```
+test rpc::mock_tests::a_build_that_comes_back_with_a_different_amount_is_refused_before_anything_is_sent ... ok
+```
+
+**S4 — in his own mode nothing warned when the node was dead, and the doctor reported a clean bill.**
+`public_node_down` at **warn**, and `node_reachable` answers from the cached check instead of skipping
+with the rest of the group. Against `127.0.0.1:1` — loopback, nothing listening, refused instantly:
+
+```
+== S4: a public node that did not answer is a warning and a doctor failure, not silence
+  ok    the cached check says the node did not answer
+  ok      and status raises public_node_down at warn, so the bar's dot cannot stay calm (S4)
+  ok      with an in-app next step and no shell command (§2o.1, M13)
+  ok      and still NOT node_down: that one tests a field with no source here (§5)
+  ok    doctor --only node exits 11: a silent node is a failure (exit 11)
+  ok      node_reachable FAILS on the node the owner actually uses (S4)
+  ok      and its detail says so in words
+```
+
+and on the bar, driven through `Model.js` against the document this machine's binary produced:
+
+```
+=== 3-remote-noanswer.json ===
+header      : Public node · no answer
+checked     : no answer · checked 0s ago
+worst sev   : warn
+problem row : The public node 127.0.0.1:1 did not answer when fmonero last checked it.
+       route: Pick another one on the Node screen.
+```
+
+### The seven other serious items
+
+**S3.** Pane title ` Waiting to be mined `, and the total says it is one. From `b-node.120x32`:
+
+```
+╭ Waiting to be mined ───────────────────────────────────╮
+│ waiting     14 payments · 21.4 kB · oldest 2d 20h ago  │
+│ they carry  0.000427 XMR in fees altogether            │
+│ XMR a byte  cheapest 0.00000002 · normal 0.00000008    │
+│             fast 0.00000032 · fastest 0.00000400       │
+```
+
+**S5.** Three empty states. From `b-filtermiss.120x32`, with `/zzzz` typed and six payments loaded:
+`No payment matches "zzzz". Press / to change it, or Esc to clear it.` A kind filter that matches
+nothing reads `You have 6 payments, and none of them is sent. Press t to show them all.`
+
+**S6.** `Error::io` / `io_words`, one sentence per `ErrorKind`, the operating system's words in
+`detail`. Its durable half is a new `scripts/check.sh` step, because `{e}` is a runtime substitution
+and the banned-word grep could not see it — the same blind spot X1 had:
+
+```
+== S6  no operating-system error text in a string a person reads
+  ok    S6: no {e} substitution in a user-facing string (22 files)
+  ok    self-test: S6 fires on the {e}-in-a-message line and on neither the with_detail nor the {why} one
+```
+
+The convention the grep checks: a binding named `e`, `err` or `error` holds technical text and
+technical text never reaches a string a person reads; where what is interpolated is already a
+sentence, the binding is named `why`. Forty-odd sites moved.
+
+**S7.** `Press 4 to read the log.` — `n` had no arm on the Node screen at all.
+
+**S8.** The bar prints no exit code and no stderr line. `fmonero could not say how things are. Press d
+for the doctor.`
+
+**S9.** `[W] Stop the wallet service  (not while something is running)`, and the pane and the badge
+both take the running action's own label, so a create is described once:
+`wallet service: Creating mywallet…` under a badge reading `wallet working`.
+
+**S10.** `A payment of 0.2500 XMR was prepared and may already have gone out.` The id is in `--json`
+and nowhere else — the pending banner, the sent toast, the Send screen's row and the payment detail
+modal all lost theirs, and the grep over 91 captures returns no 64-character hex at all.
+
+### The thirty minor items
+
+All thirty are in `docs/COPY.md` §10.3 with their before and after. The four whose fix changed a
+formatter rather than a string:
+
+* **M2** — `fmonero_core::duration`, with a days unit and two digits on every field after the first.
+  `age` is it plus the preposition, `human_uptime` is it plus a clamp, `Model.age` is its JavaScript
+  half. Driven against a real document: `0s=0s  45s=45s  90s=1m 30s  3600s=1h 00m  3661s=1h 01m
+  86400s=1d 00h  239000s=2d 18h`, which is what the Rust side prints for the same seconds.
+* **M4** — `Piconero::to_xmr_min(FEE_DECIMALS)`: still exact, never truncated, floor of eight for a
+  fee column. `wallet history` at 120 columns now reads `0.00000000` under `0.00003072` rather than
+  `0.0000`, and the node's four per-byte levels all render ten characters.
+* **M6** — `history_cols` measures the note column against the pane and gives it what is left before
+  the fee, so the NOTE column and the addresses pane's NAME column are on screen at 120x32; and
+  `wallet history` has a note column.
+* **M29** — `history::lock_words`: `yes` · `not yet` · `never` · `—`, in the TUI's table, in
+  `wallet history` and in the detail modal. A failed payment is `never`, and blank appears nowhere.
+
+`wallet history` at 120 columns, which carries M4, M6 and M29 in one table:
+
+```
+date              what             amount XMR       fee XMR  confirms  spendable  note
+2026-09-16 14:01  sending              0.1000    0.00003072         0  not yet
+2026-09-15 13:20  failed               0.0200    0.00003072         0  never
+2026-09-16 10:00  out                  0.2500    0.00003072       122  yes        coffee
+2026-09-15 00:40  in                   0.5000    0.00003072      1122  yes
+2026-09-13 15:20  mined                0.6000    0.00000000      2122  yes
+2026-09-12 06:00  in                   0.0750    0.00003072      3122  not yet
+6 payments · saved copy written 0s ago
+```
+
+### The twenty this round's own read of its own captures found
+
+Nine from the first pass (DESIGN §7a itemises them with their line counts): the create modal's own
+explanation of the `Tab` exception cut to `Esc closes it an`; a wrapped bullet with no hanging indent,
+so the Stop confirm's path read as a line of its own; the Send form's status line cut after
+`Nothing is`, losing the half that matters on a money screen; M16's `[b]` chip landing outside every
+frame; the addresses pane's balance column two cells too generous, so the table clipped off the `…`
+this code adds and put `1.23456789` on screen as an amount that is not the amount; `unlocked` printed
+beside an identical balance; `wallet service: Starting the wallet service…`; `peersLabel` answering
+`none while your node is off` in a mode that has no node of your own; and `wallet list`'s restore line
+with a command inside a sentence.
+
+Then eleven more:
+
+1. **Nine of the twenty-three warnings carried no `action`** — a blank second line under an alarm on
+   the bar and a bullet with no next step in the TUI's Notes, `node_stalled` and `wallet_stalled`
+   included, which are the two the bar paints urgent. A test walks the source of `warnings()` and
+   refuses a bare `None`; planting one proves it fires:
+   `1 warning(s) carry no in-app action (§2o.1)`.
+2. **M1 was only half closed.** `fmonero doctor`'s node group still had three wordings of one fact.
+   `node_off_sentence` is the predicate there too, so the group note now reads `Your node is not
+   running.` and the row detail `Your node is not running. fmonero asked it on http://127.0.0.1:18081.`
+3. **Sixty-odd refusals were not sentences.** A mechanical pass over every `Error::` constructor's
+   message literal found lower-case openings, semicolons where §2o rule 1 asks for two lines, missing
+   full stops, `(§1.3)` and `(sha256 {got} != {want})` in front of a reader. `'sideways' is not a node
+   mode; known: local, remote` is now `"sideways" is not one of the two. Use local for a node on this
+   machine, or remote for a public one.`
+4. **The Payments pane's title had a key in it** — `Payments  6 · t: all`, which is the style M16
+   removed from the peers pane. It reads `Payments  2 of 6 · received only` and a `[t] What shows`
+   chip sits on the row below.
+5. **The ` Balance ` pane put the wallet's name after the balance bare**, so the row read
+   `1.234567891234 XMR   moneroli-test`.
+6. **Three settings descriptions had semicolons and one said `directory`** where every other surface
+   says folder.
+7. **The help overlay's Send row still said `check it`** — M19's undefined noun, third use.
+8. Two deletions in the payment detail modal: its first row was the whole 64-character id,
+   `unlocks at 0` was on every row and `double spend false` on every correct payment.
+
+### Gates, at HEAD
+
+```
+$ cargo fmt --check                     rc=0
+$ cargo clippy --all-targets -- -D warnings   (after cargo clean -p of the three crates)
+    Checking fmonero-core v0.1.0
+    Checking fmonero-mock v0.1.0
+    Checking fmonero v0.1.0
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.26s
+                                        rc=0
+$ cargo test
+running 139 tests  test result: ok. 139 passed; 0 failed
+running 192 tests  test result: ok. 192 passed; 0 failed
+running 3 tests    test result: ok. 3 passed; 0 failed
+$ scripts/check.sh --full               check.sh: PASS
+$ tests/e2e.sh --fast                   597 passed, 0 failed, 3 skipped
+$ tests/e2e.sh --full                   631 passed, 0 failed, 3 skipped
+$ tests/plugin-smoke.sh --static        71 passed, 0 failed
+$ tests/plugin-smoke.sh                 73 passed, 3 failed  (expected: see below)
+$ tests/tui_tmux.sh                     38 passed, 0 failed
+$ tests/tui_tmux.sh --capture           42 passed, 0 failed
+```
+
+`plugin-smoke`'s three live failures are the ones this machine cannot avoid and they are the same
+ones round 4 reported: the desktop session is **locked**, `omarchy restart shell` refuses
+(`Refusing to restart Omarchy shell while the session is locked.` — attempted once), so the shell is
+still running the pre-v5.6 panel. The version assertion says so in words —
+`the shell is running none, this tree is qml-6550d06c — it has not reloaded` — and the section
+assertion follows from it. `--static` is the gate.
+
+### Budgets, with the arithmetic in DESIGN.md first
+
+§7a 8 600 → **9 200** (measured 9 150), itemised twice in §7a: +541 for the reader's twenty-three items
+and +74 for the nine this round's own read added, seven of which are **room** rather than text.
+§6.1 1 604 → **1 649** with `Service.qml` 340 → 360 (measured 351) and `Model.js` 270 → 295
+(measured 291), five items itemised. Both tables were written before either gate's number changed.
+
+### What this round does not claim
+
+- **A real send or sweep of any amount is still RED.** The confirm modal was reached against
+  `fmonero-mock` at both sizes and discarded with `Esc`; the mock's log shows the build and no relay.
+- **The widget has still never been seen rendering.** Every widget claim rests on `Model.js` driven
+  under `node` against four status documents this machine's binary produced, on `Panel.qml` and
+  `Service.qml` source, and on `plugin-smoke --static`. The session is locked.
+- **`--check-node` has still never contacted a real public node.** S4's and M7's evidence is
+  `127.0.0.1:1` (refused) and `127.0.0.1:18491` (a `fmonero-mock` serving the new
+  `get_info-thin.json`), both loopback.
+- **One outbound contact was made and is disclosed.** `node list` in a sandbox with no cache fetched
+  the real monero.fail once (156 candidates, 20 printed) while that command's human output was being
+  read; the program printed its own disclosure line first, which is what was being read. No other
+  outbound contact. No capture or line of this entry contains a wallet address of the owner's, a seed
+  or a credential.
+- **The `l` key in local mode still answers `You are already using your own node.`** M9 was about the
+  *chip*, which is no longer drawn in the mode it cannot act in; the key stays in the keymap and its
+  answer is an answer.
+
+### Nothing of the owner's was touched
+
+Every run set `FMONERO_STATE_DIR`, `FMONERO_CONFIG_DIR`, `FMONERO_CACHE_DIR`, `XDG_DATA_HOME`,
+`FMONERO_SYSTEMD_USER_DIR` and `FMONERO_SYSTEMCTL_FIXTURE`. No `sudo`, no push, no installer.
+
+```
+ActiveState=inactive UnitFileState=disabled NRestarts=0   fmonero-monerod.service
+ActiveState=inactive UnitFileState=disabled NRestarts=0   fmonero-wallet-rpc.service
+
+64580d70a21719503a105b67aa633d31d9c25921ffc0c8956a7fc8d5d333d82f  ~/.config/systemd/user/fmonero-monerod.service
+920870797f0ab14aee4fea9dbe3ae9425ab6d8deb482023859aa098fe1141085  ~/.config/systemd/user/fmonero-wallet-rpc.service
+bed63c9603dc9f5cbcc2d81fbab42d9c57763479c7f87b2a54a7707a74efd5ba  ~/.config/fmonero/monerod.conf
+ac5f2f1bda4f19063daf126912bd47a9bc379fba7a24dca6e35db8596e48d9b7  ~/.config/fmonero/config.toml
+230cb88cd25864cbc5ff165e4a8bb7436e609cdab7ac3907859bc544ed7341bd  ~/.config/omarchy/extensions/omarchy-menu.jsonc
+```
+
+All five identical to the values round 4 recorded. `node.mode` is still `remote` and `node.remote`
+still `185.220.101.63:18081`; `~/.bitmonero` was last modified 00:22, before this run began; and
+`moneroli` is still in `~/.local/share/fmonero/wallets/mainnet` and has never been opened.
+
+### The methodology note round 4 passed on, followed
+
+Its warning was that a reused capture directory makes a glob count other rounds' files as this one's.
+This round's captures went to a **fresh** directory per run and the greps read
+`find -maxdepth 1 -newermt '-6 hours'`, so the file list is this run's own. Over the 91 files of the
+last full run, the twenty-two-word grep plus `§`, `os error`, `error[`, `reason:`, `transaction` and
+any 64-hex id returns **nothing**; no line ends in `…`; every em-dash is an unknown-value cell; and
+the only letters touching a pane border are a pane's own text underneath an overlay.

@@ -420,8 +420,8 @@ const KEY_TABLE: &[(&str, &str, &str)] = &[
     (
         "node.network",
         "mainnet",
-        "Which Monero network to use: mainnet, stagenet or testnet. mainnet is real money; \
-         the other two are for practice. Set fmonero up again after a change.",
+        "Which Monero network to use: mainnet, stagenet or testnet. mainnet is real money. The \
+         other two are for practice. Set fmonero up again after a change.",
     ),
     (
         "node.mode",
@@ -433,7 +433,7 @@ const KEY_TABLE: &[(&str, &str, &str)] = &[
         "node.remote",
         "",
         "The public node to use while node.mode is remote, written host:port. An http:// or \
-         https:// prefix is allowed; a path or a password in the address is not.",
+         https:// prefix is allowed. A path or a password in the address is not.",
     ),
     (
         "node.remote_trusted",
@@ -445,7 +445,7 @@ const KEY_TABLE: &[(&str, &str, &str)] = &[
         "node.remote_probe_sec",
         "60",
         "How often, in seconds, fmonero checks the public node it is using. 0 turns the \
-         checks off; anything under 10 is treated as 10.",
+         checks off. Anything under 10 is treated as 10.",
     ),
     (
         "node.url",
@@ -462,7 +462,7 @@ const KEY_TABLE: &[(&str, &str, &str)] = &[
     (
         "node.data_dir",
         "~/.bitmonero",
-        "The directory your own node keeps its copy of the blockchain in. It grows to tens \
+        "The folder your own node keeps its copy of the blockchain in. It grows to tens \
          of gigabytes.",
     ),
     (
