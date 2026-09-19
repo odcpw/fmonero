@@ -249,7 +249,7 @@ the redesign needs.
 | `screens.rs:1172` | `No wallet is open.` | unchanged | The one line on the old screen that was already right. |
 | `screens.rs:1162` | `Open wallet…      pick one of the {n} wallets in {dir}` | `Open wallet…      choose one of the {n} in {dir}` | Shorter; the chip already says "wallet". |
 | `screens.rs:1183` | `Create wallet…    a new wallet, on this machine, in that directory` | `Create wallet…    a new one, kept on this machine` | Rule 1: three clauses for one fact. |
-| `screens.rs:1188` | `Start the wallet daemon   (not needed first — opening or creating one starts it)` | `Start the wallet service   (not needed: opening or creating a wallet starts it)` | Vocabulary, rule 12. |
+| `screens.rs:1188` | `Start the wallet daemon   (not needed first — opening or creating one starts it)` | **`Start the wallet service   (not needed: opening a wallet starts it)`, or `Stop the wallet service    (nothing is open, so nothing is interrupted)` — by state** (W15) | Vocabulary, rule 12 — and the label has to follow the key: §7a.5 says `W` stops the service when nothing is open, and in exactly that state the chip said `Start` and pressing it stopped it. One predicate (`Tui::wallet_daemon_key_stops`) decides both. |
 | `screens.rs:1199` | `wallet daemon: {phrase}` | `wallet service: {phrase}` | Vocabulary. |
 | `screens.rs:1217` | `starting…` | unchanged | Already plain. |
 | `screens.rs:1220` | `reading status…` | `checking…` | Rule 5. |
@@ -734,6 +734,15 @@ The string tests that pin these words (`crates/fmonero/src/tui/tests.rs`, `tests
 
 ## 6. The count
 
+**v5.6.2 adds three surfaces to the inventory and closes its own gap** (the 2026-09-19 verification's
+item 18 said this section lists fourteen surfaces and `node info`'s human output is not one of them).
+The three are `node list`'s human table, `node info`'s human output and `node peers`'s — all three
+rendered from `output.rs`, all three outside §3.9's row list, and each one a second vocabulary for
+something the TUI already says (`monero.fail says` against `their block`; a generic key dump;
+`last seen 1789560101`). They are in §9 below, with what they say now.
+
+
+
 | | |
 |---|---|
 | Strings inventoried | **450** rows across 13 surfaces |
@@ -838,3 +847,29 @@ on the Wallet screen (V3) and are now inside its ` Balance ` pane. The `Use your
 (V4) stated nothing at all, and `Dialog` is why: it draws its message as one centred row, so the
 sentences after the first spilled past the border — it is an overlay now, the shape the picker's own
 confirm has.
+
+---
+
+## 9. Plain-language round 3 (2026-09-19): the surfaces this document had not inventoried
+
+The 2026-09-19 verification read the program as a non-technical user and found twenty-two things;
+the round that closed them re-read every capture and found nineteen more. Most were rows in §3 that
+the implementation had drifted from, and they are corrected in place above. **These are the ones this
+document had never listed at all** — every one of them one command away from the owner, and every one
+of them governed by §2o's first paragraph from the day it was written.
+
+| Surface | What it said | What it says now |
+|---|---|---|
+| the doctor's **human table** (W1) | `warn:wallet_unreachable  wallet_rpc_reachable  The wallet service is not …` — the check's **id** where §7 says its title goes, and `:{reason}` after the status word. Fifteen of the forty ids carry a §2o rule-7 word | the title, a verdict in words (`OK` · `needs attention` · `not working` · `not checked: no wallet is open`), and the detail under it. Group headings are sentences (`The two background services`, not `[units]`) |
+| `node list`'s **table** (W20) | group headings `monero.fail says` / `checked here` over two columns both headed `block`; `synced` rendering the JSON `true`; `ping 20` with no unit; ungrouped block numbers; `web` and `own` markers with nothing to explain them | the picker's own columns (`their block`, `block here`), `yes`/`no`, `20 ms`, grouped numbers, one marker and a footer that explains it |
+| `node info`'s **human output** (W20) | the generic key dump: `layout remote`, `busy_syncing —`, `fee fees_pico=— per_byte_pico=—`, thirty rows of field names — and, in local mode, every field of every peer on one row, because `sync.peers` is an array | the rows `status` prints, then what only this command asks for: the version, the payments waiting, how many peers it is fetching from |
+| `node peers`'s **table** (round 3's self-read) | `block 3541122`, `8412s`, `last seen 1789560101` — a raw unix second in the column whose whole content is *when*; `3 peer(s)` | a header, grouped blocks, `2h 20m`, `62h 53m ago`, `1 peer` / `3 peers` |
+| `settings list`'s **default column** | `[default ]` for an empty default, and a `*` (changed) against `node.data_dir`, `node.log_file` and `wallet.dir` on a machine where nobody had changed anything — three of the defaults in `KEYS` are patterns | `(none)`, and `Settings::default_here` resolves the patterns through the same function `load` uses, so the marker and the printed default are both about this machine |
+| `status`'s **node and wallet rows** (W3) | `node  not answering  …  block —  public node` and six `—` under it, about a node nobody had contacted; `wallet  not running  http://127.0.0.1:18083  —  balance — XMR` | the cached check (`public node · synced`, block, response time, `checked 2s ago`), and a wallet row that says only what is known |
+| `wallet history`'s **table** | `2026-09-16T14:01`, `block` for a mining reward, `pool` for one waiting, `true` under `locked` | `2026-09-16 14:01`, `mined`, `waiting`, `locked`/blank — from `TransferKind::words()`, which the TUI's table reads too |
+
+**And two rules this document said were "enforced by reading" now have greps** (§5's step): rule 12's
+em-dash, with a self-test over three planted dashes and the three shapes of the unknown-value glyph
+that must pass; and `txid`, which §2o.2 retires and the word list did not carry — the Wallet screen's
+filter hint read `filter by txid, address or note` through the whole v5.6 round. A `{field}` name is
+read as a substitution rather than as prose, so `"… · id {txid} · …"` is a sentence that says `id`.

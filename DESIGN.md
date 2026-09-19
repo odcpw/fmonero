@@ -5789,6 +5789,28 @@ property of the type rather than a habit. *Tests:* a unit test asserts every con
 `hint` names an `fmonero` subcommand that the TUI can reach has a `Some(action)`, and §6.7 asserts the
 widget renders `action` and never `hint`.
 
+### 5b.6 The v5.6.2 amendments, in full
+
+**Nine additions, no signature moved.** Every one exists because a fact was being worded or computed
+in two places and one of the two was wrong on the screen (§2a.3, §2o rule 8); each is named in the
+round's `DECISIONS.md` entry in the commit that makes it, per the rule at the top of §5b.
+
+| # | Addition | The two places it replaces |
+|---|---|---|
+| 1 | `grouped(n: u64) -> String`, moved from `crates/fmonero/src/output.rs` (which re-exports it) | core's own `wallet_behind` warning could not reach the binary's formatter, so it printed `6122 blocks to go` in the same panel as `6 122 blocks left`. The picker, the status bar, the hero and the peers table each chose for themselves. |
+| 2 | `age(seconds: u64) -> String`, moved from `src/tui/screens.rs` (which re-exports it) | the doctor divided by 60 itself: `listed 342 min ago` where the screen said `5h 42m ago`. |
+| 3 | `short_id(id: &str) -> String` | a 64-character id as prose, in the highest-severity warning the product has, on a bar 380 pixels wide. |
+| 4 | `SYNC_KEEPS_GOING: &str` | decision 7's one fact, worded three ways (§7a.5). |
+| 5 | `status::node_off_words(&Status) -> &'static str` | `not running` and `not answering` in one frame, and advice to press the key that is already running (§7a.3). The TUI's own `Tui::node_off_words` adds `starting`, which core cannot know. |
+| 6 | `TransferKind::words()` and `AddrKind::words()` | the wire values as prose: `block` for a mining reward, `pool` for one waiting to be mined, `mainnet standard` under the Send screen's address field. `as_str` is unchanged and stays what `--json` carries. |
+| 7 | `nodes::probe_reason_words(Option<&str>) -> &'static str` | the picker said `too slow`; `node list`'s table printed the wire's `timed_out`. |
+| 8 | `Settings::default_here(key, paths, network) -> Option<String>` | three of the defaults in `Settings::KEYS` are patterns (`~/.bitmonero`, `…/wallets/<network>`), so `settings list` marked all three as changed on a machine where nobody had changed anything. It resolves them through `derive_machine_defaults`, the one function `Settings::load` uses. |
+| 9 | `Paths::bitmonero_dir` follows `FMONERO_STATE_DIR` (W21) | the defaults of `node.data_dir` and `node.log_file` pointed at the owner's own chain folder from inside every sandbox: three rounds of this repo's verification read his log, and the doctor's `disk_space` and `node_data_dir_single_writer` measure the same two paths. |
+
+`settings list`'s payload gains **`default_here`** beside `default` (§5c): `default` stays the table's
+own string, which is the agent contract, and `default_here` is what that string resolves to on this
+machine, which is the only thing a value can honestly be compared against. Nothing else in §5c moves.
+
 ## 5c. Per-command JSON payloads
 
 `--json` is promised on every command (§4) and agents are the stated audience, but before v2 only
@@ -6214,7 +6236,7 @@ row the exact one — v5.6.1, V16; the same amount, `1.234567` truncated to four
   4AdUnd…9fL2Kq                                  copy (c)
   Check for payments
 
-  This keeps going in the background.
+  This keeps going in the background, even after you close this window.
 
   [ Check for payments ]  [ Choose node… ]  [ Stop your node ]
 ```
@@ -6315,7 +6337,9 @@ against). Then `omarchy-shell shell rescanPlugins`, sleep 2, and
 **v5.6 adds three assertions and one fixture, and retires one.** The fixture is a **public-node
 status with a wallet open and `wallet.height` 240 000 behind `node.remote_probe.height`**, and against
 it the panel must render: the header `Wallet syncing 63%`, the line
-`This keeps going in the background.`, and **no row anywhere containing the words** `daemon`, `unit`,
+`This keeps going in the background, even after you close this window.` (v5.6.2: the same sentence
+`fmonero_core::SYNC_KEEPS_GOING` gives the TUI and the `wallet_behind` warning, asserted against the
+constant rather than against a copy of it), and **no row anywhere containing the words** `daemon`, `unit`,
 `probe`, `restricted`, `trusted`, `ssl` or `not available` — the §2o rule-7 grep, over the rendered
 panel rather than over the source, which is the half a source grep cannot prove. The third assertion
 is that a `wallet_closed` or `wallet_idle` warning produces **no problem row** (§6.5's gate) while a
@@ -6337,9 +6361,25 @@ fix_cmd}], summary}`), and exits per the rule below (11, 12 or 0). `--only GROUP
 
 **Every check's title and detail is plain language (§2o), and every `id` is unchanged (v5.6).** The
 ids, groups, classes and `reason` strings are `doctor --json` and `doctor capabilities`, which agents
-branch on; the **title** is what a person reads down the left of the table and the **detail** is the
-sentence beside it, and twelve of the forty titles carried a section number, an RPC method or a unit
-name. `docs/COPY.md` §3.12 holds the rewrite of all forty titles and of every detail and skip reason,
+branch on; the **title** is what a person reads and the **detail** is the sentence under it, and
+twelve of the forty titles carried a section number, an RPC method or a unit name.
+
+**v5.6.2 fixes where those titles go** (W1). Until it, `report.rs::human` printed `check.id` in the
+column §7 describes and `:{reason}` after the status word — so all forty rewritten titles reached no
+reader at all, and what a person read instead was the identifier set, fifteen of the forty carrying a
+word §2o rule 7 deletes outright (`unit_no_password_in_argv`, `wallet_daemon_matches_unit`,
+`wallet_rpc_auth`). The table's shape is now: **the title, dot leaders, and a verdict in words** at a
+fixed column — `OK` · `needs attention` · `not working` · `not checked: <why, in words>` — then the
+**detail indented under it**, then a `Try:` line for a finding and one line per mutation. A `skip`
+carries its reason as a phrase because one missing precondition silences a whole group and is the
+same detail twelve times in a public-node run; `report.rs::not_checked_because` holds those phrases
+and a test reads every `Verdict::skip` reason out of `checks.rs` to prove each has one. The **group
+headings are sentences too** (`The two background services`, not `[units]` — `units` is a rule-7
+word, and it was a heading over seven rows); `DoctorGroup::name()` is unchanged, and is still what
+`--only` takes and what `--json` carries. `report.json`'s per-check object gains **`title`** beside
+`id`; every other key is unchanged. A test renders every check in all four statuses with every reason
+the file can produce and asserts that no id, no reason, no machine status word and nothing
+identifier-shaped reaches a line. `docs/COPY.md` §3.12 holds the rewrite of all forty titles and of every detail and skip reason,
 against the live `fmonero doctor` this round captured. Three of them are worth naming here because
 they are the highest-volume strings in the program: the `skip:remote_node` detail, which printed
 *"node.mode is remote (…): there is no local monerod to ask, and no wallet-RPC method reports a remote
@@ -6869,7 +6909,10 @@ peers/bans/picker tables, Wallet's subaddress table and history list, the Log vi
 every Send form field; every modal button including the send confirm's; the wheel over any list;
 and **an on-screen button wherever a key hint exists today** — which is the owner's request read
 literally and is also the design rule: *if a screen tells the user to press a key, that text is the
-button.* So `[o] Open a wallet`, `[c] Create wallet…`, `[W] Start the wallet service`,
+button.* So `[o] Open a wallet`, `[c] Create wallet…`, **`[W] Start the wallet service` or
+`[W] Stop the wallet service` by state** (v5.6.2, W15: §7a.5 says `W` stops the service when nothing
+is open, and in exactly that state the chip read `Start` and pressing it stopped it — one predicate,
+`Tui::wallet_daemon_key_stops`, decides the label and the key),
 `[p] Check these` / `[p] Check this node`, `[f] Get the list` / `[f] Get a fresh list` /
 `[f] Choose another node`, `[a] Add a node`, `[Enter] Use this node`, `[l] Use your own node`,
 `[H] Back to the last one`, `[u] Start your node`, `[d] Stop your node`,
@@ -6940,7 +6983,7 @@ coordinate out of `hits` can prove routing and can never prove alignment.
 
 | Screen | Data | Shows |
 |---|---|---|
-| **Node** (default) | `core::status(&ctx)` every 1 s; `node info` extras on entry and on `r`; `nodes::cached` on entry and `nodes::list` on `f` (§7a.4) | Hero: sync `MiniBar` with percent and `height / target_height`, ETA from two samples, nettype, version, hard-fork version. Detail: peers in/out with a `Table` of the top 10 connections (`get_connections`: host, state, height, pruning seed, up/down rate), a 60-sample `Sparkline` of `rx_bps`, mempool (txs, bytes, oldest, fee total), fee estimate with the four `fees[]` levels, net limits. On a node that only answers basic questions every pane it cannot fill renders `This node does not answer that.` — **without the method name** (v5.6, §2o rule 5) — never a zero, and never a poisoned `get_info` field (§5). Where another program on this machine runs the node the hero adds `Another program on this machine runs this node. fmonero can read it but not change it.` (v5.6, §2o) and `u`, `d`, `L` and the ban actions are disabled with that same sentence, which core and the TUI now share so the two cannot drift. **With a public node (v5.2, §2m; rewritten in v5.6) the screen is a different, much smaller one** and the 1 s poll makes no node call at all. **v5.5's version of it said five things were unavailable and one thing about the architecture, and that is what v5.6 replaces.** The hero reads `● Public node · <address>` on one line and, when a wallet is open, `this wallet  block 3 541 122 · refreshed <age> ago` — **grouped, and `refreshed` rather than `checked`** (v5.6.1, DECISIONS V5): the row printed `block 3541122 · checked 2026-09-19T00:20:07+02`, an ungrouped block number beside an RFC3339 timestamp used as prose and clipped mid-offset, with `checked` doing double duty for the node's own measurement two lines away. It now uses the same two formatters the ` This node ` pane beside it uses, and `wallet.last_refresh_at` is converted to an age through `unix_from_rfc3339` (v5.6.1, §5b). The two panes that read `not available with a remote node` — Net and Mempool · fees — **are gone**, and in their place is one pane, ` This node `, built from the cached check of §2n.4, which is the measurement fmonero already had and never showed here: `block 3 765 346` · `synced` or `syncing` · `answered in 240 ms` · `checked 2m ago`, and under them the chip `[f] Choose another node`. Its two other states are specified because both are reachable on a fresh machine: never checked renders `Not checked yet.` with `[p] Check this node`, and a failed check renders `No answer when checked 2m ago.` with `[f] Choose another node`. The row for the trust flag and the ssl mode is **deleted** (§2o forbids both words, fmonero never marks a public node trusted, and a row showing a value the user cannot change and did not choose is chrome), and so is the line `fmonero does not talk to this node — monero-wallet-rpc does…`, which was an architecture lecture standing where the user's answer belongs (§2o rule 2). **No sync `MiniBar`, no percent, no ETA from `get_info`**: those three are `null` with a public node and a gauge at 0 % is the rendered untruth §2j forbids. The check's height and its age always render **together**, for §5's reason: a four-hour-old `synced` says nothing about now. **v5.5: under the hero, in *both* modes, the public-node picker (§7a.4)** — in remote mode it is the screen's main pane and fills the space the peers table occupies locally; in local mode it sits below the peers table and is how someone finds an address to switch to. v5.5 gave the remote hero one line of the check; v5.6 promotes it to the ` This node ` pane above, where it is four facts and a way out rather than a footnote on a screen of disclaimers. |
+| **Node** (default) | `core::status(&ctx)` every 1 s; `node info` extras on entry and on `r`; `nodes::cached` on entry and `nodes::list` on `f` (§7a.4) | Hero: sync `MiniBar` with percent and `height / target_height`, ETA from two samples, nettype, version, hard-fork version. Detail: peers in/out with a `Table` of the top 10 connections (`get_connections`: host, state, height, up/down rate — **the pruning seed is not among them from v5.6.2**: `KEEPS 0` and `KEEPS 384` decide nothing a reader can act on, which is the argument `docs/COPY.md` §3.9 already made for `node peers`' own human output, and it stays in `node peers --json`), a 60-sample `Sparkline` of `rx_bps`, mempool (txs, bytes, oldest, fee total), fee estimate with the four `fees[]` levels, net limits. On a node that only answers basic questions every pane it cannot fill renders `This node does not answer that.` — **without the method name** (v5.6, §2o rule 5) — never a zero, and never a poisoned `get_info` field (§5). Where another program on this machine runs the node the hero adds `Another program on this machine runs this node. fmonero can read it but not change it.` (v5.6, §2o) and `u`, `d`, `L` and the ban actions are disabled with that same sentence, which core and the TUI now share so the two cannot drift. **With a public node (v5.2, §2m; rewritten in v5.6) the screen is a different, much smaller one** and the 1 s poll makes no node call at all. **v5.5's version of it said five things were unavailable and one thing about the architecture, and that is what v5.6 replaces.** The hero reads `● Public node · <address>` on one line and, when a wallet is open, `this wallet  block 3 541 122 · refreshed <age> ago` — **grouped, and `refreshed` rather than `checked`** (v5.6.1, DECISIONS V5): the row printed `block 3541122 · checked 2026-09-19T00:20:07+02`, an ungrouped block number beside an RFC3339 timestamp used as prose and clipped mid-offset, with `checked` doing double duty for the node's own measurement two lines away. It now uses the same two formatters the ` This node ` pane beside it uses, and `wallet.last_refresh_at` is converted to an age through `unix_from_rfc3339` (v5.6.1, §5b). The two panes that read `not available with a remote node` — Net and Mempool · fees — **are gone**, and in their place is one pane, ` This node `, built from the cached check of §2n.4, which is the measurement fmonero already had and never showed here: `block 3 765 346` · `synced` or `syncing` · `answered in 240 ms` · `checked 2m ago`, and under them the chip `[f] Choose another node`. Its two other states are specified because both are reachable on a fresh machine: never checked renders `Not checked yet.` with `[p] Check this node`, and a failed check renders `No answer when checked 2m ago.` with `[f] Choose another node`. The row for the trust flag and the ssl mode is **deleted** (§2o forbids both words, fmonero never marks a public node trusted, and a row showing a value the user cannot change and did not choose is chrome), and so is the line `fmonero does not talk to this node — monero-wallet-rpc does…`, which was an architecture lecture standing where the user's answer belongs (§2o rule 2). **No sync `MiniBar`, no percent, no ETA from `get_info`**: those three are `null` with a public node and a gauge at 0 % is the rendered untruth §2j forbids. The check's height and its age always render **together**, for §5's reason: a four-hour-old `synced` says nothing about now. **v5.5: under the hero, in *both* modes, the public-node picker (§7a.4)** — in remote mode it is the screen's main pane and fills the space the peers table occupies locally; in local mode it sits below the peers table and is how someone finds an address to switch to. v5.5 gave the remote hero one line of the check; v5.6 promotes it to the ` This node ` pane above, where it is four facts and a way out rather than a footnote on a screen of disclaimers. |
 | **Wallet** | `get_balance`, `get_address`, `history::query`; `wallet_dir::list` and `units::state` when nothing is open | **When no wallet is open the whole screen is the empty-state panel of §7a.5** — three buttons and one status line, not an empty table. Otherwise: Header: balance / unlocked / `locked for N blocks (≈ M min)`. Left: subaddress `Table` built from `get_address.addresses[]` (index, label, address, used), with per-row balances joined in from `get_balance.per_subaddress` where present and `—` where absent (that list holds only funded subaddresses, §5); `Enter` = copy, `a` = new address, `l` = label. Right: a `VirtualizedList` of history rows (date, type badge, amount, fee, confirmations, note) with `/` filter and `t` cycling the type filter (all/in/out/block/pending/failed/pool). **`confirmations` and `locked` come from `history::confirmations` / `history::locked` (§5b) and are never recomputed here** — `output.rs` and this screen are two independently written callers of the `unlock_time` height/timestamp formula (§2a.3). `Enter` on a row opens a detail pane (txid, `destinations[]` from `Transfer::destinations` — §5b carries the field precisely so this pane can be built — payment id, unlock time, `subaddr_index` as `major/minor`, double-spend flag) and `n` edits its note. The `locked` column is labelled `locked (est.)` and shows `—` rather than a value on a `--cached` read (§4.1). |
 | **Send** | the §7a state machine | Three `TextInput`s (To, Amount, Note), a priority chip row showing the node's own `fees[]` for each level (`0` is drawn as an alias of the lowest chip, §1b.4), an account selector, and a live validation line. **One transaction only — sweep is CLI-only in v0.1** (§0): `all` in the Amount field is refused inline naming `fmonero wallet sweep`. |
 | **Log** | `node log` tail | `ftui`'s log viewer over the tail of `settings.node.log_file`, `/` to search, `f` to toggle follow, `L` to cycle the node's `set_log_level` 0–4 (needs `--yes`-equivalent: a confirm modal, because it is a mutation). |
@@ -7137,9 +7180,9 @@ the whole screen:
 ```
   No wallet is open.
 
-  [o] Open a wallet       (no wallets on this machine yet — press c to create one)
+  [o] Open a wallet       (no wallets on this machine yet. Press c to create one)
   [c] Create wallet…      a new one, kept on this machine
-  [W] Start the wallet service   (not needed: opening or creating a wallet starts it)
+  [W] Start the wallet service   (not needed: opening a wallet starts it)
 
   wallet service: not running yet. It starts when you open or create a wallet.
   node: public node 185.220.101.63:18081
@@ -7177,18 +7220,18 @@ wallet.height > 0`), the Wallet screen renders two lines under the balance:
 
 ```
   Syncing 63% · 240 000 blocks left.
-  Syncing in the background. You can close this window.
+  This keeps going in the background, even after you close this window.
 ```
 
-(**The two lines above are the ones the program prints**, corrected in the 2026-09-19 verification:
-this mock read `Syncing 63% · 240 000 blocks left` / `This keeps going in the background. You can
-close this window.`, and `docs/COPY.md` §3.3 still does. The correction is stated rather than
-silently adopted because the code is not obviously the better text: decision 7's one fact is worded
-**three** ways across the surfaces that carry it — the TUI's `Syncing in the background. You can
-close this window.`, the widget's `This keeps going in the background.` and the `wallet_behind`
-warning's `It keeps going in the background, even after you close this window.` — which is §2o rule
-8 unmet, and the 2026-09-19 verification reports it as a defect for the next round to settle in one
-place rather than in this document.)
+(**The second line is `fmonero_core::SYNC_KEEPS_GOING`, and it is the only wording of it** — v5.6.2,
+W10. Decision 7's one fact was worded three ways: the TUI's `Syncing in the background. You can close
+this window.`, the widget's `This keeps going in the background.` and the `wallet_behind` warning's
+`It keeps going in the background, even after you close this window.`, which is §2o rule 8 unmet on
+the one sentence §7a.5 exists to add. The constant lives in core because core's own warning is one of
+the three callers; `plugin/oliver.monero/Panel.qml` carries the same literal and
+`tests/plugin-smoke.sh` reads the constant out of `lib.rs` to assert the two are the same sentence.
+The line is **wrapped** on both screens: it is 69 characters and the Node screen's hero is 52 % of the
+window.)
 
 The percent is `wallet.height / node height` and the count is their difference, where the node height
 is the live `get_info` with your own node and the **cached check** with a public node — the same
@@ -7469,7 +7512,7 @@ shell commands; terminal too small → §7a resize.
 | Tier | Width | Layout |
 |---|---|---|
 | Wide | ≥ 100 cols | Node: two columns (hero + peers table \| sparkline + mempool + fees), with the **picker** (§7a.4) below in local mode and in the left column's place in remote mode, all seven of its columns. Wallet: subaddresses \| history side by side, or the §7a.5 panel. Send: form and a live preview pane. |
-| Medium | 60–99 | single column, tables lose their least important columns (peers drops pruning seed and rates; history drops fee and note), no sparkline. **Picker drops `checked` and `web`** — the two columns nothing is decided by. Send: form only. |
+| Medium | 60–99 | single column, tables lose their least important columns (peers drops its rates; history drops fee and note), no sparkline. **Picker drops `checked` and `web`** — the two columns nothing is decided by. Send: form only. |
 | Narrow | < 60 or < 20 rows | status line + hero + the one focused list; tabs collapse to `1·2·3·4`. **Picker keeps address, health and — when probed — `ms`, and nothing else**: the address is never elided at any tier (§7a.4). **The §7a.5 empty-state panel keeps all three buttons, stacked**, because a screen whose whole content is three buttons has nothing to drop, and the tier where a user is most likely to be stuck is not the tier to hide the way out. The send confirm modal still renders in full — it is never abbreviated. |
 | Tiny | < 40×10 | one line: `fmonero — terminal too small (need 40x10)` |
 

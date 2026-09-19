@@ -505,7 +505,30 @@ else
   ok "the remote-mode TUI wrote nothing to stderr"
 fi
 
+# W7, over the CAPTURES rather than over the source: every block number fmonero renders is grouped,
+# so a bare run of seven or more digits on a screen is a number that got past a formatter. Three
+# exclusions, each by construction rather than by convenience: the Log screen shows **monerod's own
+# bytes** and may not rewrite them (`Synced 3541122/3541122` is the file's text); a run preceded by a
+# `.` or another digit is inside an amount (`1.234567891234`); a run preceded by `:` is a timestamp;
+# and a run followed by ` piconero` is the send confirm's exact integer amount, which §2o.2 puts there
+# on purpose and which grouping would corrupt. A grep over the source cannot make this assertion — `h.to_string()` is what it would
+# have to find, and there is no shape to look for.
 if [ -n "$CAPTURE" ]; then
+  # `|| true` on both greps: this script runs under `set -e`, and "no match" is the answer this
+  # assertion wants rather than a failure of the script.
+  BARE_DIGITS=""
+  for f in "$CAPTURE"/*.txt; do
+    case "$f" in *"/log.txt") continue ;; esac
+    hit="$( { grep -oE '(^|[^0-9.:])[0-9]{7,}( piconero)?' "$f" || true; } \
+            | { grep -v piconero || true; } | { grep -oE '[0-9]{7,}' || true; } \
+            | sort -u | tr '\n' ' ')"
+    if [ -n "$hit" ]; then BARE_DIGITS="$BARE_DIGITS$f: $hit"$'\n'; fi
+  done
+  if [ -z "$BARE_DIGITS" ]; then
+    ok "W7: no ungrouped block number in any capture ($(ls "$CAPTURE"/*.txt | wc -l) screens)"
+  else
+    bad "an ungrouped number reached a screen" $BARE_DIGITS
+  fi
   printf '%s\n' "$SCENARIO" > "$CAPTURE/scenario.txt"
   printf '\n  captures in %s\n' "$CAPTURE"
 fi
