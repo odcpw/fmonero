@@ -2388,12 +2388,19 @@ fn detail_modal(m: &Tui, frame: &mut Frame) {
     // characters were the first row of this modal; `wallet history --json` carries every one of
     // them, and `wallet history` prints the payment id a Monero user actually quotes.
     let mut lines = vec![
+        // **A block number of zero is `not in a block yet`, not `block 0`** (round 4's own read of
+        // the captures, §2j's rule that a zero may not stand in for unknown). Every `sending`,
+        // `waiting` and `failed` row has height 0.
         pair(
             "what",
             format!(
-                "{} · block {} · {}",
+                "{} · {} · {}",
                 t.kind.words(),
-                t.height,
+                if t.height == 0 {
+                    "not in a block yet".to_string()
+                } else {
+                    format!("block {}", grouped(t.height))
+                },
                 short_time(t.timestamp)
             ),
         ),
@@ -2437,7 +2444,11 @@ fn detail_modal(m: &Tui, frame: &mut Frame) {
         ));
     }
     // A real Monero term where it has a value; an always-present empty row taught it as noise.
-    if !t.payment_id.is_empty() {
+    //
+    // **And sixteen zeros is not a value** (round 4's own read): `0000000000000000` is Monero's own
+    // "there is no payment id" sentinel, so the row printed an identifier at a person that means
+    // nothing. `--json` carries the field either way.
+    if !t.payment_id.is_empty() && t.payment_id.bytes().any(|b| b != b'0') {
         lines.push(pair("payment id", t.payment_id.clone()));
     }
     // M16: `double spend false` was a phrase a reader looks up printed on every correct payment.
@@ -2449,13 +2460,19 @@ fn detail_modal(m: &Tui, frame: &mut Frame) {
         ));
     }
     lines.push(pair("note", dash(&t.note)));
-    lines.push(Line::styled("destinations", dim));
+    // `paid to`, not `destinations`: one vocabulary, and the label is what a person calls it.
+    // The amount carries its unit (§2o rule 9), which this row did not.
+    lines.push(Line::styled("paid to", dim));
     if t.destinations.is_empty() {
-        lines.push(Line::styled("  none (this payment came in)", dim));
+        lines.push(Line::styled("  nobody: this payment came in", dim));
     }
     for d in &t.destinations {
         lines.push(Line::styled(
-            format!("  {} {}", d.amount.to_xmr_string(), short_addr(&d.address)),
+            format!(
+                "  {} XMR  {}",
+                d.amount.to_xmr_string(),
+                short_addr(&d.address)
+            ),
             text,
         ));
     }
@@ -2471,7 +2488,14 @@ fn log_screen(m: &Tui, area: Rect, frame: &mut Frame) {
     // persistent indicator of the mode that decides whether the pane scrolls under you — was
     // never on screen at all.
     let on_off = if m.logs.follow { "on" } else { "off" };
-    let path = m.logs.path.display().to_string();
+    // **M8's other half** (round 4's own read): with a public node the title named the file your own
+    // node would write, which is a path to something that will never exist in that mode. The body
+    // says why; the title says nothing it cannot back up.
+    let path = if m.remote_mode() {
+        String::new()
+    } else {
+        m.logs.path.display().to_string()
+    };
     let room = (area.width as usize).saturating_sub(" Log  follow off    ".len());
     let title = format!(
         " Log  follow {on_off}  {} ",
