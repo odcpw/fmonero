@@ -1,0 +1,4 @@
+$ fmonero note
+fmonero: "note" is not an fmonero command. Did you mean "node"?
+  Try: fmonero --help
+[exit 2]

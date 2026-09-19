@@ -6867,6 +6867,17 @@ files, and the itemisation is:
 eighteen items DELETE code — S1's `width / 2` cap and its `mine` accumulator, S3's two columns of
 budget — and both deletions are the fix.
 
+**+41 more, measured 10 042, from this round's own read of its own 92 captures** — which is the step
+the effort exists for and the one that found the last of M1's class. Five of the seven items are one
+amount printed at two precisions in one frame: the Preview's Amount before a plan existed, the
+validation row under it, the payment detail modal's `Amount · your fee` row, the ledger's own
+`AMOUNT XMR` column against that modal and against the note modal's title, and — in `output.rs` —
+the sweep plan's rows and `wallet history`'s amount column. `Piconero::to_xmr_money` is the one
+figure. The other two: M8's row split in two once "across the network" made it 71 cells in a 54-cell
+pane, and the `Layout::None` refusal split in two because `fmonero has not set up your node yet` is
+false when something IS answering on that port. Plus `list_modal`'s key row, which sat one character
+out of line with the text above it, and the Log screen's own test.
+
 **v5.6.5 raises §7a from 9 200 to 9 600, and the arithmetic is written here before the code is.**
 The measured v5.6.4 tree is **9 150**. Round 4 iteration 3's reader returned ten serious items and
 forty-two minor ones; sixteen of them land in these six files, and the itemisation is:

@@ -1,0 +1,8 @@
+$ fmonero node list
+  address                                           answered     their block  last seen    ping      block here   synced
+  node.xmr.pub:443                                  100% of 18     3 765 209  12m 11s ago  34 ms     3 765 209    yes
+  monero-rpc.cheems.de.box.skhron.com.ua:18089      94% of 18      3 764 877  12m 11s ago  42 ms     3 765 100    yes
+  monero-rpc.cheems.de.box.skhron.com.u:18089       72% of 18      3 765 172  12m 11s ago  —         —            —
+3 nodes from monero.fail · list fetched 2m 11s ago · 37 without a port were left out · answered = how many of
+  monero.fail's own checks each node answered
+[exit 0]

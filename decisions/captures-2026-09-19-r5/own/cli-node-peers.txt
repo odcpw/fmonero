@@ -1,0 +1,13 @@
+$ fmonero node peers
+3 peers connected right now
+  host              port    doing           block        connected  average per second
+  203.0.113.17      18080   trading blocks  3 541 122    2h 20m     12 B down · 2 B up
+  198.51.100.42     18080   catching up     3 541 100    1m 02s     0 B down · 0 B up
+  192.0.2.201       51422   trading blocks  3 541 122    31m 43s    1 B down · 31 B up
+Peers it has reached before: 3 addresses
+  203.0.113.17:18080  last seen 3d 03h ago
+  198.51.100.42:18080  last seen 3d 03h ago
+  185.129.61.7:18080  last seen 3d 04h ago
+Peers it has only heard about: 1 address
+  192.0.2.201:18080  last seen 3d 23h ago
+[exit 0]

@@ -1,0 +1,4 @@
+$ fmonero wallet send 42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm 0.1 --yes
+fmonero: The payment from 2026-09-10 02:26 was prepared and fmonero never saw it go out. It may still be on its way.
+  Try: fmonero wallet history --limit 5   # then: fmonero wallet clear-pending --yes
+[exit 3]

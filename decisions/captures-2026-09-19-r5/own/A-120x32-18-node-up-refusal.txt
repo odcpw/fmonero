@@ -1,0 +1,32 @@
+[ 1 Node ]  2 Wallet    3 Send    4 Log                                                                 network mainnet
+╭ Node ──────────────────────────────────────────────────────╮╭ Net ───────────────────────────────────────────────────╮
+│ ● Synced                                                   ││ right now   0 B/s down · 0 B/s up                      │
+│ blocks     ████████████  100%  3 541 122 / 3 541 122       ││ its limits  8192 kB/s down · 2048 kB/s up              │
+│ last block  3d 03h ago                                     ││                                                        │
+│ Synced means it has every block its peers have offered. A  │╰────────────────────────────────────────────────────────╯
+│ last block this old means none has been offered for a      │╭ Waiting to be mined ───────────────────────────────────╮
+│ while.                                                     ││ waiting     14 payments across the network · 21.4 kB   │
+│ peers       16 out · 3 in                                  ││ oldest      3d 03h ago                                 │
+│ version     0.18.5.1-release · mainnet                     ││ their fees  0.000427 XMR altogether                    │
+│                                                            ││ XMR a byte  cheapest 0.00000002 · normal 0.00000008    │
+╰────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────────────────╯
+╭ Peers  3 ──────────────────────────────────────────────────────────────╮╭ Notes ─────────────────────────────────────╮
+│ HOST                   │DOING         │BLOCK      │AVERAGE DOWN / UP   ││ • Only 96 GB free on the disk your node    │
+│ 203.0.113.17           │trading blocks│3 541 122  │12 B/s / 2 B/s      ││   uses. A full copy of the blockchain      │
+│ 198.51.100.42          │catching up   │3 541 100  │0 B/s / 0 B/s       ││   needs about 120 GB, and it keeps         │
+│ 192.0.2.201            │trading blocks│3 541 122  │1 B/s / 31 B/s      ││   growing.                                 │
+│                                                                        ││   Free some space on that disk, or press d │
+│ [b] Show blocked addresses                                             ││   to stop your node.                       │
+╰────────────────────────────────────────────────────────────────────────╯│ • Your node accepted fmonero without       │
+╭ Public nodes ──────────────────────────────────────────────────────────╮│   asking for a password.                   │
+│ No list of public nodes yet.                                           ││   Only programs on this machine can reach  │
+│ [f] Get the list                                                       ││   it, so this is not urgent.               │
+│ Getting the list tells monero.fail your IP address. Nothing else is    ││                                            │
+│ contacted.                                                             ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+╰────────────────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────╯
+Something else is answering on that port and fmonero did not set it up, so fmonero cannot start or stop it.
+● node synced block 3 541 122 · 16 out · 3 in ● wallet open 1.234567891234 XMR                         ⇥ screens  ? help

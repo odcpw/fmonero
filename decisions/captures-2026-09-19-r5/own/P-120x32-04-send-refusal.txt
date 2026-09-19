@@ -1,0 +1,32 @@
+  1 Node    2 Wallet  [ 3 Send ]  4 Log                                                                 network mainnet
+0.5000 XMR to 42ey1afD…fJJQAWDm · may already have gone out · press 2 for the wallet
+╭ Send ──────────────────────────────────────────────────────────────╮╭ Preview ───────────────────────────────────────╮
+│ To      DwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm  ││ To                                             │
+│         95 characters typed. The box is showing the end of them.   ││ 42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVd │
+│ Amount  0.1                                                        ││ FCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQA │
+│                                                                    ││ WDm                                            │
+│ Note    optional, kept with this wallet                            ││ Amount  0.10000000 XMR                         │
+│                                                                    ││ Fee     known once Enter works out the fee     │
+│ Fee cheapest  normal  fast  fastest  p · Ctrl+P                    ││ Account 0                                      │
+│ Account ◂ 0 ▸ ←→ changes it                                        ││ Unlocked 1.234567891234 XMR                    │
+│ mainnet address · 0.10000000 XMR · Enter works out the fee.        ││                                                │
+│   Nothing is sent yet.                                             ││                                                │
+│ account 0 · ↑↓ fields · ⇥ screens · @ address book · Esc leaves    ││                                                │
+│   the form                                                         ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+╰────────────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────────╯
+The payment from 2026-09-10 02:26 was prepared and fmonero never saw it go out. It may still be on its way. Press P on
+the Wallet screen to clear that record.
+● node synced block 3 541 122 · 16 out · 3 in ● wallet payment may be out 1.234567891234 XMR           ⇥ screens  ? help

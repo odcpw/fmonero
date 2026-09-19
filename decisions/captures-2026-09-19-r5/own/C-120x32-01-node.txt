@@ -1,0 +1,32 @@
+[ 1 Node ]  2 Wallet    3 Send    4 Log
+╭ Node ──────────────────────────────────────────────────────╮╭ This node ─────────────────────────────────────────────╮
+│ ● Public node · synced ·                                   ││ block 3 765 100                                        │
+│   monero-rpc.cheems.de.box.skhron.com.ua:18089             ││ synced                                                 │
+│ this wallet block 3 541 122 · not refreshed yet            ││ answered in 42 ms                                      │
+│ Syncing 94% · 223 978 blocks left.                         ││ checked 32s ago                                        │
+│ This keeps going in the background, even after you close   ││ [f] Get a fresh list                                   │
+│ this window.                                               ││                                                        │
+│                                                            ││                                                        │
+│                                                            ││                                                        │
+│                                                            ││                                                        │
+╰────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────────────────╯
+╭ Public nodes ──────────────────────────────────────────────────────────╮╭ Notes ─────────────────────────────────────╮
+│ address                                                  │answered     ││ • You are using the public node            │
+│ ● monero-rpc.cheems.de.box.skhron.com.ua:18089           │94% of 18    ││   monero-rpc.cheems.de.box.skhron.com.ua:1 │
+│   node.xmr.pub:443                                       │100% of 18   ││   8089. It sees your IP address and when   │
+│   monero-rpc.cheems.de.box.skhron.com.u:18089            │72% of 18    ││   you ask it anything.                     │
+│                                                                        ││   Press l to use your own node instead.    │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│                                                                        ││                                            │
+│ 3 nodes from monero.fail · list fetched 30s ago · 37 without a port    ││                                            │
+│ were left out · answered = how many of monero.fail's own checks it     ││                                            │
+│ answered                                                               ││                                            │
+│ [p] Check these [f] Get a fresh list [↑↓] Pick a node from the list    ││                                            │
+│ [a] Add a node [H] Back to the last one [l] Use your own node          ││                                            │
+╰────────────────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────╯
+● synced monero-rpc.cheems.de.box.skhron.com.ua:18089 ● wallet open 1.234567891234 XMR                 ⇥ screens  ? help

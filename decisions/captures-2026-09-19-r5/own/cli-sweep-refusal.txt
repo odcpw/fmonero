@@ -1,0 +1,17 @@
+$ fmonero wallet sweep 42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm
+To        42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm
+Amount    1.234506451234 XMR (1234506451234 piconero)
+Fee       0.00006144 XMR (61440000 piconero)
+Total     1.234567891234 XMR (1234567891234 piconero)
+Account   0   Fee level normal
+2 payments:
+  1.   0.80000000 XMR  fee 0.00003072 XMR  not sent
+  2.   0.434506451234 XMR  fee 0.00003072 XMR  not sent
+nothing was sent
+fmonero: This would empty this account. 1.234506451234 XMR to
+  42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm, 0.00006144 XMR in
+  fees, and 1.234567891234 XMR would leave this wallet in 2 payments.
+  Try: fmonero wallet sweep
+        42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm --account 0
+        --priority 2 --yes
+[exit 3]

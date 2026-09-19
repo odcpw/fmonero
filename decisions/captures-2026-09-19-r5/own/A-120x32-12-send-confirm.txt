@@ -1,0 +1,32 @@
+  1 Node    2 Wallet  [ 3 Send ]  4 Log                                                                 network mainnet
+╭ Send ──────────────────────────────────────────────────────────────╮╭ Preview ───────────────────────────────────────╮
+│ To      DwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm  ││ To                                             │
+│         95 characters typed. The box is showing the end of them.   ││ 42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVd │
+│ Amount  0.1                                                        ││ FCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQA │
+│                                                                    ││ WDm                                            │
+│ Note    optional, kept with this wallet                            ││ Amount  0.10000000 XMR                         │
+│                                                                    ││ Fee     0.00003072 XMR                         │
+│ Fee cheapest  norma╭ Confirm · this sends money ────────────────────────────────────────────────╮                    │
+│ Account ◂ 0 ▸ ←→ ch│                                                                            │                    │
+│ mainnet address · 0│ To                                                                         │                    │
+│   Nothing is sent y│ 42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9Uxq │                    │
+│ account 0 · ↑↓ fiel│ eoyFQMYbqSWYTfJJQAWDm                                                      │                    │
+│   the form         │ Amount 0.10000000 XMR  (100000000000 piconero)                             │                    │
+│                    │ Fee    0.00003072 XMR  (30720000 piconero)                                 │                    │
+│                    │ Total  0.10003072 XMR  (100030720000 piconero)                             │                    │
+│                    │ Account 0  Fee level normal                                                │                    │
+│                    │                                                                            │                    │
+│                    │ Type "send" and press Enter to send · Esc discards                         │                    │
+│                    │ > _                                                                        │                    │
+│                    │                                                                            │                    │
+│                    ╰────────────────────────────────────────────────────────────────────────────╯                    │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+│                                                                    ││                                                │
+╰────────────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────────╯
+● node synced block 3 541 122 · 16 out · 3 in ● wallet open 1.234567891234 XMR                         ⇥ screens  ? help

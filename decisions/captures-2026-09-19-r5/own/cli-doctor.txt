@@ -1,0 +1,100 @@
+$ fmonero doctor
+Monero's own programs
+  Monero's node program is installed ................................ OK
+    /usr/bin/monerod: Monero 'Fluorine Fermi' (v0.18.5.1-release)
+  Monero's wallet program is installed .............................. OK
+    /usr/bin/monero-wallet-rpc: Monero 'Fluorine Fermi' (v0.18.5.1-release)
+  The installed Monero is version 0.18 .............................. OK
+    Monero 'Fluorine Fermi' (v0.18.5.1-release). That is the 0.18 fmonero is written for.
+Your node
+  Which node fmonero uses ........................................... needs attention
+    No node is set up on this machine.
+    Try: fmonero setup --units --yes
+  The node fmonero uses answers ..................................... OK
+    http://127.0.0.1:18591 answered, at block 3 541 122.
+  A public node is told nothing about your amounts .................. not checked: you are using your own node
+    You are using your own node, which fmonero trusts because it is yours.
+  Your node answers more than basic questions ....................... OK
+    Your node answers everything fmonero asks.
+  Your node is synced ............................................... OK
+    Synced at block 3 541 122.
+  Your node has peers ............................................... OK
+    Connected to 16 other machines.
+  This machine's clock agrees with the node's ....................... not working
+    This machine's clock is 3d 03h behind the Monero network's, and 1m 00s is the most fmonero accepts. A clock this far
+      out gets the times your money unlocks at wrong and stops other machines talking to yours.
+    Try: timedatectl set-ntp true
+  Only one program is using the chain folder ........................ OK
+    Nothing else is using /tmp/claude-1000/r5/work.fizOG3/A/state/bitmonero.
+Your wallet
+  The wallet service answers ........................................ OK
+    http://127.0.0.1:18593 answered, version 1.31, and a wallet is open.
+  The wallet service's password file is private and works ........... OK
+    Only you can read /tmp/claude-1000/r5/work.fizOG3/A/state/run/monero-wallet-rpc.18593.login, and the wallet service
+      asked fmonero for it.
+  The open wallet is close to the node's block ...................... OK
+    The wallet is at block 3 541 122, the node at 3 541 122: 0 to go.
+  The wallet can sign in to your node ............................... not checked: your node asks for no password
+    Your node asks for no password, so the wallet needs none.
+  The open wallet is on the network your settings name .............. not checked: the network was not recorded
+    A wallet is open, and fmonero has no record of which network it belongs to. It writes that down when it opens one
+      itself.
+  Your wallet folder exists and is private .......................... OK
+    /tmp/claude-1000/r5/work.fizOG3/A/wallets/mainnet is there, and only you can read it.
+  No payment is left unaccounted for ................................ OK
+    No payment is waiting to be accounted for.
+The two background services
+  · fmonero has not set up its two background services yet.
+  fmonero's two background services are set up ...................... needs attention
+    Your node is not set up yet. The wallet service is not set up yet.
+    Try: fmonero doctor --fix
+  Both services listen only on this machine ......................... not checked: the services are not set up yet
+  No password appears in either service's command line .............. not checked: the services are not set up yet
+  Neither service starts a second node behind fmonero's back ........ not checked: the services are not set up yet
+  Neither service starts on its own ................................. not checked: the services are not set up yet
+  The wallet service uses your wallet folder ........................ not checked: the services are not set up yet
+  The wallet service points at the node you chose ................... not checked: the services are not set up yet
+  The wallet service's port matches your settings ................... not checked: the services are not set up yet
+Room on the disk
+  The chain folder's disk has room .................................. needs attention
+    Only 14 GB free where /tmp/claude-1000/r5/work.fizOG3/A/state/bitmonero lives. A full copy of the blockchain and
+      room to work needs about 120 GB, and that is an estimate rather than a measurement.
+    Try: df -h ~
+  Your node keeps the size of blockchain you asked for .............. not checked: your node is not set up yet
+    Your node has not been set up on this machine yet.
+fmonero's own files
+  fmonero is installed where your shell looks for it ................ OK
+    /home/oliver/.local/bin/fmonero is there.
+  fmonero's own saved state is readable ............................. OK
+    /tmp/claude-1000/r5/work.fizOG3/A/state/state.json is readable.
+  Your settings file is readable and holds only known keys .......... OK
+    /tmp/claude-1000/r5/work.fizOG3/A/config/config.toml is readable and every setting in it is one fmonero knows.
+  The saved copy of your payments belongs to this wallet ............ OK
+    The saved copy of your payments reaches block 3 541 000 and the wallet is at 3 541 122: 122 to go.
+  The list of public nodes is less than a day old ................... OK
+    3 public nodes, listed 2m 11s ago.
+  The bar widget is installed ....................................... OK
+    /home/oliver/.config/omarchy/plugins/oliver.monero → /home/oliver/Projects/odcpw/fmonero/plugin/oliver.monero
+  The bar widget is switched on ..................................... OK
+    The bar widget is switched on (oliver.monero).
+  fmonero's Omarchy menu entries are present ........................ OK
+    Every fmonero menu entry is present.
+Privacy on this machine
+  Only you can read the password your node asks for ................. not checked: your node is not set up yet
+    /tmp/claude-1000/r5/work.fizOG3/A/config/monerod.conf has not been written yet.
+  Your node asked fmonero for a password ............................ needs attention
+    Your node answered fmonero without asking for a password. Any web page you visit could ask it things too.
+    Try: fmonero setup --units --yes
+  Everything fmonero writes is private to you ....................... not working
+    /tmp/claude-1000/r5/work.fizOG3/A/state/run can be read by others, and only you should be able to.;
+      /tmp/claude-1000/r5/work.fizOG3/A/cache/public-nodes.json can be read by others, and only you should be able to.
+    Try: fmonero doctor --fix
+  Only fmonero is listening on the node and wallet ports ............ needs attention
+    Port 18591 on 127.0.0.1 is held by process 580179 (fmonero-mock). Port 18593 on 127.0.0.1 is held by process 580180
+      (fmonero-mock). None of those is one of fmonero's own.
+    Try: fmonero node info
+
+40 checks: 21 OK, 5 need attention, 2 not working, 12 not checked
+
+  Try: fmonero doctor --fix --dry-run
+[exit 11]

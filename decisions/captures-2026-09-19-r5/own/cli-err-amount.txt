@@ -1,0 +1,4 @@
+$ fmonero wallet send 42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm 1.2.3
+fmonero: "1.2.3" is not an amount. Use digits and at most one dot, like 0.5 for XMR or 250000000000p for piconero.
+  Try: fmonero wallet send <address> 0.01 --dry-run   # XMR, or 10000000000p
+[exit 2]

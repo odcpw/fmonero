@@ -1,0 +1,70 @@
+$ fmonero settings list
+  node.network            mainnet
+    Which Monero network to use: mainnet, stagenet or testnet. mainnet is real money. The other two are for practice.
+      Set fmonero up again after a change.  [default mainnet]
+  node.mode               local
+    Where your wallet gets its blocks: local, a node on this machine, or remote, a public node someone else runs.
+      [default local]
+  node.remote             (none)
+    The public node to use while node.mode is remote, written host:port. An http:// or https:// prefix is allowed. A
+      path or a password in the address is not.  [default (none)]
+  node.remote_trusted     false
+    true tells a public node more about what your wallet is asking for, which is only ever safe for a node you run
+      yourself. Leave it false. true or false.  [default false]
+  node.remote_probe_sec   60
+    How often, in seconds, fmonero checks the public node it is using. 0 turns the checks off. Anything under 10 is
+      treated as 10.  [default 60]
+* node.url                http://127.0.0.1:18591
+    The address fmonero talks to your own node on. The host has to be this machine. Not used while you are on a public
+      node.  [default http://127.0.0.1:18081]
+  node.unit               fmonero-monerod.service
+    The name of the background service that runs your own node. Change it only if you have a second one.  [default
+      fmonero-monerod.service]
+  node.data_dir           /tmp/claude-1000/r5/work.fizOG3/A/state/bitmonero
+    The folder your own node keeps its copy of the blockchain in. It grows to tens of gigabytes.  [default
+      /tmp/claude-1000/r5/work.fizOG3/A/state/bitmonero]
+* node.log_file           /tmp/claude-1000/r5/work.fizOG3/A/bitmonero.log
+    The file your own node writes its log to, and the file the Log screen shows.  [default
+      /tmp/claude-1000/r5/work.fizOG3/A/state/bitmonero/bitmonero.log]
+  node.prune              true
+    true keeps a smaller copy of the blockchain, which is what fits on this machine. false keeps all of it. true or
+      false.  [default true]
+* wallet.url              http://127.0.0.1:18593
+    The address fmonero talks to the wallet service on. The host has to be this machine.  [default
+      http://127.0.0.1:18083]
+  wallet.unit             fmonero-wallet-rpc.service
+    The name of the background service that holds your wallet open.  [default fmonero-wallet-rpc.service]
+* wallet.dir              /tmp/claude-1000/r5/work.fizOG3/A/wallets/mainnet
+    The folder your wallet files are kept in. fmonero wallet list shows what is there.  [default
+      /tmp/claude-1000/r5/work.fizOG3/A/data/fmonero/wallets/mainnet]
+* wallet.port             18593
+    The port on this machine the wallet service answers on. Change it only if something else is already using it.
+      [default 18083]
+  wallet.account          0
+    Which account inside the wallet to use unless you say otherwise. 0 is the first one.  [default 0]
+  wallet.priority         2
+    The fee level to use unless you say otherwise: 0 or 1 cheapest, 2 normal, 3 fast, 4 fastest.  [default 2]
+  wallet.autostart        false
+    true starts the wallet service as soon as the fmonero tui window opens. false waits until you open or create a
+      wallet. Nothing but the tui reads it.  [default false]
+  timeouts.node_sec       3
+    How many seconds to wait for your own node to answer before giving up.  [default 3]
+  timeouts.wallet_sec     5
+    How many seconds to wait for the wallet service to answer before giving up.  [default 5]
+  timeouts.refresh_sec    120
+    How many seconds to allow while fmonero checks for payments.  [default 120]
+  timeouts.transfer_sec   120
+    How many seconds to allow while a payment is prepared.  [default 120]
+  timeouts.open_sec       300
+    How many seconds to allow while a wallet is being opened.  [default 300]
+  timeouts.systemctl_sec  10
+    How many seconds to allow when a background service is started or stopped.  [default 10]
+  tui.poll_ms             1000
+    How often the fmonero tui window refreshes what it shows, in milliseconds.  [default 1000]
+  tui.tick_ms             120
+    How often the spinner in the fmonero tui window moves, in milliseconds.  [default 120]
+  tui.mouse               true
+    true lets you click tabs, rows, fields and buttons. false gives the terminal its own text selection back.  [default
+      true]
+* = changed from the default
+[exit 0]

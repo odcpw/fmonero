@@ -1,0 +1,6 @@
+$ fmonero node info
+node    synced  127.0.0.1:18591  block 3 541 122  a node fmonero did not set up
+        peers 16 out · 3 in  14 payments across the network waiting to be mined  blockchain 118.2 GB  running 3d 15h
+        they take 21.4 kB and carry 0.000427 XMR in fees
+        version 0.18.5.1-release · mainnet
+[exit 0]

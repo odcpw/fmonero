@@ -1,0 +1,32 @@
+  1 Node  [ 2 Wallet ]  3 Send    4 Log                                                                 network mainnet
+╭ Balance ─────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 1.234567891234 XMR                                                                                                   │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭ Addresses ───────────────────────────────────╮╭ ▸ Payments  6 ───────────────────────────────────────────────────────╮
+│ #  │NAME    │ADDRESS (✓ used)                ││ / filter by address or note                                          │
+│ 0  │Primar… │42ey1afD…fJJQAWDm ✓             ││ WHEN             WHAT        AMOUNT XMR CONFIRMS SPENDABLE  NOTE     │
+│ 1  │donati… │8AsN91rz…N1EX5Mtm ✓             ││ 2026-09-16 14:01 sending     0.10000000        0 not yet             │
+│ 2  │        │86kKnBK╭ Payment · n edits the note · Esc closes ─────────────────────────────────╮ never               │
+│                     │                                                                          │ yes        coffee   │
+│                     │ What        sending · not in a block yet · 2026-09-16 14:01              │ yes                 │
+│                     │ Amount      0.10000000 XMR · your fee 0.00003072 XMR                     │ yes                 │
+│                     │ Confirms    0 · spendable not yet                                        │ not yet             │
+│                     │ Address     #0 of account 0                                              │                     │
+│                     │ Note        —                                                            │                     │
+│                     │ Paid to                                                                  │                     │
+│                     │   0.10000000 XMR                                                         │                     │
+│                     │   44Kbx4sJ7JDRDV5aAhLJzQCjDz2ViLRduE3ijDZu3osWKBjMGkV1XPk4pfDUMqt1Aiezve │                     │
+│                     │   phdqm6YD19GKFD9ZcXVUTp6BW                                              │                     │
+│                     │                                                                          │                     │
+│                     │                                                                          │                     │
+│                     │                                                                          │                     │
+│                     ╰──────────────────────────────────────────────────────────────────────────╯                     │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
+╰──────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────────────────╯
+[R] Check for payments [t] Choose which payments show [Q] QR code [x] Close wallet
+● node synced block 3 541 122 · 16 out · 3 in ● wallet open 1.234567891234 XMR                         ⇥ screens  ? help

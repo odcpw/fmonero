@@ -1,0 +1,40 @@
+  1 Node  [ 2 Wallet ]  3 Send    4 Log                                                                                               network mainnet
+╭ Wallet ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ No wallet is open.                                                                                                                                 │
+│ There are no wallets on this machine yet.                                                                                                          │
+│ [c] Create a wallet    (a new one, kept on this machine)                                                                                           │
+│                                                                                                                                                    │
+│                                                                                                                                                    │
+│                                                                                                                                                    │
+│ wallet service: not running. Opening or creating a wallet starts it                                                                                │
+│ node: your own node 127.0.0.1:18691 · running · press 1 for the Node screen                                                                        │
+│                                                                                                                                                    │
+│                                                                                                                                                    │
+│                                         ╭ Create a wallet ───────────────────────────────────────────────╮                                         │
+│                                         │                                                                │                                         │
+│                                         │ Name                                                           │                                         │
+│                                         │ Password                                                       │                                         │
+│                                         │ Password again                                                 │                                         │
+│                                         │ Seed language        ◂ English ▸                               │                                         │
+│                                         │                                                                │                                         │
+│                                         │ ↑↓ fields · Enter next, then create · Esc discards             │                                         │
+│                                         │ Tab cannot change screens while this is open. Esc closes it    │                                         │
+│                                         │ and keeps nothing.                                             │                                         │
+│                                         │                                                                │                                         │
+│                                         │                                                                │                                         │
+│                                         │                                                                │                                         │
+│                                         ╰────────────────────────────────────────────────────────────────╯                                         │
+│                                                                                                                                                    │
+│                                                                                                                                                    │
+│                                                                                                                                                    │
+│                                                                                                                                                    │
+│                                                                                                                                                    │
+│                                                                                                                                                    │
+│                                                                                                                                                    │
+│                                                                                                                                                    │
+│                                                                                                                                                    │
+│                                                                                                                                                    │
+│                                                                                                                                                    │
+│                                                                                                                                                    │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+● node synced block 3 541 122 · 16 out · 3 in ● wallet not running                                                                   ⇥ screens  ? help

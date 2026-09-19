@@ -1,0 +1,5 @@
+$ fmonero wallet balance
+account   0
+balance   1.234567891234 XMR
+unlocked  1.234567891234 XMR
+[exit 0]

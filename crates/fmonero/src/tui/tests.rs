@@ -3256,3 +3256,46 @@ fn the_log_screen_names_its_file_whole_at_every_width() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// **M13 and M14: the empty wallet panel says there are none, and every fact on it names a step.**
+///
+/// With no wallets the `[o]` chip is not drawn — `o` has nothing to open — and the comment at
+/// `screens.rs:1861` claimed "the line under it says there is nothing yet" while the two rows that
+/// would have carried such a line were discarded with `let _ = (rows[1], rows[3]);`. So the panel
+/// said nowhere that the folder is empty. And its two status rows stated a fact and offered nothing:
+/// §2o rule 11 unmet twice, on the screen whose whole content is controls.
+#[test]
+fn the_empty_wallet_panel_says_there_are_none_and_every_row_names_a_step() {
+    let mut s = sim(offline_model(Screen::Wallet));
+    s.model_mut().wallets = Vec::new();
+    for (w, h) in [(120u16, 32u16), (150, 40), (70, 24)] {
+        let text = sim_text(&s, w, h);
+        let flat = flowed(&text.replace('│', " "));
+        assert!(flat.contains("No wallet is open."), "{w}x{h}:\n{text}");
+        // M13.
+        assert!(
+            flat.contains("There are no wallets on this machine yet."),
+            "{w}x{h} says nowhere that the folder is empty:\n{text}"
+        );
+        // And `[o]` is still not drawn, because it still cannot help.
+        assert!(!text.contains("[o] Open a wallet"), "{w}x{h}:\n{text}");
+        assert!(text.contains("[c] Create a wallet"), "{w}x{h}:\n{text}");
+        // M14: both status rows.
+        assert!(
+            flat.contains("Opening or creating a wallet starts it"),
+            "{w}x{h}: the service row offers nothing:\n{text}"
+        );
+        assert!(
+            flat.contains("press 1 for the Node screen"),
+            "{w}x{h}: the node row offers nothing:\n{text}"
+        );
+    }
+    // With a wallet there, the sentence goes: it would be false.
+    s.model_mut().wallets = vec!["moneroli".to_string()];
+    let text = sim_text(&s, 120, 32);
+    assert!(
+        !text.contains("There are no wallets"),
+        "the sentence must not survive a wallet appearing:\n{text}"
+    );
+    assert!(text.contains("[o] Open a wallet"), "{text}");
+}

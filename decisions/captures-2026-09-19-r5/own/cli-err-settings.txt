@@ -1,0 +1,4 @@
+$ fmonero settings get nope
+fmonero: "nope" is not one of fmonero's settings.
+  Try: fmonero settings list
+[exit 6]

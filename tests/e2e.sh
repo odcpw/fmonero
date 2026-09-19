@@ -1865,9 +1865,17 @@ if [ "$CHECKED" = 1 ]; then
   expect_json '.node.remote_probe.reachable' 'false' "the cached check says the node did not answer"
   expect_json '[.warnings[] | select(.id=="public_node_down") | .severity]' '["warn"]' \
     "  and status raises public_node_down at warn, so the bar's dot cannot stay calm (S4)"
+  # **Round 5, M19: not the same sentence as `remote_node`'s.** Both said `Pick another one on the
+  # Node screen.`, so the TUI's Notes pane showed one instruction twice under two different bullets —
+  # on the screen whose own name it was quoting. This one names the list and the key that uses it;
+  # `remote_node`'s names `l`. And `panel_action` carries the bar's version, because "in the list" is
+  # a thing the bar does not have (S7).
   expect_json '[.warnings[] | select(.id=="public_node_down") | .action]' \
-    '["Pick another one on the Node screen."]' \
-    "  with an in-app next step and no shell command (§2o.1, M13)"
+    '["Pick another node in the list and press Enter."]' \
+    "  with an in-app next step and no shell command (§2o.1, M13, M19)"
+  expect_json '[.warnings[] | select(.id=="public_node_down") | .panel_action]' \
+    '["Press n to pick another one."]' \
+    "  and the bar's own wording beside it, naming a key the panel binds (S7)"
   # `contains` on an array of strings is a SUBSTRING test in jq, and `public_node_down` contains
   # `node_down` — so the exact comparison is the only one that means what it says here.
   expect_json '[.warnings[].id] | any(. == "node_down")' 'false' \

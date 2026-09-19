@@ -1,0 +1,3 @@
+$ fmonero wallet validate notanaddress
+"notanaddress" is not a Monero address. Addresses are 95 characters and start with 4 or 8. This one is 12.
+[exit 0]

@@ -1,0 +1,10 @@
+$ fmonero status
+node    synced  127.0.0.1:18591  block 3 541 122  a node fmonero did not set up
+        peers 16 out · 3 in  14 payments across the network waiting to be mined  blockchain 118.2 GB  running 3d 15h
+wallet  open  balance 1.234567891234 XMR
+[warn] Only 96 GB free on the disk your node uses. A full copy of the blockchain needs about 120 GB, and it keeps
+  growing.
+  Try: fmonero doctor --only storage
+[warn] Your node accepted fmonero without asking for a password.
+  Try: fmonero setup --units --yes
+[exit 0]

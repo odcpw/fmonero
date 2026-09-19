@@ -2938,7 +2938,10 @@ pub(super) fn list_modal(
         key_row
     };
     lines_at(lines, inner, false, frame);
-    para(keys.to_string(), th.dimmed().bg(bg), false)
+    // One leading space, like every row above it (round 5's own read of its captures): the rows are
+    // drawn `" {part} "` and this line sat flush against the modal's border, one character out of
+    // line with the text it belongs to.
+    para(format!(" {keys}"), th.dimmed().bg(bg), false)
         .render(Rect::new(inner.x, key_row, inner.width, 1), frame);
     if let Some((input, label)) = input {
         let row = input_row;

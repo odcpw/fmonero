@@ -1,0 +1,32 @@
+  1 Node    2 Wallet    3 Send  [ 4 Log ]                                                               network mainnet
+╭ Log  follow on  /tmp/claude-1000/r5/work.fizOG3/A/bitmonero.log ─────────────────────────────────────────────────────╮
+│ / search the log                                                                                                     │
+│ 2026-09-16 14:02:09.114 I Monero 'Fluorine Fermi' (v0.18.5.1-release) started                                        │
+│ 2026-09-16 14:02:10.002 I Synced 3541122/3541122                                                                     │
+│ 2026-09-16 14:02:11.771 I [127.0.0.1:18080 OUT] NEW BLOCK 3541122                                                    │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+You left the form. 1-4 change screens, Enter goes back.
+● node synced block 3 541 122 · 16 out · 3 in ● wallet open 1.234567891234 XMR                         ⇥ screens  ? help

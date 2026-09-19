@@ -13,7 +13,10 @@ BRANCH ON code_name + reason, NEVER ON PROSE
   Every failure is {ok:false, schema, code, code_name, error, hint, reason, detail, action}.
   `detail` carries the technical text `error` no longer does — the transport's own words, the
   RPC method, a serde message — and `action` is the in-app sentence the TUI renders instead of
-  `hint`. Both are null for most errors and never absent. `reason` is a
+  `hint`. Both are null for most errors and never absent.
+  `status.warnings[]` carries the same pair plus one: `hint` for a terminal, `action` for the TUI
+  and `panel_action` for the bar panel, whose keymap is a different one. Render the field that
+  belongs to your surface; ids and reasons are what you branch on. `reason` is a
   stable discriminator WITHIN a code, because exit 3 alone covers eight unrelated conditions
   and the reflex for one of them (append --yes and retry) is wrong for the rest:
     3 needs_yes          -> re-run with --yes

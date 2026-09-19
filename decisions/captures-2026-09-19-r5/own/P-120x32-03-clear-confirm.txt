@@ -1,0 +1,32 @@
+  1 Node  [ 2 Wallet ]  3 Send    4 Log                                                                 network mainnet
+0.5000 XMR to 42ey1afD…fJJQAWDm · may already have gone out · press P to clear this record once you know
+╭ Balance ─────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 1.234567891234 XMR                                                                                                   │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭ Addresses ───────────────────────────────────╮╭ ▸ Payments  6 ───────────────────────────────────────────────────────╮
+│ #  │NAME    │ADDRESS (✓ used)                ││ / filter by address or note                                          │
+│ 0  │Primar… │42ey1afD…fJJQAWDm ✓             ││ WHEN             WHAT        AMOUNT XMR CONFIRMS SPENDABLE  NOTE     │
+│ 1  │donati… │8AsN91rz╭ Clear that record ─────────────────────────────────────────────────────╮0 not yet             │
+│ 2  │        │86kKnBKF│                                                                        │0 never               │
+│                      │ fmonero does not know whether 0.5000 XMR to 42ey1afD…fJJQAWDm went     │2 yes        coffee   │
+│                      │ out.                                                                   │2 yes                 │
+│                      │                                                                        │2 yes                 │
+│                      │ · clearing this record does not cancel anything. A payment that went   │2 not yet             │
+│                      │   out is gone                                                          │                      │
+│                      │ · while it is here, fmonero will not let you send again. That is what  │                      │
+│                      │   stops you paying twice                                               │                      │
+│                      │ · so look at your payments first, and clear this once you know         │                      │
+│                      │                                                                        │                      │
+│                      │ y to confirm · Esc cancels                                             │                      │
+│                      │                                                                        │                      │
+│                      ╰────────────────────────────────────────────────────────────────────────╯                      │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
+│                                              ││                                                                      │
+╰──────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────────────────╯
+[P] Clear that record [R] Check for payments [t] Choose which payments show [Q] QR code [x] Close wallet
+● node synced block 3 541 122 · 16 out · 3 in ● wallet payment may be out 1.234567891234 XMR           ⇥ screens  ? help

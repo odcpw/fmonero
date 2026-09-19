@@ -1,0 +1,40 @@
+[ 1 Node ]  2 Wallet    3 Send    4 Log
+╭ Node ──────────────────────────────────────────────────────────────────────╮╭ This node ───────────────────────────────────────────────────────────╮
+│ ● Public node · not checked yet · 127.0.0.1:18595                          ││ Not checked yet.                                                     │
+│ this wallet block 3 541 122 · not refreshed yet                            ││ [p] Check this node                                                  │
+│                                                                            ││                                                                      │
+│                                                                            ││                                                                      │
+│                                                                            ││                                                                      │
+│                                                                            ││                                                                      │
+│                                                                            ││                                                                      │
+│                                                                            ││                                                                      │
+│                                                                            ││                                                                      │
+╰────────────────────────────────────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────────────────╯
+╭ Public nodes ─────────────────────────────────────────────────────────────────────────────╮╭ Notes ────────────────────────────────────────────────╮
+│ No list of public nodes yet.                                                              ││ • You are using the public node 127.0.0.1:18595. It   │
+│ [f] Get the list                     ╭ Before contacting anyone ────────────────────────────────────────────╮ddress and when you ask it anything.  │
+│ Getting the list tells monero.fail yo│                                                                      │ your own node instead.               │
+│                                      │ Getting the list tells monero.fail your IP address.                  │                                      │
+│                                      │ Checking a node tells that node too. Nothing else is contacted.      │                                      │
+│                                      │                                                                      │                                      │
+│                                      │ monero.fail's figures are its own measurements. They are not a       │                                      │
+│                                      │ recommendation, and not yours.                                       │                                      │
+│                                      │                                                                      │                                      │
+│                                      │ Enter continues · Esc cancels                                        │                                      │
+│                                      │                                                                      │                                      │
+│                                      ╰──────────────────────────────────────────────────────────────────────╯                                      │
+│                                                                                           ││                                                       │
+│                                                                                           ││                                                       │
+│                                                                                           ││                                                       │
+│                                                                                           ││                                                       │
+│                                                                                           ││                                                       │
+│                                                                                           ││                                                       │
+│                                                                                           ││                                                       │
+│                                                                                           ││                                                       │
+│                                                                                           ││                                                       │
+│                                                                                           ││                                                       │
+│                                                                                           ││                                                       │
+│                                                                                           ││                                                       │
+│                                                                                           ││                                                       │
+╰───────────────────────────────────────────────────────────────────────────────────────────╯╰───────────────────────────────────────────────────────╯
+● public node 127.0.0.1:18595 ● wallet open 1.234567891234 XMR                                                                       ⇥ screens  ? help

@@ -935,7 +935,9 @@ step "§7a  the TUI fits its line budget · §6.1 the plugin fits its own"
 # not exist at all: a key, a chip, a confirm overlay and a chip row that stops dropping controls),
 # S9 (the year in the money ledger, and the 42%→40% pane split that makes room for it) and S10 (a
 # fourth node state, and the key that leaves it). Two of the eighteen DELETE code, and both deletions
-# are the fix: the picker's `width / 2` cap and `list_modal`'s two columns of phantom budget.
+# are the fix: the picker's `width / 2` cap and `list_modal`'s two columns of phantom budget. +41 more
+# from this round's own read of its own captures (measured 10 042), five of them one amount printed at
+# two precisions in one frame — the last of M1's class, and the class only a read of the output finds.
 TUI_BUDGET=10100
 if [ -d "$BIN/tui" ]; then
   TUI_FILES=()
