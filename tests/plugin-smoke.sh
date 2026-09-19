@@ -250,9 +250,9 @@ JSON
               "last_refresh_at": null },
   "pending": null,
   "warnings": [ { "id": "wallet_behind", "severity": "warn",
-                  "text": "This wallet has 240000 blocks to go.",
+                  "text": "This wallet has 240 000 blocks to go.",
                   "hint": "fmonero wallet refresh",
-                  "action": "It keeps going in the background, even after you close this window." },
+                  "action": "This keeps going in the background, even after you close this window." },
                 { "id": "wallet_stalled", "severity": "error",
                   "text": "The wallet service took too long to answer. fmonero will try again in 30s.",
                   "hint": "fmonero doctor   # or re-run the command with --force",
@@ -369,6 +369,16 @@ present "Panel.qml renders the node row from it" Panel.qml 'Model.nodeLabel'
 present "Panel.qml renders the check with its age" Panel.qml 'Model.checkedLabel'
 present "Model.headerLine is the hero's one string (§6.4)" Panel.qml 'Model.headerLine'
 present "Model.walletSyncLabel carries decision 7's line" Panel.qml 'Model.walletSyncLabel'
+# W10: decision 7 is ONE sentence, and this is the assertion that keeps the widget's copy of it
+# from drifting from `fmonero_core::SYNC_KEEPS_GOING`. The Rust const is read out of the source
+# rather than restated here, so the two cannot be edited apart.
+SYNC_SENTENCE="$(sed -n '/pub const SYNC_KEEPS_GOING/,/;$/p' \
+   "$REPO/crates/fmonero-core/src/lib.rs" | grep -oE '"[^"]+"' | tr -d '"')"
+if [ -n "$SYNC_SENTENCE" ] && grep -qF "$SYNC_SENTENCE" "$PLUGIN/Panel.qml"; then
+  ok "the widget quotes decision 7's one sentence, byte for byte (W10)"
+else
+  bad "Panel.qml must carry fmonero_core::SYNC_KEEPS_GOING verbatim: $SYNC_SENTENCE"
+fi
 present "the node toggle is inert in remote mode" Service.qml 'if (remote) { localError'
 present "cursor reports the mode" Panel.qml 'remote: svc.remote'
 # V16: the header takes the SHORT balance from Status, because §2a.5 forbids the QML from

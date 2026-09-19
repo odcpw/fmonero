@@ -252,7 +252,7 @@ fn pending_banner_text(p: &fmonero_core::PendingStatus) -> String {
     let txid: String = p
         .txs
         .first()
-        .map_or("—".into(), |t| t.txid.chars().take(8).collect());
+        .map_or("—".into(), |t| fmonero_core::short_id(&t.txid));
     format!(
         "SENDING {} XMR to {} · {} of {} sent · id {txid} · press 2 for the wallet",
         p.total_amount_xmr,
@@ -315,7 +315,8 @@ fn status_line(m: &Tui, area: Rect, frame: &mut Frame) {
     }
     if let Some(s) = &m.status {
         if let Some(h) = s.node.height {
-            spans.push(Span::styled(format!("{h} "), th.dimmed()));
+            // W7: `node synced 3541122` sat one row under a pane reading `block 3 541 122`.
+            spans.push(Span::styled(format!("block {} ", grouped(h)), th.dimmed()));
         }
         if let Some(out) = s.node.outgoing_connections_count {
             let inc = s.node.incoming_connections_count.unwrap_or(0);
@@ -579,9 +580,12 @@ fn picker_pane(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
                     (Some(r), Some(c)) => format!("{}% of {c}", (r * 100.0).round() as i64),
                     _ => "—".into(),
                 });
+                // W7: grouped, like the pane sixty columns to the right — and `3 765 172` is
+                // nine cells in a twelve-cell column, so it fits where `3765172` merely did not
+                // read as a block number.
                 cells.push(
                     n.health_last_height
-                        .map(|h| h.to_string())
+                        .map(grouped)
                         .unwrap_or_else(|| "—".into()),
                 );
             }
@@ -601,7 +605,7 @@ fn picker_pane(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
                     }
                     Some(p) if p.reachable => {
                         cells.push(opt(p.latency_ms));
-                        cells.push(opt(p.height));
+                        cells.push(p.height.map(grouped).unwrap_or_else(|| "—".into()));
                         cells.push(match p.synchronized {
                             Some(true) => "yes".into(),
                             Some(false) => "no".into(),
@@ -797,13 +801,15 @@ fn node_hero(m: &Tui, area: Rect, frame: &mut Frame) {
                     ),
                 ));
                 // Decision 7, on the screen a user watches while it happens: the scanning is
-                // inside the wallet service, so closing this window does not stop it.
+                // inside the wallet service, so closing this window does not stop it. **One
+                // sentence, from core** (W10), and wrapped — this hero is 52% of the width.
                 if let Some(line) = wallet_sync_line(s) {
                     lines.push(Line::styled(line, th.warn()));
-                    lines.push(Line::styled(
-                        "Syncing in the background. You can close this window.",
-                        th.dimmed(),
-                    ));
+                    lines.extend(
+                        wrap_words(fmonero_core::SYNC_KEEPS_GOING, inner.width as usize)
+                            .into_iter()
+                            .map(|l| Line::styled(l, th.dimmed())),
+                    );
                 }
             }
             lines_at(lines, inner, false, frame);
@@ -825,16 +831,19 @@ fn node_hero(m: &Tui, area: Rect, frame: &mut Frame) {
             );
         }
         if let Some(pct) = n.sync_percent {
+            // W7: both numbers grouped. `100%  3541122 / 3541122` was the one place the hero
+            // printed a block number the way a phone number is printed.
             let target = match (n.target_height, n.height) {
-                (Some(0), Some(h)) => h.to_string(),
-                (Some(t), _) => t.to_string(),
+                (Some(0), Some(h)) => grouped(h),
+                (Some(t), _) => grouped(t),
                 _ => "—".into(),
             };
             gauge = Some((lines.len() as u16, pct / 100.0));
+            let here = n.height.map(grouped).unwrap_or_else(|| "—".into());
             lines.push(kv(
                 th,
                 "blocks",
-                format!("{:13}{pct:.0}%  {} / {target}", "", opt(n.height)),
+                format!("{:13}{pct:.0}%  {here} / {target}", ""),
             ));
             if let Some(eta) = m.sync_eta() {
                 lines.push(kv(th, "done in", eta));
@@ -914,11 +923,11 @@ fn node_hero(m: &Tui, area: Rect, frame: &mut Frame) {
     }
 }
 
-/// A block number as a person reads it (§2o rule 9). **One implementation, three callers**: this
-/// screen, the doctor's details and the bar widget's `Model.grouped`, which is the JavaScript half
-/// of the same formatter — v5.6 moved the Rust half into `output.rs` when the doctor became the
-/// third caller (§2a.3: an invariant that lives in two places holds in one).
-pub(super) use crate::output::grouped;
+/// A block number as a person reads it (§2o rule 9). **One implementation for the whole program**
+/// — [`fmonero_core::grouped`], which W7 moved into core so that core's own warnings, the hero,
+/// the status bar, the picker, the doctor's details and the widget's `Model.grouped` all render
+/// one number one way (§2a.3: an invariant that lives in two places holds in one).
+pub(super) use fmonero_core::grouped;
 
 /// Decision 7's line, on both screens that render it and in the widget, from one formula.
 ///
@@ -1467,15 +1476,19 @@ fn wallet_header(m: &Tui, area: Rect, sync: Option<&str>, frame: &mut Frame) {
     // the two under it, which is why the pane is five rows tall while a wallet is catching up.
     if let Some(line) = sync {
         if inner.height >= 3 {
+            // W10: the sentence is core's, so this pane, the Node hero and the bar widget cannot
+            // word decision 7 three ways. Wrapped, because it is 69 characters and this pane is
+            // as narrow as the terminal.
+            let mut rows = vec![Line::styled(line.to_string(), th.warn())];
+            rows.extend(
+                wrap_words(fmonero_core::SYNC_KEEPS_GOING, inner.width as usize)
+                    .into_iter()
+                    .map(|l| Line::styled(l, th.dimmed())),
+            );
+            let h = (rows.len() as u16).min(inner.height.saturating_sub(1));
             lines_at(
-                vec![
-                    Line::styled(line.to_string(), th.warn()),
-                    Line::styled(
-                        "Syncing in the background. You can close this window.".to_string(),
-                        th.dimmed(),
-                    ),
-                ],
-                Rect::new(inner.x, inner.y + 1, inner.width, 2),
+                rows,
+                Rect::new(inner.x, inner.y + 1, inner.width, h),
                 false,
                 frame,
             );
@@ -1517,7 +1530,7 @@ fn wallet_header(m: &Tui, area: Rect, sync: Option<&str>, frame: &mut Frame) {
     }
     if let Some(behind) = w.blocks_behind.filter(|b| *b > 0) {
         spans.push(Span::styled(
-            format!("   {behind} blocks to go"),
+            format!("   {} blocks to go", grouped(behind.max(0) as u64)),
             th.dimmed(),
         ));
     }
@@ -2774,16 +2787,10 @@ fn rate(bps: u64) -> String {
     format!("{}/s", bytes(bps))
 }
 
-pub(super) fn age(seconds: u64) -> String {
-    let (h, m, s) = (seconds / 3600, (seconds % 3600) / 60, seconds % 60);
-    if h > 0 {
-        format!("{h}h {m:02}m ago")
-    } else if m > 0 {
-        format!("{m}m {s:02}s ago")
-    } else {
-        format!("{s}s ago")
-    }
-}
+/// How long ago, in one wording for the whole program (W12). The implementation is
+/// [`fmonero_core::age`]: the doctor divided seconds by 60 itself and printed `342 min ago` for
+/// a list this screen called `5h 42m ago`.
+pub(super) use fmonero_core::age;
 
 /// A unix second as `MM-DD HH:MM`; `0` (a pending row) is `—`.
 pub(super) fn short_time(unix: i64) -> String {

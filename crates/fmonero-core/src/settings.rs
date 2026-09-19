@@ -882,6 +882,18 @@ impl Settings {
         if s.wallet.dir == WalletSettings::default().dir {
             s.wallet.dir = paths.wallet_dir.join(s.node.network.as_str());
         }
+        // **The chain folder and the log follow `paths.bitmonero_dir`** (W21), the same shape
+        // `wallet.dir` follows `paths.wallet_dir` just above. Only the DEFAULTS move: a value
+        // written in `config.toml` is the authority, here as everywhere. On the owner's machine
+        // `paths.bitmonero_dir` *is* `~/.bitmonero`, so nothing changes for him; under
+        // `FMONERO_STATE_DIR` both land inside the sandbox, which is what stops a test harness
+        // from measuring his disk and reading his log.
+        if s.node.data_dir == NodeSettings::default().data_dir {
+            s.node.data_dir = paths.bitmonero_dir.clone();
+        }
+        if s.node.log_file == NodeSettings::default().log_file {
+            s.node.log_file = paths.bitmonero_dir.join("bitmonero.log");
+        }
         s.node.data_dir = expand_tilde(&s.node.data_dir, &paths.home);
         s.node.log_file = expand_tilde(&s.node.log_file, &paths.home);
         s.wallet.dir = expand_tilde(&s.wallet.dir, &paths.home);

@@ -1292,7 +1292,7 @@ fn nothing_on_the_wallet_screen_is_drawn_outside_a_frame() {
         // without this the test would pass on a screen that never rendered them.
         let text = lines.join("\n");
         assert!(
-            text.contains("You can close this window."),
+            text.contains(fmonero_core::SYNC_KEEPS_GOING),
             "{cols}x{rows}: decision 7's lines are not on screen at all:\n{text}"
         );
         for (y, line) in lines.iter().enumerate() {
@@ -1778,8 +1778,16 @@ fn the_seed_backup_modal_names_the_command_and_contains_no_seed() {
     assert!(text.contains("With the wallet closed"), "{text}");
     assert!(!text.contains("fmonero wallet close"), "{text}");
     assert!(text.contains("never shows your seed"), "{text}");
-    // No line of the modal is 25 words long, which is what a seed would be.
-    for line in render(s.model(), 110, 34) {
+    // No line of the modal is 25 words long, which is what a seed would be. The **status bar**
+    // is excluded by row, not by threshold: it is a strip of short labelled fields — two badges,
+    // a grouped block number (W7), two peer counts, a balance and a toast — and raising the
+    // word limit until that row passes is raising it past a seed.
+    let rows = render(s.model(), 110, 34);
+    let last = rows.len().saturating_sub(1);
+    for (i, line) in rows.iter().enumerate() {
+        if i == last {
+            continue;
+        }
         let words = line.split_whitespace().count();
         assert!(words < 20, "a 25-word line would be a seed: {line}");
     }
@@ -2250,6 +2258,58 @@ fn an_unreadable_settings_file_keeps_the_old_values_and_says_so_once() {
         !s.model().note.contains("Could not read your settings"),
         "the same failure was raised twice: {}",
         s.model().note
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ======================================================================================
+// The plain-language round 3 (W1–W22): the findings the 2026-09-19 verification read off a
+// real screen, each with the assertion that keeps it closed.
+// ======================================================================================
+
+/// **W21.** `FMONERO_STATE_DIR` redirected state, config and cache and left the **defaults** of
+/// `node.data_dir` and `node.log_file` at `~/.bitmonero`, so a sandbox that did not set them
+/// pointed at the owner's own chain folder. This repo's own verification opened the Log screen on
+/// `/home/oliver/.bitmonero/bitmonero.log` twice, and the doctor's `disk_space` and
+/// `node_data_dir_single_writer` probes measure the same two paths.
+///
+/// The assertion is on the **rendered screen**, not only on the setting: the Log screen's title
+/// and its empty-state line are where a reader sees which file is open.
+#[test]
+fn a_sandboxed_log_screen_never_opens_the_machines_own_chain_folder() {
+    let dir = std::env::temp_dir().join(format!(
+        "fmonero-tui-w21-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    // Deliberately NOT overriding `node.log_file`: the default is the thing under test.
+    let mut ctx = Context::for_test(&dir).expect("test context");
+    ctx.settings.node.url = "http://127.0.0.1:1".into();
+    ctx.settings.wallet.url = "http://127.0.0.1:2".into();
+    let home_chain = ctx.paths.home.join(".bitmonero");
+    assert!(
+        ctx.settings.node.data_dir.starts_with(&dir)
+            && ctx.settings.node.log_file.starts_with(&dir),
+        "the sandbox's own chain folder and log: {} / {}",
+        ctx.settings.node.data_dir.display(),
+        ctx.settings.node.log_file.display()
+    );
+    let mut s = sim(model(&ctx, Screen::Log));
+    s.send(Msg::Tick);
+    let text = sim_text(&s, 150, 40);
+    assert!(
+        text.contains("bitmonero.log"),
+        "the Log screen names the file it opened:\n{text}"
+    );
+    assert!(
+        !text.contains(&home_chain.display().to_string()),
+        "a sandbox may never render the machine's own chain folder:\n{text}"
+    );
+    assert_eq!(
+        s.model().logs.path,
+        dir.join("bitmonero/bitmonero.log"),
+        "the Log screen reads the sandbox's log"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

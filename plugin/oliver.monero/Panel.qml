@@ -627,9 +627,14 @@ Panel {
             // **Decision 7, said out loud.** The wallet keeps scanning inside the wallet service
             // whether or not the TUI is open, exactly as fbittorrent's transfers keep running when
             // its window closes, and until v5.6 nothing on either surface said so.
+            //
+            // **The sentence is `fmonero_core::SYNC_KEEPS_GOING`, byte for byte** (W10): this
+            // widget, the TUI's two screens and core's own warning said one fact three ways.
+            // `tests/plugin-smoke.sh` asserts the two literals are the same sentence.
             Text {
               textFormat: Text.PlainText; visible: svc.alive && svc.walletBehind
-              width: parent.width; text: "This keeps going in the background."
+              width: parent.width
+              text: "This keeps going in the background, even after you close this window."
               color: root.dim; font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall; wrapMode: Text.WordWrap
             }

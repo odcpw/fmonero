@@ -982,12 +982,13 @@ fn warnings(
             Severity::Warn,
             format!(
                 "This wallet has {} blocks to go.",
-                s.wallet.blocks_behind.unwrap_or(0)
+                crate::grouped(s.wallet.blocks_behind.unwrap_or(0).max(0) as u64)
             ),
             "fmonero wallet refresh",
             // Decision 7, and the whole of it: the scanning happens inside the wallet service,
-            // so closing the TUI does not stop it. Nothing on either surface said so before.
-            Some("It keeps going in the background, even after you close this window."),
+            // so closing the TUI does not stop it. **One sentence, quoted from one place**
+            // (W10): this warning, both TUI screens and the bar widget all said it differently.
+            Some(crate::SYNC_KEEPS_GOING),
         );
     }
     if s.wallet.blocks_to_unlock.is_some_and(|b| b > 0) {
@@ -1016,12 +1017,16 @@ fn warnings(
         .as_ref()
         .is_some_and(|p| p.txs.iter().any(|t| !t.relayed));
     if in_flight || pending_unreadable {
+        // **The id is shortened here and whole in `--json`** (W8): 64 hexadecimal characters
+        // rendered as prose is the shape this warning had on a bar 380 pixels wide, and it is
+        // the most serious warning the program has. `pending.txs[].txid` carries the whole of
+        // it for the agent that needs it.
         let txid = s
             .pending
             .as_ref()
             .and_then(|p| p.txs.iter().find(|t| !t.relayed))
-            .map(|t| t.txid.clone())
-            .unwrap_or_else(|| "the recorded transaction".to_string());
+            .map(|t| crate::short_id(&t.txid))
+            .unwrap_or_else(|| "the recorded payment".to_string());
         add(
             "send_may_be_in_flight",
             Severity::Error,

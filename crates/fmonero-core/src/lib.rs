@@ -70,10 +70,72 @@ pub const CONTRACT_VERSION: &str = "1.0.0";
 /// is what the Node screen's hero says.
 pub const FOREIGN_NODE_READ_ONLY: &str =
     "Another program on this machine runs this node. fmonero can read it but not change it.";
-/// The same fact stated as an observation rather than a refusal — the `foreign_node_running`
-/// warning (§5) and the doctor's `node_layout` detail (§7).
+/// The same fact stated as an observation rather than a refusal (the `foreign_node_running`
+/// warning of §5, and the doctor's `node_layout` detail of §7).
 pub const FOREIGN_NODE_INFO: &str =
     "Another program on this machine runs this node. fmonero reads it and never changes it.";
+
+/// **Decision 7, in one sentence, for every surface** (§7a.5, §6.5, W10).
+///
+/// The wallet's scanning happens inside the wallet service, so closing the TUI window or the
+/// bar's panel does not stop it. Three surfaces said that in three different wordings — the
+/// TUI's two screens, the bar widget and this crate's own `wallet_behind` warning — and a user
+/// who reads two of them cannot tell whether they describe one thing. The Rust callers quote
+/// this constant; `plugin/oliver.monero/Panel.qml` carries the same literal and
+/// `tests/plugin-smoke.sh` asserts the two are byte for byte the same sentence.
+pub const SYNC_KEEPS_GOING: &str =
+    "This keeps going in the background, even after you close this window.";
+
+/// A block number as a person reads it: `3 765 346`, a space every three digits (§2o rule 9).
+///
+/// **One implementation for the whole program** (W7). It lived in `crates/fmonero/src/output.rs`,
+/// which this crate cannot reach, so core's own warnings printed `6122 blocks to go` in the same
+/// panel as `6 122 blocks left`, and the picker, the status bar and the hero each made their own
+/// choice. The bar widget's `Model.grouped` is the JavaScript half of the same formatter, and
+/// `tests/plugin-smoke.sh` holds it to the same output.
+pub fn grouped(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(' ');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// How long ago something happened, in the words every surface uses: `5h 42m ago`, `3m 07s ago`,
+/// `12s ago` (§2o.2's "checked 2m ago").
+///
+/// **One implementation** (W12): the TUI had this and the doctor divided by 60 itself, so a
+/// five-and-a-half-hour-old list read `342 min ago` in the doctor and `5h 42m ago` on the screen.
+pub fn age(seconds: u64) -> String {
+    let (h, m, s) = (seconds / 3600, (seconds % 3600) / 60, seconds % 60);
+    if h > 0 {
+        format!("{h}h {m:02}m ago")
+    } else if m > 0 {
+        format!("{m}m {s:02}s ago")
+    } else {
+        format!("{s}s ago")
+    }
+}
+
+/// Enough of a payment id to recognise it: the first eight characters, then the last six (W8).
+///
+/// A Monero id is 64 hexadecimal characters. Printed whole it is a paragraph in a panel 380
+/// pixels wide and it wraps any terminal, which is what `send_may_be_in_flight` — the most
+/// serious warning the program has — did on the bar. The whole id stays in `--json`, where the
+/// agent that needs it reads it, and in the payment row `wallet history` prints.
+pub fn short_id(id: &str) -> String {
+    if id.chars().count() <= 16 {
+        return id.to_string();
+    }
+    let chars: Vec<char> = id.chars().collect();
+    let head: String = chars[..8].iter().collect();
+    let tail: String = chars[chars.len() - 6..].iter().collect();
+    format!("{head}…{tail}")
+}
 
 /// The whole of §5, without starting anything (see [`status::status`]).
 pub fn status(ctx: &Context) -> Result<Status, Error> {
@@ -248,6 +310,26 @@ mod tests {
         let then = rfc3339_from_unix(1_700_000_000).expect("a real instant");
         assert!(then.starts_with("2023-11-1"), "{then}");
         assert!(now_unix() > 1_700_000_000);
+    }
+
+    /// W7, W12, W8: the three formatters every surface shares, so a second implementation is a
+    /// test failure rather than a screen a reader has to reconcile.
+    #[test]
+    fn the_shared_formatters_render_the_way_every_surface_promises() {
+        assert_eq!(grouped(3_541_122), "3 541 122");
+        assert_eq!(grouped(6_122), "6 122");
+        assert_eq!(grouped(0), "0");
+        assert_eq!(grouped(999), "999");
+        assert_eq!(age(20_520), "5h 42m ago");
+        assert_eq!(age(187), "3m 07s ago");
+        assert_eq!(age(0), "0s ago");
+        let id = "bbbb1111222233334444555566667777888899990000aaaabbbbccccddddeeee";
+        assert_eq!(short_id(id), "bbbb1111…ddeeee");
+        assert_eq!(short_id("short"), "short");
+        assert!(
+            !short_id(id).contains(&id[20..40]),
+            "the middle of the id is what the shortening removes"
+        );
     }
 
     #[test]

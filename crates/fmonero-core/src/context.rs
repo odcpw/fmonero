@@ -153,6 +153,8 @@ impl Context {
         paths.systemd_user_dir = dir.join("systemd/user");
         paths.local_bin = dir.join("bin");
         paths.wallet_dir = dir.join("wallets");
+        // W21: and the chain folder and the log, which `Settings::load` derives from this.
+        paths.bitmonero_dir = dir.join("bitmonero");
         let settings = Settings::load(&paths)?;
         let timeouts = Timeouts::from_settings(&settings.timeouts);
         let mut ctx = Context {
@@ -250,6 +252,18 @@ mod tests {
             "and wallet.dir must be ABSENT, or the CreateDir action of §4.2 is unobservable"
         );
         assert!(ctx.settings.wallet.dir.ends_with("mainnet"));
+        // W21: nor the owner's chain folder, and nor his node's log — the two defaults that
+        // `FMONERO_STATE_DIR` used to leave pointing at `~/.bitmonero`.
+        assert!(
+            ctx.settings.node.data_dir.starts_with(&dir),
+            "nor ~/.bitmonero: {}",
+            ctx.settings.node.data_dir.display()
+        );
+        assert!(
+            ctx.settings.node.log_file.starts_with(&dir),
+            "nor the owner's node log: {}",
+            ctx.settings.node.log_file.display()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

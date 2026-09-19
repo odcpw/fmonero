@@ -150,22 +150,13 @@ impl Out {
 
 // ---------------------------------------------------------------- formatters
 
-/// A block number as a person reads it: `3 765 346`, a space every three digits, the same grouping
-/// the bar widget's `Model.grouped` applies (§2o rule 9).
+/// A block number as a person reads it: `3 765 346`, a space every three digits (§2o rule 9).
 ///
-/// It lives here rather than in the TUI because v5.6 gave it a third caller — the doctor's details,
-/// which printed `3541122` while the pane sixty columns away printed `3 541 122` (DECISIONS, V5).
-pub fn grouped(n: u64) -> String {
-    let digits = n.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(' ');
-        }
-        out.push(c);
-    }
-    out
-}
+/// **The implementation is [`fmonero_core::grouped`]** and this is a re-export (W7). It lived
+/// here while the callers were the TUI and the doctor; core's own warnings were the caller that
+/// could not reach it, so `This wallet has 6122 blocks to go.` stood in the same panel as
+/// `6 122 blocks left`. One formatter, in the crate every surface already depends on.
+pub use fmonero_core::grouped;
 
 /// `1.5 GB`, `842 kB` — decimal units, the way a disk meter reads.
 ///
@@ -291,12 +282,55 @@ pub fn human(out: &Out, label: &str, value: &serde_json::Value) {
     }
 }
 
-/// `fmonero status` in human form, rendered from the §5 document's JSON so that the
-/// document stays the single source of truth (§5).
-pub fn status_human(out: &Out, v: &serde_json::Value) {
-    let node = &v["node"];
-    let wallet = &v["wallet"];
-    let node_badge = if node["reachable"] == serde_json::Value::Bool(true) {
+/// The node's two rows **with a public node** (W3).
+///
+/// §2m.3 makes `node.reachable` and `node.synchronized` **`null`** here, because fmonero never
+/// asks a public node anything — the wallet service does. Reading `reachable != true` therefore
+/// printed `not answering` about a node nobody had contacted, in the first word of the first line
+/// of the first command, with six `—` under it. The measurement that does exist is the cached
+/// check (§5's `node.remote_probe`), which is what the TUI's ` This node ` pane, the widget's
+/// `Checked` row and the doctor's `node_layout` row all render from the same document.
+fn public_node_rows(out: &Out, node: &serde_json::Value) {
+    let probe = &node["remote_probe"];
+    let reachable = probe["reachable"] == serde_json::Value::Bool(true);
+    let badge = if probe.is_null() {
+        out.paint("public node · not checked yet", Paint::Dim)
+    } else if !reachable {
+        out.paint("public node · no answer", Paint::Yellow)
+    } else if probe["synchronized"] == serde_json::Value::Bool(true) {
+        out.paint("public node · synced", Paint::Green)
+    } else if probe["synchronized"] == serde_json::Value::Bool(false) {
+        out.paint("public node · syncing", Paint::Yellow)
+    } else {
+        out.paint("public node · answered", Paint::Green)
+    };
+    out.line(format!("node    {badge}  {}", cell(&node["url"])));
+    // The second row carries what the check measured, or nothing at all. Six `—` for fields that
+    // have no source with a public node is the shape §6.5 deleted from the widget: a row that
+    // carries no information for the state the reader is in.
+    if probe.is_null() {
+        return;
+    }
+    let age = probe["age_sec"]
+        .as_i64()
+        .map(|a| fmonero_core::age(a.max(0) as u64))
+        .unwrap_or_else(|| "—".to_string());
+    let mut fields = Vec::new();
+    if reachable {
+        if let Some(h) = probe["height"].as_u64() {
+            fields.push(format!("block {}", grouped(h)));
+        }
+        if let Some(ms) = probe["latency_ms"].as_u64() {
+            fields.push(format!("answered in {ms} ms"));
+        }
+    }
+    fields.push(format!("checked {age}"));
+    out.line(format!("        {}", fields.join("  ")));
+}
+
+/// The node's two rows **with your own node** — every field here has a live source (§5).
+fn own_node_rows(out: &Out, node: &serde_json::Value) {
+    let badge = if node["reachable"] == serde_json::Value::Bool(true) {
         if node["synchronized"] == serde_json::Value::Bool(true) {
             out.paint("synced", Paint::Green)
         } else {
@@ -308,15 +342,16 @@ pub fn status_human(out: &Out, v: &serde_json::Value) {
     // `layout` is the JSON key and its values are internal words (§2o rule 5): the human row
     // says which node it is instead.
     let whose = match node["layout"].as_str() {
-        Some("remote") => "public node",
-        Some("none") => "none",
+        Some("none") => "no node is set up yet",
         _ => "your own node",
     };
     out.line(format!(
-        "node    {}  {}  block {}  {whose}",
-        node_badge,
+        "node    {badge}  {}  block {}  {whose}",
         cell(&node["url"]),
-        cell(&node["height"])
+        node["height"]
+            .as_u64()
+            .map(grouped)
+            .unwrap_or_else(|| "—".to_string())
     ));
     let size = node["database_size"]
         .as_u64()
@@ -335,6 +370,18 @@ pub fn status_human(out: &Out, v: &serde_json::Value) {
         size,
         up
     ));
+}
+
+/// `fmonero status` in human form, rendered from the §5 document's JSON so that the
+/// document stays the single source of truth (§5).
+pub fn status_human(out: &Out, v: &serde_json::Value) {
+    let node = &v["node"];
+    let wallet = &v["wallet"];
+    if node["layout"].as_str() == Some("remote") {
+        public_node_rows(out, node);
+    } else {
+        own_node_rows(out, node);
+    }
     let wallet_badge = if wallet["open"] == serde_json::Value::Bool(true) {
         out.paint("open", Paint::Green)
     } else if wallet["reachable"] == serde_json::Value::Bool(true) {
@@ -388,6 +435,15 @@ pub fn status_human(out: &Out, v: &serde_json::Value) {
 fn footers(label: &str, v: &serde_json::Value) -> Vec<String> {
     let mut out = Vec::new();
     match label {
+        // W3: with a public node the node rows are the cached check, and when there is no check
+        // yet the one line that changes that is the useful thing to say.
+        "status"
+            if v["node"]["layout"].as_str() == Some("remote")
+                && v["node"]["remote_probe"].is_null() =>
+        {
+            out.push("this public node has not been checked yet".to_string());
+            out.push("Try: fmonero status --check-node".to_string());
+        }
         "wallet history" => {
             if v["cached"] == serde_json::Value::Bool(true) {
                 out.push("from the saved copy: confirmation counts are not known".to_string());

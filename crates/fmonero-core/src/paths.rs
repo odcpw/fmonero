@@ -31,7 +31,14 @@ pub struct Paths {
     /// login file (§2c). Follows `FMONERO_STATE_DIR`, so a test's `run_dir` and a real
     /// unit's `WorkingDirectory` deliberately diverge (§4.2).
     pub run_dir: PathBuf,
-    /// `~/.bitmonero` — Monero's own default data dir (§1b.1).
+    /// `~/.bitmonero` — Monero's own default data dir (§1b.1) — or `state_dir/bitmonero` when
+    /// `FMONERO_STATE_DIR` is set (W21).
+    ///
+    /// **This is what `node.data_dir` and `node.log_file` default to** (`Settings::load`), which
+    /// is why the redirect is here rather than in each caller: `FMONERO_STATE_DIR` redirected
+    /// state, config and cache, and left those two defaults pointing at the owner's own chain
+    /// folder — so a sandbox that did not set them measured his disk, read his log and opened it
+    /// on the Log screen. Three rounds of this repo's own verification did exactly that.
     pub bitmonero_dir: PathBuf,
     /// `~/.config/systemd/user` — where `setup --units` writes the two units (§4.2) — or
     /// `FMONERO_SYSTEMD_USER_DIR` when `FMONERO_STATE_DIR` is also set (§2i's test seam,
@@ -127,13 +134,21 @@ impl Paths {
             Some(p) if under_test_state_dir() => p,
             _ => xdg_config.join("systemd/user"),
         };
+        // W21: a sandbox's chain folder and log are the sandbox's. Without this the DEFAULTS of
+        // `node.data_dir` and `node.log_file` are the owner's `~/.bitmonero`, whatever else the
+        // environment redirects.
+        let bitmonero_dir = if under_test_state_dir() {
+            state_dir.join("bitmonero")
+        } else {
+            home.join(".bitmonero")
+        };
         Ok(Paths {
             run_dir: state_dir.join("run"),
             state_dir,
             config_dir,
             cache_dir,
             wallet_dir,
-            bitmonero_dir: home.join(".bitmonero"),
+            bitmonero_dir,
             systemd_user_dir,
             omarchy_config_dir: xdg_config.join("omarchy"),
             local_bin: home.join(".local/bin"),
