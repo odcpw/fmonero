@@ -342,7 +342,13 @@ fn own_node_rows(out: &Out, node: &serde_json::Value) {
     };
     // `layout` is the JSON key and its values are internal words (§2o rule 5): the human row
     // says which node it is instead.
+    // `none` means fmonero set nothing up — and something may still be answering on that port,
+    // which is a different fact from "there is no node" (self-read, round 3: this row read
+    // `node  synced  127.0.0.1:18491  block 3 541 122  no node is set up yet`).
     let whose = match node["layout"].as_str() {
+        Some("none") if node["reachable"] == serde_json::Value::Bool(true) => {
+            "a node fmonero did not set up"
+        }
         Some("none") => "no node is set up yet",
         _ => "your own node",
     };
@@ -362,8 +368,10 @@ fn own_node_rows(out: &Out, node: &serde_json::Value) {
         .as_i64()
         .map(human_uptime)
         .unwrap_or_else(|| "—".to_string());
+    // `disk {database_size}` labelled the chain's own size as free space (self-read, round 3):
+    // `disk 118.2 GB` beside a warning that 96 GB were free.
     out.line(format!(
-        "        synced {}%  peers {} out / {} in  waiting {}  disk {}  running {}",
+        "        synced {}%  peers {} out / {} in  waiting {}  blockchain {}  running {}",
         cell(&node["sync_percent"]),
         cell(&node["outgoing_connections_count"]),
         cell(&node["incoming_connections_count"]),
@@ -383,20 +391,34 @@ pub fn status_human(out: &Out, v: &serde_json::Value) {
     } else {
         own_node_rows(out, node);
     }
-    let wallet_badge = if wallet["open"] == serde_json::Value::Bool(true) {
-        out.paint("open", Paint::Green)
+    // The wallet row, and **only what is known** (self-read, round 3): with nothing open it read
+    // `wallet  not running  http://127.0.0.1:18083  —  balance — XMR` — a loopback URL, a dash
+    // where the name goes and a dash where the money goes, which is the shape §6.5 deleted from
+    // the widget and W3 deleted from the node row above. The URL stays in `--json`.
+    let (badge, rest) = if wallet["open"] == serde_json::Value::Bool(true) {
+        // The name only when there is one: `wallet  open  —  balance …` put a dash where the
+        // wallet's name goes (self-read, round 3). fmonero records the name when it opens one
+        // itself, and a wallet opened another way has none to show.
+        let name = match wallet["name"].as_str() {
+            Some(n) => format!("{n}  "),
+            None => String::new(),
+        };
+        (
+            out.paint("open", Paint::Green),
+            format!("{name}balance {} XMR", cell(&wallet["balance_xmr"])),
+        )
     } else if wallet["reachable"] == serde_json::Value::Bool(true) {
-        out.paint("closed", Paint::Yellow)
+        (
+            out.paint("closed", Paint::Yellow),
+            "the wallet service is running, with nothing open".to_string(),
+        )
     } else {
-        out.paint("not running", Paint::Dim)
+        (
+            out.paint("not running", Paint::Dim),
+            "it starts when you open a wallet".to_string(),
+        )
     };
-    out.line(format!(
-        "wallet  {}  {}  {}  balance {} XMR",
-        wallet_badge,
-        cell(&wallet["url"]),
-        cell(&wallet["name"]),
-        cell(&wallet["balance_xmr"])
-    ));
+    out.line(format!("wallet  {badge}  {rest}"));
     if let Some(p) = v["pending"].as_object() {
         out.line(out.paint(
             &format!(
@@ -560,10 +582,11 @@ fn history_human(out: &Out, v: &serde_json::Value) {
         "locked"
     ));
     for t in rows {
+        // `2026-09-16T14:01` is a machine timestamp cut in half; the `T` is not a word.
         let when = t["timestamp"]
             .as_i64()
             .and_then(fmonero_core::rfc3339_from_unix)
-            .map(|s| s.chars().take(16).collect::<String>())
+            .map(|s| s.chars().take(16).collect::<String>().replace('T', " "))
             .unwrap_or_else(|| "—".to_string());
         // The kind **in words** and the lock as a word, not as a JSON value: this table printed
         // `block` for a mining reward, `pool` for one waiting to be mined and `true` under
@@ -594,9 +617,17 @@ fn history_human(out: &Out, v: &serde_json::Value) {
     }
     // `high_water` is the snapshot's own bookkeeping and stays in `--json` (§2o rule 7).
     out.line(format!(
-        "{} payments · saved copy {}s old",
+        "{} {} · saved copy written {}",
         rows.len(),
-        cell(&v["cache_age_sec"])
+        if rows.len() == 1 {
+            "payment"
+        } else {
+            "payments"
+        },
+        v["cache_age_sec"]
+            .as_u64()
+            .map(fmonero_core::age)
+            .unwrap_or_else(|| "at an unknown time".to_string())
     ));
 }
 
@@ -683,17 +714,55 @@ fn list_human(out: &Out, v: &serde_json::Value) {
 const NO_ANSWER: &str = "— this node does not answer that";
 
 fn peers_human(out: &Out, v: &serde_json::Value) {
+    // A header, grouped block numbers, and **times a person can read**: this table printed
+    // `block 3541122`, `8412s` and `last seen 1789560101` — a raw unix second, in the column whose
+    // whole content is when (self-read, round 3).
+    fn plural(n: usize, one: &'static str, many: &'static str) -> &'static str {
+        if n == 1 {
+            one
+        } else {
+            many
+        }
+    }
     match v["connections"].as_array() {
         Some(rows) => {
-            out.line(format!("{} peers connected", rows.len()));
+            out.line(format!(
+                "{} {} connected",
+                rows.len(),
+                plural(rows.len(), "peer", "peers")
+            ));
+            out.line(out.paint(
+                &format!(
+                    "  {}  {}  {}  {}  {}  {}",
+                    pad("host", 40),
+                    pad("port", 6),
+                    pad("state", 14),
+                    pad("block", 11),
+                    pad("connected", 9),
+                    "average ↓ ↑"
+                ),
+                Paint::Dim,
+            ));
             for c in rows {
                 out.line(format!(
-                    "  {}  {}  {}  block {}  {}s  ↓{} ↑{}",
+                    "  {}  {}  {}  {}  {}  ↓{} ↑{}",
                     pad(&cell(&c["host"]), 40),
                     pad(&cell(&c["port"]), 6),
-                    pad(&cell(&c["state"]), 12),
-                    cell(&c["height"]),
-                    cell(&c["live_time"]),
+                    pad(&cell(&c["state"]), 14),
+                    pad(
+                        &c["height"]
+                            .as_u64()
+                            .map(grouped)
+                            .unwrap_or_else(|| "—".to_string()),
+                        11
+                    ),
+                    pad(
+                        &c["live_time"]
+                            .as_i64()
+                            .map(human_uptime)
+                            .unwrap_or_else(|| "—".to_string()),
+                        9
+                    ),
                     human_bytes(c["avg_download"].as_u64().unwrap_or(0)),
                     human_bytes(c["avg_upload"].as_u64().unwrap_or(0)),
                 ));
@@ -704,13 +773,22 @@ fn peers_human(out: &Out, v: &serde_json::Value) {
     for (key, title) in [("white", "known peers"), ("gray", "other peers")] {
         match v[key].as_array() {
             Some(rows) => {
-                out.line(format!("{title}: {} peer(s)", rows.len()));
+                out.line(format!(
+                    "{title}: {} {}",
+                    rows.len(),
+                    plural(rows.len(), "peer", "peers")
+                ));
                 for p in rows {
                     out.line(format!(
                         "  {}:{}  last seen {}",
                         cell(&p["host"]),
                         cell(&p["port"]),
-                        cell(&p["last_seen"])
+                        p["last_seen"]
+                            .as_i64()
+                            .map(
+                                |t| fmonero_core::age((fmonero_core::now_unix() - t).max(0) as u64)
+                            )
+                            .unwrap_or_else(|| "—".to_string())
                     ));
                 }
             }
@@ -739,9 +817,14 @@ fn node_info_human(out: &Out, v: &serde_json::Value) {
         return;
     }
     own_node_rows(out, node);
+    out.line(format!(
+        "        version {} · {}",
+        cell(&node["version"]),
+        cell(&node["nettype"])
+    ));
     if let Some(p) = v["txpool"].as_object() {
         out.line(format!(
-            "        waiting {} to be mined  {}  fees {} XMR  {} double spends",
+            "        {} payments waiting to be mined  {}  fees {} XMR  {} double spends",
             cell(&p["txs_total"]),
             p["bytes_total"]
                 .as_u64()
@@ -752,17 +835,19 @@ fn node_info_human(out: &Out, v: &serde_json::Value) {
         ));
     }
     if let Some(sync) = v["sync"].as_object() {
+        // **Both of these are arrays**, and `cell` renders an array by joining its elements —
+        // which printed every field of every peer as one row (self-read, round 3). What a reader
+        // wants from them is how many.
+        let count = |k: &str| {
+            sync[k]
+                .as_array()
+                .map(|a| a.len().to_string())
+                .unwrap_or_else(|| "—".to_string())
+        };
         out.line(format!(
-            "        fetching blocks from {} peers  {} in progress",
-            cell(&sync["peers"]),
-            cell(&sync["spans"]),
-        ));
-    }
-    if let Some(rpc) = v["rpc"].as_object() {
-        // The fork numbers are Monero's own bookkeeping and stay in `--json` (§2o rule 5).
-        out.line(format!(
-            "        this node runs Monero {}",
-            cell(&rpc["release"])
+            "        fetching blocks from {} peers, {} stretches in progress",
+            count("peers"),
+            count("spans"),
         ));
     }
 }
@@ -957,7 +1042,13 @@ fn settings_human(out: &Out, v: &serde_json::Value) {
             s => s,
         };
         let value = shown(&r["value"]);
-        let default = shown(&r["default"]);
+        // `default_here` is the pattern resolved for this machine, which is the only default a
+        // value can honestly be compared against (self-read, round 3).
+        let default = shown(if r["default_here"].is_null() {
+            &r["default"]
+        } else {
+            &r["default_here"]
+        });
         let marker = if value == default { " " } else { "*" };
         out.line(format!(
             "{marker} {}  {}",

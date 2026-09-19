@@ -757,6 +757,30 @@ fn parse_dir(key: &str, value: &str) -> Result<PathBuf, Error> {
     Ok(p)
 }
 
+/// The defaults that are computed from this machine's paths rather than written in
+/// [`Settings::KEYS`]: the wallet directory (§4's per-network default) and, since W21, the chain
+/// folder and the node log, which follow `Paths::bitmonero_dir` and therefore the sandbox when
+/// `FMONERO_STATE_DIR` is set.
+///
+/// **Only the defaults move.** A value written in `config.toml` is the authority, here as
+/// everywhere: each branch fires only while the field still holds the table's own default.
+/// Computing `wallet.dir` from `$HOME` instead of from `paths.wallet_dir` was a second,
+/// independent statement of one default — the two agree only while `XDG_DATA_HOME` is
+/// `~/.local/share`, and `setup --units` derives its own `want_dir` from `paths.wallet_dir`
+/// (§4.2), so anywhere else the two disagreed and `setup --units` planned a settings change on a
+/// machine that needed none.
+fn derive_machine_defaults(s: &mut Settings, paths: &Paths) {
+    if s.wallet.dir == WalletSettings::default().dir {
+        s.wallet.dir = paths.wallet_dir.join(s.node.network.as_str());
+    }
+    if s.node.data_dir == NodeSettings::default().data_dir {
+        s.node.data_dir = paths.bitmonero_dir.clone();
+    }
+    if s.node.log_file == NodeSettings::default().log_file {
+        s.node.log_file = paths.bitmonero_dir.join("bitmonero.log");
+    }
+}
+
 impl Settings {
     /// `(key, default, one-line doc)` — the §4 table (§5b).
     pub const KEYS: &'static [(&'static str, &'static str, &'static str)] = KEY_TABLE;
@@ -872,28 +896,12 @@ impl Settings {
                 )))
             }
         };
-        // The default wallet directory carries the network segment (§4), and it is derived from
-        // **`paths.wallet_dir`** — `$XDG_DATA_HOME/fmonero/wallets`, which §5b calls "the default
-        // root of the per-network wallet directories". Computing it from `$HOME` here instead was
-        // a second, independent statement of one default: the two agree only while
-        // `XDG_DATA_HOME` is `~/.local/share`, and `setup --units` derives its own `want_dir`
-        // from `paths.wallet_dir` (§4.2), so anywhere else the two disagreed and `setup --units`
-        // planned a settings change on a machine that needed none.
-        if s.wallet.dir == WalletSettings::default().dir {
-            s.wallet.dir = paths.wallet_dir.join(s.node.network.as_str());
-        }
-        // **The chain folder and the log follow `paths.bitmonero_dir`** (W21), the same shape
-        // `wallet.dir` follows `paths.wallet_dir` just above. Only the DEFAULTS move: a value
-        // written in `config.toml` is the authority, here as everywhere. On the owner's machine
-        // `paths.bitmonero_dir` *is* `~/.bitmonero`, so nothing changes for him; under
-        // `FMONERO_STATE_DIR` both land inside the sandbox, which is what stops a test harness
-        // from measuring his disk and reading his log.
-        if s.node.data_dir == NodeSettings::default().data_dir {
-            s.node.data_dir = paths.bitmonero_dir.clone();
-        }
-        if s.node.log_file == NodeSettings::default().log_file {
-            s.node.log_file = paths.bitmonero_dir.join("bitmonero.log");
-        }
+        // The three defaults this machine computes rather than the table stating them: the
+        // per-network wallet directory (§4, §5b's "default root of the per-network wallet
+        // directories"), the chain folder and the node log. One function, shared with
+        // `default_here`, so `settings list` can tell a value the user changed from a default
+        // that is a pattern rather than a value.
+        derive_machine_defaults(&mut s, paths);
         s.node.data_dir = expand_tilde(&s.node.data_dir, &paths.home);
         s.node.log_file = expand_tilde(&s.node.log_file, &paths.home);
         s.wallet.dir = expand_tilde(&s.wallet.dir, &paths.home);
@@ -934,6 +942,29 @@ impl Settings {
     }
 
     /// The documented default of one key, as `settings list` prints it.
+    /// The default a key resolves to **on this machine** (`settings list`).
+    ///
+    /// Three of the defaults in [`Settings::KEYS`] are patterns rather than values —
+    /// `~/.bitmonero`, `~/.bitmonero/bitmonero.log` and
+    /// `~/.local/share/fmonero/wallets/<network>` — so comparing a loaded value against the table
+    /// marked all three as "changed from the default" on a machine where nobody had changed
+    /// anything (self-read, round 3: `settings list` printed `*` against `node.data_dir`). This
+    /// resolves them through [`derive_machine_defaults`], the same function `load` uses.
+    pub fn default_here(key: &str, paths: &Paths, network: Network) -> Option<String> {
+        let mut s = Settings {
+            node: NodeSettings {
+                network,
+                ..NodeSettings::default()
+            },
+            ..Settings::default()
+        };
+        derive_machine_defaults(&mut s, paths);
+        s.node.data_dir = expand_tilde(&s.node.data_dir, &paths.home);
+        s.node.log_file = expand_tilde(&s.node.log_file, &paths.home);
+        s.wallet.dir = expand_tilde(&s.wallet.dir, &paths.home);
+        s.get(key).ok()
+    }
+
     pub fn default_of(key: &str) -> Option<&'static str> {
         Self::KEYS
             .iter()

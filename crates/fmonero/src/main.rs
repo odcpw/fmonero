@@ -2196,7 +2196,17 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                         serde_json::json!({
                             "key": key,
                             "value": ctx.settings.get(key).unwrap_or_default(),
+                            // The table's own default, unchanged: it is the agent contract, and
+                            // three of them are patterns (`~/.bitmonero`, `…/wallets/<network>`).
                             "default": default,
+                            // What that pattern resolves to on THIS machine, which is what the
+                            // human row compares against and prints — otherwise a value nobody
+                            // changed is marked `*` (self-read, round 3).
+                            "default_here": fmonero_core::Settings::default_here(
+                                key,
+                                &ctx.paths,
+                                ctx.settings.node.network,
+                            ),
                             "doc": doc,
                         })
                     })

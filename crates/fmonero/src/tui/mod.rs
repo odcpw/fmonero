@@ -2396,14 +2396,16 @@ impl Tui {
             Confirm::NodeUp => (" Start your node ", ""),
             Confirm::NodeDown => (" Stop your node ", ""),
             Confirm::NodeLocal => (" Use your own node ", ""),
+            // One row is enough here — it has one fact to state — but it states the same two
+            // keys as every other confirm (self-read, round 3: it named `y` and not `Esc`).
             Confirm::LogLevel(l) => (
                 " How much your node logs ",
                 match l {
-                    0 => "set it to 0, where 0 is quietest · y confirms",
-                    1 => "set it to 1, where 0 is quietest · y confirms",
-                    2 => "set it to 2, where 0 is quietest · y confirms",
-                    3 => "set it to 3, where 0 is quietest · y confirms",
-                    _ => "set it to 4, where 0 is quietest · y confirms",
+                    0 => "Set it to 0, the quietest. y to confirm · Esc cancels",
+                    1 => "Set it to 1, where 0 is quietest. y to confirm · Esc cancels",
+                    2 => "Set it to 2, where 0 is quietest. y to confirm · Esc cancels",
+                    3 => "Set it to 3, where 0 is quietest. y to confirm · Esc cancels",
+                    _ => "Set it to 4, the noisiest. y to confirm · Esc cancels",
                 },
             ),
         };
@@ -2943,7 +2945,10 @@ impl Model for Tui {
                         self.picker.progress = None;
                         self.picker.err = None;
                         self.note(
-                            format!("{} public nodes in the list.", list.nodes.len()),
+                            match list.nodes.len() {
+                                1 => "1 public node in the list.".to_string(),
+                                n => format!("{n} public nodes in the list."),
+                            },
                             false,
                         );
                         self.picker.list = Some(*list);
