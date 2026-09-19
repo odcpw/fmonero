@@ -1865,7 +1865,7 @@ fn history_cache_fresh(p: &Probes) -> Verdict {
         return Verdict::warn(
             "bad_magic",
             "The saved copy of your payments does not begin the way fmonero's own files do: it \
-             is damaged, or it belongs to another program. Nothing is lost — fmonero ignores it \
+             is damaged, or it belongs to another program. Nothing is lost: fmonero ignores it \
              and asks your wallet again.",
         )
         .cmd("fmonero wallet history --limit 1   # writes the saved copy again");

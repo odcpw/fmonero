@@ -539,16 +539,7 @@ fn node_screen(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
 
 /// §2n.4's machine reason, as a person reads it (§2o rule 5). The reason string itself is the
 /// discriminator `node list --json` carries and agents branch on; this is the cell.
-pub(super) fn probe_reason(reason: Option<&'static str>) -> &'static str {
-    match reason {
-        Some("timed_out") => "too slow",
-        Some("refused") => "refused",
-        Some("bad_json") => "bad answer",
-        Some("cancelled") => "stopped",
-        Some(_) => "no answer",
-        None => "no answer",
-    }
-}
+pub(super) use fmonero_core::nodes::probe_reason_words as probe_reason;
 
 /// The public-node picker (§7a.4, v5.5) — the Node screen's lower pane, in both modes.
 ///
@@ -1066,20 +1057,22 @@ fn node_hero(m: &Tui, area: Rect, frame: &mut Frame) {
 /// one number one way (§2a.3: an invariant that lives in two places holds in one).
 pub(super) use fmonero_core::grouped;
 
-/// Decision 7's line, on both screens that render it and in the widget, from one formula.
-///
-/// `None` when the wallet is not behind, or when either height is unknown — a percentage
-/// computed from a missing node height would be the rendered untruth §2j forbids. The node's
-/// height is the live `get_info` with your own node and the **cached check's** with a public
-/// one, which is the only source there is (§5's `node.remote_probe`).
 /// How long ago fmonero last checked this wallet for payments, in the node pane's own words
-/// (v5.6, V5). `None` when no refresh has been recorded, which the caller renders as `not yet`
-/// rather than as `—`: the dash means "unknown", and this is known and simply has not happened.
+/// (v5.6, V5). `None` when no refresh has been recorded, which the caller renders as
+/// `not refreshed yet` rather than as `—`: the dash means "unknown", and this is known and simply
+/// has not happened (W5).
 fn refreshed_age(s: &Status) -> Option<String> {
     let at = fmonero_core::unix_from_rfc3339(s.wallet.last_refresh_at.as_deref()?)?;
     Some(age((fmonero_core::now_unix() - at).max(0) as u64))
 }
 
+/// Decision 7's line, on both screens that render it and in the widget, from one formula (W22
+/// moved this comment back onto the function it describes: `refreshed_age` was inserted above it).
+///
+/// `None` when the wallet is not behind, or when either height is unknown: a percentage computed
+/// from a missing node height would be the rendered untruth §2j forbids. The node's height is the
+/// live `get_info` with your own node and the **cached check's** with a public one, which is the
+/// only source there is (§5's `node.remote_probe`).
 pub(super) fn wallet_sync_line(s: &Status) -> Option<String> {
     let wallet = s.wallet.height?;
     let node = s.node.height.or_else(|| {
@@ -1522,7 +1515,7 @@ fn wallet_empty(m: &Tui, area: Rect, frame: &mut Frame) {
     // away for the one reader who wants it.
     let open_label = match m.wallets.len() {
         0 => {
-            "Open a wallet     (no wallets on this machine yet — press c to create one)".to_string()
+            "Open a wallet     (no wallets on this machine yet. Press c to create one)".to_string()
         }
         n => {
             let names = m.wallets.join(", ");
@@ -1931,7 +1924,7 @@ fn detail_modal(m: &Tui, frame: &mut Frame) {
         return;
     };
     let h = 13 + t.destinations.len() as u16;
-    let Some(inner) = overlay(m, frame, 76, h, " Payment — n edits the note · Esc closes ")
+    let Some(inner) = overlay(m, frame, 76, h, " Payment · n edits the note · Esc closes ")
     else {
         return;
     };
@@ -2465,7 +2458,7 @@ fn local_node_modal(m: &Tui, frame: &mut Frame) {
     }
     if !node_up {
         text.push((
-            "Your own node is not running yet. Switching will not start it — press u after this."
+            "Your own node is not running yet. Switching will not start it. Press u after this."
                 .to_string(),
             th.warn(),
         ));
@@ -2548,7 +2541,7 @@ fn add_node_modal(m: &Tui, input: &TextInput, frame: &mut Frame) {
         )
     } else {
         match fmonero_core::settings::Settings::parse_remote_address(typed) {
-            Ok(addr) => (format!("{addr} — press Enter to add it"), th.ok().bg(bg)),
+            Ok(addr) => (format!("{addr} · press Enter to add it"), th.ok().bg(bg)),
             Err(e) => (e.to_string(), th.err().bg(bg)),
         }
     };
@@ -2628,7 +2621,7 @@ fn qr_modal(m: &Tui, address: &str, frame: &mut Frame) {
         frame,
         side + 4,
         qr_rows + text_rows + 4,
-        " Receive — Esc closes ",
+        " Receive · Esc closes ",
     ) else {
         return;
     };

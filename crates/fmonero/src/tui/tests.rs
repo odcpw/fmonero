@@ -1662,7 +1662,7 @@ fn the_add_node_modal_validates_as_you_type_and_shows_the_key_that_commits() {
     type_str(&mut s, "node.example.com:18089");
     let text = sim_text(&s, 120, 32);
     assert!(
-        text.contains("node.example.com:18089 — press Enter to add it"),
+        text.contains("node.example.com:18089 · press Enter to add it"),
         "a valid address is not confirmed:\n{text}"
     );
 }

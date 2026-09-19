@@ -1165,13 +1165,15 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                                 "rpc": serde_json::Value::Null,
                             })),
                         );
-                        // What cannot be known, said rather than implied (§2j): no wallet-RPC
-                        // method reports a daemon's height, sync state or nettype (§1b.9 item 5).
+                        // What cannot be known, said rather than implied (§2j, W20): nothing this
+                        // machine can ask reports a public node's own block, sync state or network
+                        // (§1b.9 item 5). The old sentence said it with two banned words and an
+                        // em-dash; the rows above now carry the cached check instead of dashes.
                         out.note(format!(
-                            "remote node {} — its own height and sync state are not observable \
-                         through monero-wallet-rpc, and nothing verifies that it is on {}",
-                            s.node.url, ctx.settings.node.network
+                            "fmonero cannot see this node's own block or whether it is on {}",
+                            ctx.settings.node.network
                         ));
+                        out.note("Try: fmonero status --check-node");
                         return Ok(0);
                     }
                     let n = NodeClient::from_ctx(&ctx)?;

@@ -125,6 +125,23 @@ pub struct Probe {
     pub probed_at: i64,
 }
 
+/// A probe's failure, in the words every surface uses (§2n.4, §2o.2, W20).
+///
+/// **One vocabulary**: the picker's table and `node list`'s both render this, so a node that timed
+/// out reads `too slow` in both places rather than `too slow` on one screen and the wire's own
+/// `timed_out` in the other. The wire values stay in `--json`, where an agent branches on them.
+pub fn probe_reason_words(reason: Option<&str>) -> &'static str {
+    match reason {
+        Some("timed_out") => "too slow",
+        Some("refused") => "refused",
+        Some("tls") => "no secure connection",
+        Some("http") => "a web error",
+        Some("bad_json") => "bad answer",
+        Some("cancelled") => "stopped",
+        Some(_) | None => "no answer",
+    }
+}
+
 /// Every value [`Probe::reason`] can hold (§2n.4). `cancelled` is the sixth and is v5.5's
 /// implementation note: `probe_many` returns one result per input in the input's order, so a
 /// sweep the user stopped with `Esc` has to say *why* those rows carry no measurement rather

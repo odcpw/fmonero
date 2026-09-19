@@ -643,7 +643,7 @@ fn view_picker(m: &Tui, entries: &[BookEntry], sel: usize, frame: &mut ftui::Fra
             .collect()
     };
     let sel = if entries.is_empty() { usize::MAX } else { sel };
-    super::screens::list_modal(m, " Address book — Enter picks ", &rows, sel, None, frame);
+    super::screens::list_modal(m, " Address book · Enter picks ", &rows, sel, None, frame);
 }
 
 /// The confirm modal — the whole safety surface, and therefore never abbreviated: it renders
@@ -661,7 +661,7 @@ pub(super) fn view_confirm(m: &Tui, plan: &Plan, frame: &mut ftui::Frame) {
     // that lost was the echo: the user typed the confirmation word into a modal that showed no
     // character of it, on the one screen that moves money (§7a: never abbreviated).
     let Some(inner) =
-        super::screens::overlay(m, frame, w, addr_rows + 12, " Confirm — this sends money ")
+        super::screens::overlay(m, frame, w, addr_rows + 12, " Confirm · this sends money ")
     else {
         return;
     };

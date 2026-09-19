@@ -242,6 +242,7 @@ pub fn human(out: &Out, label: &str, value: &serde_json::Value) {
         "wallet list" => return list_human(out, value),
         "node peers" => return peers_human(out, value),
         "node list" => return nodes_human(out, value),
+        "node info" => return node_info_human(out, value),
         "node log" => return log_human(out, value),
         "settings list" => return settings_human(out, value),
         "setup" => return setup_human(out, value),
@@ -655,6 +656,13 @@ fn list_human(out: &Out, v: &serde_json::Value) {
     }
 }
 
+/// The value a restricted node leaves for a column it does not serve (§2o.2, W4).
+///
+/// The `—` is the program's one glyph for an unknown value, so it **leads** the cell and the words
+/// after it say why — rather than sitting mid-sentence as an em-dash, which §2o rule 12 forbids and
+/// the `scripts/check.sh` step for it now greps out.
+const NO_ANSWER: &str = "— this node does not answer that";
+
 fn peers_human(out: &Out, v: &serde_json::Value) {
     match v["connections"].as_array() {
         Some(rows) => {
@@ -672,7 +680,7 @@ fn peers_human(out: &Out, v: &serde_json::Value) {
                 ));
             }
         }
-        None => out.line("connections   — (this node does not answer that)"),
+        None => out.line(format!("connections   {NO_ANSWER}")),
     }
     for (key, title) in [("white", "known peers"), ("gray", "other peers")] {
         match v[key].as_array() {
@@ -687,15 +695,66 @@ fn peers_human(out: &Out, v: &serde_json::Value) {
                     ));
                 }
             }
-            None => out.line(format!("{title}   — (this node does not answer that)")),
+            None => out.line(format!("{title}   {NO_ANSWER}")),
         }
     }
 }
 
-/// `fmonero node list` (§2n, §5c). Two column groups, headed so the table itself states
-/// §2n.2's distinction: what **monero.fail says** and what was **probed here**. They are never
-/// combined into a score — a single number mixing a measurement with a third party's claim is a
-/// number nobody can check.
+/// `fmonero node info` (§5c, W20) — **the same rows `status` prints, plus what only this command
+/// asks for.**
+///
+/// It was the generic key dump: `layout remote`, `nettype —`, `busy_syncing —`,
+/// `fee fees_pico=— per_byte_pico=—`, `remote_probe age_sec=13 … restricted=false` — thirty rows of
+/// field names, most of them `—`, four of them words §2o rule 7 deletes. `docs/COPY.md` §6 lists
+/// fourteen inventoried surfaces and this was not one of them; §2o's first paragraph always
+/// governed it. Every number here is in `node info --json` too, under the names an agent branches
+/// on.
+fn node_info_human(out: &Out, v: &serde_json::Value) {
+    let node = &v["node"];
+    if node["layout"].as_str() == Some("remote") {
+        public_node_rows(out, node);
+        // §2m.3: no wallet-RPC method reports a public node's own state, so the rows above are
+        // the whole of what this machine can know. Said once, in words, rather than implied by
+        // twenty-six dashes.
+        out.line("        Nothing else about a public node can be measured from this machine.");
+        return;
+    }
+    own_node_rows(out, node);
+    if let Some(p) = v["txpool"].as_object() {
+        out.line(format!(
+            "        waiting {} to be mined  {}  fees {} XMR  {} double spends",
+            cell(&p["txs_total"]),
+            p["bytes_total"]
+                .as_u64()
+                .map(human_bytes)
+                .unwrap_or_else(|| "—".to_string()),
+            cell(&p["fee_total_xmr"]),
+            cell(&p["num_double_spends"]),
+        ));
+    }
+    if let Some(sync) = v["sync"].as_object() {
+        out.line(format!(
+            "        fetching blocks from {} peers  {} in progress",
+            cell(&sync["peers"]),
+            cell(&sync["spans"]),
+        ));
+    }
+    if let Some(rpc) = v["rpc"].as_object() {
+        // The fork numbers are Monero's own bookkeeping and stay in `--json` (§2o rule 5).
+        out.line(format!(
+            "        this node runs Monero {}",
+            cell(&rpc["release"])
+        ));
+    }
+}
+
+/// `fmonero node list` (§2n, §5c, W20) — **the picker's table, in the CLI's own shape.**
+///
+/// It was a second vocabulary for one thing: group headings `monero.fail says` / `checked here`
+/// over columns the TUI calls `their block` and `block here`, `synced` rendering the JSON `true`,
+/// a `ping 20` with no unit, ungrouped block numbers beside the picker's grouped ones, and two
+/// markers (`web`, `own`) in the rows with nothing to say what they meant. The column names are
+/// the picker's, the units are on the numbers, and the one marker left is explained in the footer.
 fn nodes_human(out: &Out, v: &serde_json::Value) {
     let rows = v["nodes"].as_array().map(Vec::as_slice).unwrap_or_default();
     if rows.is_empty() {
@@ -704,32 +763,34 @@ fn nodes_human(out: &Out, v: &serde_json::Value) {
         return;
     }
     let probed_any = rows.iter().any(|r| !r["probe"].is_null());
-    if probed_any {
-        out.line(format!(
-            "{}  {}   {}",
-            pad("", 47),
-            out.paint("monero.fail says", Paint::Dim),
-            out.paint("checked here", Paint::Dim),
-        ));
-    }
+    // The picker's own column names (§7a.4): `their block` is what the list says, `block here` is
+    // what this machine measured. They were both `block` under two group headings, and one of the
+    // two headings carried a word §2o removes.
     out.line(format!(
         "  {}  {}  {}  {}{}",
         pad("address", 44),
         pad("reliability", 12),
-        pad("block", 10),
-        pad("last seen", 10),
+        pad("their block", 12),
+        pad("last seen", 12),
         if probed_any {
-            format!("  {}  {}  {}", pad("ping", 6), pad("block", 10), "synced")
+            format!(
+                "  {}  {}  {}",
+                pad("ping", 8),
+                pad("block here", 12),
+                "synced"
+            )
         } else {
             String::new()
         },
     ));
+    let mut any_own = false;
     for r in rows {
         let configured = r["configured"] == serde_json::Value::Bool(true);
         let mark = if configured { "●" } else { " " };
         // A `custom` row renders `—` in every monero.fail column: monero.fail has never heard of
         // it, and a blank there would read as "not measured yet" (§7a.4).
         let custom = r["custom"] == serde_json::Value::Bool(true);
+        any_own |= custom;
         let health = match (r["health_ratio"].as_f64(), r["health_checks"].as_u64()) {
             (Some(ratio), Some(n)) => format!("{}% of {n}", (ratio * 100.0).round() as i64),
             _ => "—".to_string(),
@@ -737,53 +798,111 @@ fn nodes_human(out: &Out, v: &serde_json::Value) {
         let probe = &r["probe"];
         let probed = if probe.is_null() {
             if probed_any {
-                format!("  {}  {}  {}", pad("—", 6), pad("—", 10), "—")
+                format!("  {}  {}  {}", pad("—", 8), pad("—", 12), "—")
             } else {
                 String::new()
             }
         } else if probe["reachable"] == serde_json::Value::Bool(true) {
             format!(
                 "  {}  {}  {}",
-                pad(&cell(&probe["latency_ms"]), 6),
-                pad(&cell(&probe["height"]), 10),
-                cell(&probe["synchronized"]),
+                pad(
+                    &probe["latency_ms"]
+                        .as_u64()
+                        .map(|ms| format!("{ms} ms"))
+                        .unwrap_or_else(|| "—".to_string()),
+                    8
+                ),
+                pad(
+                    &probe["height"]
+                        .as_u64()
+                        .map(grouped)
+                        .unwrap_or_else(|| "—".to_string()),
+                    12
+                ),
+                // The picker's three words, never the JSON `true`.
+                match probe["synchronized"].as_bool() {
+                    Some(true) => "yes",
+                    Some(false) => "no",
+                    None => "—",
+                },
             )
         } else {
-            // A failure is a result, and its reason is the useful half (§2n.4).
-            format!("  {}", out.paint(&cell(&probe["reason"]), Paint::Yellow))
+            // A failure is a result, and its reason is the useful half (§2n.4) — in the picker's
+            // words, from core's own table (W20).
+            format!(
+                "  {}",
+                out.paint(
+                    fmonero_core::nodes::probe_reason_words(probe["reason"].as_str()),
+                    Paint::Yellow
+                )
+            )
         };
         out.line(format!(
             "{mark} {}  {}  {}  {}{}{}",
             pad(&cell(&r["address"]), 44),
             pad(&health, 12),
-            pad(&cell(&r["health_last_height"]), 10),
+            pad(
+                &r["health_last_height"]
+                    .as_u64()
+                    .map(grouped)
+                    .unwrap_or_else(|| "—".to_string()),
+                12
+            ),
             pad(
                 &r["health_checked_at"]
                     .as_i64()
-                    .map(|t| human_uptime(fmonero_core::now_unix() - t))
+                    .map(|t| fmonero_core::age((fmonero_core::now_unix() - t).max(0) as u64))
                     .unwrap_or_else(|| "—".to_string()),
-                10
+                12
             ),
             probed,
+            // `web_compatible` is a flag for browser wallets and decides nothing here, so v5.6
+            // dropped its marker from the picker; W20 drops it from this table too, and leaves the
+            // field to `node list --json`.
             if custom {
                 out.paint(" own", Paint::Dim)
-            } else if r["web_compatible"] == serde_json::Value::Bool(true) {
-                out.paint(" web", Paint::Dim)
             } else {
                 String::new()
             },
         ));
     }
-    let age = v["cache_age_sec"]
-        .as_u64()
-        .map(|s| human_uptime(s as i64))
-        .unwrap_or_else(|| "—".to_string());
-    out.line(format!(
-        "{} of {} nodes · list {age} old · {} skipped · from monero.fail",
-        rows.len(),
-        cell(&v["total"]),
-        v["skipped_no_port"].as_u64().unwrap_or(0) + v["skipped_invalid"].as_u64().unwrap_or(0),
-    ));
+    // The footer, in the picker's words (W6, W20): what the list is, how old it is, and what was
+    // left out of it, each count with the noun it counts.
+    let mut parts = vec![
+        format!(
+            "{} of {} nodes from monero.fail",
+            rows.len(),
+            cell(&v["total"])
+        ),
+        format!(
+            "list from {}",
+            v["cache_age_sec"]
+                .as_u64()
+                .map(fmonero_core::age)
+                .unwrap_or_else(|| "an unknown time".to_string())
+        ),
+    ];
+    let no_port = v["skipped_no_port"].as_u64().unwrap_or(0);
+    let invalid = v["skipped_invalid"].as_u64().unwrap_or(0);
+    if no_port > 0 {
+        parts.push(format!(
+            "{no_port} without a port {} left out",
+            if no_port == 1 { "was" } else { "were" }
+        ));
+    }
+    if invalid > 0 {
+        parts.push(format!("{invalid} fmonero could not read"));
+    }
+    if any_own {
+        parts.push("own = a node you added".to_string());
+    }
+    if rows
+        .iter()
+        .any(|r| r["configured"] == serde_json::Value::Bool(true))
+    {
+        parts.push("● = the node you are using".to_string());
+    }
+    out.line(parts.join(" · "));
 }
 
 fn log_human(out: &Out, v: &serde_json::Value) {
@@ -811,8 +930,15 @@ fn settings_human(out: &Out, v: &serde_json::Value) {
         .max()
         .unwrap_or(0);
     for r in rows {
-        let value = cell(&r["value"]);
-        let default = cell(&r["default"]);
+        // **W20: an empty value reads `(none)`.** `node.remote` is empty until you choose a public
+        // node, and the row printed a blank where the value goes and `[default ]` under it — two
+        // places where a reader cannot tell "nothing" from "the renderer lost it".
+        let shown = |v: &serde_json::Value| match cell(v) {
+            s if s.is_empty() => "(none)".to_string(),
+            s => s,
+        };
+        let value = shown(&r["value"]);
+        let default = shown(&r["default"]);
         let marker = if value == default { " " } else { "*" };
         out.line(format!(
             "{marker} {}  {}",

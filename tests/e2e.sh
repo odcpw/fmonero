@@ -2004,6 +2004,47 @@ case "$ERR" in
   *) ok "--json says nothing on stderr" ;;
 esac
 
+step "§2o, W20: node list's human table is the picker's vocabulary, and node info is not a key dump"
+# The two human surfaces the 2026-09-19 verification read off a pty. Both are rendered from the same
+# JSON an agent gets, so this asserts the RENDERING and nothing about the daemon.
+script -qec "$FM node list --no-color" /dev/null > "$WORK/$CASE/nodes-human.txt" 2>&1 || true
+NH="$(cat "$WORK/$CASE/nodes-human.txt")"
+# `block here` and `ms` are the probed columns, and this cache has no probe in it — the table drops
+# them rather than printing a column of dashes, which is what the picker does at the same tier.
+for want in "their block" "from monero.fail"; do
+  case "$NH" in
+    *"$want"*) ok "node list's table says '$want' (the picker's own column)" ;;
+    *) bad "node list is missing '$want'" "$(head -3 "$WORK/$CASE/nodes-human.txt")" ;;
+  esac
+done
+for unwanted in "monero.fail says" "checked here" " web"; do
+  case "$NH" in
+    *"$unwanted"*) bad "node list still prints '$unwanted'" "$(head -3 "$WORK/$CASE/nodes-human.txt")" ;;
+    *) ok "and no longer prints '$unwanted'" ;;
+  esac
+done
+# A block number is grouped here exactly as the picker and the widget group it (W7).
+if grep -qE '[0-9] [0-9]{3} [0-9]{3}' "$WORK/$CASE/nodes-human.txt"; then
+  ok "and its block numbers are grouped (W7)"
+else
+  bad "a block number in node list is ungrouped" "$(head -4 "$WORK/$CASE/nodes-human.txt")"
+fi
+script -qec "$FM node info --no-color" /dev/null > "$WORK/$CASE/info-human.txt" 2>&1 || true
+IH="$(cat "$WORK/$CASE/info-human.txt")"
+for unwanted in "busy_syncing" "fees_pico" "layout" "remote_probe" "database_size_rounded"; do
+  case "$IH" in
+    *"$unwanted"*) bad "node info still prints the field name '$unwanted'" "$(head -4 "$WORK/$CASE/info-human.txt")" ;;
+    *) ok "node info prints no '$unwanted'" ;;
+  esac
+done
+# And `settings list` says `(none)` where a default is empty (W20).
+script -qec "$FM settings list --no-color" /dev/null > "$WORK/$CASE/settings-human.txt" 2>&1 || true
+if grep -q '\[default (none)\]' "$WORK/$CASE/settings-human.txt"; then
+  ok "settings list renders an empty default as (none)"
+else
+  bad "an empty default still renders as a blank" "$(grep -n 'node.remote ' "$WORK/$CASE/settings-human.txt" | head -2)"
+fi
+
 step "§2n.4: --probe measures from THIS machine, against fmonero-mock"
 # The probe path is AMBER by the same mechanism every other RPC is: a real socket, a real
 # `get_info`, fixtures derived from the Monero source.

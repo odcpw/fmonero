@@ -415,6 +415,75 @@ if [ -n "$HITS_2O" ]; then
 else
   pass "§2o rule 7: no banned word in the TUI, the CLI, the doctor, core or the widget (${#COPY_SURFACES[@]} files)"
 fi
+# ---------------------------------------------------------------- §2o rule 12, the em-dash
+#
+# **W4 mechanises rule 12**, which `docs/COPY.md` §7 said was "enforced by reading" — and reading
+# missed four, three of them strings that round had just written. An em-dash is prose punctuation
+# and §2o has none; the one use the design keeps is the **`—` that stands for an unknown value**
+# ("The `—` for an unknown value, everywhere", COPY §4), which is a cell glyph and not punctuation.
+# So a literal passes when every em-dash in it is that glyph: the literal is the glyph alone
+# (padding aside), or the glyph is the first thing in it and there is only one. Everything else —
+# ` — ` inside a sentence, a modal title's ` — `, a row that joins two values with one — fires.
+HITS_DASH=""
+for f in "${COPY_SURFACES[@]}"; do
+  while IFS= read -r lit; do
+    case "$lit" in
+      *—*) ;;
+      *) continue ;;
+    esac
+    # The literal's content, without the quotes.
+    body="${lit%\"}"; body="${body#\"}"
+    stripped="$(printf '%s' "$body" | tr -d ' ')"
+    lead="$(printf '%s' "$body" | sed 's/^ *//')"
+    count="$(printf '%s' "$body" | grep -o '—' | wc -l)"
+    if [ "$stripped" = "—" ]; then continue; fi
+    case "$lead" in
+      —*) [ "$count" = 1 ] && continue ;;
+    esac
+    HITS_DASH="$HITS_DASH$f: $lit"$'\n'
+  done < <(literals_2o "$f")
+done
+if [ -n "$HITS_DASH" ]; then
+  fail "§2o rule 12: an em-dash is in a user-facing string"
+  printf '%s' "$HITS_DASH" | sed 's/^/        /'
+else
+  pass "§2o rule 12: no em-dash in prose, in any of the ${#COPY_SURFACES[@]} surfaces"
+fi
+# Its self-test: the three shapes that must fire and the two that must not.
+SELF_DASH="$SELFTEST/em-dash"
+mkdir -p "$SELF_DASH"
+{
+  printf '%s\n' 'let a = "Switching will not start it — press u after this.";'
+  printf '%s\n' 'let b = " Open a wallet — Enter opens · Esc cancels ";'
+  printf '%s\n' 'let c = "block 3 541 122 — checked 2s ago";'
+} > "$SELF_DASH/bad.rs"
+{
+  printf '%s\n' 'let d = "—";'
+  printf '%s\n' 'let e = "—           ";'
+  printf '%s\n' 'let f = "— this node does not answer that";'
+} > "$SELF_DASH/good.rs"
+DASH_FIRED=0
+DASH_WRONG=0
+for kind in bad good; do
+  while IFS= read -r lit; do
+    case "$lit" in *—*) ;; *) continue ;; esac
+    body="${lit%\"}"; body="${body#\"}"
+    stripped="$(printf '%s' "$body" | tr -d ' ')"
+    lead="$(printf '%s' "$body" | sed 's/^ *//')"
+    count="$(printf '%s' "$body" | grep -o '—' | wc -l)"
+    ok_lit=0
+    [ "$stripped" = "—" ] && ok_lit=1
+    case "$lead" in —*) [ "$count" = 1 ] && ok_lit=1 ;; esac
+    if [ "$kind" = bad ] && [ "$ok_lit" = 0 ]; then DASH_FIRED=$((DASH_FIRED + 1)); fi
+    if [ "$kind" = good ] && [ "$ok_lit" = 0 ]; then DASH_WRONG=$((DASH_WRONG + 1)); fi
+  done < <(literals_2o "$SELF_DASH/$kind.rs")
+done
+if [ "$DASH_FIRED" = 3 ] && [ "$DASH_WRONG" = 0 ]; then
+  pass "self-test: §2o rule 12 fires on all three planted em-dashes and on none of the three glyphs"
+else
+  fail "self-test: rule 12 caught $DASH_FIRED of 3 planted dashes and rejected $DASH_WRONG of 3 glyphs"
+fi
+
 # The self-test §2o asks for by name: the planted literal must fire, and the allowed command
 # must not. A grep that cannot be shown to fire is a grep the first agent to hit it relaxes.
 SELF_2O="$SELFTEST/plain-language"
