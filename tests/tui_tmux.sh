@@ -48,8 +48,18 @@ trap cleanup EXIT
 export FMONERO_STATE_DIR="$WORK/state"
 export FMONERO_CONFIG_DIR="$WORK/config"
 export FMONERO_CACHE_DIR="$WORK/cache"
-mkdir -p "$FMONERO_STATE_DIR/run" "$FMONERO_CONFIG_DIR" "$FMONERO_CACHE_DIR"
+# **`XDG_DATA_HOME` too** (round 4 iteration 3). `wallet.dir` defaults to
+# `$XDG_DATA_HOME/fmonero/wallets/<network>` (§3), and without this the pane read the OWNER's wallet
+# folder: this gate's own "the empty state" assertions ran against a screen listing his `moneroli`,
+# which is the shape V18 fixed for `node.log_file` and W21 for `node.data_dir`. Nothing here writes
+# a wallet — `wallet_dir::list` reads `*.keys` basenames and no wallet bytes — but a gate that
+# asserts an EMPTY state has to own the folder it calls empty.
+export XDG_DATA_HOME="$WORK/data"
+mkdir -p "$FMONERO_STATE_DIR/run" "$FMONERO_CONFIG_DIR" "$FMONERO_CACHE_DIR" \
+         "$XDG_DATA_HOME/fmonero/wallets/mainnet"
 chmod 700 "$FMONERO_STATE_DIR" "$FMONERO_CONFIG_DIR" "$FMONERO_CACHE_DIR"
+chmod 700 "$XDG_DATA_HOME/fmonero" "$XDG_DATA_HOME/fmonero/wallets" \
+          "$XDG_DATA_HOME/fmonero/wallets/mainnet"
 
 NODE_PORT=18291
 WALLET_PORT=18293
@@ -120,7 +130,7 @@ printf '\n== the TUI on a pty (%s)\n' "$SCENARIO"
 # for. Verified on this machine: with a server already running, `tmux new-session -d 'echo
 # [$FMONERO_STATE_DIR]'` prints `[]`.
 tmux new-session -d -s "$SESSION" -x 120 -y 40 \
-  "env FMONERO_STATE_DIR=$FMONERO_STATE_DIR FMONERO_CONFIG_DIR=$FMONERO_CONFIG_DIR FMONERO_CACHE_DIR=$FMONERO_CACHE_DIR $FM tui 2>$WORK/tui.err; echo \$? > $WORK/rc"
+  "env FMONERO_STATE_DIR=$FMONERO_STATE_DIR FMONERO_CONFIG_DIR=$FMONERO_CONFIG_DIR FMONERO_CACHE_DIR=$FMONERO_CACHE_DIR XDG_DATA_HOME=$XDG_DATA_HOME $FM tui 2>$WORK/tui.err; echo \$? > $WORK/rc"
 sleep 2
 
 # And the sandbox is asserted, not assumed: if the pane is not in it, everything below is a test
@@ -341,15 +351,26 @@ if [ -n "$CAPTURE" ]; then
   printf '  skip  §7a.5 the empty state: the mock is stateless, so a closed wallet still answers\n'
 else
   WTEXT="$(pane)"
-  # X36 (v5.6.3): the three chips are in one style now — a verb, an article, no ellipsis, and the
-  # note in brackets. `[c] Create wallet…` carried an ellipsis and no article beside `[o] Open a
-  # wallet`, which had an article and none.
-  for needle in "[o] Open a wallet" "[c] Create a wallet" "[W] Start the wallet service" "wallet service:"; do
+  # X36 (v5.6.3): the chips are in one style — a verb, an article, no ellipsis, and the note in
+  # brackets. `[c] Create wallet…` carried an ellipsis and no article beside `[o] Open a wallet`,
+  # which had an article and none.
+  #
+  # **Only the chips that can act** (round 4 iteration 3): `[W] Start the wallet service  (not
+  # needed: opening a wallet starts it)` was a control whose own label told the reader not to press
+  # it, and it is not drawn in that state. The key is unchanged and the `?` overlay still explains
+  # both halves of it, which is what the next assertion reads.
+  for needle in "[c] Create a wallet" "wallet service:"; do
     case "$WTEXT" in
       *"$needle"*) ok "§7a.5: the empty state carries '$needle'" ;;
       *) bad "the empty state is missing '$needle'" "$(printf '%s' "$WTEXT" | sed -n '5,12p')" ;;
     esac
   done
+  case "$WTEXT" in
+    *"not needed: opening a wallet starts it"*)
+      bad "a chip whose own label says not to press it is still drawn" \
+          "$(printf '%s' "$WTEXT" | sed -n '5,12p')" ;;
+    *) ok "§7a.5: no chip on this screen tells the reader not to press it" ;;
+  esac
 fi
 
 # 5. §7a.1 revision 1, the blocker's own flow: fill ALL FOUR create-wallet controls from the
@@ -440,7 +461,7 @@ env FMONERO_STATE_DIR="$R_STATE" FMONERO_CONFIG_DIR="$R_CONFIG" FMONERO_CACHE_DI
 env FMONERO_STATE_DIR="$R_STATE" FMONERO_CONFIG_DIR="$R_CONFIG" FMONERO_CACHE_DIR="$R_CACHE" \
   "$FM" settings set node.mode remote >/dev/null
 tmux new-session -d -s "$REMOTE_SESSION" -x 120 -y 40 \
-  "env FMONERO_STATE_DIR=$R_STATE FMONERO_CONFIG_DIR=$R_CONFIG FMONERO_CACHE_DIR=$R_CACHE $FM tui 2>$WORK/tui-remote.err; echo \$? > $WORK/rc-remote"
+  "env FMONERO_STATE_DIR=$R_STATE FMONERO_CONFIG_DIR=$R_CONFIG FMONERO_CACHE_DIR=$R_CACHE XDG_DATA_HOME=$XDG_DATA_HOME $FM tui 2>$WORK/tui-remote.err; echo \$? > $WORK/rc-remote"
 sleep 2
 tmux send-keys -t "$REMOTE_SESSION" 1 2>/dev/null || true
 sleep 1.5

@@ -686,7 +686,17 @@ fn view_preview(m: &Tui, area: Rect, frame: &mut ftui::Frame) {
     lines.push(Line::from_spans([
         Span::styled("Amount  ".to_string(), th.dimmed()),
         Span::styled(
-            amount.map_or("—".to_string(), |a| format!("{} XMR", a.to_xmr_string())),
+            // **Eight decimals once the fee is known** (round 4 iteration 3): with a plan in hand
+            // this pane shows an Amount, a Fee and a Total, and `0.0100` above `0.00003072` above
+            // `0.01003072` is the same three-precisions-in-one-column the confirm modal had. Before
+            // the plan exists it is the figure the reader typed, which is theirs to read.
+            match (amount, &s.stage) {
+                (Some(a), Stage::Built(_)) => {
+                    format!("{} XMR", a.to_xmr_min(Piconero::FEE_DECIMALS))
+                }
+                (Some(a), _) => format!("{} XMR", a.to_xmr_string()),
+                (None, _) => "—".to_string(),
+            },
             th.text(),
         ),
     ]));
