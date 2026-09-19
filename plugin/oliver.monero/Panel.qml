@@ -30,7 +30,7 @@ Panel {
   // with the checked-out tree: a stale shell now fails the gate instead of decorating it. The token
   // is the first eight hex digits of the sha256 of the four widget files with this line removed, so
   // it cannot be left behind by an edit — the gate computes what it should be and says so.
-  readonly property string panelVersion: "qml-2d885de2"
+  readonly property string panelVersion: "qml-5fba81b1"
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent
@@ -539,10 +539,11 @@ Panel {
               // `transaction`, which is why this surface, `output.rs` and the note modal all kept
               // it through three rounds. Pluralised, because `1 payments` is the same defect as
               // `Checked 1 nodes`.
+              // **M8: whose payments these are.** `14 payments` on a panel whose every other
+              // figure is this machine's read as the owner's own; they are strangers'. One phrase,
+              // and `fmonero_core::payments_across_the_network` is the Rust half of it.
               value: svc.node && svc.node.tx_pool_size !== null && svc.node.tx_pool_size !== undefined
-                ? Model.int(svc.node.tx_pool_size, 0)
-                  + (Model.int(svc.node.tx_pool_size, 0) === 1 ? " payment" : " payments")
-                  + (svc.node.restricted === true ? " or more" : "")
+                ? Model.waitingLabel(svc.node.tx_pool_size, svc.node.restricted === true)
                 : "—"
             }
           }
@@ -589,7 +590,13 @@ Panel {
                   message: String(modelData.text || "")
                   // §2o.1: the warning's **action**, not its `hint` — which is where
                   // `fmonero node local --yes` reached the bar.
-                  hint: String(modelData.action || "")
+                  //
+                  // **Round 5, S7: `panel_action`, not `action`.** `action` is written for the TUI
+                  // keymap, and of the nine warnings that reach this panel seven named a key it does
+                  // not bind — two of them naming `d`, which here opens the doctor and there stops
+                  // your node. §5 carries both sentences now; `action` is the fallback only for a
+                  // document written by an older binary.
+                  hint: String(modelData.panel_action || modelData.action || "")
                   severity: String(modelData.severity || "warn")
                 }
               }

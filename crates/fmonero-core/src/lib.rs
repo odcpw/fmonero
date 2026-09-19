@@ -99,6 +99,20 @@ pub const NODE_NOT_SET_UP: &str = "fmonero has not set up your node yet.";
 pub const SYNC_KEEPS_GOING: &str =
     "This keeps going in the background, even after you close this window.";
 
+/// What is waiting to be mined, **with whose payments they are** (round 5, M8).
+///
+/// The count reached a person on three surfaces — the TUI's ` Waiting to be mined ` pane, `status`
+/// and the bar's own row — as a bare `14 payments`, on screens whose every other figure is about
+/// this machine and this wallet. They are strangers' transactions, and the pane that counted them
+/// also said `they carry 0.000427 XMR in fees altogether`, which reads as a possessive about people
+/// the reader has never met. One phrase, in all three places.
+pub fn payments_across_the_network(n: u64) -> String {
+    format!(
+        "{n} {} across the network",
+        if n == 1 { "payment" } else { "payments" }
+    )
+}
+
 /// A block number as a person reads it: `3 765 346`, a space every three digits (§2o rule 9).
 ///
 /// **One implementation for the whole program** (W7). It lived in `crates/fmonero/src/output.rs`,

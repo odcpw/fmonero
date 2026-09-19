@@ -135,6 +135,14 @@ to rediscover them:
 - **`node ban` / `node unban` have no in-app key**. The bans pane therefore reads `No banned peers.`
   and stops there, rather than printing `fmonero node ban <host>` at a user who cannot type it.
 
+**Round 5 closes the other two the same list implied, and both were worse than a printed command,
+because both were refusals with no route at all** (S8, S10):
+
+| Where | What it said | What it does now |
+|---|---|---|
+| Send screen, with an unresolved payment record | one line — *"An earlier payment may still be on its way: 1 of 1 payments were prepared and fmonero never saw them go out."* — no key, no chip, no next step. The only resolution in the product was `fmonero wallet clear-pending --yes`, which §2 above had removed from the banner two rows higher | the refusal names `P` and the Wallet screen; `P` there opens a confirm that states the risk in plain words and runs the same core sequence `wallet clear-pending` runs. The chip `[P] Clear that record` is drawn whenever there is a record, and drawn first |
+| Node screen, local mode, no units written | `Press u to start it.`, and `u` answered *"Another program on this machine runs this node. fmonero can read it but not change it."* Nothing ran it, and nothing in the app could write the units | `fmonero has not set up your node yet. Press S to set it up.` — the hero and all three keys, from one sentence — and `S` runs `units::install` |
+
 ---
 
 ## 3. Rewrite table
@@ -676,7 +684,7 @@ prose; the flag names, exit-code list and amount grammar stay exactly as they ar
 | `main.rs:101-102` `status` after_help | `Three RPCs with the wallet closed, five with it open, plus two systemctl probes` | `Three questions to the wallet and the node with no wallet open, five with one, plus two checks on the background services` | Rules 6 and 7. |
 | `main.rs:143` `node up` after_help | `Refuses (exit 3) when another monerod already holds the data dir` | `Refuses (exit 3) when another program is already using the chain folder` | Rules 6 and 7. |
 | `main.rs:202` `node remote` after_help | `Writes node.mode, node.remote and node.remote_trusted, re-renders both units` | `Writes node.mode, node.remote and node.remote_trusted, then sets up both background services again` | Rule 7 (`re-renders`, `units`); settings keys stay by rule 5's carve-out. |
-| `main.rs:457` `wallet set-daemon` after_help | `This is the only way a remote node enters the picture: monero-wallet-rpc …` | `This is the only way a public node enters the picture: the wallet service …` | Vocabulary. |
+| `main.rs:457` `wallet use-node` after_help | `This is the only way a remote node enters the picture: monero-wallet-rpc …` | `This is the only way a public node enters the picture: the wallet service …` | Vocabulary. |
 | `main.rs:379` `wallet send` after_help | `Builds with do_not_relay and prints the REAL fee first.` | `Prepares the payment without sending it and prints the real fee first.` | Rules 6, 7. |
 | `main.rs:406` `wallet sweep` after_help | `Sweeps the whole account (bounded by --below) and may build SEVERAL transactions` | `Sweeps the whole account (bounded by --below) and may need several transactions` | Vocabulary (`build`); the shout goes. |
 | `main.rs:225` `node list` after_help | `Serves cache_dir/public-nodes.json and fetches only when --refresh is …` | `Uses the saved list and fetches a new one only when --refresh is …` | Rule 6 (a file path as the subject of a sentence). |
@@ -983,7 +991,7 @@ quantity; no id outside `--json`. Three worth quoting:
 
 * `node bans` → `2 addresses blocked` / `203.0.113.66   23h 23m left` — the words the TUI's own
   Blocked-addresses pane uses, and the 32-bit integer form of the address stays in `--json`.
-* `wallet set-daemon` → `This wallet is now using the node at 127.0.0.1:18081.` /
+* `wallet use-node` → `This wallet is now using the node at 127.0.0.1:18081.` /
   `fmonero will not tell that node which amounts your wallet holds.` /
   `Opening a wallet sets this again, so it lasts until then.` — §2o.2's own wording for `trusted`,
   and `ssl_support` is not shown at all.
@@ -1073,3 +1081,77 @@ for a value with no source, rather than a sentence where a number goes.
 **One word, everywhere.** `refused` was the one probe reason returned as itself while the other five
 were turned into English, and to a Monero user it reads as the node turning him away. It is
 `nothing listening`.
+
+---
+
+## 12. Plain-language round 5 (2026-09-19): the twelve serious and the twenty minor, closed
+
+Round 4's independent verification read 112 captures off a real pty and returned twelve serious
+findings and twenty minor ones. This section is what each one now says. The three defects the whole
+effort is named after were all arithmetic, and all three are gone.
+
+### 12.1 The three width defects
+
+| Where | Was | Is |
+|---|---|---|
+| the picker's address column (`screens.rs`, S1) | `monero-rpc.cheems.de.box.skhron.com.ua:180` at 120 columns — two characters of the port gone, no ellipsis, no marker, and `:180` is a plausible port | columns drop from the right until the widest cell fits whole; the `width / 2` cap that permitted the cut is deleted, and so is the configured row's separate floor, which the measurement already covers |
+| `node list`'s header (`output.rs`, S2) | 122 characters on a 120-column terminal, so `synced` arrived as `sync` and `ed` | `columns()` takes the row's own indent as a positional parameter, and `nodes_header` is a function a test can measure |
+| the open-a-wallet modal (`screens.rs`, S3) | a 248-character path rendered as 245 — a `-`, a `0` and a `-` gone from the middle, naming a folder that does not exist | the budget is `MODAL_W - 6`: the two columns each line spends on its own `" {part} "` padding |
+
+### 12.2 Money and ids
+
+| Where | Was | Is |
+|---|---|---|
+| the pending-send refusal (S4) | `1 of 1 payments were prepared…` over a `Try:` line whose `#` comment carried all 64 characters of an id, on a command that takes no id | `The payment from 2026-09-16 14:01 was prepared and fmonero never saw it go out. It may still be on its way.` · one hint literal, `send::PENDING_HINT`, shared by five surfaces and carrying no id · `action` = `Press P on the Wallet screen to clear that record.` |
+| the resolve step's refusal (S4) | `This wallet has no record of <64 hex>, which fmonero sent.` | `One payment fmonero sent is not in this wallet's own record of payments. It may still be on its way.` The id is in `detail`, which reaches `--json` and no human line |
+| the doctor's `send_may_be_in_flight` row (S4's class) | every unrelayed id joined into the detail a person reads | the shared sentence, the destination, and `Only you can decide whether it arrived` |
+| the sweep plan's rows (S5) | `5c2e0b83…29d74b  0.8000 XMR  fee 0.00003072 XMR  not sent` | `1.   0.80000000 XMR  fee 0.00003072 XMR  not sent` — a row number tells two equal amounts apart, and the id is in `--json` |
+| the send refusal's own figures (M1) | the plan table at eight decimals and the sentence under it at four, changing under the reader mid-decision | `Piconero::to_xmr_money` — one precision for everything on the path where money is about to move |
+| the sweep refusal (M2) | `This would send everything you have, 1.234506451234 XMR` three lines under `Total 1.234567891234 XMR`, which is the balance | `This would empty this account. 1.234506451234 XMR to <addr>, 0.000061440000 XMR in fees, and 1.234567891234 XMR would leave this wallet in 2 payments.` |
+| `1 of 1 payments **were** prepared` (M3) | plural for one | one payment `was` prepared, two `were`; and the doctor's `payment(s)` is `payments()` |
+
+### 12.3 One fact, one wording
+
+| Where | Was | Is |
+|---|---|---|
+| the money ledger's time (S9) | `09-16 14:01` in the TUI's list, detail view and note title; `2026-09-16 14:01` in `wallet history` | `fmonero_core::when`, read by all four. `WHEN` is 16 cells where the pane has them and 11 where it does not, and the addresses pane gave up 2% of the Wide tier to make the room |
+| `wallet history`'s header (M5) | `date  what  amount XMR  fee XMR  confirms  spendable  note` | `when  what  amount XMR  confirms  spendable  note  fee XMR` — the TUI's own order and first word |
+| the bar's address shortening (M4) | eight and **six**, against the TUI's eight and eight | eight and eight, held by `plugin-smoke` |
+| the bar's wallet row (M6) | `not running` for a wallet answering on a service fmonero did not write | `reachable` is the predicate; `running (not fmonero's)`, and `not answering` for a unit that is up and silent |
+| the two "pick another node" actions (M19) | `Pick another one on the Node screen.` twice, under two bullets, on the Node screen | `Press l to use your own node instead.` and `Pick another node in the list and press Enter.` |
+| `status` in public-node mode (M20) | the node unchecked twice in three lines | the badge states it; the footer is the hint alone |
+
+### 12.4 Room, and what a reader is left with
+
+| Where | Was | Is |
+|---|---|---|
+| the privacy consent modal (S6) | three sentences and two blank rows: `Enter continues · Esc cancels` was off screen at 120x32 and 150x40 | the overlay wraps its own text and asks for the rows it draws |
+| the widget's warning rows (S7) | the TUI's keymap — seven keys the panel does not bind, two that mean something else there | `panel_action`, from `status.rs`'s `PANEL_ACTIONS`, naming only keys the panel binds and controls it draws |
+| the send confirm and `Tab` (S12) | nothing moved and nothing was said, under a help overlay promising `Tab` always works in a pop-up | a row reading `Esc first, then Tab.`, and the overlay's first row says a pop-up holding unfinished work asks for `Esc` first |
+| `● Synced` over `last block 3d 01h ago` (M7) | two facts a reader cannot reconcile | `Synced means it has every block its peers have offered. A last block this old means none has been offered for a while.` |
+| the waiting pane (M8) | `14 payments` · `they carry 0.000427 XMR in fees altogether` | `14 payments across the network` · `their fees  0.000427 XMR altogether` — and `status` and the bar say it the same way |
+| the fee-level rows (M9) | `XMR a byte` on two consecutive rows | `XMR a byte` then `and` |
+| the Log screen's title (M10) | the log path elided mid-token, in the only place the file is named | the title keeps it when it fits whole; the pane's first row carries it hard-chunked when it does not |
+| the doctor's long paths (M11) | one over-long line the terminal wrapped at column 1, with no marker | `wrap_to` hard-chunks a single token wider than the line |
+| the payments filter (M12) | `filter by id, address or note` | `filter by address or note` — ids are never displayed |
+| the empty wallet panel (M13, M14) | one chip, no sentence saying there are no wallets, and two status rows with no next step | `There are no wallets on this machine yet.`, plus `Opening or creating a wallet starts it` and `press 1 for the Node screen` |
+
+### 12.5 `--help` and clap
+
+| Where | Was | Is |
+|---|---|---|
+| `wallet sweep` (M15) | `Sweep an account to one recipient` — the word defined by itself | `Send everything in one account to one address, in as many payments as it takes` |
+| `wallet set-daemon` (M16) | the command's **name** carried rule 7's first banned word | `wallet use-node`, with `set-daemon` kept as a hidden alias |
+| three `///` em-dashes (M17) | `node list`, `node remote <ADDR>` and `node log --follow` | periods, and `node list` no longer uses `probe` and `checked` for one act in one sentence |
+| clap's own voice (M18) | `unrecognized subcommand 'note'; tip: a similar subcommand exists: 'node'` and `unknown settings key 'nope'` | `"note" is not an fmonero command. Did you mean "node"?` and `"nope" is not one of fmonero's settings.` |
+
+### 12.6 The two that were not wording
+
+Both are in §2 above: the Send screen's pending refusal now names `P` and the Wallet screen (S8), and
+local mode with no units written says `fmonero has not set up your node yet. Press S to set it up.`
+on the hero and on all three keys that used to claim another program owned the node (S10).
+
+S11 needed no edit: round 4's own commit had already corrected `README.md`, `agent.rs`'s `BUILD_NOTE`
+and DESIGN §1.1 to what the journal shows, and V18's structural half — `FMONERO_STATE_DIR` gating
+`install` but not `start`/`stop` — was closed with a test (`units::tests::a_sandbox_without_the_fixture_may_not_start_or_stop_a_real_unit`).
+What round 5 adds is the rule where the next agent writing a sandbox will read it: `CLAUDE.md`.

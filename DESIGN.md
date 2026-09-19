@@ -37,7 +37,7 @@ in-process `TcpListener` mock-server tests).
   refuses with exit 4 `reason: remote_node`.
 - **Wallet**, via `monero-wallet-rpc` run as a systemd **user** unit on `127.0.0.1:18083`:
   `wallet list|open|close|create|balance|address|new-address|history|send|sweep|`
-  `validate|book|refresh|notes|clear-pending|set-daemon`.
+  `validate|book|refresh|notes|clear-pending|use-node`.
 - **One open wallet at a time**, one account (`account_index`, default 0) selectable per command.
 - **Money safety**: `send`/`sweep` build with `do_not_relay` first, print the *real* fee, and relay
   that exact transaction only after `--yes` (§2a).
@@ -1134,8 +1134,15 @@ Each of these is a testable statement, and the test that proves it is named. Pha
    `hint: fmonero wallet history --limit <N>   # then: fmonero wallet clear-pending --yes`.
 
    `status` surfaces the record as `pending` (§5) and raises `send_may_be_in_flight` while **any**
-   entry is `relayed: false`. The blocking hint is
-   `fmonero wallet history --limit 5   # confirm whether <txid> landed, then: fmonero wallet clear-pending --yes`.
+   entry is `relayed: false`. The blocking hint is `send::PENDING_HINT`,
+   `fmonero wallet history --limit 5   # then: fmonero wallet clear-pending --yes` — **one literal,
+   shared by the five surfaces that print it, and carrying no id** (round 5, S4). It used to read
+   `# confirm whether <txid> landed, then: …`: sixty-four hexadecimal characters inside a `#` comment
+   as prose, on a command (`wallet history`) that takes no id, on the path that blocks a send. §2o
+   rule 5 puts ids in `--json`. What identifies the payment for a person is **when it was prepared**,
+   which is the field the record has always held, so the refusal reads *"The payment from
+   2026-09-16 14:01 was prepared and fmonero never saw it go out. It may still be on its way."* and
+   carries `action` = `send::PENDING_ACTION`, the in-app route §2o.1's list gained in round 5.
 5. **Amounts are integers.** `Piconero(u64)` end to end. No `f64` touches a monetary value
    anywhere, in Rust or in QML — the plugin formats amounts from the pre-rendered `*_xmr` **string**
    in Status JSON and never divides. Parsing rejects more than 12 decimal places, a bare `.`, a
@@ -1453,7 +1460,7 @@ when *every* returned address is loopback. (`localhost` is a name, not an addres
 `/etc/hosts` or a name-service module can point it anywhere, which would turn the one property this
 paragraph claims back into an assumption.) Anything else exits 2 with the hint
 `fmonero node remote <host>:<port> --yes   # a remote node is reached by monero-wallet-rpc, not by fmonero`
-(v5.2: the old hint named `wallet set-daemon`, a one-off the next `wallet open` undoes — §2m).
+(v5.2: the old hint named `wallet use-node`, a one-off the next `wallet open` undoes — §2m).
 
 **Remote node mode (§2m) does not weaken one word of this paragraph, and that is the point.**
 `settings.node.remote` is **not a URL any fmonero client ever sees**: it is rendered into the
@@ -2016,7 +2023,7 @@ either. A wallet does not need a local chain: `monero-wallet-rpc` will talk to a
 mode is not a new transport — it is the decision to stop pretending the local node exists, stated
 once, in settings, with every consumer reading the same key.
 
-Three things make it a *mode* rather than the one-off `wallet set-daemon` already in §4.1. First,
+Three things make it a *mode* rather than the one-off `wallet use-node` already in §4.1. First,
 `wallet_session::open` issues `set_daemon` after **every** `open_wallet` (§4.2), so a one-off is
 undone the next time a wallet is opened — a setting the tool silently reverts is worse than no
 setting. Second, the wallet **unit** carries `--daemon-address` and one of
@@ -2130,8 +2137,8 @@ rule's outcome rather than a separate one: `Disabled` when the host is a loopbac
 remote mode it is `Autodetect` unless the user pointed `node.remote` at loopback, which §2m.2
 allows. Keying it on the mode instead would send `autodetect` to `127.0.0.1` for anyone testing the
 mode locally — the wasted handshake this very paragraph corrects in the other direction — and would
-leave `wallet set-daemon`, whose ADDRESS is neither mode's key, with a rule of its own. One
-derivation, in `units::daemon_target` and in the address `wallet set-daemon` was given (§5b).
+leave `wallet use-node`, whose ADDRESS is neither mode's key, with a rule of its own. One
+derivation, in `units::daemon_target` and in the address `wallet use-node` was given (§5b).
 
 **The `-38` exemption is narrowed, because v5 attributed it to the wrong cause.** §4.2 said a `-38`
 from `set_daemon` is "raised when wallet2 cannot reach the address"; §1b.9 item 1 shows that
@@ -2268,8 +2275,8 @@ reports every action `unchanged`, restarts nothing and exits 0.
    `error: "another fmonero send is building or relaying"`,
    `hint: fmonero status --json   # wait for pending to clear, then retry`;
 4. **the §2a.4 `pending_send` entry check** — any entry with `relayed == false` exits
-   **3 `safety`**, `reason: pending_send`, with §2a.4's hint
-   (`fmonero wallet history --limit 5   # confirm whether <txid> landed, then: fmonero wallet clear-pending --yes`).
+   **3 `safety`**, `reason: pending_send`, with §2a.4's hint (`send::PENDING_HINT`, which carries no
+   id — round 5, S4).
    **No resolve step runs here**: resolving belongs to `send::build` and needs the wallet daemon
    this command is about to restart;
 5. **`--yes` gate** — without it, print what would change and exit **3 `safety`**,
@@ -2892,7 +2899,18 @@ chip, a button: `Press o to open a wallet`, `[Choose node…]`. Never `fmonero w
 **Anything a user does more than once is an in-app action**, and for v0.1 the list is exhaustive:
 start or stop the wallet service · open, create and close a wallet · choose a public node · go back
 to your own node · get a fresh node list · check a node · check for payments · rescan · change how
-much your node logs · add an address · rename one · note a payment. A refusal that would otherwise
+much your node logs · add an address · rename one · note a payment · **clear the record of a payment
+fmonero lost track of** (round 5, S8: `P` on the Wallet screen) · **set your own node up on this
+machine** (round 5, S10: `S` on the Node screen).
+
+The last two are round 5's additions, and both were added for the same reason: the program had a
+state it refused to leave and named no way out of one. The Send screen refused a filled, valid form
+with *"An earlier payment may still be on its way"* and the only resolution anywhere was
+`fmonero wallet clear-pending --yes`, a command this section had deliberately removed from the banner
+above the form; and in local mode with no units written the Node screen invited `u`, `u` answered with
+a sentence about another program owning a node that does not exist, and nothing in the app could
+write the units. A refusal with no route is worse than a shell command, because the shell command at
+least ends somewhere. A refusal that would otherwise
 print a command instead states the situation and names the key or chip. **`node local` therefore
 enters the TUI in v5.6** (§7a.4's `l`), reversing v5.5's decision to offer neither mode switch: the
 toast that used to read `remote node mode — run: fmonero node local --yes` was the single worst
@@ -3271,7 +3289,7 @@ wallet.
 | `node ban` | `HOST [--seconds N]` (default 86400) | `set_bans [{host, ban:true, seconds}]`. **Layout `user_unit` only** (§2i). **In remote mode: exit 4 `backend`, `reason: remote_node`, hint `fmonero node local --yes`, before any RPC or `systemctl` spawn (§2m.3, §4).** | yes | – | – | yes |
 | `node unban` | `HOST` | `set_bans [{host, ban:false, seconds:0}]`. **Layout `user_unit` only** (§2i). **In remote mode: exit 4 `backend`, `reason: remote_node`, hint `fmonero node local --yes`, before any RPC or `systemctl` spawn (§2m.3, §4).** | yes | – | – | yes |
 | `node limit` | `[--up KBPS] [--down KBPS] [--out-peers N] [--in-peers N]` | no args → `NodeClient::{get_limit, peers_count}`, both read-only (any layout); with args → `NodeMutators::{set_limit, set_peers_count}`, which exist only on a type the **layout `user_unit`** gate hands out (§2i). `-1` restores the default. **In remote mode: exit 4 `backend`, `reason: remote_node`, hint `fmonero node local --yes`, before any RPC or `systemctl` spawn (§2m.3, §4).** | with args | – | – | yes |
-| `node remote` | `ADDR [--trusted] [--yes] [--dry-run]` | **`node_mode::set_remote` (§5b, §2m.5)** — the persistent form of `wallet set-daemon`, in nine steps: parse ADDR against §2m.2's grammar (exit 2 `bad_remote_address`) → `--dry-run` prints the plan and the unit diff and exits 0, **without needing `--yes`** and **before the two money guards below**, exactly as `setup --dry-run` does → the §2a.11 `send.lock` (exit 3 `send_in_progress`) → the §2a.4 `pending_send` entry check (exit 3 `pending_send`) — the two guards every other money-adjacent path carries, here because this is the command that changes which node a pending send would be *resolved* against (§2m.5) → the `--yes` gate (exit 3 `needs_yes`, hint = the user's own command with `--yes` appended verbatim) → **one** `Settings::save` writing `node.remote`, `node.remote_trusted` and `node.mode = remote` together, so a crash cannot leave the §2m.1 invariant broken → `units::install` re-rendering both units and `monerod.conf` → `systemctl --user restart <wallet.unit>` **iff `units::state` said it was active before the render** (a running `monero-wallet-rpc` holds `--daemon-address` in its argv) → when a wallet was open, `state::clear_last_open` and `wallet_must_reopen: "<name>"` in the payload with `hint: fmonero wallet open <name>`. Starts no daemon and never runs `node up`: §2i's single-writer precondition is the only thing allowed to start `monerod`. Idempotent — a second run reports every action `unchanged`, restarts nothing, exits 0. Payload shape: §5c | yes | **yes** | no | no |
+| `node remote` | `ADDR [--trusted] [--yes] [--dry-run]` | **`node_mode::set_remote` (§5b, §2m.5)** — the persistent form of `wallet use-node`, in nine steps: parse ADDR against §2m.2's grammar (exit 2 `bad_remote_address`) → `--dry-run` prints the plan and the unit diff and exits 0, **without needing `--yes`** and **before the two money guards below**, exactly as `setup --dry-run` does → the §2a.11 `send.lock` (exit 3 `send_in_progress`) → the §2a.4 `pending_send` entry check (exit 3 `pending_send`) — the two guards every other money-adjacent path carries, here because this is the command that changes which node a pending send would be *resolved* against (§2m.5) → the `--yes` gate (exit 3 `needs_yes`, hint = the user's own command with `--yes` appended verbatim) → **one** `Settings::save` writing `node.remote`, `node.remote_trusted` and `node.mode = remote` together, so a crash cannot leave the §2m.1 invariant broken → `units::install` re-rendering both units and `monerod.conf` → `systemctl --user restart <wallet.unit>` **iff `units::state` said it was active before the render** (a running `monero-wallet-rpc` holds `--daemon-address` in its argv) → when a wallet was open, `state::clear_last_open` and `wallet_must_reopen: "<name>"` in the payload with `hint: fmonero wallet open <name>`. Starts no daemon and never runs `node up`: §2i's single-writer precondition is the only thing allowed to start `monerod`. Idempotent — a second run reports every action `unchanged`, restarts nothing, exits 0. Payload shape: §5c | yes | **yes** | no | no |
 | `node list` | `[--refresh] [--probe] [--limit N] [--all]` | **v5.5, §2n.** `nodes::list(ctx, ListOpts)` (§5b): serve `cache_dir/public-nodes.json` if it exists, **fetching only** when `--refresh` is given or the cache is absent or older than 24 h; then, with `--probe`, `get_info` the top `--limit` candidates by monero.fail health (8 concurrent, `-m 5`, cancellable). Prints one row per node — address, scheme, `web_compatible`, monero.fail health (`ratio` as a percent with its sample size, `last_height`, `last_checked`) and, when probed, `height`/`synchronized`/`restricted`/`latency_ms` — plus `cache_age_sec`, `skipped_no_port` and the `source`. `--limit` defaults to **20** and bounds *both* what is printed and what is probed, so a bare `--probe` contacts twenty strangers and not a hundred and fifty-eight; `--all` prints every usable candidate (and, with `--probe`, probes them all, which the human-mode output says out loud before it starts). The configured node sorts first, then by health, then by latency among probed (§2n.6). **Reads no wallet, moves no money, starts no daemon and works in both modes** — a list of remote nodes is exactly as meaningful in local mode, where it is how someone decides to switch. Needs `curl` (exit 4 `curl_missing`, §2n.3). **In human mode it prints the §2n.5 disclosure on stderr whenever this invocation actually fetches or probes** — `Getting the list from monero.fail. This tells it your IP address.` / `Checking up to <N> nodes. Each one learns your IP address.` (v5.6.3, X2) — which is the rendering attached to the act rather than to a flag, and covers the bare form that fetches because the cache is absent or a day old (v5.5, revision 7); `--json` is silent, because the envelope already carries `refreshed` and `probed`. Not mutating in the `--yes` sense, but it *writes the cache*, which is why `M` is `yes`. Payload shape: §5c | yes (the cache) | no | no | no |
 | `node local` | `[--yes] [--dry-run]` | **`node_mode::set_local` (§5b, §2m.5)** — the same nine steps with `node.mode = local` and no ADDR. `node.remote` and `node.remote_trusted` are **left as they are** (§2m.1): they are inert in local mode and the address is the one thing the user would have to retype. Ends by naming `fmonero node up` when the node unit is inactive. Payload shape: §5c | yes | **yes** | no | no |
 | `wallet list` | — | `wallet_dir::list` (§5b): `*.keys` basenames in `settings.wallet.dir`, sorted; no RPC, no wallet bytes read (§2b.6). A NAME containing `/` is exit 2 (§1b.5). An empty list (and a `-23 NO_WALLET_DIR`) prints, besides `fmonero wallet create <name> --yes`, the one command that brings an existing seed back: `hint: monero-wallet-cli --restore-deterministic-wallet --wallet-file <wallet.dir>/<name>   # then: fmonero wallet open <name>` (§0 cuts `wallet restore`). | no | – | no | no |
@@ -3289,7 +3307,7 @@ wallet.
 | `wallet book` | `list` · `add ADDRESS DESC` · `remove INDEX` | `get_address_book` / `add_address_book` / `delete_address_book` | on add/remove | on remove | yes | no |
 | `wallet refresh` | `[--start-height H]` | **`wallet_session::refresh` (§5b)** — `refresh` under `timeouts.refresh_sec` (120 s) followed by `state::note_refresh`, so `status`'s `wallet.last_refresh_at` (§5) has one writer shared with the TUI's `R` and with `send`'s remote gate (§2m.3). Works in both modes; in remote mode it is the command that proves the remote node answers, which is why it is the first thing §4b's LIVE list runs | yes | no | yes | yes |
 | `wallet notes` | `get TXID` · `set TXID TEXT` | `get_tx_notes` / `set_tx_notes` | on set | no | yes | no |
-| `wallet set-daemon` | `ADDRESS [--trusted]` | One `set_daemon` on the open wallet, with `ssl_support` chosen the way §2m.3's table chooses it for the address's shape: `"disabled"` for a loopback address, `"autodetect"` otherwise. **It is a one-off and the payload says so** (`persistent: false`, §5c): `wallet_session::open` issues its own `set_daemon` after every `open_wallet` (§4.2), so the next `wallet open` replaces whatever this set. The persistent form is `fmonero node remote <addr> --yes` (§2m.5), which this command's hint names. ADDRESS is validated against §2m.2's grammar — the same one `node.remote` uses, so the two commands cannot accept different strings | yes | **yes** | yes | no |
+| `wallet use-node` | `ADDRESS [--trusted]` | One `set_daemon` on the open wallet, with `ssl_support` chosen the way §2m.3's table chooses it for the address's shape: `"disabled"` for a loopback address, `"autodetect"` otherwise. **It is a one-off and the payload says so** (`persistent: false`, §5c): `wallet_session::open` issues its own `set_daemon` after every `open_wallet` (§4.2), so the next `wallet open` replaces whatever this set. The persistent form is `fmonero node remote <addr> --yes` (§2m.5), which this command's hint names. ADDRESS is validated against §2m.2's grammar — the same one `node.remote` uses, so the two commands cannot accept different strings | yes | **yes** | yes | no |
 | `settings list` · `get K` · `set K V` | | `~/.config/fmonero/config.toml` | on set | no | no | no |
 | `setup` | `[--units] [--plugin] [--menu] [--all] [--yes] [--dry-run]` | §4.2 | yes | **yes** | no | no |
 | `doctor` | `[--fix] [--only GROUP] [--dry-run] [--yes] [--save]`, `doctor undo RUN\|latest`, `doctor capabilities` | §7. `--fix` alone performs every fixer in v0.1 (classes A and B); `--yes` is accepted and ignored. | with `--fix` | – | no | no |
@@ -3326,7 +3344,7 @@ already stops them reaching a node fmonero does not own. A confirmation flag is 
 when it is rare: demanding it here teaches `--yes` as a reflex on commands where it costs nothing,
 which is the habituation §2a.4 argues against for `clear-pending`. `--yes` is reserved for the
 operations where a mistake costs money or a resync — `wallet send`, `wallet sweep`, `wallet create`,
-`wallet clear-pending`, `wallet set-daemon`, `node down`, `node restart`, **`node remote`**,
+`wallet clear-pending`, `wallet use-node`, `node down`, `node restart`, **`node remote`**,
 **`node local`**, `setup`. The two mode commands are on that list because they decide which node the
 next send is built against, because they restart a daemon that may be holding an open wallet, and
 because they change the node an **already-relayed** send would be resolved against (§2a.4) — which
@@ -4591,7 +4609,7 @@ impl Settings {
     /// **v5.2.** §2m.2's grammar, in one place: returns the normalized address (scheme
     /// lower-cased, kept; host and port unchanged) or `Error::Usage{reason:"bad_remote_address"}`
     /// with the row's exact message and the one hint §2m.2 prescribes. Called by
-    /// `Settings::set("node.remote", …)`, by `node_mode::set_remote` and by `wallet set-daemon`,
+    /// `Settings::set("node.remote", …)`, by `node_mode::set_remote` and by `wallet use-node`,
     /// so the three cannot accept different strings.
     pub fn parse_remote_address(s: &str) -> Result<String, Error>;
 }
@@ -4998,7 +5016,7 @@ impl WalletClient {
     /// exit 4 — `reason: unreachable` for a refused connect, `auth_refused` for a 401.
     pub fn from_ctx(ctx: &Context) -> Result<WalletClient, Error>;
     /// As `NodeClient::authenticated`: what the wire did on the last completed request. Feeds §5's
-    /// `wallet.authenticated`, §5c's `wallet set-daemon.authenticated` and the doctor (§7.1).
+    /// `wallet.authenticated`, §5c's `wallet use-node.authenticated` and the doctor (§7.1).
     pub fn authenticated(&self) -> Option<bool>;
     pub fn get_version(&self) -> Result<(u16, u16, bool), Error>;    // (major, minor, release)
     pub fn get_height(&self) -> Result<u64, Error>;                  // WalletLocked if -13
@@ -5050,7 +5068,7 @@ impl WalletClient {
     /// on every daemon call and can never sync.
     /// **Requires an already-open wallet**: `on_set_daemon` answers `-13 NOT_OPEN` with no wallet
     /// loaded (`wallet_rpc_server.cpp:4692`), so call it immediately AFTER `open_wallet`, never
-    /// before. Called only from `wallet_session::open` and from `wallet set-daemon`.
+    /// before. Called only from `wallet_session::open` and from `wallet use-node`.
     /// `ssl` is a typed enum rather than a string because epee accepts exactly three spellings and
     /// answers `-38 "Invalid ssl support mode"` for a fourth (`net_ssl.cpp:654-665`,
     /// `wallet_rpc_server.cpp:4732-4737`) — a typo would be a runtime failure on the send path's
@@ -5335,10 +5353,10 @@ pub mod units {
     /// remotely; `trusted` = `true` locally, `settings.node.remote_trusted` remotely; `ssl` is
     /// derived from the ADDRESS — `Disabled` for a loopback literal host, `Autodetect` otherwise
     /// — so the local case follows from §2c rather than being a second rule, and
-    /// `wallet set-daemon`, whose address is neither key, uses the same derivation on its argument
+    /// `wallet use-node`, whose address is neither key, uses the same derivation on its argument
     /// (`ssl_for_address`, below).
     pub fn daemon_target(ctx: &Context) -> DaemonTarget;
-    /// The address half of the rule above, exposed because `wallet set-daemon` needs it for an
+    /// The address half of the rule above, exposed because `wallet use-node` needs it for an
     /// address that is in no setting (§4.1). Two callers, one derivation (§2a.3).
     pub fn ssl_for_address(address: &str) -> SslSupport;
     /// True only for Layout::UserUnit. Read by `NodeClient::mutators` (§2i) and by the doctor;
@@ -5825,6 +5843,35 @@ property of the type rather than a habit. *Tests:* a unit test asserts every con
 `hint` names an `fmonero` subcommand that the TUI can reach has a `Some(action)`, and §6.7 asserts the
 widget renders `action` and never `hint`.
 
+### 5b.8 The round 5 amendment, in full
+
+**One addition to the §5 document, no signature moved: `Warning::panel_action: Option<String>`.**
+
+`Warning::action` was added in v5.6 as "the in-app sentence the TUI and the bar widget render where
+they used to render `hint`", and the two surfaces have different keymaps. Round 4's verifier read the
+nine warnings that can reach the bar against `Panel.qml`'s own `onTextKey` ladder — which binds
+exactly `n r t c d w` — and found that **seven of them name a key the panel does not have, and two
+name a key that does something else there**: `Free some space on that disk, or press d to stop your
+node.` and `Press d, then u, on the Node screen to start it afresh.`, where the panel's `d` opens the
+doctor. The disk row is the one the owner meets.
+
+So the document carries both sentences. `action` is unchanged, for the TUI. `panel_action` is
+`status.rs`'s `PANEL_ACTIONS` table where the wording has to differ and `action` where it does not, so
+it is **always present** and a consumer needs no fallback. The table names only keys the panel binds
+and only controls it draws (`Open wallet…` / `Check for payments`, `Choose node…`, `Start your node` /
+`Stop your node`), and a Rust test walks the source of `warnings()` and refuses any warn-or-error
+warning whose sentence names **any** key without an entry in the table — which is a stronger rule than
+"names a bound key", because `d` is bound and means the wrong thing.
+
+It is an **addition**: an agent reading schema 1 sees one more key and nothing it already parsed has
+moved. `Panel.qml` reads `panel_action || action`, the `||` being for a document an older binary wrote.
+
+Round 5 also renames one command, which is schema-visible: **`wallet set-daemon` is `wallet
+use-node`** (M16 — the command's own name carried rule 7's first banned word, and §2o.3's gate reads
+`///` text and flag names, so a subcommand name was outside every grep the round had). `set-daemon`
+stays as a hidden clap alias, so nothing already written against it breaks; the emitted `command`
+label and `--help` are `wallet use-node`.
+
 ### 5b.7 The v5.6.5 amendments, in full
 
 **Three additions to the §5 document and one to `PendingStatus`, no signature moved.** Every one
@@ -5914,7 +5961,7 @@ invocation will know, never what this one prints. The exact-key-set gate therefo
 | `wallet open` | `name`, `open` (bool), `unit_started` (bool), `nettype` (the wallet's own, §2a.6) |
 | `wallet close` | `name` (the wallet that was closed), `open` (always false), `unit_started` (always false) |
 | `wallet create` | `name`, `open` (**true** — `on_create_wallet` ends `m_wallet = wal.release()`, so the new wallet is left open and `wallet create` finishes `wallet_session::open`'s last three steps on it, §4.1), `unit_started`, `seed_backup_hint` (§2b.2); **never** `seed` |
-| `wallet set-daemon` | `address`, `trusted` (bool), `ssl_support` (`"disabled"` \| `"autodetect"` — §2m.3 chooses by the address's shape), `authenticated` (bool \| null), **`persistent` (bool, always `false`)**. `persistent` is a key rather than a README sentence because the fact it carries is that this call is undone by the next `wallet open` (§4.2) — an agent that sets a daemon and then opens a wallet would otherwise have no way to learn that its change is gone, and the honest place to say so is the payload of the command that made it (§2m.5). |
+| `wallet use-node` | `address`, `trusted` (bool), `ssl_support` (`"disabled"` \| `"autodetect"` — §2m.3 chooses by the address's shape), `authenticated` (bool \| null), **`persistent` (bool, always `false`)**. `persistent` is a key rather than a README sentence because the fact it carries is that this call is undone by the next `wallet open` (§4.2) — an agent that sets a daemon and then opens a wallet would otherwise have no way to learn that its change is gone, and the honest place to say so is the payload of the command that made it (§2m.5). |
 | `node info` | `node` — the §5 `node` object verbatim, so one parser serves both — plus `txpool` (`{txs_total, bytes_total, fee_total_pico, fee_total_xmr, oldest, num_10m, num_double_spends}`), `sync` (`{height, target_height, spans, peers}` or `null` on a restricted node) and `hard_fork` (`{current_version, state, voting_on: {version, enabled, earliest_height, votes, threshold, window, voting}}` — **two different fork versions, kept apart**, §1b.3) and `rpc` (`{version_major, version_minor, release, hard_forks: [{hf_version, height}]}` from json_rpc `get_version`, §1b.3 `:2173` — where `version` is the **RPC** version packed `major<<16\|minor`, not the software version, which is `node.version` from `get_info`). That last key is why `NodeClient::get_version` exists: without a place to land, a frozen call with no consumer forces a Phase 1b agent either to break the §5c exact-key-set gate or to break the §5b freeze. The block-header fields of `node` are **`null`, not zeros**, when `get_last_block_header` answered `"BUSY"` (§1b.3). **In remote mode the key set is identical and `txpool`, `sync`, `hard_fork` and `rpc` are all `null`**, with `node` carrying §5's remote-mode shape — `layout: "remote"`, `url` = `settings.node.remote`, `trusted` = `settings.node.remote_trusted`, `reachable: null` and every measured field `null` (§2m.3). One key set for both modes is what lets §5c's exact-key-set gate run unchanged and one parser serve both; a shorter remote payload would make every consumer branch on the mode before it could read the address. |
 | `node peers` | `connections` (array of `{address, host, port, state, height, pruning_seed, incoming, live_time, avg_download, avg_upload}` — `port` is parsed from the daemon's **string** and rendered as an **integer**, so both arrays agree, §1b.3), `white` and `gray` (arrays of `{host, port, last_seen}`), each `null` on a restricted node |
 | `node bans` | `bans` (array of `{host, ip, seconds}`) |
@@ -5952,10 +5999,34 @@ the assertion, because thirty payloads in a decisions log is bulk, not evidence.
 |---|---|---|
 | `manifest.json` | ~55 lines | schemaVersion 1, id `oliver.monero`, name "Monero", version, author, license, description, `kinds:["bar-widget"]`, `entryPoints.barWidget:"Panel.qml"`, `barWidget{displayName, description, category:"Finance", allowMultiple:false, defaultSection:"right", defaults{}, schema[]}` |
 | `Service.qml` | ≤ **360** (v5.6.4, was 340) | the state model (6.3), the two polls, the action queue |
-| `Panel.qml` | ≤ **880** (v5.6.6, was 870) | bar button + `KeyboardPanel` content (6.5) |
+| `Panel.qml` | ≤ **885** (round 5, was 880) | bar button + `KeyboardPanel` content (6.5) |
 | `MoneroIcon.qml` | ≤ **112** (v5.6, was 96) | the Monero ⓜ glyph as `QtQuick.Shapes` + `PathSvg`; no image asset. The progress ring now draws the **wallet's** catch-up as well as a local node's sync (§6.4), which is one more arc and its percent source |
-| `Model.js` | ≤ **315** (v5.6.6, was 300) | pure formatters: `parseStatus(text)`, `shortAddr`, `age`, `rate`, `grouped`, **`headerLine(status)`** (v5.6 — §6.4's five-word header, from one first-match table), **`walletSyncLabel(status)`** (v5.6 — `Syncing 63% · 240 000 blocks left`), **`nodeLabel(node)`** (v5.6, renamed from `remoteLabel`), **`checkedLabel(node)`** (v5.6, renamed from `probeLabel`; still refuses to render a height without its age), `walletStateLabel`, `pendingLabel`, `peersLabel`, `worstSeverity`, `safeArgv` |
+| `Model.js` | ≤ **340** (round 5, was 315) | pure formatters: `parseStatus(text)`, `shortAddr`, `age`, `rate`, `grouped`, **`headerLine(status)`** (v5.6 — §6.4's five-word header, from one first-match table), **`walletSyncLabel(status)`** (v5.6 — `Syncing 63% · 240 000 blocks left`), **`nodeLabel(node)`** (v5.6, renamed from `remoteLabel`), **`checkedLabel(node)`** (v5.6, renamed from `probeLabel`; still refuses to render a height without its age), `walletStateLabel`, `pendingLabel`, `peersLabel`, `worstSeverity`, `safeArgv` |
 | `README.md` | — | docs agent |
+
+**Round 5 raises `Model.js` from 315 to 340 and `Panel.qml` from 880 to 885, and §6.1's total from
+1 699 to 1 725.** The measured tree at `bd1eb41` is 1 669 (`Panel.qml` 871, `Service.qml` 351,
+`MoneroIcon.qml` 107, `Model.js` 308, `manifest.json` 32). Three of round 4's findings are the
+widget's own:
+
+* **S7 (+8 in `Panel.qml`, and §5 grew a field).** The warning row rendered `action`, which is written
+  for the TUI's keymap. Of the nine warnings that reach this panel seven named a key it does not bind,
+  and **two named `d`, which opens the doctor here and stops your node there.** §5 carries
+  `panel_action` beside `action` now, `status.rs`'s `PANEL_ACTIONS` table is the bar's own wording, and
+  a Rust test refuses any warn-or-error warning whose sentence names a key without an entry in it.
+* **M4 (+6 in `Model.js`).** `shortAddr` took eight from the head and **six** from the tail while
+  `screens::short_addr` took eight, so one payment read `42ey1afD…fJJQAWDm` in the TUI's banner and
+  `42ey1afD…JQAWDm` on the bar. `plugin-smoke` holds the two to one output, as it already does for
+  `grouped`, `age` and `percent`.
+* **M6 (+10 in `Model.js`).** `walletStateLabel` keyed on `unit_active` alone, so a wallet answering on
+  a service fmonero did not write said `not running` under a header reading `Wallet syncing 99%` — the
+  V13 contradiction, in the direction the TUI fixed and this did not. `reachable` is the half that
+  answers "is it there"; `unit_active` without it is what the TUI's badge calls `not answering`.
+* **M8 (+8 in `Model.js`).** `waitingLabel` — `14 payments` on a panel whose every other figure is this
+  machine's read as the owner's own. They are strangers'.
+
+**1 669 + 31 measured = 1 700, and the budget is 1 725** (`Panel.qml` 878, `Model.js` 332).
+`QML_BUDGET` becomes 1725.
 
 **v5.6.6 raises the same two again, and this one is what the first live render paid for.** The
 session unlocked partway through round 4 iteration 3, `omarchy restart shell` went through, and this
@@ -6627,7 +6698,7 @@ touches something foreign but reversible gets its own class then, with its first
 | `wallet_rpc_auth` | wallet | error | D | the login file exists, has **no group and no other permission bits** (§2c), and a `get_version` using it returns 200. When the file is absent but the unit is active, the detail names **both** the port it looked for and the port the unit binds (§4.2) | no | `systemctl --user restart fmonero-wallet-rpc.service` |
 | `wallet_daemon_link` | wallet | warn | D | wallet `get_height` within 100 blocks of node `get_info.height`. **`skip:remote_node` in remote mode**: the node's height is its half of the comparison and no wallet-RPC method reports it (§1b.9 item 5) | no | `fmonero wallet refresh` |
 | `wallet_daemon_matches_unit` | units | error | **B** | **new in v5.2.** The installed wallet unit's `--daemon-address` equals `units::daemon_target(ctx).address` byte for byte, its trust flag is `--trusted-daemon` or `--untrusted-daemon` exactly as `daemon_target` says, and its `--daemon-ssl` value matches. It is its own check rather than a clause of `units_present` because it is the one skew with a *silent* symptom: a `monero-wallet-rpc` started before any `wallet open` auto-refreshes against whatever its argv said (§1b.9 item 3), so a unit naming the old node keeps a wallet syncing from a node `status` does not name — and `units_present`'s byte comparison, which would also catch it, reports the generic `unit_drift` and buries the reason. Skipped `skip:unit_missing` when the file is absent | **yes** | `WriteFile{unit path, units::render_wallet_unit(ctx), 0o644}` + `RunArgv{["systemctl","--user","daemon-reload"], inverse: the same}`, and the detail names `fmonero node remote <addr> --yes` as the command that also restarts the daemon |
-| `wallet_daemon_auth` | wallet | error | D | **`skip:remote_node` in remote mode** (v5.2): there is no local credential to be missing — `set_daemon` sends no `username`/`password` at all there (§2m.3) — and both of its other terms, the node's height and its `synchronized` flag, are unobservable. Otherwise: one-shot and honest about what it cannot distinguish, because §7's architecture makes every detector a pure `fn detect(&Probes) -> Verdict` over **one** run's probes — "stuck while the node advances" is a two-sample-over-time observation and would force either a sleep inside a probe or a quiet weakening to "the wallet is behind", which fires on every normal sync. So: `fail` when our `monerod.conf` carries `rpc-login`, the wallet is reachable, the node is reachable, `node.synchronized == true` **and** `wallet_height + 100 < node_height`; `skip:node_syncing` when the node is not synchronized; `pass` otherwise. The detail says that a synced node with a wallet far behind is the signature of a missing daemon credential (§4.2) and that the check cannot distinguish it from a wallet still catching up on a large restore height. | no | `fmonero wallet set-daemon 127.0.0.1:18081 --trusted --yes` |
+| `wallet_daemon_auth` | wallet | error | D | **`skip:remote_node` in remote mode** (v5.2): there is no local credential to be missing — `set_daemon` sends no `username`/`password` at all there (§2m.3) — and both of its other terms, the node's height and its `synchronized` flag, are unobservable. Otherwise: one-shot and honest about what it cannot distinguish, because §7's architecture makes every detector a pure `fn detect(&Probes) -> Verdict` over **one** run's probes — "stuck while the node advances" is a two-sample-over-time observation and would force either a sleep inside a probe or a quiet weakening to "the wallet is behind", which fires on every normal sync. So: `fail` when our `monerod.conf` carries `rpc-login`, the wallet is reachable, the node is reachable, `node.synchronized == true` **and** `wallet_height + 100 < node_height`; `skip:node_syncing` when the node is not synchronized; `pass` otherwise. The detail says that a synced node with a wallet far behind is the signature of a missing daemon credential (§4.2) and that the check cannot distinguish it from a wallet still catching up on a large restore height. | no | `fmonero wallet use-node 127.0.0.1:18081 --trusted --yes` |
 | `wallet_nettype_matches` | wallet | warn | D | the open wallet's own nettype, recorded by `wallet_session::open` from its primary address (§2a.6), equals `settings.node.network`; `skip:wallet_closed` when nothing is open. The send path follows the **wallet**, so a mismatch is a configuration fact and not a money risk — but it means `wallet.dir`, the unit's ports and the node the wallet talks to were rendered for a different network | no | `fmonero settings set node.network <the wallet's> && fmonero setup --units --yes` |
 | `wallet_dir_exists` | wallet | warn | B | `settings.wallet.dir` **and every ancestor** exists, mode 0700. A missing *ancestor* is what stops the unit from starting: `monero-wallet-rpc` creates only the leaf, with one `mkdir(dir, 0700)`, and treats any failure but `EEXIST` as fatal (`wallet_rpc_server.cpp:325-340`, §4.2) | **yes** | `CreateDir{path, mode: 0o700}` **applied to each missing ancestor in turn, one `FileAction` per level**, so each stays individually undoable |
 | `wallet_dir_matches_unit` | units | error | B | the wallet unit's `--wallet-dir` argument equals `settings.wallet.dir` byte for byte — both absolute, which is why the unit renders the path rather than `%h` (§4.2) — the daemon resolves `<wallet-dir>/<filename>` and a name may not contain `/`, so a mismatch is unbridgeable and makes `wallet list` read a directory `open_wallet` never writes | **yes** | rewrite the unit from the setting (backup first) |
@@ -6725,7 +6796,7 @@ places to update when monero.fail changes one field.
 
 ---
 
-## 7a. TUI (`fmonero tui`) — one agent, one pass, ≤ 9 600 lines across `src/tui/{mod,theme,screens,send,subs,hit}.rs` (`tests.rs` excluded)
+## 7a. TUI (`fmonero tui`) — one agent, one pass, ≤ 10 100 lines across `src/tui/{mod,theme,screens,send,subs,hit}.rs` (`tests.rs` excluded)
 
 **v5.6.4 raises it to 9 100, and the arithmetic is here before the gate moved.** The measured v5.6.3
 tree is **8 535** (`mod` 3 063 · `screens` 3 409 · `send` 889 · `subs` 534 · `hit` 436 · `theme` 204),
@@ -6752,6 +6823,49 @@ and round 4's reading put twenty-three items into these files. They are, with wh
   no longer contradicts itself: M10 and M12 (three confirms that described what was not happening and
   said nothing about the node's last check), M6 (`history_cols` measuring a note column against the
   pane instead of a constant) and M30 (a QR modal that names its address and says what it is for).
+
+**Round 5 raises §7a from 9 600 to 10 100, and the arithmetic is written here before the line moves.**
+The measured tree at `bd1eb41` is **9 570**. Round 4's independent verification returned twelve
+serious findings and twenty minor ones; nine of the twelve and nine of the twenty land in these six
+files, and the itemisation is:
+
+* **S8, the in-app route that did not exist (+140).** The Send screen refused a filled, valid form
+  while a payment record was unresolved and named no key, no chip and no next step, and the only
+  resolution in the product was a shell command §2o.1 had removed from the banner above the form. `P`
+  on the Wallet screen, a `Confirm::ClearPending`, a `clear_pending_modal` that states the risk in
+  plain words (clearing cancels nothing; while the record is here fmonero will not let you send
+  again; that is what stops you paying twice), a chip drawn only while there is a record and drawn
+  **first** because it is the most urgent control on the screen, and a chip row that takes the rows
+  its chips need instead of dropping the fifth silently.
+* **S9, the year and the room for it (+70).** `short_time` became `moment` / `moment_short` over
+  `fmonero_core::when`, which is the same function `wallet history` reads; `HistoryCols` gained a
+  measured `when` width; and the addresses pane went from 42% to 40% of the Wide tier, which is 48
+  cells at 120 columns — exactly M6's own threshold for its `NAME` column — leaving the payments pane
+  68, which is exactly `16 + 1 + 7 + 1 + 14 + 9 + 10 + 2 + 8`.
+* **S10, a fourth node state and the key that leaves it (+75).** `may_mutate_node` collapsed
+  `Layout::None` into `Layout::SystemUnit`, so a fresh machine was told another program owned a node
+  that does not exist. `u`, `d` and `L` answer with `NODE_NOT_SET_UP` there, the hero says the same
+  sentence, and `S` runs `units::install` — the same call `setup --units --yes` makes, refusing by
+  itself inside a sandbox that has not opted in.
+* **S6, an overlay sized from its own wrapped text (+45).** The privacy notice asked for ten rows and
+  needed eleven, so `Enter continues · Esc cancels` was off screen at both sizes — on the one screen
+  that asks permission to reveal the owner's IP address. It wraps its own lines now and asks for the
+  rows it is about to draw.
+* **S12, the notice `Tab` can actually show (+30).** `toast_hidden` suppresses every toast while a
+  transaction is built, which is right, and it meant `Press Esc first to discard this.` reached nobody
+  on the one screen that needed it. `send.tab_note` is a row the confirm grows, and the `?` overlay's
+  first row is true about pop-ups.
+* **M10, the log path whole (+40).** A `Block` title cannot wrap, so a path longer than the title was
+  elided mid-token in the only place the file is named. The title keeps it when it fits and the pane's
+  own first row carries it hard-chunked when it does not.
+* **M7 (+20)** `● Synced` over `last block 3d 01h ago` with nothing reconciling them. **M13 (+13)**
+  the empty wallet panel said nowhere that there are no wallets. **M14 (+18)** two facts with no next
+  step on the screen whose whole content is controls. **M8 (+12)**, **M9 (+8)**, **M12 (+4)** and
+  **S1 (+12)** and **S3 (+12)**, the two width defects, which are arithmetic and a comment each.
+
+**9 570 + 431 measured = 10 001, and the ceiling is 10 100.** `TUI_BUDGET` becomes 10100. Two of the
+eighteen items DELETE code — S1's `width / 2` cap and its `mine` accumulator, S3's two columns of
+budget — and both deletions are the fix.
 
 **v5.6.5 raises §7a from 9 200 to 9 600, and the arithmetic is written here before the code is.**
 The measured v5.6.4 tree is **9 150**. Round 4 iteration 3's reader returned ten serious items and
@@ -7056,10 +7170,18 @@ Consequences, each stated because each is a place the old code did something els
 - **While a modal is open, `Tab` switches screens and closes the modal**, except the two modals that
   hold something that must not be silently dropped: the **send confirm** modal (a built transaction
   and the §2a.11 lock) and the **create-wallet** modal (a typed password). Those two consume `Tab`
-  and flash the status line `Esc to discard first` — the one documented exception, and it is
-  documented *in the modal*, on the line under its buttons, rather than only here. A password half
-  typed and a transaction built are the two states where "go somewhere else" must be an explicit
-  discard; everything else a modal holds is a selection that costs a keypress to rebuild.
+  and say so — the one documented exception, and it is documented *in the modal*, on the line under
+  its buttons, rather than only here. A password half typed and a transaction built are the two states
+  where "go somewhere else" must be an explicit discard; everything else a modal holds is a selection
+  that costs a keypress to rebuild.
+  **Round 5, S12: "flash the status line" is the half that could not work.** `screens::toast_hidden`
+  suppresses every toast while `send.stage` is `Stage::Built` — correctly, because the window on top
+  states the situation — so the send confirm was the one modal that needed the sentence and the one
+  that could not show it: `Tab` there moved nothing and said nothing, at 0.2 s and at 1.5 s, while the
+  `?` overlay's first row promised `Tab` always works "in a pop-up". The send confirm grows a row
+  reading **`Esc first, then Tab.`** the moment `Tab` is pressed, the create-wallet modal keeps its own
+  line, and the `?` overlay's first row says that a pop-up holding unfinished work asks for `Esc`
+  first. Three statements of one rule, and all three are now true.
 - **Inside a modal, fields and controls move with `Up`/`Down`, and `Enter` advances from any field
   except the last, where it submits** (v5.5, revision 1). This is the Send form's rule of the bullet
   above, reused rather than reinvented, and it is stated here because the `Tab` exception makes it
@@ -7446,13 +7568,22 @@ while the table's width is under `address_min + (COL + 1) × (kept − 1)`, wher
 `Flex` gap — `ftui-widgets-0.7.0/src/table.rs:114`, `:845`). Omitting that `+ 1` is how a 150-column
 terminal came to render a *worse* address column than a 100-column one and elide the node this
 machine is configured on. And `address_min` is **measured, not chosen**: the widest address cell the
-table will draw — marker, address and `web`/`own` tag — capped at half the table's width so that one
-49-column hostname cannot delete every data column, and never below the **configured** row's own
-width, because the node the user is using is the one whose address has to be readable. A fixed 26
-was below the 31 cells `● xmr-node.cakewallet.com:18081` needs, which is the whole of the defect:
-the sentence above was true of the loop's intent and false of its arithmetic. *Test:* the configured
-address renders complete at 90, 100, 120, 150 and 180 columns, with the longest address monero.fail
-actually served this machine (49 columns) in the list.
+table will draw — marker, address and `own` tag. A fixed 26 was below the 31 cells
+`● xmr-node.cakewallet.com:18081` needs, which is the whole of the original defect: the sentence above
+was true of the loop's intent and false of its arithmetic.
+
+**Round 5, S1: there is no cap.** v5.5.1 capped `address_min` at half the table's width so that one
+49-column hostname could not delete every data column — and bought that by permitting the one
+truncation this section forbids twice. At 120 columns the picker's pane is 72 wide, so the cap was 36
+rather than the measured 46, three columns were kept, and `Table` silently cut
+`monero-rpc.cheems.de.box.skhron.com.ua:18089` to `…skhron.com.ua:180`: no ellipsis, no marker, and
+`:180` is a plausible port for a reader to type into `[a] Add a node`. **Columns drop from the right
+until the widest cell fits whole, however many that costs**, which is what this paragraph's first
+sentence already said. A table with one column and a readable address beats a table with four and a
+wrong port; the data columns are a comparison, the address is the thing being chosen. The configured
+row needs no floor of its own any more, because it is one of the rows measured.
+*Test:* every address in the list renders character-complete at 90, 100, 120, 150 and 180 columns,
+with a 43-character address, the 44-character one the fixture carries, and the configured node's own.
 
 **The picker never writes `node.mode = local`, never starts or stops a daemon directly, and never
 probes on entry.** Entry reads the cache (`nodes::cached`, which cannot spawn) and probes **only the
@@ -7492,6 +7623,14 @@ drawn at all, because `o` has nothing to open; `[W]` is drawn only in the state 
 `Stop the wallet service  (nothing is open, so nothing is interrupted)`. This section printed all
 three unconditionally, two of them carrying a parenthetical telling the reader not to press the chip
 it was written on. `crates/fmonero/src/tui/tests.rs` asserts the absences in both states.)
+
+(**Round 5, M13 and M14.** With no wallets the panel drew one chip and no sentence saying there were
+none — the comment at `screens.rs:1861` claimed "the line under it says there is nothing yet" and the
+two rows that would have carried such a line were discarded with `let _ = (rows[1], rows[3]);`. The
+second row of the panel now reads `There are no wallets on this machine yet.` And the two status rows
+each name a next step, which is §2o rule 11 on the screen whose whole content is controls: the service
+row ends `Opening or creating a wallet starts it` in every state where it is not running, and the node
+row ends `press 1 for the Node screen`.)
 
 (v5.6, §2o: `daemon` and `idle` were the program's words, the trust flag is deleted everywhere, and
 the two long chip descriptions each said one fact in three clauses.)
@@ -7615,20 +7754,20 @@ six; the changes are marked.**
 
 | Keys | Means |
 |---|---|
-| `Tab` `⇧Tab` `Ctrl+C` | **screens · quit — always, in a field, a modal, the overlay or a running action** (§7a.1, changed; **v5.5.1** moved `Ctrl+C` into this row and `1 2 3 4` out of it) |
+| `Tab` `⇧Tab` `Ctrl+C` | **screens · quit — always in a field, the overlay or a running action; a pop-up holding unfinished work asks for `Esc` first** (§7a.1, changed; **v5.5.1** moved `Ctrl+C` into this row and `1 2 3 4` out of it; **round 5, S12** made the pop-up clause true — the two modals that consume `Tab` now both say so, and the send confirm could not) |
 | `1 2 3 4` `q` | the same two, **but only when no field has focus** — a focused field keeps every printable key, and `Esc` unfocuses it (**v5.5.1**: the row that said `always` was false here, and half of it is what a user types into the Amount field) |
 | `?` | this help |
 | `r` | check now (v5.6: `refresh` was the name of an RPC) |
 | `Esc` | close this help, else leave the field, else stop what is running (the field step is new in v5.5, §7a.1; the wording is v5.6, §2o) |
 | mouse | **click tabs, rows, fields and every `[key]` chip · wheel scrolls the list under the cursor · right-click is Esc** (new, §7a.2; the row reads `mouse: off — fmonero settings set tui.mouse true` when it is off) |
 | **Node:** `u` `d` | start · stop your node (it asks first; not while you use a public node) |
-| **Node:** `b` · `L` | peers ⇄ bans · change how much your node writes to its log (it asks first) |
+| **Node:** `b` · `L` `S` | peers ⇄ bans · change how much your node writes to its log (it asks first) · **set your own node up on this machine** (`S` is new in round 5, S10 — `units::install`, the same call `setup --units --yes` makes, and the only route out of `Layout::None` from inside the app) |
 | **Node:** `p` `f` | **check the listed nodes · get a fresh list** (new in v5.5, §7a.4; wording v5.6) |
 | **Node:** `Enter` `a` `H` `l` | **use the selected node (it asks first) · add an address · go back to the last one · use your own node instead** (`l` is new in v5.6, §7a.4/§2o.1) |
 | **Wallet:** `o` `c` `x` | **open a wallet · create one · close the open wallet** (`c` and `x` changed in v5.5, §7a.5) |
 | **Wallet:** `W` | **start the wallet service, or stop it when nothing is open** (new in v5.5, §7a.5) |
 | **Wallet:** `a` `l` `n` | new address · rename the selected one · edit the note on the selected payment |
-| **Wallet:** `R` `Q` | check for payments · show the address as a QR code |
+| **Wallet:** `R` `Q` `P` | check for payments · show the address as a QR code · **clear the record of a payment fmonero lost track of** (it asks first; `P` is new in round 5, S8 — its chip is drawn only while there is a record, and drawn first, because it is the control that stops the next send) |
 | **Wallet:** `/` `t` | filter rows · change which kinds show |
 | **Wallet:** `←→` `Enter` | swap panes · copy an address · open a row |
 | **Send:** `↑↓` `Enter` | **next/previous field · works out the fee** (`Tab` no longer moves between fields, §7a.1; `Esc` leaves the field, `Enter` from outside goes back into the form). v5.6.5: one wording for this, because the form's hint row, its validation row, the Preview's Fee row, the `?` overlay and the toast said it five different ways, and §7a.6 itself said `check it` — M19's undefined noun, sixth use |

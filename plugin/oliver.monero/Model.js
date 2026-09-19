@@ -99,12 +99,27 @@ function age(sec) {
   return r + "s"
 }
 
-// "4AdUnd…9fL2Kq" — enough of both ends to recognise an address without showing one that could be
+// "4AdUnd…f9fL2Kq" — enough of both ends to recognise an address without showing one that could be
 // mistaken for a full one. The panel copies the real value, never this.
+//
+// **M4: eight and EIGHT.** This took six from the tail while `screens.rs`'s `short_addr` took
+// eight, so the same payment read `42ey1afD…fJJQAWDm` in the TUI's pending banner and
+// `42ey1afD…JQAWDm` on the bar, one row apart on the same screen — one fact, two shortenings
+// (§2o rule 8). `tests/plugin-smoke.sh` holds this function to the Rust one's output, as it already
+// does for `grouped`, `age` and `percent`.
 function shortAddr(addr) {
   var a = String(addr || "")
   if (a.length <= 20) return a
-  return a.substring(0, 8) + "…" + a.substring(a.length - 6)
+  return a.substring(0, 8) + "…" + a.substring(a.length - 8)
+}
+
+// What is waiting to be mined, with whose payments they are (M8) — the JavaScript half of
+// `fmonero_core::payments_across_the_network`, held to it by `tests/plugin-smoke.sh` the way
+// `grouped`, `age` and `percent` are. `orMore` is the restricted-node case: such a node answers with
+// a count that is a floor (§2o.2), and the panel says so rather than asserting it.
+function waitingLabel(n, orMore) {
+  var c = int(n, 0)
+  return c + (c === 1 ? " payment" : " payments") + " across the network" + (orMore ? " or more" : "")
 }
 
 // §6.5's node row, in one line (v5.6). `node` is Status.node.
@@ -154,10 +169,19 @@ function checkedLabel(node) {
 // The wallet service's state as a person reads it (§2o.2). `up` and `idle` were the program's
 // words: with a public node and nothing open the service is SUPPOSED to be down (§4.2), which
 // is why §5 makes that an `info` rather than a warning.
+//
+// **M6: `unit_active` alone was the wrong predicate** — the V13 contradiction, in the direction the
+// TUI fixed and this did not. With a wallet open and answering on a service fmonero did not write,
+// this row said `not running` under a header reading `Wallet syncing 99%`. The question a person is
+// asking is whether the wallet service is there, and `reachable` is the half that answers it:
+// something fmonero can talk to is running, whoever started it. `unit_active` without `reachable` is
+// the state the TUI's badge calls `not answering`.
 function walletStateLabel(wallet, warnings) {
-  if (wallet && wallet.unit_active === true) return "running"
-  var idle = Array.isArray(warnings) && warnings.some(function (w) {
-    return w && w.id === "wallet_idle"
+  var w = wallet || {}
+  if (w.reachable === true) return w.unit_active === true ? "running" : "running (not fmonero's)"
+  if (w.unit_active === true) return "not answering"
+  var idle = Array.isArray(warnings) && warnings.some(function (w2) {
+    return w2 && w2.id === "wallet_idle"
   })
   return idle ? "starts when you open a wallet" : "not running"
 }

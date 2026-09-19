@@ -479,8 +479,11 @@ strip_all() { strip_alts "$(strip_keys "$(strip_envs "$(strip_flags "$(strip_fie
 # The §5c `setup.actions[].what` values, exempt **by name**. They are payload values an agent
 # branches on — `tests/e2e.sh` selects rows with `select(.what == "wallet unit")` — and `setup`'s
 # human rendering puts them through `units::action_words`, which is where the sentence a person
-# reads comes from. Four literals, listed, so a fifth has to be added deliberately.
-ALLOWED_LABELS='^"(node unit|wallet unit|wallet set-daemon|CreateDir wallet\.dir)"$'
+# reads comes from. Three literals, listed, so a fourth has to be added deliberately.
+# Round 5 removes the fourth: `wallet set-daemon` was the one exemption whose only reason was that
+# the command's own NAME carried rule 7's first banned word (M16). The command is `wallet use-node`
+# now, so the exemption is gone rather than kept as a licence.
+ALLOWED_LABELS='^"(node unit|wallet unit|CreateDir wallet\.dir)"$'
 HITS_2O=""
 for f in "${COPY_SURFACES[@]}"; do
   while IFS= read -r lit; do
@@ -927,7 +930,13 @@ step "§7a  the TUI fits its line budget · §6.1 the plugin fits its own"
 # fresh reader's round (+541, measured 9 076) and nine more from this round's own read of its own
 # captures (+74, measured 9 150). Seven of those nine are ROOM rather than text: a sentence cut to
 # fit is a sentence the reader does not have, and four of the nine were exactly that.
-TUI_BUDGET=9600
+# Round 5: **10100**, itemised in §7a before this line moved (was 9600) — eighteen items from round
+# 4's independent verification, led by S8 (an in-app route out of a pending payment record, which did
+# not exist at all: a key, a chip, a confirm overlay and a chip row that stops dropping controls),
+# S9 (the year in the money ledger, and the 42%→40% pane split that makes room for it) and S10 (a
+# fourth node state, and the key that leaves it). Two of the eighteen DELETE code, and both deletions
+# are the fix: the picker's `width / 2` cap and `list_modal`'s two columns of phantom budget.
+TUI_BUDGET=10100
 if [ -d "$BIN/tui" ]; then
   TUI_FILES=()
   for f in mod theme screens send subs hit; do
@@ -964,7 +973,12 @@ fi
 # M26 (the in-app `action` a failed button never showed); `Model.js` +21 for M2 (one duration shape),
 # M27 (a row starting with a bare separator, and a header with no verdict) and M28 (the peers row
 # blaming a node that is off).
-QML_BUDGET=1699
+# Round 5: **1725**, itemised in §6.1 before this line moved — 360 + 885 + 112 + 340 = 1 697 plus
+# manifest.json's 32 real lines. Four items: S7 (`panel_action`, because `action` is the TUI's keymap
+# and two of the nine warnings that reach the bar named `d`, which opens the doctor here), M4 (one
+# shortening for one address), M6 (`reachable`, not `unit_active` alone) and M8 (whose payments are
+# waiting).
+QML_BUDGET=1725
 if [ -d plugin/oliver.monero ]; then
   QML_LINES="$(cat plugin/oliver.monero/*.qml plugin/oliver.monero/*.js plugin/oliver.monero/manifest.json 2>/dev/null | grep -c '')"
   if [ "$QML_LINES" -le "$QML_BUDGET" ]; then
@@ -985,9 +999,9 @@ if [ -d plugin/oliver.monero ]; then
     fi
   done <<'PERFILE'
 360 Service.qml
-880 Panel.qml
+885 Panel.qml
 112 MoneroIcon.qml
-315 Model.js
+340 Model.js
 PERFILE
 else
   printf '  skip  §6.1 line budget: plugin/oliver.monero does not exist yet\n'

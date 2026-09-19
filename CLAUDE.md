@@ -34,8 +34,17 @@ in-process mock server test suite, on-demand systemd user unit for the backend).
 - No stubs, mocks or placeholders in shipped code. Tests use in-process mock JSON-RPC servers.
 - Claim nothing RED in README, `--help` or robot-docs. Append to `DECISIONS.md`; never rewrite
   earlier entries.
+- **A sandbox needs `FMONERO_SYSTEMCTL_FIXTURE`, not just `FMONERO_STATE_DIR`.** The state dir moves
+  fmonero's files; it does **not** move `systemctl --user`. `units::install` refuses under a state
+  dir with no fixture (exit 3 `sandboxed_units`) and `units::start`/`stop` refuse the same way — but
+  the refusal is the last line of defence, not the plan. On 2026-09-19 a verification sandbox set the
+  state dir and forgot the fixture, and its `node up` started the owner's real unit: a real `monerod`
+  ran for thirty seconds and left ~147 MB in `~/.bitmonero` (DECISIONS: V18, round 4's S11). Every
+  sandboxed run sets, together: `FMONERO_STATE_DIR`, `FMONERO_CONFIG_DIR`, `FMONERO_CACHE_DIR`,
+  `XDG_DATA_HOME`, `FMONERO_SYSTEMD_USER_DIR`, `FMONERO_SYSTEMCTL_FIXTURE` and — if anything could
+  fetch a node list — `FMONERO_NODES_URL` pointed at a local `fmonero-mock`.
 
-## State (2026-09-17)
+## State (2026-09-19)
 Monero 0.18.5.1 is installed (`extra/monero`). fmonero v0.1 is built, installed to
 `~/.local/bin/fmonero`, its two user units are written (disabled until a wallet is opened or the
 owner runs `node up`), the bar widget `oliver.monero` is live, and the owner uses **remote node

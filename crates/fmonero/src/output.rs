@@ -97,9 +97,18 @@ fn visible_width(s: &str) -> usize {
 ///
 /// The hanging indent is the other half of the defect: before this, a wrapped detail returned to
 /// column 0, so a continuation of an indented table row broke the table's own indent and a wrapped
-/// bullet read as a new bullet. A word longer than the whole width — an address, a 64-character id,
-/// a path — is put on its own line **whole**: §2a and `docs/COPY.md` §4 both say an address is
-/// never elided, and a word broken in half is exactly what this fix exists to remove.
+/// bullet read as a new bullet.
+///
+/// **Round 5, M11: a token longer than the line is hard-chunked, under the hanging indent.** It used
+/// to go on its own line whole, on the argument that §2a and `docs/COPY.md` §4 forbid eliding an
+/// address — and what a terminal then does with a 248-character path is wrap it itself, at column 1,
+/// with no marker: the doctor's own capture had three lines of 120, 120 and 2 columns, the
+/// continuations flush left and reading as new rows. Nothing was elided and the reader still could
+/// not tell where the path ended. Hard-chunking loses no character either, and a chunk boundary under
+/// an indent is visible where a terminal's own wrap is not — which is the rule the TUI's
+/// `wrap_hanging` and `wrap_words` have followed since round 4 iteration 3. The one cost is that a
+/// 95-character address on a terminal narrower than about 100 columns arrives in two pieces; the send
+/// confirm's own modal has always done that, for the same reason.
 fn wrap_to(text: &str, width: usize, hang: usize) -> Vec<String> {
     // The line's own leading spaces are structure, not prose: they start the first line and the
     // hanging indent is measured from them.
@@ -146,6 +155,16 @@ fn wrap_to(text: &str, width: usize, hang: usize) -> Vec<String> {
         current_width += w;
         gap.clear();
         any = true;
+        // M11: one token wider than the line, split where the line ends rather than where the
+        // terminal ends. `visible_width` and the character count agree here — a token carrying a
+        // colour escape is a painted word, never a path — so the split is by characters.
+        while current_width > width && current.chars().count() > hang.max(1) {
+            let keep: String = current.chars().take(width).collect();
+            let rest: String = current.chars().skip(width).collect();
+            lines.push(keep);
+            current = format!("{hang_pad}{rest}");
+            current_width = hang + rest.chars().count();
+        }
     }
     lines.push(current.trim_end().to_string());
     lines
@@ -670,9 +689,10 @@ fn own_node_rows(out: &Out, node: &serde_json::Value, unit_active: Option<bool>)
         fields.push(format!("peers {o} out · {i} in"));
     }
     if let Some(n) = node["tx_pool_size"].as_u64() {
+        // M8: whose payments these are, in the one phrase the TUI's pane and the bar's row use.
         fields.push(format!(
-            "{n} {} waiting to be mined",
-            if n == 1 { "payment" } else { "payments" }
+            "{} waiting to be mined",
+            fmonero_core::payments_across_the_network(n)
         ));
     }
     if let Some(b) = node["database_size"].as_u64() {
@@ -1399,13 +1419,6 @@ fn node_info_human(out: &Out, v: &serde_json::Value) {
     }
 }
 
-/// `fmonero node list` (§2n, §5c, W20) — **the picker's table, in the CLI's own shape.**
-///
-/// It was a second vocabulary for one thing: group headings `monero.fail says` / `checked here`
-/// over columns the TUI calls `their block` and `block here`, `synced` rendering the JSON `true`,
-/// a `ping 20` with no unit, ungrouped block numbers beside the picker's grouped ones, and two
-/// markers (`web`, `own`) in the rows with nothing to say what they meant. The column names are
-/// the picker's, the units are on the numbers, and the one marker left is explained in the footer.
 /// `node list`'s header row, as its own function so a test can **measure it** (round 5, S2).
 ///
 /// It was 122 characters on a 120-column terminal with probe results in the list, so `synced`
@@ -1443,6 +1456,13 @@ fn nodes_header(w: &[usize], probed_any: bool) -> String {
     )
 }
 
+/// `fmonero node list` (§2n, §5c, W20) — **the picker's table, in the CLI's own shape.**
+///
+/// It was a second vocabulary for one thing: group headings `monero.fail says` / `checked here`
+/// over columns the TUI calls `their block` and `block here`, `synced` rendering the JSON `true`,
+/// a `ping 20` with no unit, ungrouped block numbers beside the picker's grouped ones, and two
+/// markers (`web`, `own`) in the rows with nothing to say what they meant. The column names are
+/// the picker's, the units are on the numbers, and the one marker left is explained in the footer.
 fn nodes_human(out: &Out, v: &serde_json::Value) {
     let rows = v["nodes"].as_array().map(Vec::as_slice).unwrap_or_default();
     if rows.is_empty() {
@@ -2212,14 +2232,37 @@ mod tests {
         }
     }
 
-    /// X3: a word longer than the line — an address, a 64-character id — goes on its own line
-    /// **whole**. `docs/COPY.md` §4 forbids eliding an address, and splitting one is worse.
+    /// **Round 5, M11: a token longer than the line is chunked where the LINE ends, not where the
+    /// terminal does.**
+    ///
+    /// X3 put it on its own line whole, and a terminal then wrapped it itself at column 1 with no
+    /// marker — the doctor's capture read 120, 120 and 2 columns with the continuations flush left,
+    /// reading as new rows. Nothing was elided and the reader still could not tell where the path
+    /// ended. Chunking loses no character either, and the chunks sit under the hanging indent.
     #[test]
-    fn a_word_longer_than_the_line_is_never_broken() {
+    fn a_token_longer_than_the_line_is_chunked_under_the_indent_and_loses_nothing() {
         let a = "4".repeat(95);
         let lines = wrap_to(&format!("To  {a}"), 80, 4);
-        assert!(lines.iter().any(|l| l.contains(&a)), "{lines:?}");
-        assert_eq!(lines.concat().matches('4').count(), 95);
+        assert!(lines.len() > 1, "it has to be split somewhere: {lines:?}");
+        assert_eq!(lines.concat().matches('4').count(), 95, "{lines:?}");
+        for l in &lines {
+            assert!(visible_width(l) <= 80, "over the line: {l:?}");
+        }
+        for l in lines.iter().skip(1) {
+            assert!(l.starts_with("    "), "a continuation is indented: {l:?}");
+        }
+        // The doctor's own case: a 248-character path in an indented detail line, at 120 columns.
+        let path = format!("/tmp/{}", "x".repeat(243));
+        let lines = wrap_to(&format!("  Only you can read {path}"), 120, 4);
+        for l in &lines {
+            assert!(visible_width(l) <= 120, "over the line: {l:?}");
+        }
+        let flat: String = lines
+            .iter()
+            .map(|l| l.trim_start().to_string())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(flat.contains(&path), "the path lost characters: {lines:?}");
     }
 
     /// X3: a coloured word occupies the columns it prints, not the bytes it carries.

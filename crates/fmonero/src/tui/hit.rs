@@ -66,6 +66,10 @@ pub(super) enum Button {
     SwapPeers,
     /// The same finding on the Payments pane, whose title read `Payments  6 · t: all`.
     KindFilter,
+    /// Round 5, S8: the Wallet screen's route out of an unresolved payment record. Until this
+    /// existed the Send screen refused with a bare fact and the only resolution in the product was
+    /// a shell command no TUI surface named (§2o.1).
+    ClearPending,
     Help,
     NextScreen,
 }

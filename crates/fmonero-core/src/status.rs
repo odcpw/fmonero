@@ -233,10 +233,71 @@ pub struct Warning {
     /// The CLI's runnable command, one per warning (§9). **Unchanged by v5.6**: agents and a
     /// person reading `fmonero status` in a terminal keep exactly what they had.
     pub hint: String,
-    /// **v5.6, §2o.1: the in-app sentence** the TUI and the bar widget render where they used
-    /// to render `hint`. `None` where nothing can be done from inside the app, and both
-    /// surfaces then show the text alone.
+    /// **v5.6, §2o.1: the in-app sentence** the TUI renders where it used to render `hint`.
+    /// `None` where nothing can be done from inside the app, and the surface then shows the text
+    /// alone.
     pub action: Option<String>,
+    /// **Round 5, S7: the same sentence for the bar panel, whose keymap is a different one.**
+    ///
+    /// `action` is written for the TUI, and `Panel.qml` rendered it verbatim. Of the nine warnings
+    /// that can reach the bar, seven named a key the panel does not bind — and two named a key that
+    /// does something else there: `Free some space on that disk, or press d to stop your node.` and
+    /// `Press d, then u, on the Node screen to start it afresh.`, where the panel's `d` opens the
+    /// doctor. §2o.1's rule is that a hint names something the user can do **where they are**; one
+    /// wording cannot serve two keymaps.
+    ///
+    /// Always present in the document, so a consumer needs no fallback: it is `action` wherever the
+    /// sentence is surface-neutral, and an override from [`PANEL_ACTIONS`] where it is not.
+    pub panel_action: Option<String>,
+}
+
+/// **Round 5, S7: the panel's own wording, for the warnings whose TUI sentence names a TUI key.**
+///
+/// `plugin/oliver.monero/Panel.qml` binds exactly `n r t c d w` (`onTextKey`) plus the arrows,
+/// `Enter`, `Tab` and `Esc`, and it draws three named buttons: `Open wallet…` / `Check for
+/// payments`, `Choose node…`, and `Start your node` / `Stop your node` with your own node. Every
+/// sentence here names one of those and nothing else, and
+/// [`tests::no_panel_visible_warning_names_a_key_the_panel_does_not_bind`] is what holds it to that
+/// — including for warnings added later, which must either be surface-neutral or appear here.
+///
+/// `info` warnings are not listed: §6.5 keeps them out of the panel's problems section altogether.
+pub const PANEL_ACTIONS: &[(&str, &str)] = &[
+    (
+        "node_down",
+        "Press r to check again. The buttons below start it and stop it.",
+    ),
+    (
+        "node_offline",
+        "The buttons below stop it and start it again.",
+    ),
+    (
+        "node_low_disk",
+        "Free some space on that disk, or stop your node with the button below.",
+    ),
+    (
+        "node_restricted",
+        "Press n to see what this node does answer.",
+    ),
+    ("public_node_down", "Press n to pick another one."),
+    (
+        "remote_node_trusted",
+        "Press n to choose the node again, which clears that.",
+    ),
+    ("wallet_down", "Press w to open a wallet."),
+    ("send_may_be_in_flight", "Press w to look at your payments."),
+    (
+        "nettype_mismatch",
+        "Press w to close this wallet if it is not the one you meant.",
+    ),
+];
+
+/// The panel's sentence for one warning: its override, or `action` where that is surface-neutral.
+fn panel_action_for(id: &str, action: Option<&String>) -> Option<String> {
+    PANEL_ACTIONS
+        .iter()
+        .find(|(warning, _)| *warning == id)
+        .map(|(_, text)| (*text).to_string())
+        .or_else(|| action.cloned())
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -860,12 +921,15 @@ fn warnings(
 ) -> Vec<Warning> {
     let mut out = Vec::new();
     let mut add = |id: &str, severity: Severity, text: String, hint: &str, action: Option<&str>| {
+        let action = action.map(str::to_string);
         out.push(Warning {
             id: id.to_string(),
             severity,
             text,
             hint: hint.to_string(),
-            action: action.map(str::to_string),
+            // Round 5, S7: the bar's own keymap, decided in one table beside the id list.
+            panel_action: panel_action_for(id, action.as_ref()),
+            action,
         });
     };
     // **Which binary is missing depends on the mode** (§2m.3): remote mode needs no `monerod`
@@ -902,7 +966,13 @@ fn warnings(
             "fmonero node local --yes",
             // M13: `f` fetches a list. Choosing a node needs a selection and Enter, and three
             // surfaces described one key three ways.
-            Some("Pick another one on the Node screen."),
+            //
+            // **M19: and it is not the same sentence as `public_node_down`'s.** Both said
+            // `Pick another one on the Node screen.`, so the Notes pane on the Node screen showed
+            // one instruction twice under two different bullets — and on that screen "on the Node
+            // screen" names where the reader already is. This one is the other route: back to your
+            // own node, which is what `l` does two rows below.
+            Some("Press l to use your own node instead."),
         );
         // **Round 4, S4: the one configuration the owner actually runs had no alarm in it.**
         //
@@ -921,7 +991,9 @@ fn warnings(
                     s.node.url
                 ),
                 "fmonero node list",
-                Some("Pick another one on the Node screen."),
+                // M19: the list is on this screen, and choosing from it is a selection and Enter
+                // (§7a.4) — which is what the `↑↓` row of the `?` overlay explains.
+                Some("Pick another node in the list and press Enter."),
             );
         }
         // A trusted daemon receives the wallet's own unspent amounts INSIDE a request
@@ -939,7 +1011,7 @@ fn warnings(
                     s.node.url
                 ),
                 "fmonero node remote <addr> --yes   # re-set it without --trusted",
-                Some("Choose the node again on the Node screen to clear that."),
+                Some("Choose the node again in the list below to clear that."),
             );
         }
     }
@@ -1459,6 +1531,143 @@ mod tests {
         // And the count is the one the id list promises, so a warning added without an action
         // cannot hide behind a passing grep.
         assert_eq!(WARNING_IDS.len(), 23);
+    }
+
+    /// **Round 5, S7: no panel-visible warning names a key the bar does not bind.**
+    ///
+    /// `Panel.qml:592` passed `action` to the warning row's hint verbatim, and those sentences are
+    /// written for the TUI. Of the nine warnings that can reach the bar, seven named a key the panel
+    /// does not have — and two named a key that does something else there: `press d to stop your
+    /// node` and `Press d, then u, on the Node screen`, where the panel's `d` opens the doctor. The
+    /// disk one is the row the owner actually meets.
+    ///
+    /// The scan is over the source of `warnings()` itself, because the sentences are literals inside
+    /// it and a test that constructed a `Status` could only reach the branches that `Status` allows.
+    /// Each `add(` call starts with its id, and every `Press x` in the call is that warning's own
+    /// advice — `text` and `hint` carry none. An `info` warning is skipped: §6.5 keeps those out of
+    /// the panel's problems section, so its wording never reaches the bar.
+    #[test]
+    fn no_panel_visible_warning_names_a_key_the_panel_does_not_bind() {
+        // `Panel.qml`'s `onTextKey` ladder, in full.
+        const PANEL_KEYS: &[char] = &['n', 'r', 't', 'c', 'd', 'w'];
+        // **And the keys the two surfaces bind to different things.** `d` opens the doctor on the
+        // bar and stops your node in the TUI, which is why "names a key the panel does not bind" is
+        // not the whole rule: the disk warning's `press d to stop your node` named a key the panel
+        // has, and pressing it there opens a report.
+        const DIVERGENT_KEYS: &[char] = &['d'];
+        let src = include_str!("status.rs");
+        let body = src
+            .split("fn warnings(")
+            .nth(1)
+            .expect("the function is in this file");
+        let body = body.split("\n/// ").next().unwrap_or(body);
+        // A key as these sentences name one: `press d`, `Press 2`, `then u`. One character,
+        // followed by punctuation or a space — `press the` and `then Enter` are words, not keys.
+        let keys_named = |text: &str| -> Vec<char> {
+            let mut out = Vec::new();
+            for pat in ["press ", "Press ", "then ", "Then "] {
+                let mut from = 0usize;
+                while let Some(i) = text[from..].find(pat) {
+                    let at = from + i + pat.len();
+                    let mut rest = text[at..].chars();
+                    let c = rest.next();
+                    let after = rest.next();
+                    if let Some(c) = c {
+                        if c.is_ascii_alphanumeric()
+                            && after.is_none_or(|n| !n.is_ascii_alphanumeric())
+                        {
+                            out.push(c);
+                        }
+                    }
+                    from = at;
+                }
+            }
+            out
+        };
+        let mut checked = 0;
+        for chunk in body.split("add(").skip(1) {
+            // The chunk ends at the call's own `);`, so a later call's text cannot leak in.
+            let chunk = chunk.split(");\n").next().unwrap_or(chunk);
+            if chunk.contains("Severity::Info") {
+                continue;
+            }
+            checked += 1;
+            let trimmed = chunk.trim_start();
+            let id = trimmed
+                .strip_prefix('"')
+                .and_then(|rest| rest.split_once('"'))
+                .map(|(id, _)| id);
+            let overridden = id.is_some_and(|id| PANEL_ACTIONS.iter().any(|(w, _)| *w == id));
+            // **The rule, and it is stronger than "names a bound key".** Two of the nine named `d`,
+            // which the panel DOES bind — to the doctor. A sentence that names any key at all is
+            // written for one keymap, so the bar's copy has to come from the bar's own table; a
+            // sentence that names none is surface-neutral and travels.
+            let named = keys_named(chunk);
+            if overridden {
+                continue;
+            }
+            for key in named {
+                assert!(
+                    PANEL_KEYS.contains(&key),
+                    "{id:?} names `{key}`, which the bar does not bind, and has no entry in \
+                     PANEL_ACTIONS"
+                );
+                assert!(
+                    !DIVERGENT_KEYS.contains(&key),
+                    "{id:?} names `{key}`, which means something else on the bar, and has no entry \
+                     in PANEL_ACTIONS"
+                );
+            }
+        }
+        assert!(checked >= 12, "only {checked} warnings were scanned");
+        // And every override itself names only keys the panel binds.
+        for (id, text) in PANEL_ACTIONS {
+            assert!(
+                WARNING_IDS.contains(id),
+                "{id} is not a warning this program raises"
+            );
+            for key in keys_named(text) {
+                assert!(
+                    PANEL_KEYS.contains(&key) && !DIVERGENT_KEYS.contains(&key),
+                    "the panel wording for {id} names `{key}`: {text}"
+                );
+            }
+            // §2o rule 4 and rule 7 apply to these exactly as to every other sentence.
+            assert!(!text.contains('§'), "{id}: {text}");
+            assert!(!text.contains('—'), "{id}: {text}");
+        }
+    }
+
+    /// `panel_action` is always present, so no consumer needs a fallback, and it is the override
+    /// where there is one (round 5, S7).
+    #[test]
+    fn every_warning_carries_a_panel_action_too() {
+        let w = Warning {
+            id: "node_low_disk".to_string(),
+            severity: Severity::Warn,
+            text: "t".to_string(),
+            hint: "h".to_string(),
+            action: Some("Free some space on that disk, or press d to stop your node.".to_string()),
+            panel_action: panel_action_for(
+                "node_low_disk",
+                Some(&"Free some space on that disk, or press d to stop your node.".to_string()),
+            ),
+        };
+        assert_eq!(
+            w.panel_action.as_deref(),
+            Some("Free some space on that disk, or stop your node with the button below.")
+        );
+        // And an id with no override keeps the TUI sentence.
+        assert_eq!(
+            panel_action_for(
+                "node_no_peers",
+                Some(&"Press r to check again.".to_string())
+            )
+            .as_deref(),
+            Some("Press r to check again.")
+        );
+        assert_eq!(panel_action_for("node_syncing", None), None);
+        let _ = w.action;
     }
 
     // ---- §5's `--check-node`: four bounds, a test each (v5.6) --------------------

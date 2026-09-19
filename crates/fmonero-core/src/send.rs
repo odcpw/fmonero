@@ -520,7 +520,11 @@ fn preflight(
                  still be on its way.",
             )
             .with_reason("pending_send")
-            .with_detail(format!("txid {missing} was answered not found"))
+            // The id, in the slot §5c reserves for technical text: `detail` reaches `--json` and no
+            // human line (`Out::report` prints the sentence and the hint, and `output.rs`'s own test
+            // asserts `detail` is not among them). Worded without the word `txid`, which §2o.2 keeps
+            // out of prose and `scripts/check.sh` cannot tell from a sentence.
+            .with_detail(format!("{missing} was answered not found"))
             .with_hint(PENDING_HINT)
             .with_action(PENDING_ACTION));
         }

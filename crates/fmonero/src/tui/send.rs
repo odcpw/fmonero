@@ -103,6 +103,15 @@ pub(super) struct SendScreen {
     /// The form has the keys. `Esc` leaves it so that `1 2 3 4`, `q` and `?` work; `Enter`
     /// returns to it. Without this an address typed into the To field would switch screens.
     pub editing: bool,
+    /// **Round 5, S12: `Tab` was pressed while a built transaction was on screen.**
+    ///
+    /// `switch_screen` raises `Press Esc first to discard this.` as a toast, and `toast_hidden`
+    /// suppresses every toast while the stage is `Built` — so the one modal that needs that sentence
+    /// was the one that could not show it. Pressing `Tab` in the send confirm moved nothing and said
+    /// nothing, at 0.2 s and at 1.5 s, while the help overlay's first row promised `Tab` always
+    /// works "in a pop-up". The flag is set by `switch_screen` and drawn by `view_confirm` as a row
+    /// of the modal itself, which is where §7a.1 says the exception belongs.
+    pub tab_note: bool,
 }
 
 /// The three fields, in Tab order, with the hint each draws while it is empty.
@@ -134,6 +143,7 @@ impl SendScreen {
             typed: String::new(),
             picker: None,
             editing: false,
+            tab_note: false,
         }
     }
 
@@ -160,6 +170,8 @@ impl SendScreen {
     pub fn back_to_form(&mut self) {
         self.stage = Stage::Form;
         self.typed.clear();
+        // Round 5, S12: the notice belongs to one confirm, and leaving it takes it away.
+        self.tab_note = false;
     }
 
     pub fn clear(&mut self) {
@@ -772,6 +784,10 @@ fn view_picker(m: &Tui, entries: &[BookEntry], sel: usize, frame: &mut ftui::Fra
 
 /// The confirm modal — the whole safety surface, and therefore never abbreviated: it renders
 /// in full at every tier (§7a's resize table).
+/// What `Tab` says inside the send confirm (round 5, S12). One literal, because `switch_screen`
+/// decides when it is shown and this file draws it.
+pub(super) const TAB_FIRST_ESC: &str = "Esc first, then Tab.";
+
 pub(super) fn view_confirm(m: &Tui, plan: &Plan, frame: &mut ftui::Frame) {
     let th = &m.theme;
     // The modal is the whole safety surface and is never abbreviated (§7a's resize table), so
@@ -784,9 +800,13 @@ pub(super) fn view_confirm(m: &Tui, plan: &Plan, frame: &mut ftui::Frame) {
     // (a border row and a padding row at each end). `addr_rows + 11` was one short, and the row
     // that lost was the echo: the user typed the confirmation word into a modal that showed no
     // character of it, on the one screen that moves money (§7a: never abbreviated).
-    let Some(inner) =
-        super::screens::overlay(m, frame, w, addr_rows + 12, " Confirm · this sends money ")
-    else {
+    let Some(inner) = super::screens::overlay(
+        m,
+        frame,
+        w,
+        addr_rows + 12 + u16::from(m.send.tab_note),
+        " Confirm · this sends money ",
+    ) else {
         return;
     };
     let bg = th.selection;
@@ -854,6 +874,14 @@ pub(super) fn view_confirm(m: &Tui, plan: &Plan, frame: &mut ftui::Frame) {
         Span::styled(m.send.typed.clone(), text),
         Span::styled("_".to_string(), dim),
     ]));
+    // **Round 5, S12: the one line `Tab` gets to say here.** Closing this modal is not allowed with
+    // a built transaction in it — that is the whole point of the stage — so `Tab` cannot switch
+    // screens, and the honest answer is the order of the two keys. It appears only after `Tab` is
+    // pressed, because a modal that explains a key nobody pressed is one more line to read on the
+    // screen that moves money.
+    if m.send.tab_note {
+        lines.push(Line::styled(TAB_FIRST_ESC.to_string(), th.err().bg(bg)));
+    }
     Paragraph::new(Text::from_lines(lines))
         .wrap(WrapMode::None)
         .render(inner, frame);

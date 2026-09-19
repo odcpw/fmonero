@@ -307,7 +307,15 @@ fn the_narrow_tier_collapses_the_tab_strip() {
 fn the_offline_node_screen_says_what_to_press_and_never_shows_a_zero_height() {
     let text = sim_text(&sim(offline_model(Screen::Node)), 120, 40);
     assert!(text.contains("Your node is not running"), "{text}");
-    assert!(text.contains("Press u to start it"), "{text}");
+    // **Round 5, S10: with nothing set up, the action is the one that sets it up.** This asserted
+    // `Press u to start it` on a model whose layout is `none` — and `u` there answered *"Another
+    // program on this machine runs this node"*, about a node that does not exist. The `u` case is
+    // asserted below, on a model that has the unit file `u` needs.
+    assert!(
+        flowed(&text.replace('│', " "))
+            .contains("fmonero has not set up your node yet. Press S to set it up."),
+        "{text}"
+    );
     // **X23: and not a row of dashes under it.** §5's rule is that unknown is `—` and never a zero;
     // with the node off there is no measurement to label at all, so the three rows that read
     // `last block —` / `peers — out · — in` / `version — · —` are not drawn, and the hero's own
@@ -790,9 +798,18 @@ fn the_send_screen_builds_once_and_relays_that_exact_transaction() {
 }
 
 /// §2i, in the TUI: `u`, `d` and `L` are refused under any layout but fmonero's own user
-/// unit, with the gate's own text, and **before** any RPC or confirm modal.
+/// unit, **before** any RPC or confirm modal — and **each layout gets its own true sentence**.
+///
+/// **Round 5, S10.** One predicate (`may_mutate_node`, which is `layout == UserUnit`) answered both
+/// `Layout::None` and `Layout::SystemUnit` with *"Another program on this machine runs this node.
+/// fmonero can read it but not change it."* On a fresh machine in local mode — no units written,
+/// nothing running, which is the first state this build's owner would have met — nothing ran that
+/// node, the Node screen's hero invited `u` two rows above, and there was no in-app route to write
+/// the units at all. This test is the pair: nobody set it up, and somebody else owns it.
 #[test]
-fn node_mutations_are_refused_when_fmonero_does_not_own_the_node() {
+fn node_mutations_are_refused_with_the_sentence_that_is_true_of_this_machine() {
+    // (1) `Layout::None`: no unit files, nothing running. The refusal names the route that fixes
+    // it, and that route is a key.
     let mut m = offline_model(Screen::Node);
     for k in ['u', 'd', 'L'] {
         let _ = m.on_key(KeyEvent::new(KeyCode::Char(k)));
@@ -802,11 +819,47 @@ fn node_mutations_are_refused_when_fmonero_does_not_own_the_node() {
         );
         assert!(m.action.is_none(), "{k}: nothing may be started");
         assert!(
+            m.note.contains("has not set up your node yet") && m.note.contains("Press S"),
+            "{k}: {}",
+            m.note
+        );
+        assert!(
+            !m.note.contains("Another program"),
+            "{k}: nothing else runs this node: {}",
+            m.note
+        );
+    }
+    // (2) `Layout::SystemUnit`: Arch's own `monerod.service` is active, so fmonero reads it and
+    // never changes it (§2i). Same three keys, the other sentence.
+    let dir = std::env::temp_dir().join(format!(
+        "fmonero-tui-foreign-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut ctx = Context::for_test(&dir).expect("test context");
+    let fixture = dir.join("systemctl.fixture");
+    std::fs::write(
+        &fixture,
+        "monerod.service active enabled yes 4242
+",
+    )
+    .expect("fixture");
+    ctx.systemctl = fmonero_core::Systemctl::Fixture(fixture);
+    ctx.settings.node.url = "http://127.0.0.1:1".into();
+    ctx.settings.wallet.url = "http://127.0.0.1:2".into();
+    let mut m = model(&ctx, Screen::Node);
+    for k in ['u', 'd', 'L'] {
+        let _ = m.on_key(KeyEvent::new(KeyCode::Char(k)));
+        assert!(m.modal.is_none(), "{k}: no confirm modal");
+        assert!(m.action.is_none(), "{k}: nothing may be started");
+        assert!(
             m.note.contains("can read it but not change it"),
             "{k}: {}",
             m.note
         );
     }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// §7a: an unresolved `pending.json` record is a red banner on **every** screen, carrying the
@@ -908,16 +961,30 @@ fn an_unresolved_pending_record_banners_every_screen() {
             // matters is that nothing is CUT OFF, which is what a fixed two-row banner did at
             // 45 columns.
             let flat = text.replace('\n', " ");
+            let flowed_frame = flowed(&text.replace('│', " "));
             // **S10: no id in the banner**, and no count of what was "sent": the three things
             // checked are the amount, what is actually known, and the route.
-            for needle in [
-                "0.1000 XMR",
-                "may already have gone out",
-                "press 2 for the wallet",
-            ] {
+            // **Round 5, S8: the route is the one that works from where you are.** It read
+            // `press 2 for the wallet` on the Wallet screen too, where `[ 2 Wallet ]` is already
+            // the active tab — so on the one screen that can resolve the record it pointed at the
+            // screen the reader was looking at. There it names the key that resolves it.
+            let route = if screen == Screen::Wallet {
+                "press P to clear this record once you know"
+            } else {
+                "press 2 for the wallet"
+            };
+            for needle in ["0.1000 XMR", "may already have gone out", route] {
                 assert!(
                     flat.contains(needle),
                     "{screen:?} at {cw}x{ch} lost {needle}:\n{text}"
+                );
+            }
+            // And the Wallet screen carries the chip the banner names (S8): a key named with no
+            // control beside it is half of what §7a.2 asks for.
+            if screen == Screen::Wallet {
+                assert!(
+                    flowed_frame.contains("[P] Clear that record"),
+                    "the chip is missing at {cw}x{ch}:\n{text}"
                 );
             }
             // §2o.1: no shell command anywhere in it.
@@ -2794,5 +2861,337 @@ fn the_wallet_service_chip_says_which_way_the_key_goes() {
         text.contains("[W] Stop the wallet service")
             && !text.contains("[W] Start the wallet service"),
         "with the service up and nothing open the chip stops it:\n{text}"
+    );
+}
+
+// ---- round 5: the twelve serious findings, each with the state that reproduced it ---------
+
+/// **S1: the picker cuts a node address mid-token at 120 columns, with no marker.**
+///
+/// `screens.rs:869` capped the address column at half the pane — `widest.min(rows[0].width / 2)` —
+/// so at 120 columns, where the picker's pane is 72 wide, the budget was 36 rather than the measured
+/// 46, three data columns were kept, and `Table` truncated
+/// `monero-rpc.cheems.de.box.skhron.com.ua:18089` to `…skhron.com.ua:180`: no ellipsis, no marker,
+/// and `:180` is a plausible port to type into `[a] Add a node`. §7a.4 says the address is never
+/// elided at any tier, and `screens.rs:846` says it too.
+///
+/// The fixture is the widest address `tests/fixtures/nodes/nodes.json` actually carries (44
+/// characters) plus the 43-character one the round asked for, and the assertion is character
+/// equality against the whole cell at every width from 90 up.
+#[test]
+fn the_picker_renders_every_address_whole_at_every_width() {
+    const MINE: &str = "xmr-node.cakewallet.com:18081";
+    // 43 characters, as the round asked for.
+    const FORTY_THREE: &str = "monero-rpc.cheems.de.box.skhron.com.u:18089";
+    // 44: the widest monero.fail has ever served this machine, from the fixture.
+    const WIDEST: &str = "monero-rpc.cheems.de.box.skhron.com.ua:18089";
+    assert_eq!(FORTY_THREE.chars().count(), 43);
+    assert_eq!(WIDEST.chars().count(), 44);
+    let dir = std::env::temp_dir().join(format!(
+        "fmonero-tui-picker-whole-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut ctx = Context::for_test(&dir).expect("test context");
+    ctx.settings.node.mode = fmonero_core::NodeMode::Remote;
+    ctx.settings.node.remote = MINE.into();
+    ctx.settings.wallet.url = "http://127.0.0.1:2".into();
+    seed_cache(&ctx, &[(MINE, false), (FORTY_THREE, true), (WIDEST, true)]);
+    // Height 44, because the picker's table needs rows to draw one: at 90x32 the pane has room for
+    // its header, its footer and its chips and nothing else, and a table with no data row proves
+    // nothing about an address. The widths are the two the round captured plus the three tiers
+    // around them.
+    for w in [90u16, 100, 120, 150, 180] {
+        let s = sim(model(&ctx, Screen::Node));
+        let text = sim_text(&s, w, 44);
+        assert!(
+            text.contains("Public nodes"),
+            "the picker must be on screen at {w} columns:\n{text}"
+        );
+        for address in [MINE, FORTY_THREE, WIDEST] {
+            assert!(
+                text.contains(address),
+                "the address {address} is cut at {w} columns:\n{text}"
+            );
+        }
+        // The configured row keeps its marker, and the marker is part of the widest cell.
+        assert!(text.contains(&format!("● {MINE}")), "{text}");
+        // And nothing in the table is elided: the picker has no ellipsis of its own, unlike the
+        // footer, whose counts it wraps.
+        for line in text.lines().filter(|l| l.contains(".com")) {
+            assert!(
+                !line.contains('…'),
+                "an address was elided at {w}: {line}\n{text}"
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **S3: `list_modal` deleted one character from every line it filled.**
+///
+/// `text_w` was `MODAL_W - 4` = 64, `overlay`'s interior is also `MODAL_W - 4` = 64, and each line is
+/// drawn `format!(" {part} ")` — `part` plus two — into a `Paragraph` with `WrapMode::None`, which
+/// truncates at 64. So every line that filled the budget lost exactly its last character: a
+/// 248-character wallet path came out as 245, with a `-`, a `0` and another `-` gone from the middle,
+/// and the open-a-wallet modal named a folder that does not exist. `wrap_hanging` was lossless all
+/// along; the budget was two columns wider than the place the text goes.
+#[test]
+fn the_open_wallet_modal_renders_a_248_character_path_character_complete() {
+    let dir = std::env::temp_dir().join(format!(
+        "fmonero-tui-modalpath-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut ctx = Context::for_test(&dir).expect("test context");
+    ctx.settings.node.url = "http://127.0.0.1:1".into();
+    ctx.settings.wallet.url = "http://127.0.0.1:2".into();
+    // The exact shape the capture found: a scratch path 248 characters long, with no wallets in it,
+    // so the modal's one row IS that path.
+    let long: PathBuf = PathBuf::from(format!(
+        "/tmp/claude-1000/-home-oliver--config-Claude-scratch-workspaces-{}/{}/scratchpad/r5/sb-A/data/fmonero/wallets/mainnet",
+        "eff1ae0e-d485-4f42-9ffb-620b5efc18d5-813ee62c-1eed-4c69-bc1f-b109cdbca45",
+        "scratch-2026-09-16-3ded94/4901fef8-2906-4bc0-b226-799715c2e661"
+    ));
+    let path = long.display().to_string();
+    assert!(
+        path.chars().count() >= 240,
+        "{} chars",
+        path.chars().count()
+    );
+    ctx.settings.wallet.dir = long;
+    let mut m = model(&ctx, Screen::Wallet);
+    let _ = m.on_key(KeyEvent::new(KeyCode::Char('o')));
+    for (w, h) in [(120u16, 32u16), (150, 40)] {
+        let text = screen_text(&m, w, h);
+        // Every character of the path, in order, with the wrapping and the modal's own padding
+        // removed — which is what `flowed` does, and the hanging indent is spaces.
+        let flat: String = text
+            .chars()
+            .filter(|c| !c.is_whitespace() && *c != '│' && *c != '╭' && *c != '╮')
+            .collect();
+        let want: String = path.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(
+            flat.contains(&want),
+            "the modal lost characters of the path at {w}x{h}.\nwant: {want}\ngot:  {flat}\n{text}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **S6: the privacy consent modal had no visible control, at both sizes.**
+///
+/// `overlay(m, frame, 72, 10, …)` leaves `inner.height = 6`, and the six logical lines need **seven**
+/// rows because the third sentence is 96 characters in a 68-column interior and wraps. So the one
+/// screen in the product that asks permission to reveal the owner's IP address to a stranger blocked
+/// the screen, stated neither the way forward nor the way back, and the unlabelled key that
+/// dismisses it — `Enter` — is the one that consents and writes `notice_ack`.
+/// `grep -c "Enter continues"` over all seventy-eight captures of round 4 returned **0**.
+#[test]
+fn the_privacy_notice_shows_its_keys_at_both_sizes() {
+    let dir = std::env::temp_dir().join(format!(
+        "fmonero-tui-notice-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut ctx = Context::for_test(&dir).expect("test context");
+    ctx.settings.node.mode = fmonero_core::NodeMode::Remote;
+    ctx.settings.node.url = "http://127.0.0.1:1".into();
+    ctx.settings.wallet.url = "http://127.0.0.1:2".into();
+    // No cache at all, so `f` is the state §2n.5 rule 2 puts the notice in front of — which is the
+    // owner's own cold-cache state today.
+    let mut m = model(&ctx, Screen::Node);
+    let _ = m.on_key(KeyEvent::new(KeyCode::Char('f')));
+    for (w, h) in [(120u16, 32u16), (150, 40)] {
+        let text = screen_text(&m, w, h);
+        assert!(
+            text.contains("Before contacting anyone"),
+            "the notice is not up at {w}x{h}:\n{text}"
+        );
+        for needle in [
+            "Getting the list tells monero.fail your IP address.",
+            "Enter continues · Esc cancels",
+        ] {
+            assert!(
+                flowed(&text.replace('│', " ")).contains(needle),
+                "{w}x{h} lost `{needle}`:\n{text}"
+            );
+        }
+        // And the last sentence is whole: it is the one that wraps, and the row it needed was the
+        // row the keys lost.
+        assert!(
+            flowed(&text.replace('│', " ")).contains("not a recommendation, and not yours."),
+            "{w}x{h} cut the third sentence:\n{text}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **S8: the Send screen refused while a payment was pending and named no way out.**
+///
+/// A filled, valid form plus `Enter` gave one line — *"An earlier payment may still be on its way…"*
+/// — with no key, no chip and no next step (§2o rule 11). The only resolution in the product was
+/// `fmonero wallet clear-pending --yes`, which `docs/COPY.md:151` had deliberately removed from the
+/// banner above the form, which is not in §2o.1's exhaustive in-app list and not one of its four
+/// `In a terminal:` exceptions, and which was named on **no** TUI surface. So a person was left on a
+/// money screen that would not build, with the obvious next move being to send again.
+#[test]
+fn a_pending_record_can_be_resolved_from_the_wallet_screen() {
+    let w = World::with_wallet("s8-clear-pending", &[]);
+    let record = PendingSend {
+        kind: PendingKind::Send,
+        account_index: 0,
+        dest: DEST.to_string(),
+        built_at: 1_789_000_000,
+        txs: vec![PendingTx {
+            txid: BUILT_TXID.to_string(),
+            amount: fmonero_core::Piconero(100_000_000_000),
+            fee: fmonero_core::Piconero(30_720_000),
+            relayed: false,
+            relayed_at: None,
+        }],
+    };
+    state::set_pending_send(&w.ctx, &record).expect("the record");
+    let mut s = sim(model(&w.ctx, Screen::Wallet));
+    assert!(s.model().has_pending(), "the record is in `status`");
+    // The chip names the key, at the owner's size.
+    let text = sim_text(&s, 120, 32);
+    assert!(
+        text.contains("[P] Clear that record"),
+        "the chip is missing:\n{text}"
+    );
+    // `P` asks first, and the confirm states the risk in plain words rather than asking for a `y`
+    // against a bare fact.
+    s.inject_event(key(KeyCode::Char('P')));
+    let modal = screen_text(s.model(), 120, 32);
+    let flat = flowed(&modal.replace('│', " "));
+    assert!(flat.contains("Clear that record"), "{modal}");
+    for needle in [
+        "does not know whether",
+        "does not cancel anything",
+        "will not let you send again",
+        "stops you paying twice",
+        "y to confirm · Esc cancels",
+    ] {
+        assert!(
+            flat.contains(needle),
+            "the confirm lost `{needle}`:\n{modal}"
+        );
+    }
+    // And no shell command reaches it (§2o.1).
+    assert!(!flat.contains("fmonero wallet"), "{modal}");
+    // Confirming runs the same core sequence `wallet clear-pending` runs, and the record is gone.
+    s.inject_event(key(KeyCode::Char('y')));
+    // `ProgramSimulator` runs `Cmd::task` synchronously, so the key press IS the clear.
+    assert!(
+        state::pending_send(&w.ctx).expect("readable").is_none(),
+        "the record was not cleared"
+    );
+    // Esc instead of `y` leaves it alone, which is the half a confirm exists for.
+    state::set_pending_send(&w.ctx, &record).expect("the record again");
+    let mut s = sim(model(&w.ctx, Screen::Wallet));
+    s.inject_event(key(KeyCode::Char('P')));
+    s.inject_event(key(KeyCode::Escape));
+    assert!(state::pending_send(&w.ctx).expect("readable").is_some());
+}
+
+/// **S12: the help overlay said `Tab` always works in a pop-up; in the send confirm it did nothing
+/// and said nothing.**
+///
+/// `switch_screen` raises `Press Esc first to discard this.`, and `screens::toast_hidden` suppresses
+/// every toast while `m.send.stage` is `Stage::Built` — so the one modal that needed that sentence
+/// was the one that could not show it. §7a.1 says the exception is documented *in the modal*, on the
+/// line under its buttons: the create-wallet modal carries its version and the send confirm carried
+/// nothing.
+#[test]
+fn tab_inside_the_send_confirm_says_which_key_comes_first() {
+    let w = World::new("s12-tab-confirm");
+    let mut s = ProgramSimulator::new(model(&w.ctx, Screen::Send));
+    s.init();
+    type_str(&mut s, DEST);
+    // `↑↓` move between fields; `Tab` is the key this test is about and must not be used to reach
+    // the amount (§7a.1).
+    s.inject_event(key(KeyCode::Down));
+    type_str(&mut s, "0.1");
+    s.inject_event(key(KeyCode::Enter));
+    run_action(&mut s);
+    assert!(
+        s.model().send.confirming(),
+        "the transaction must be built for this state to exist"
+    );
+    let before = sim_text(&s, 120, 32);
+    assert!(
+        !before.contains("Esc first, then Tab"),
+        "the notice is only shown once Tab is pressed:\n{before}"
+    );
+    s.inject_event(key(KeyCode::Tab));
+    assert!(
+        s.model().send.confirming(),
+        "Tab may not leave a built transaction"
+    );
+    assert_eq!(s.model().screen, Screen::Send, "and may not switch screens");
+    for (cw, ch) in [(120u16, 32u16), (150, 40)] {
+        let text = sim_text(&s, cw, ch);
+        assert!(
+            flowed(&text.replace('│', " ")).contains("Esc first, then Tab."),
+            "{cw}x{ch}: the modal said nothing about Tab:\n{text}"
+        );
+        // The confirm word's own line is still on screen: the notice is a row the modal grew, not a
+        // row it took (§7a: the safety surface is never abbreviated).
+        assert!(
+            flowed(&text.replace('│', " ")).contains("and press Enter to send"),
+            "{cw}x{ch}: the confirm prompt was pushed off:\n{text}"
+        );
+    }
+    // Esc discards, and the notice goes with the confirm.
+    s.inject_event(key(KeyCode::Escape));
+    assert!(!s.model().send.confirming());
+    assert!(!s.model().send.tab_note);
+}
+
+/// **S9: the payments ledger showed no year, anywhere in the TUI, at any width.**
+///
+/// `short_time` returned `MM-DD HH:MM` unconditionally — in the list, in the `Enter` detail view and
+/// in the note modal's own title — while `fmonero wallet history` two keys away printed
+/// `2026-09-16 14:01`. A payment from September 2024 and one from September 2026 were the same row on
+/// the screen the owner reads to reconcile what he was paid.
+#[test]
+fn the_payments_ledger_carries_the_year_at_the_owners_widths() {
+    let w = World::with_wallet("s9-year", &[]);
+    let mut s = sim(model(&w.ctx, Screen::Wallet));
+    let rows = s.model().wallet.rows.clone();
+    let first = rows.first().expect("the fixture has payments").clone();
+    let stamp = fmonero_core::when(first.timestamp).expect("a real instant");
+    assert_eq!(stamp.chars().count(), 16, "{stamp}");
+    for (cw, ch) in [(120u16, 32u16), (150, 40)] {
+        let text = sim_text(&s, cw, ch);
+        assert!(
+            text.contains(&stamp),
+            "{cw}x{ch}: the list has no year:\n{text}"
+        );
+        // The header is sized for it, so no row is pushed out of the pane.
+        assert!(text.contains("WHEN "), "{text}");
+        // M6's note column survives the five extra cells at 120 (`history_cols` writes out why).
+        assert!(
+            text.contains("NOTE"),
+            "{cw}x{ch}: the note column went:\n{text}"
+        );
+    }
+    // The detail view and the note modal title, which are the other two readings of the same fact.
+    s.inject_event(key(KeyCode::Enter));
+    let detail = sim_text(&s, 120, 32);
+    assert!(
+        flowed(&detail.replace('│', " ")).contains(&stamp),
+        "the payment detail has no year:\n{detail}"
+    );
+    s.inject_event(key(KeyCode::Escape));
+    s.inject_event(key(KeyCode::Char('n')));
+    let note = sim_text(&s, 120, 32);
+    assert!(
+        note.contains(&stamp),
+        "the note modal's title has no year:\n{note}"
     );
 }

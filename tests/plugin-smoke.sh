@@ -220,7 +220,7 @@ fires  "pico / 1e12" "$FLOATS" 'var xmr = status.wallet.balance_pico / 1e12'
 if command -v node >/dev/null 2>&1; then
   MODEL_TMP="$(mktemp -d)"
   sed '/^\.pragma library/d' "$PLUGIN/Model.js" > "$MODEL_TMP/model.js"
-  printf 'module.exports = { headerLine, checkedLabel, walletStateLabel, nodeLabel, worstSeverity, age, blocksLeft, walletSyncPct, grouped, pendingLabel };\n' \
+  printf 'module.exports = { headerLine, checkedLabel, walletStateLabel, nodeLabel, worstSeverity, age, blocksLeft, walletSyncPct, grouped, pendingLabel, shortAddr, waitingLabel };\n' \
     >> "$MODEL_TMP/model.js"
   # Fixture 1: the owner's machine as of 2026-09-18 — a public node, no wallet open, `wallet_idle`,
   # and a populated `node.remote_probe`.
@@ -282,6 +282,14 @@ console.log(JSON.stringify({
   left: M.blocksLeft(s),
   pct: M.walletSyncPct(s),
   worst: M.worstSeverity(s.warnings),
+  // Round 5, M4: the same shortening the TUI's `screens::short_addr` does — eight and eight.
+  shortAddr: M.shortAddr("42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm"),
+  // Round 5, M8: whose payments are waiting.
+  waiting: M.waitingLabel(14, false),
+  waitingOne: M.waitingLabel(1, true),
+  // Round 5, M6: a wallet answering on a service fmonero did not write is running.
+  walletForeign: M.walletStateLabel({ reachable: true, unit_active: false }, []),
+  walletSilent: M.walletStateLabel({ reachable: false, unit_active: true }, []),
 }));
 JS
   CLOSED_OUT="$(cd "$MODEL_TMP" && node run.js closed.json 2>&1)" || CLOSED_OUT="node failed: $CLOSED_OUT"
@@ -326,6 +334,25 @@ JS
   for word in daemon unit probe restricted trusted ssl "not available"; do
     refuse "no '$word' in any rendered row (§2o)" "$CLOSED_OUT$BEHIND_OUT" "$word"
   done
+  # **Round 5, M4: one shortening for one address.** This took eight from the head and SIX from the
+  # tail while `screens::short_addr` took eight — so the same payment read `42ey1afD…fJJQAWDm` in the
+  # TUI's pending banner and `42ey1afD…JQAWDm` on the bar, one fact in two shapes (§2o rule 8). The
+  # expected string is the Rust function's own output for the upstream test vector.
+  expect "an address is shortened the way the TUI shortens it (M4)" "$CLOSED_OUT" \
+    '"shortAddr":"42ey1afD…fJJQAWDm"'
+  # **Round 5, M8: whose payments are waiting to be mined.** `14 payments` on a panel whose every
+  # other figure is this machine's read as the owner's own.
+  expect "the waiting row says whose payments those are (M8)" "$CLOSED_OUT" \
+    '"waiting":"14 payments across the network"'
+  expect "and it pluralises and keeps the restricted floor" "$CLOSED_OUT" \
+    '"waitingOne":"1 payment across the network or more"'
+  # **Round 5, M6: `unit_active` alone was the wrong predicate.** With a wallet open and answering on
+  # a service fmonero did not write, the wallet row said `not running` under a header reading
+  # `Wallet syncing 99%` — the V13 contradiction, in the direction the TUI fixed and this did not.
+  expect "a wallet answering on somebody else's service is not 'not running' (M6)" "$CLOSED_OUT" \
+    '"walletForeign":"running (not fmonero'"'"'s)"'
+  expect "and a unit that is up and silent is 'not answering', as the TUI's badge says" "$CLOSED_OUT" \
+    '"walletSilent":"not answering"'
   # 7. showBalance off keeps the amount off the bar, header included (§6.2).
   refuse "showBalance off keeps the balance out of the header" "$BEHIND_OUT" \
     '"headerHidden":"Wallet open · 1.234567 XMR"'
@@ -346,11 +373,15 @@ if grep -q 'sev !== "warn" && sev !== "error"' "$PLUGIN/Panel.qml"; then
 else
   bad "the problems section must exclude info warnings (§6.5)"
 fi
-if grep -q 'String(modelData.action || "")' "$PLUGIN/Panel.qml" &&
+# **Round 5, S7: `panel_action` first.** `action` is written for the TUI's keymap, and seven of the
+# nine warnings that reach this panel named a key it does not bind — two of them naming `d`, which
+# opens the doctor here and stops your node there. §5 carries both sentences; `action` stays as the
+# fallback for a document an older binary wrote, and `hint` is still never rendered.
+if grep -q 'String(modelData.panel_action || modelData.action || "")' "$PLUGIN/Panel.qml" &&
    ! grep -q 'modelData.hint' "$PLUGIN/Panel.qml"; then
-  ok "a problem row renders the warning's action and never its hint (§2o.1)"
+  ok "a problem row renders the warning's panel_action and never its hint (§2o.1, S7)"
 else
-  bad "a problem row must render \`action\`, not \`hint\` (§2o.1)"
+  bad "a problem row must render \`panel_action\`, not \`hint\` (§2o.1, S7)"
 fi
 if grep -q 'send_may_be_in_flight' "$PLUGIN/Panel.qml"; then
   ok "send_may_be_in_flight is excluded while the pending row renders it (§6.5)"

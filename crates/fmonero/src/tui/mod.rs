@@ -136,8 +136,12 @@ pub const KEYS: &[(&str, &str)] = &[
     // already said so — the overlay was the thing that lied.
     (
         "Tab  ⇧Tab  Ctrl+C",
-        "screens · quit. Always: in a field, in a pop-up or while something runs. Quit twice to \
-         stop a job first.",
+        // **Round 5, S12: true about pop-ups.** This promised `Tab` always switches screens "in a
+        // pop-up", and the two pop-ups that hold work you have not finished — the send confirm and
+        // the create-wallet form — refuse it, because leaving would throw that work away. One of
+        // them said so and the other said nothing at all.
+        "screens · quit. Always in a field and while something runs. A pop-up holding unfinished \
+         work asks for Esc first. Quit twice to stop a job first.",
     ),
     (
         "1 2 3 4  q",
@@ -170,7 +174,13 @@ pub const KEYS: &[(&str, &str)] = &[
         "u  d  b",
         "Node: start · stop your node · swap the peers table for the blocked addresses",
     ),
-    ("L", "Node: change how much your node logs (it asks first)"),
+    // Round 5, S10: `S` is the in-app route out of "nobody has set this up yet", which had none.
+    // It shares a row with `L` because the `?` overlay has 27 rows at 120x32 and no more, and two
+    // keys that both set something about your own node are one kind of thing.
+    (
+        "L  S",
+        "Node: change how much your node logs (it asks first) · set your own node up",
+    ),
     ("p  f", "Node: check the listed nodes · get a fresh list"),
     (
         "Enter  a  H",
@@ -189,9 +199,13 @@ pub const KEYS: &[(&str, &str)] = &[
         "a  l  n",
         "Wallet: new address · rename the selected one · edit the note on the selected payment",
     ),
+    // Round 5, S8: `P` is the Wallet screen's route out of an unresolved payment record, which had
+    // none at all — the Send screen refused and named nothing. Its chip is drawn only while there
+    // is a record; this row lists the keymap, not the state, so it is here always.
     (
-        "R  Q",
-        "Wallet: check for payments · show the address as a QR code",
+        "R  Q  P",
+        "Wallet: check for payments · show the address as a QR code · clear a payment record \
+         fmonero lost track of (it asks first)",
     ),
     (
         "/  t",
@@ -234,6 +248,15 @@ pub const KEYS: &[(&str, &str)] = &[
     ),
 ];
 
+/// Core's one sentence for "nobody has set a node up here" plus the TUI's own route (§2o.1).
+///
+/// One function, so the hero and the three keys that refuse in that state cannot drift — which is
+/// exactly how round 5's S10 came about: four surfaces described one fact and the one a person met
+/// first was the false one.
+pub(super) fn node_set_up_line() -> String {
+    format!("{} Press S to set it up.", fmonero_core::NODE_NOT_SET_UP)
+}
+
 /// The four fee levels, by the names the user chooses between (§2o.2). Monero's priority is
 /// `0..=4` on the wire, where **0 is the daemon's own alias of 1** (§1b.4) — so there are four
 /// names, and a stored `0` renders as the first of them. The Send screen's chips, the Node
@@ -271,7 +294,10 @@ const HISTORY_LIMIT: usize = 500;
 const LOG_LINES: usize = 2_000;
 // §2o.2 says `id`, never `txid` in prose — and this hint is the one place the word survived the
 // v5.6 round, because the grep's word list did not carry it (self-read, round 3; the list does now).
-pub(super) const FILTER_HINT: &str = "filter by id, address or note";
+/// **M12: no `id`.** The line offered a filter on something the TUI never displays — ids are
+/// `--json` only (§2o rule 5) — so the one search term a reader would reach for first cannot
+/// match anything they can see. Both fields it names are on the rows.
+pub(super) const FILTER_HINT: &str = "filter by address or note";
 pub(super) const SEARCH_HINT: &str = "search the log";
 
 /// The node extras the Node screen needs beyond §5's `status` document.
@@ -464,6 +490,10 @@ pub(super) enum Confirm {
     /// `Confirm::UseNode` does — it restarts the wallet service and can close the wallet this
     /// session is holding (§2m.5).
     NodeLocal,
+    /// Round 5, S8: `P` on the Wallet screen, the in-app half of `wallet clear-pending`. It asks
+    /// first because the record it deletes is the interlock that stops a second spend (§2a.4), and
+    /// the modal states that in plain words rather than asking for a `y` against a bare fact.
+    ClearPending,
 }
 
 pub(super) enum Prompt {
@@ -1451,6 +1481,12 @@ impl Tui {
     /// that is what makes leaving safe enough to be the default.
     fn switch_screen(&mut self, forward: bool) -> Cmd<Msg> {
         if self.send.confirming() || matches!(self.modal, Some(Modal::CreateWallet(_))) {
+            // **Round 5, S12: the send confirm says it in the modal, because no toast can.**
+            // `screens::toast_hidden` suppresses every toast while a transaction is built, which is
+            // right — the window on top states the situation — and it meant this sentence reached
+            // nobody on the one screen that needed it. The create-wallet modal already carries its
+            // own version of the exception on the line under its buttons (§7a.1).
+            self.send.tab_note = self.send.confirming();
             self.note("Press Esc first to discard this.", true);
             return Cmd::none();
         }
@@ -1909,6 +1945,7 @@ impl Tui {
             hit::Button::CloseWallet => self.close_wallet(),
             hit::Button::WalletDaemon => self.toggle_wallet_daemon(),
             hit::Button::RefreshWallet => self.start(Action::WalletRefresh { start_height: 0 }),
+            hit::Button::ClearPending => self.confirm_clear_pending(),
             hit::Button::Qr => {
                 match self.selected_address() {
                     Some(address) => self.modal = Some(Modal::Qr { address }),
@@ -1996,6 +2033,10 @@ impl Tui {
                     to: next,
                 });
             }
+            // Round 5, S10: the in-app route that writes the node and wallet services. It is the
+            // same core call `fmonero setup --units --yes` makes, and it is the only way out of
+            // `Layout::None` from inside the app.
+            KeyCode::Char('S') => return self.setup_units(),
             KeyCode::Char('b') => return self.swap_peers_view(),
             // `↑↓` move the **picker** on this screen: it is the pane a user acts on, and the
             // peers table is a read-only display whose selection nothing consumes.
@@ -2056,6 +2097,9 @@ impl Tui {
             KeyCode::Char('R') => {
                 return self.start(Action::WalletRefresh { start_height: 0 });
             }
+            // Round 5, S8. Drawn as a chip only while there is a record; the key answers either
+            // way, because a key that silently does nothing is the dead end §7a.5 exists to remove.
+            KeyCode::Char('P') => return self.confirm_clear_pending(),
             KeyCode::Char('Q') => match self.selected_address() {
                 Some(address) => self.modal = Some(Modal::Qr { address }),
                 None => self.note("No address to show yet.", true),
@@ -2191,6 +2235,15 @@ impl Tui {
                         self.picker.prev = fmonero_core::nodes::configured_address(&self.ctx);
                         self.start(Action::NodeLocal)
                     }
+                    // **The same core sequence `wallet clear-pending` runs** (round 5, S8): the
+                    // §2a.11 send lock first, so the record cannot be deleted between two
+                    // `relay_tx` calls of a sweep, then `clear_pending_send`. One implementation
+                    // reached from two surfaces, which is what §2a.3 asks for.
+                    Confirm::ClearPending => self.task("clear that record", |ctx| {
+                        let _lock = fmonero_core::send::take_send_lock(ctx)?;
+                        fmonero_core::state::clear_pending_send(ctx)?;
+                        Ok("That record is cleared. Nothing was sent or cancelled by it.".into())
+                    }),
                     Confirm::LogLevel { to: level, .. } => {
                         // The daemon does not report its level, so the cycle pointer is the
                         // TUI's own and advances when the call is sent, not when it lands.
@@ -2520,6 +2573,57 @@ impl Tui {
         Cmd::none()
     }
 
+    /// **Round 5, S10: `S` on the Node screen — set the node up.**
+    ///
+    /// `units::install` is exactly what `fmonero setup --units --yes` calls, and it refuses by
+    /// itself inside a sandbox that has not opted in (§4.2), so this adds no new power. It is not a
+    /// confirm: it writes two unit files and `monerod.conf` and starts nothing, which is the same
+    /// class of act as `f` fetching a node list.
+    fn setup_units(&mut self) -> Cmd<Msg> {
+        if matches!(units::detect_layout(&self.ctx), Ok(units::Layout::UserUnit)) {
+            self.note("Your node is already set up. Press u to start it.", false);
+            return Cmd::none();
+        }
+        if self.remote_mode() {
+            self.note(
+                "You are using a public node, so there is nothing here to set up. Press l to use \
+                 your own node first.",
+                true,
+            );
+            return Cmd::none();
+        }
+        self.task("set your node up", |ctx| {
+            units::install(ctx, false)?;
+            Ok("Your node is set up. Press u to start it.".into())
+        })
+    }
+
+    /// **Round 5, S8: the Wallet screen's route out of an unresolved payment record.**
+    ///
+    /// It is not `confirm`, for the same reason `confirm_local` is not: `confirm`'s first act is to
+    /// refuse in public-node mode and to refuse when another program owns the node, and neither has
+    /// anything to do with a record of the user's own payments.
+    fn confirm_clear_pending(&mut self) -> Cmd<Msg> {
+        if !self.has_pending() {
+            self.note("Nothing is waiting to be accounted for.", false);
+            return Cmd::none();
+        }
+        self.modal = Some(Modal::Confirm {
+            what: Confirm::ClearPending,
+        });
+        Cmd::none()
+    }
+
+    /// Is there an unresolved payment record? `status` carries it, and a `pending.json` fmonero
+    /// cannot parse still counts: "unparsable" is not "absent" (§2a.4).
+    pub(super) fn has_pending(&self) -> bool {
+        self.status.as_ref().is_some_and(|s| s.pending.is_some())
+            || self
+                .status
+                .as_ref()
+                .is_some_and(|s| s.warnings.iter().any(|w| w.id == "send_may_be_in_flight"))
+    }
+
     fn confirm(&mut self, what: Confirm) -> Cmd<Msg> {
         // In public-node mode `u`, `d` and `L` say so instead of acting (§7a): all three exit 4
         // `remote_node`. **v5.6 names the two keys that do something about it** rather than the
@@ -2560,14 +2664,32 @@ impl Tui {
                     }
                     // `l` itself is the way back and is never refused here.
                     Confirm::NodeLocal => "Press l to use your own node.",
+                    // Nor is `P`: a payment record is the wallet's, not the node's, and
+                    // `confirm_clear_pending` never routes through this guard.
+                    Confirm::ClearPending => "Press P on the Wallet screen.",
                 },
                 true,
             );
             return Cmd::none();
         }
-        if !matches!(units::may_mutate_node(&self.ctx), Ok(true)) {
-            self.note(fmonero_core::FOREIGN_NODE_READ_ONLY, true);
-            return Cmd::none();
+        // **Round 5, S10: `Layout::None` is not `Layout::SystemUnit`.**
+        //
+        // `may_mutate_node` is `detect_layout(ctx)? == Layout::UserUnit`, so both got the same
+        // refusal — and on a fresh machine in local mode, before anything has been set up, the Node
+        // screen invited `u` ("Press u to start it.") and `u` answered *"Another program on this
+        // machine runs this node."* Nothing ran it. Three other surfaces answered the same state
+        // correctly, which is how the reader found it. And there was no in-app route to write the
+        // units at all, which is the dead end §7a.5 exists to remove: `S` is that route.
+        match units::detect_layout(&self.ctx) {
+            Ok(units::Layout::UserUnit) => {}
+            Ok(units::Layout::None) => {
+                self.note(node_set_up_line(), true);
+                return Cmd::none();
+            }
+            _ => {
+                self.note(fmonero_core::FOREIGN_NODE_READ_ONLY, true);
+                return Cmd::none();
+            }
         }
         // **`L` is refused while the node is not answering** (round 4 iteration 3). How much a
         // node logs is a setting the node itself holds, so with the node off the confirm was
@@ -2778,7 +2900,7 @@ impl Tui {
             " Note for {} XMR · {} · {} ",
             t.amount.to_xmr_string(),
             t.kind.words(),
-            screens::short_time(t.timestamp)
+            screens::moment(t.timestamp)
         );
         self.modal = Some(Modal::Prompt {
             what: Prompt::Note { txid },
@@ -3162,6 +3284,7 @@ impl Model for Tui {
                         // One wording for this on all four surfaces (round 4 iteration 3).
                         self.note("The fee is worked out. Nothing has been sent yet.", false);
                         self.send.typed.clear();
+                        self.send.tab_note = false;
                         self.send.stage = Stage::Built(plan);
                         return Cmd::none();
                     }
