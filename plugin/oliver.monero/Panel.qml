@@ -144,15 +144,19 @@ Panel {
   // **The problems section, which is not the warnings list** (§6.5, v5.6). `info` warnings are
   // the state the rows above already show, and v5.5 put them in the alarm channel — on the
   // owner's correctly configured machine that meant an alarm about a wallet service designed to
-  // be down. The one exclusion is `send_may_be_in_flight` while the pending row renders it:
-  // together they are one alarm printed twice.
+  // be down. Two exclusions, and both are the same rule: a warning the hero has already rendered
+  // is not repeated here. `send_may_be_in_flight` while the pending row shows it, and
+  // `wallet_behind` while the hero reads `Wallet syncing 99%` over `Syncing 99% · 6 122 blocks
+  // left` — which put one fact on three rows of a 380-pixel panel (round 4 iteration 3).
   readonly property var problems: {
     var out = []
     for (var i = 0; i < svc.warnings.length; i++) {
       var w = svc.warnings[i]
       var sev = String(w.severity || "")
+      var id = String(w.id || "")
       if (sev !== "warn" && sev !== "error") continue
-      if (svc.pending && String(w.id || "") === "send_may_be_in_flight") continue
+      if (svc.pending && id === "send_may_be_in_flight") continue
+      if (svc.walletBehind && id === "wallet_behind") continue
       out.push(w)
     }
     return out

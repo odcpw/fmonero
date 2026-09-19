@@ -1070,23 +1070,30 @@ fn balance_human(out: &Out, v: &serde_json::Value) {
 fn address_human(out: &Out, v: &serde_json::Value) {
     out.line(format!("primary   {}", cell(&v["primary"])));
     out.line(format!("selected  {}", cell(&v["selected"])));
+    // **Two rows per address** (round 4 iteration 3). One row carried the index, the 95-character
+    // address, the name and a `(used)` marker — 105 columns before the name, so at the owner's 120
+    // the marker landed alone at column 0 on the line below, reading as a row of its own. An
+    // address is never wrapped and never elided (§2a, `docs/COPY.md` §4), so what moves is
+    // everything else: the name and the marker go above it, and the address has the row to itself.
+    // The same shape `wallet book list` uses.
     for a in v["addresses"]
         .as_array()
         .map(Vec::as_slice)
         .unwrap_or_default()
     {
-        // An address is never wrapped and never elided (§2a, `docs/COPY.md` §4).
-        out.row(format!(
-            "  {} {}  {}{}",
-            pad(&cell(&a["address_index"]), 3),
-            cell(&a["address"]),
-            cell(&a["label"]),
-            if a["used"] == serde_json::Value::Bool(true) {
-                "  (used)"
-            } else {
-                ""
+        let mut head = format!("#{}", cell(&a["address_index"]));
+        match a["label"].as_str() {
+            Some(l) if !l.is_empty() => {
+                head.push_str("  ");
+                head.push_str(l);
             }
-        ));
+            _ => {}
+        }
+        if a["used"] == serde_json::Value::Bool(true) {
+            head.push_str("  · used before");
+        }
+        out.line(format!("  {head}"));
+        out.row(format!("      {}", cell(&a["address"])));
     }
 }
 

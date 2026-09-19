@@ -245,7 +245,12 @@ function peersLabel(node) {
     // ask — X23's shape, on the bar. And with a PUBLIC node it is neither: fmonero never asks one
     // anything (§2m.3), so the row says whose question it is, in the TUI's own words for the pane
     // that stands where this row would be.
-    if (node.layout === "remote") return "this is about your own node"
+    // **Not a sentence where a number goes** (round 4 iteration 3). With a public node fmonero
+    // asks it nothing (§2m.3), so this row has no source at all — and `Peers: this is about your
+    // own node` answers a question the label did not ask. `—` is the program's one glyph for a
+    // value with no source (§5), which is what this is. The panel does not draw the row in that
+    // mode anyway; this is the honest value if it ever does.
+    if (node.layout === "remote") return "—"
     if (node.reachable !== true) return "none while your node is off"
     return "not shown by this node"
   }

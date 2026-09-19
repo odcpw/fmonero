@@ -345,11 +345,22 @@ fn the_offline_wallet_screen_offers_the_open_key() {
     assert!(text.contains("No wallet is open."), "{text}");
     // v5.6.1, V12: `Open wallet…      choose one of the 0 in /home/…` became a sentence, and the
     // balance pane that rendered `— XMR   unlocked — XMR` above this panel is gone with it.
-    assert!(text.contains("[o] Open a wallet"), "{text}");
     assert!(!text.contains("unlocked — XMR"), "{text}");
     assert!(text.contains("[c] Create a wallet"), "{text}");
-    assert!(text.contains("[W] Start the wallet service"), "{text}");
     assert!(text.contains("wallet service:"), "{text}");
+    // **Only the chips that can act** (round 4 iteration 3). With no wallets on this machine `o`
+    // has nothing to open and its label said so — `(none on this machine yet. Press c to create
+    // one)` — and `W` said `(not needed: opening a wallet starts it)`. Two controls telling the
+    // reader not to press them, on the screen whose whole content is controls. `Create a wallet`
+    // is the one thing to do here, and both keys are still in the `?` overlay.
+    assert!(
+        !text.contains("[o] Open a wallet"),
+        "with no wallets there is nothing for o to open:\n{text}"
+    );
+    assert!(
+        !text.contains("[W] Start the wallet service"),
+        "opening a wallet starts the service, so this chip has nothing to offer:\n{text}"
+    );
 }
 
 /// §7a: the keymap table "is also the exact content of the `?` overlay — one
@@ -1340,6 +1351,9 @@ fn the_priority_chips_and_the_account_arrows_are_clickable() {
 #[test]
 fn every_wallet_empty_state_chip_is_a_hit_target_and_acts() {
     let mut s = sim(offline_model(Screen::Wallet));
+    // One wallet on this machine, so `[o]` has something to open: the chip is drawn only where it
+    // can act (round 4 iteration 3), and this test is about the chips that are drawn.
+    s.model_mut().wallets = vec!["main".to_string()];
     for (b, check) in [
         (Button::OpenWallet, "Open a wallet"),
         (Button::CreateWallet, "Create a wallet"),
@@ -1354,12 +1368,17 @@ fn every_wallet_empty_state_chip_is_a_hit_target_and_acts() {
         );
         s.inject_event(key(KeyCode::Escape));
     }
-    // `[W]` is there too, and it is the only bare "start the daemon" affordance in the product.
+    // `[W]` is a hit target in the one state it can act in: the service up with nothing open.
+    if let Some(st) = s.model_mut().status.as_mut() {
+        st.wallet.unit_active = true;
+        st.wallet.open = false;
+        st.wallet.name = None;
+    }
     assert!(
         find(s.model(), 120, 40, |t| t
             == Target::Button(Button::WalletDaemon))
         .is_some(),
-        "[W] Start the wallet daemon must be clickable"
+        "[W] Stop the wallet service must be clickable in the state it can act in"
     );
 }
 
@@ -1435,18 +1454,20 @@ fn nothing_on_the_wallet_screen_is_drawn_outside_a_frame() {
 }
 
 #[test]
-fn the_wallet_empty_state_keeps_all_three_chips_at_every_tier() {
-    let m = offline_model(Screen::Wallet);
-    let s = sim(m);
+fn the_wallet_empty_state_keeps_every_chip_it_draws_at_every_tier() {
+    // One wallet, so `[o]` is drawn; `[W]` is not, because opening a wallet starts the service and
+    // the chip that said so in its own parenthetical is gone (round 4 iteration 3).
+    let mut s = sim(offline_model(Screen::Wallet));
+    s.model_mut().wallets = vec!["main".to_string()];
     for (w, h) in [(120u16, 40u16), (70, 24), (56, 22)] {
         let text = sim_text(&s, w, h);
-        for want in [
-            "[o] Open a wallet",
-            "[c] Create a wallet",
-            "[W] Start the wallet service",
-        ] {
+        for want in ["[o] Open a wallet", "[c] Create a wallet"] {
             assert!(text.contains(want), "{want} missing at {w}x{h}:\n{text}");
         }
+        assert!(
+            !text.contains("[W] Start the wallet service"),
+            "a chip whose own label says not to press it is not drawn at {w}x{h}:\n{text}"
+        );
     }
 }
 
@@ -2750,13 +2771,15 @@ fn esc_with_nothing_running_talks_about_the_cancel_and_not_about_the_node() {
 #[test]
 fn the_wallet_service_chip_says_which_way_the_key_goes() {
     let mut s = sim(offline_model(Screen::Wallet));
-    // Nothing running: `W` starts it.
+    // Nothing running: `W` starts it — and **no chip is drawn**, because opening a wallet starts
+    // the service and the chip's own label used to say exactly that (round 4 iteration 3). The key
+    // still works and the `?` overlay still explains it.
     assert!(!s.model().wallet_daemon_key_stops());
+    assert!(s.model().wallet_daemon_chip().is_none());
     let text = sim_text(&s, 120, 32);
     assert!(
-        text.contains("[W] Start the wallet service")
-            && !text.contains("[W] Stop the wallet service"),
-        "with the service down the chip starts it:\n{text}"
+        !text.contains("[W] Start the wallet service") && !text.contains("[W] Stop the wallet"),
+        "the chip cannot act here, so it is not drawn:\n{text}"
     );
     // The service up with nothing open — §7a.5's stop state, reached by moving the one field the
     // predicate reads, because no wallet mock answers "running with nothing open".

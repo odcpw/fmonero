@@ -143,8 +143,9 @@ pub const KEYS: &[(&str, &str)] = &[
         "1 2 3 4  q",
         "the same two, but only when no field has focus. Esc leaves a field.",
     ),
-    ("?", "this help"),
-    ("r", "check now"),
+    // Three pairs merged, to buy the rows the `↑↓` row and the status line need (round 4
+    // iteration 3): each pair was two keys doing one kind of thing, on two rows.
+    ("?  r", "this help · check now"),
     (
         "Esc",
         "close this help, else leave the field, else stop what is running",
@@ -153,10 +154,22 @@ pub const KEYS: &[(&str, &str)] = &[
         "mouse",
         "click tabs, rows, fields and every [key] chip. The wheel scrolls. Right-click is Esc.",
     ),
-    ("u  d", "Node: start · stop your node"),
+    // **How to move a selection** (round 4 iteration 3). The overlay had `Send: ↑↓` and
+    // `pop-ups: ↑↓` and nothing at all for the four tables a person actually reads — the public
+    // node list, the addresses, the payments and the peers. On a fresh Node screen nothing is
+    // selected and the first `Down` selects row one rather than moving, so the obvious
+    // `Down`+`Enter` lands on the node already in use and answers `This is the node you are
+    // using.` This row is where that is explained.
+    (
+        "↑↓  j k",
+        "move the selection in a list or a table. Nothing is selected until you press one.",
+    ),
     // M16: `peers ⇄ bans` was a symbol with no words in the one overlay that exists to explain
     // the keys.
-    ("b", "Node: swap the peers table for the blocked addresses"),
+    (
+        "u  d  b",
+        "Node: start · stop your node · swap the peers table for the blocked addresses",
+    ),
     ("L", "Node: change how much your node logs (it asks first)"),
     ("p  f", "Node: check the listed nodes · get a fresh list"),
     (
@@ -172,8 +185,10 @@ pub const KEYS: &[(&str, &str)] = &[
         "W",
         "Wallet: start the wallet service, or stop it when nothing is open",
     ),
-    ("a  l", "Wallet: new address · rename the selected one"),
-    ("n", "Wallet: edit the note on the selected payment"),
+    (
+        "a  l  n",
+        "Wallet: new address · rename the selected one · edit the note on the selected payment",
+    ),
     (
         "R  Q",
         "Wallet: check for payments · show the address as a QR code",
@@ -189,7 +204,10 @@ pub const KEYS: &[(&str, &str)] = &[
     (
         "Send: ↑↓  Enter",
         // M19's noun, here too: `check it` was the third undefined use of it on the money path.
-        "next/previous field · work out the fee. Tab leaves the form, Esc leaves a field, Enter \
+        // **And one wording for it** (round 4 iteration 3): the form's hint row, its validation
+        // row, the Preview's Fee row, this row and the toast said it five different ways. All five
+        // say "works out the fee" now.
+        "next/previous field · works out the fee. Tab leaves the form, Esc leaves a field, Enter \
          goes back in.",
     ),
     (
@@ -202,14 +220,18 @@ pub const KEYS: &[(&str, &str)] = &[
     ),
     ("Send: ←→", "on the Fee or Account row: change it"),
     (
-        "Send: sweep",
-        "to send everything, in a terminal: fmonero wallet sweep <address> --dry-run",
-    ),
-    (
         "Send: type \"send\"",
         "typing the word confirms. Esc discards. Once sent it cannot be taken back.",
     ),
     ("Log: /  f  n N", "search · follow · next/previous match"),
+    // **§2o.1's shape, and the last row of the panel** (round 4 iteration 3). This is one of the
+    // four places a shell command may appear at all, and §2o.1 says each is phrased
+    // `In a terminal: …` and is the last line of its panel. It sat mid-overlay, lower case, between
+    // two keymap rows — which is the one position that makes it read as a key you can press.
+    (
+        "sweep",
+        "sends everything you have. In a terminal: fmonero wallet sweep <address> --dry-run",
+    ),
 ];
 
 /// The four fee levels, by the names the user chooses between (§2o.2). Monero's priority is
@@ -2659,15 +2681,20 @@ impl Tui {
     /// but not answering yet` in the pane below. `toggle_wallet_daemon` already refused there; the
     /// label was the half that lied, and a label that describes a refusal as harmless is worse
     /// than the refusal.
-    pub(super) fn wallet_daemon_chip(&self) -> &'static str {
+    /// **`None` where pressing `W` would be refused or pointless** (round 4 iteration 3).
+    ///
+    /// This returned three labels and two of them told the reader not to use the chip they were
+    /// written on: `Start the wallet service  (not needed: opening a wallet starts it)` and, while
+    /// an action was in flight, `Stop the wallet service  (not while something is running)`. A
+    /// control that advertises a route which cannot exist in the state it is drawn in is the
+    /// argument M9 already settled for `[l]` and §6.5 settled for the widget's own buttons. The key
+    /// stays in the keymap, where the `?` overlay explains both halves of it.
+    pub(super) fn wallet_daemon_chip(&self) -> Option<&'static str> {
         if self.action.is_some() {
-            return "Stop the wallet service  (not while something is running)";
+            return None;
         }
-        if self.wallet_daemon_key_stops() {
-            "Stop the wallet service  (nothing is open, so nothing is interrupted)"
-        } else {
-            "Start the wallet service  (not needed: opening a wallet starts it)"
-        }
+        self.wallet_daemon_key_stops()
+            .then_some("Stop the wallet service  (nothing is open, so nothing is interrupted)")
     }
 
     /// `W` — start the wallet daemon, or stop it when it is idle.
@@ -3123,6 +3150,7 @@ impl Model for Tui {
                     Ok(Outcome::Built(plan)) => {
                         self.exit.store(0, Ordering::SeqCst);
                         // M19: what was done, in the words the form and the Preview use.
+                        // One wording for this on all four surfaces (round 4 iteration 3).
                         self.note("The fee is worked out. Nothing has been sent yet.", false);
                         self.send.typed.clear();
                         self.send.stage = Stage::Built(plan);

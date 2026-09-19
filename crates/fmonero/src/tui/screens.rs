@@ -827,7 +827,7 @@ fn picker_pane(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
     let mut picker_chips: Vec<(Button, &str, &str)> = vec![
         (Button::Probe, "p", "Check these"),
         list_chip(m),
-        (Button::UseNode, "Enter", "Use this node"),
+        use_node_chip(m),
         (Button::AddNode, "a", "Add a node"),
         (Button::PrevNode, "H", "Back to the last one"),
     ];
@@ -1708,13 +1708,33 @@ fn warnings_pane(m: &Tui, area: Rect, frame: &mut Frame) {
             }
         }
         if let Some(action) = w.action.as_deref() {
-            for (i, part) in wrap_words(action, text_w).into_iter().enumerate() {
-                let _ = i;
+            for part in wrap_words(&route_here(action, m.screen), text_w) {
                 lines.push(Line::styled(format!("  {part}"), th.dimmed()));
             }
         }
     }
     lines_at(lines, inner, false, frame);
+}
+
+/// A warning's in-app route, **with the locator dropped when the reader is already there**
+/// (round 4 iteration 3).
+///
+/// §5's `action` is one string for every surface: the widget's problems section needs to say which
+/// screen, because it is not a screen. The TUI does not — and both public-node bullets ended
+/// `Pick another one on the Node screen.` in the Notes pane **of the Node screen**, with the list
+/// they mean two panes to the left. So the locator is removed where it is redundant and kept
+/// everywhere else, which leaves one `action` in the document and one sentence on each surface.
+fn route_here(action: &str, screen: Screen) -> String {
+    let here = format!(" on the {} screen", screen.name());
+    match action.find(&here) {
+        Some(at) => {
+            let mut out = String::with_capacity(action.len());
+            out.push_str(&action[..at]);
+            out.push_str(&action[at + here.len()..]);
+            out
+        }
+        None => action.to_string(),
+    }
 }
 
 // ---------------------------------------------------------------- Wallet
@@ -1820,7 +1840,10 @@ fn wallet_empty(m: &Tui, area: Rect, frame: &mut Frame) {
             "Open a wallet      (fmonero cannot read your wallet folder. Press o to see why)"
                 .to_string()
         }
-        0 => "Open a wallet      (none on this machine yet. Press c to create one)".to_string(),
+        // With none on this machine `o` has nothing to open, and the chip said so in its own
+        // label (round 4 iteration 3). `Create a wallet` below is the action; that is what the
+        // chip row offers, and the line under it says there is nothing yet.
+        0 => String::new(),
         n => {
             let names = m.wallets.join(", ");
             let plural = if n == 1 { "wallet" } else { "wallets" };
@@ -1844,28 +1867,28 @@ fn wallet_empty(m: &Tui, area: Rect, frame: &mut Frame) {
     para("No wallet is open.".to_string(), th.text(), false).render(rows[0], frame);
     // Every bracketed chip is a hit target (§7a.2), and the stacked form is kept at **every**
     // tier: a screen whose whole content is three buttons has nothing to drop.
-    chips(
-        m,
-        rows[2],
-        &[
-            (Button::OpenWallet, "o", open_label.as_str()),
-            // **X36: one style for the three chips on this screen.** This one carried an ellipsis
-            // and no article while the one above it had an article and no ellipsis — W19 put the
-            // create modal's own four labels in one style and left these in two.
-            (
-                Button::CreateWallet,
-                "c",
-                "Create a wallet    (a new one, kept on this machine)",
-            ),
-            // **W15: the label follows the state.** In the state §7a.5 says `W` stops the
-            // service — it is running and nothing is open — this chip still read `Start`, and
-            // pressing it stopped the service. One predicate decides both (`Tui::
-            // wallet_daemon_key_stops`).
-            // S9: one predicate decides the label, and it knows about an action in flight.
-            (Button::WalletDaemon, "W", m.wallet_daemon_chip()),
-        ],
-        frame,
-    );
+    // **Only the chips that can act** (round 4 iteration 3): each of these carried a parenthetical
+    // saying not to use it in the state it was drawn in.
+    let mut row: Vec<(Button, &str, &str)> = Vec::new();
+    if !open_label.is_empty() {
+        row.push((Button::OpenWallet, "o", open_label.as_str()));
+    }
+    // **X36: one style for the chips on this screen.** This one carried an ellipsis and no article
+    // while the one above it had an article and no ellipsis — W19 put the create modal's own four
+    // labels in one style and left these in two.
+    row.push((
+        Button::CreateWallet,
+        "c",
+        "Create a wallet    (a new one, kept on this machine)",
+    ));
+    // **W15: the label follows the state.** In the state §7a.5 says `W` stops the service — it is
+    // running and nothing is open — this chip read `Start`, and pressing it stopped the service.
+    // One predicate decides both (`Tui::wallet_daemon_key_stops`), and S9 made it know about an
+    // action in flight.
+    if let Some(label) = m.wallet_daemon_chip() {
+        row.push((Button::WalletDaemon, "W", label));
+    }
+    chips(m, rows[2], &row, frame);
     // The daemon line is one of exactly four strings, and the node line is there because "which
     // node" and "is the daemon up" were the two questions the old screen answered in two
     // different places, one of them a refusal.
@@ -2022,6 +2045,20 @@ fn wallet_header(m: &Tui, area: Rect, sync: Option<&str>, frame: &mut Frame) {
     }
     // The balance keeps row 0 of the pane, whatever else the pane holds (V3).
     line_at(spans, Rect::new(inner.x, inner.y, inner.width, 1), frame);
+}
+
+/// The picker's `Enter` chip, which **names the node it would use** (round 4 iteration 3).
+///
+/// It read `[Enter] Use this node` with nothing selected, and on a fresh Node screen nothing is:
+/// the first `Down` selects row one rather than moving, so the obvious `Down`+`Enter` lands on the
+/// node already in use and answers `This is the node you are using.` The chip says what it will do,
+/// and when there is nothing to do it names the keys that give it something.
+fn use_node_chip(m: &Tui) -> (Button, &'static str, &'static str) {
+    if m.picker.table.borrow().selected.is_some() {
+        (Button::UseNode, "Enter", "Use the selected node")
+    } else {
+        (Button::UseNode, "↑↓", "Pick a node from the list")
+    }
 }
 
 fn subaddress_pane(m: &Tui, area: Rect, frame: &mut Frame) {
@@ -2599,9 +2636,17 @@ fn log_screen(m: &Tui, area: Rect, frame: &mut Frame) {
              use your own node."
                 .to_string()
         } else {
+            // **The path is elided with a marker, like the title one row above it** (round 4
+            // iteration 3): `para(…, wrap = true)` word-wraps, and a path is one word, so a long
+            // one was clipped at the pane edge with nothing to say it had been — one row under a
+            // title that does mark its own elision with `…`.
             format!(
                 "No log yet. Your node writes it once it runs.\n{}",
-                m.logs.path.display()
+                fit(
+                    &m.logs.path.display().to_string(),
+                    (rows[1].width as usize).max(8)
+                )
+                .trim_end()
             )
         };
         para(text, th.dimmed(), true).render(rows[1], frame);
@@ -3683,11 +3728,18 @@ pub(super) fn framed(
 pub(super) fn overlay(m: &Tui, frame: &mut Frame, w: u16, h: u16, title: &str) -> Option<Rect> {
     let th = &m.theme;
     let b = frame.bounds();
-    let (w, h) = (w.min(b.width), h.min(b.height));
+    // **The status bar's row is not the overlay's to use** (round 4 iteration 3). At 120x32 the
+    // `?` overlay was exactly the height of the screen, so its bottom border was drawn on the
+    // status line — and because the overlay is two columns narrower than the terminal, the row
+    // read `●╰────…────╯p`: the status bar's first and last characters standing either side of a
+    // border. An overlay that needs the whole screen is an overlay that has one row too many, and
+    // the honest place to find that out is here rather than in the capture.
+    let room = b.height.saturating_sub(1);
+    let (w, h) = (w.min(b.width), h.min(room));
     if w < 20 || h < 4 {
         return None;
     }
-    let area = Rect::new(b.x + (b.width - w) / 2, b.y + (b.height - h) / 2, w, h);
+    let area = Rect::new(b.x + (b.width - w) / 2, b.y + (room - h) / 2, w, h);
     let blank = Text::from_lines((0..area.height).map(|_| {
         Line::styled(
             " ".repeat(area.width as usize),

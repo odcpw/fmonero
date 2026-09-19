@@ -179,7 +179,10 @@ impl SendScreen {
             return (NO_SWEEP.to_string(), false);
         }
         if to.is_empty() && amount.is_empty() {
-            return ("Enter who to pay and how much.".into(), false);
+            // **Not `Enter who to pay …`** (round 4 iteration 3): this row is about filling the
+            // form, and opening it with the name of the key that submits it was one of five
+            // wordings for Enter on one screen.
+            return ("Type who to pay and how much.".into(), false);
         }
         let dest = if let Some(label) = to.strip_prefix('@') {
             if label.is_empty() {
@@ -687,12 +690,34 @@ fn view_preview(m: &Tui, area: Rect, frame: &mut ftui::Frame) {
             th.text(),
         ),
     ]));
+    // **The Preview learns the fee the moment the fee is known** (round 4 iteration 3). It read
+    // `Fee  known once Enter prepares it` while the confirm modal beside it, in the same frame,
+    // showed `Fee 0.00003072 XMR` — two panes, one fact, one of them wrong. The plan lives on
+    // `Stage::Built`, which is exactly the state the modal is drawn from, so there is one source.
+    //
+    // M19's own point stands for the other states: the noun `the check` was never defined on this
+    // screen, and what the fee waits for is the wallet service working it out. One wording for
+    // that, here, on the validation row, in the `?` overlay and in the toast.
+    let (fee_text, total_text) = match &s.stage {
+        Stage::Built(plan) => (
+            format!("{} XMR", plan.total_fee.to_xmr_min(Piconero::FEE_DECIMALS)),
+            plan.total()
+                .ok()
+                .map(|t| format!("{} XMR", t.to_xmr_min(Piconero::FEE_DECIMALS))),
+        ),
+        Stage::Validating | Stage::Building => ("working it out…".to_string(), None),
+        _ => ("known once Enter works out the fee".to_string(), None),
+    };
     lines.push(Line::from_spans([
         Span::styled("Fee     ".to_string(), th.dimmed()),
-        // M19: the noun `the check` was never defined on this screen. What the fee waits for is
-        // the wallet service preparing the payment, which is what Enter starts.
-        Span::styled("known once Enter prepares it".to_string(), th.dimmed()),
+        Span::styled(fee_text, th.dimmed()),
     ]));
+    if let Some(total) = total_text {
+        lines.push(Line::from_spans([
+            Span::styled("Total   ".to_string(), th.dimmed()),
+            Span::styled(total, th.text()),
+        ]));
+    }
     lines.push(Line::from_spans([
         Span::styled("Account ".to_string(), th.dimmed()),
         Span::styled(s.account.to_string(), th.text()),
@@ -757,8 +782,13 @@ pub(super) fn view_confirm(m: &Tui, plan: &Plan, frame: &mut ftui::Frame) {
     // a zero. `Piconero::checked_add` fails only when `amount + fee` exceeds `u64::MAX`, and
     // `Total 0.0000 XMR` beside a real Amount and a real Fee is not a sum of what is being spent.
     // The confirm word is refused in that state (`SendScreen::on_key`).
+    // **All three figures at one precision** (round 4 iteration 3): `Amount 0.0100 XMR`,
+    // `Fee 0.00003072 XMR`, `Total 0.01003072 XMR` — three different decimal counts in one modal,
+    // on the three numbers the reader is being asked to add up. Eight decimals for all three, which
+    // is what `Piconero::FEE_DECIMALS` is, and the sum is then checkable by eye down the column.
+    let xmr = |p: Piconero| p.to_xmr_min(Piconero::FEE_DECIMALS);
     let (total, total_pico) = match plan.total() {
-        Ok(t) => (t.to_xmr_string(), t.0.to_string()),
+        Ok(t) => (xmr(t), t.0.to_string()),
         Err(_) => ("—".to_string(), "—".to_string()),
     };
     let mut lines = vec![Line::styled("To".to_string(), dim)];
@@ -771,14 +801,10 @@ pub(super) fn view_confirm(m: &Tui, plan: &Plan, frame: &mut ftui::Frame) {
     for (label, xmr, pico) in [
         (
             "Amount ",
-            plan.total_amount.to_xmr_string(),
+            xmr(plan.total_amount),
             plan.total_amount.0.to_string(),
         ),
-        (
-            "Fee    ",
-            plan.total_fee.to_xmr_string(),
-            plan.total_fee.0.to_string(),
-        ),
+        ("Fee    ", xmr(plan.total_fee), plan.total_fee.0.to_string()),
         ("Total  ", total, total_pico),
     ] {
         lines.push(Line::from_spans([
@@ -912,7 +938,7 @@ mod tests {
         assert_eq!(s.account, 0);
         assert_eq!(
             s.request(None).err(),
-            Some("Enter who to pay and how much.".to_string()),
+            Some("Type who to pay and how much.".to_string()),
             "the selector must not build anything by itself"
         );
     }

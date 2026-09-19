@@ -133,7 +133,12 @@ pub struct Probe {
 pub fn probe_reason_words(reason: Option<&str>) -> &'static str {
     match reason {
         Some("timed_out") => "too slow",
-        Some("refused") => "refused",
+        // **Not `refused`** (round 4 iteration 3): five of the six reasons were turned into English
+        // and this one was returned as itself, in the badge, the status bar, the picker's column and
+        // the ` This node ` pane. To a Monero user "refused" reads as the node turning him away —
+        // as an authentication or a policy decision — where what happened is that the connection
+        // was closed at once because nothing was listening on that port.
+        Some("refused") => "nothing listening",
         Some("tls") => "no secure connection",
         Some("http") => "a web error",
         Some("bad_json") => "bad answer",
