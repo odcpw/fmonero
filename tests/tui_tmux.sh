@@ -388,8 +388,10 @@ esac
 # And `Tab` is held here, which is the one documented exception — said in the modal itself.
 tmux send-keys -t "$SESSION" Tab 2>/dev/null || true; sleep 0.8
 case "$(pane)" in
-  # X34: `Press Esc to discard first.` named no second thing — first before what?
-  *"Press Esc first to discard this."*) ok "§7a.1: the create modal holds Tab and says so in the modal" ;;
+  # X34: `Press Esc to discard first.` named no second thing — first before what? **M23 (round 4):
+  # so did X34's replacement**, and what Tab normally does is change screens, so that is what the
+  # line says it cannot do here.
+  *"Tab cannot change screens while this is open."*) ok "§7a.1: the create modal holds Tab and says so in the modal" ;;
   *) bad "the create modal must consume Tab" "$(printf '%s' "$(pane)" | tail -4)" ;;
 esac
 tmux send-keys -t "$SESSION" Escape 2>/dev/null || true; sleep 0.5
@@ -477,8 +479,10 @@ case "$RTEXT2" in
   # node. Press…`, which named neither route. **X5 (v5.6.3): the situation comes first, and each of
   # the three keys states its own.** One shared 40-column toast was rule 11's hint standing in for
   # the sentence, and `L` was told to choose a node and never told why its own key was refused.
-  *"there is no node here to start. Press f for another public node, or l to use your own."*)
-    ok "u states its own situation and names both ways out, whole (§2o.1, W14, X5)" ;;
+  # **M13 (round 4): `f` gets a fresh list; it does not choose a node.** Choosing one needs a
+  # selection and Enter, and this refusal was the third of three descriptions of one key.
+  *"there is no node here to start. Pick a node below and press Enter, or press l to"*)
+    ok "u states its own situation and names both ways out, whole (§2o.1, W14, X5, M13)" ;;
   *) bad "u did not name the in-app way out" "$(printf '%s' "$RTEXT2" | tail -3)" ;;
 esac
 case "$RTEXT2" in

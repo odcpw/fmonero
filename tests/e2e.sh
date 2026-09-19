@@ -1797,13 +1797,22 @@ expect_json '.node.trusted' 'false' "  trusted false"
 expect_json '.node.height' 'null' "  and every measured field null"
 expect_json '.node.sync_percent' 'null' "  including the one a gauge would read"
 expect_json '[.warnings[].id] | contains(["remote_node"])' 'true' "  the remote_node info row"
-expect_json '[.warnings[].id] | contains(["node_down"])' 'false' \
+expect_json '[.warnings[].id] | any(. == "node_down")' 'false' \
   "  and NOT node_down: null is not false (§5)"
 fm doctor --json
 expect_json '[.checks[] | select(.id=="node_layout") | .status]' '["pass"]' \
   "doctor: node_layout passes and is the group's one source of truth (§7.1)"
-expect_json '[.checks[] | select(.id=="node_reachable") | .reason]' '["remote_node"]' \
-  "  and every other node check skips with skip:remote_node"
+# **Round 4, S4: `node_reachable` answers from the cached check in remote mode, it does not skip.**
+# It skipped `remote_node` with the rest of the group, so `doctor --only node` against a silent public
+# node ended `0 need attention, 0 not working` while the layout row above it named the address. This
+# sandbox has never checked anything, so the reason here is `no_remote_check` — nothing has looked —
+# and a check that came back with no answer is a `fail`, tested in the `--full` block below.
+expect_json '[.checks[] | select(.id=="node_reachable") | .reason]' '["no_remote_check"]' \
+  "  node_reachable says nothing has checked this public node yet (S4)"
+expect_json '[.checks[] | select(.id=="node_reachable") | .status]' '["skip"]' \
+  "  and it is a skip, not a pass: a node nobody asked is not a node that answered"
+expect_json '[.checks[] | select(.id=="node_unrestricted") | .reason]' '["remote_node"]' \
+  "  while every other node check still skips with skip:remote_node"
 expect_json '[.checks[] | select(.id=="remote_node_untrusted") | .status]' '["pass"]' \
   "  remote_node_untrusted runs HERE and passes on an untrusted node"
 expect_json '[.checks[] | select(.id=="disk_space" or .id=="prune_configured") | .reason] | unique' \
@@ -1827,6 +1836,49 @@ expect_json '[.checks[] | select(.id=="remote_node_untrusted") | .status]' '["wa
 fm status --json
 expect_json '[.warnings[].id] | contains(["remote_node_trusted"])' 'true' "  status warns too"
 fm settings set node.remote_trusted false >/dev/null
+
+step "S4: a public node that did not answer is a warning and a doctor failure, not silence"
+# **Round 4's third blocker, and the owner's own configuration was the one with no alarm in it.**
+# With `node.mode = remote` and the configured node silent, `status` listed two `[info]` lines and
+# `doctor` said `0 need attention, 0 not working` — while the row one line above both said `no
+# answer`. `node_down` is gated on `reachable == Some(false)` and that field is `null` here by
+# design (§2m.3), so the fact the program HAD was never raised.
+#
+# `127.0.0.1:1` is the address: loopback, nothing listening, refused instantly, and it leaves this
+# machine no more than any other loopback call does. Two runs, because `--check-node` starts the
+# check in the background and the NEXT run harvests it (§5) — which is M7's point as well.
+fm settings set node.remote 127.0.0.1:1 >/dev/null
+fm status --check-node --json >/dev/null 2>&1 || true
+CHECKED=0
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  if "$FM" status --json 2>/dev/null | jq -e '.node.remote_probe != null' >/dev/null 2>&1; then
+    CHECKED=1; break
+  fi
+  "$FM" status --check-node --json >/dev/null 2>&1 || true
+  sleep 1
+done
+if [ "$CHECKED" = 1 ]; then
+  fm status --json
+  expect_json '.node.remote_probe.reachable' 'false' "the cached check says the node did not answer"
+  expect_json '[.warnings[] | select(.id=="public_node_down") | .severity]' '["warn"]' \
+    "  and status raises public_node_down at warn, so the bar's dot cannot stay calm (S4)"
+  expect_json '[.warnings[] | select(.id=="public_node_down") | .action]' \
+    '["On the Node screen, pick another node and press Enter."]' \
+    "  with an in-app next step and no shell command (§2o.1, M13)"
+  # `contains` on an array of strings is a SUBSTRING test in jq, and `public_node_down` contains
+  # `node_down` — so the exact comparison is the only one that means what it says here.
+  expect_json '[.warnings[].id] | any(. == "node_down")' 'false' \
+    "  and still NOT node_down: that one tests a field with no source here (§5)"
+  fm doctor --only node --json
+  expect_rc 11 "doctor --only node exits 11: a silent node is a failure"
+  expect_json '[.checks[] | select(.id=="node_reachable") | .status]' '["fail"]' \
+    "  node_reachable FAILS on the node the owner actually uses (S4)"
+  expect_json '[.checks[] | select(.id=="node_reachable") | .detail | test("did not answer")]' \
+    '[true]' "  and its detail says so in words"
+else
+  skip "S4: no check completed in ten tries; the warning is asserted by the unit tests"
+fi
+fm settings set node.remote "$REMOTE_ADDR" >/dev/null
 
 step "§4.2: the wallet unit renders the remote daemon target"
 # The §1.3 disk floor does NOT apply in remote mode (v5.2, §4.2): it is a floor for a chain, and

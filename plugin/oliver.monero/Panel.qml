@@ -30,7 +30,7 @@ Panel {
   // with the checked-out tree: a stale shell now fails the gate instead of decorating it. The token
   // is the first eight hex digits of the sha256 of the four widget files with this line removed, so
   // it cannot be left behind by an edit — the gate computes what it should be and says so.
-  readonly property string panelVersion: "qml-cb0c04a4"
+  readonly property string panelVersion: "qml-ea91b3d6"
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent
