@@ -101,11 +101,15 @@ What that changes, and what it does not:
   test failed on this tree **before** any v5.2 code was written, for exactly this reason; the
   transcript is in DECISIONS.md, because a suite that fails on a machine that got *better* is a
   suite that gets weakened (§2j).
-- **Nothing that needs a running daemon moved.** No `monerod` is running, there is no
-  `~/.bitmonero` chain, and every §4b RED row that needs a live local node stays RED. The §2i
-  preflight's `not_installed` answer is still a real code path — it is what a machine without the
-  package gets — and it is still tested, now through `units::preflight`'s own unit test rather than
-  through this machine's accident.
+- **Nothing that needs a running daemon moved.** No `monerod` is running, and every §4b RED row
+  that needs a live local node stays RED. `~/.bitmonero` is no longer empty, and the reason is
+  recorded rather than tidied away: on 2026-09-19 a verification sandbox set `FMONERO_STATE_DIR`
+  without `FMONERO_SYSTEMCTL_FIXTURE`, so its `node up` started the owner's real unit and a real
+  `monerod` ran for thirty seconds, reaching block 40 536 of 3 765 450 and leaving about 147 MB
+  there (DECISIONS: V18). It measured nothing, and the owner's one-line undo is
+  `rm -rf ~/.bitmonero`. The §2i preflight's `not_installed` answer is still a real code path — it is
+  what a machine without the package gets — and it is still tested, now through
+  `units::preflight`'s own unit test rather than through this machine's accident.
 - Everything that needs a live **remote** daemon is what §4b's new LIVE list covers (§2m): the
   wallet daemon is installed, so `monero-wallet-rpc` against a public node is reachable for the
   first time.
@@ -7342,7 +7346,7 @@ rather than a table with no rows and a footer full of empty fields. In place of 
 ```
   No list of public nodes yet.
 
-  [f] Get the list          195 public nodes from monero.fail
+  [f] Get the list
   Getting the list tells monero.fail your IP address. Nothing else is contacted.
 ```
 
@@ -7474,13 +7478,20 @@ the whole screen:
 ```
   No wallet is open.
 
-  [o] Open a wallet       (no wallets on this machine yet. Press c to create one)
-  [c] Create wallet…      a new one, kept on this machine
-  [W] Start the wallet service   (not needed: opening a wallet starts it)
+  [o] Open a wallet      (1 wallet on this machine: moneroli)
+  [c] Create a wallet    (a new one, kept on this machine)
 
   wallet service: not running yet. It starts when you open or create a wallet.
   node: public node 185.220.101.63:18081
 ```
+
+(**The panel above is the code's, and it draws only the chips that can act** — round 4 iteration 3,
+corrected here by the round-4 verification. With **no** wallets on this machine the `[o]` row is not
+drawn at all, because `o` has nothing to open; `[W]` is drawn only in the state where pressing it
+*stops* the service, reading
+`Stop the wallet service  (nothing is open, so nothing is interrupted)`. This section printed all
+three unconditionally, two of them carrying a parenthetical telling the reader not to press the chip
+it was written on. `crates/fmonero/src/tui/tests.rs` asserts the absences in both states.)
 
 (v5.6, §2o: `daemon` and `idle` were the program's words, the trust flag is deleted everywhere, and
 the two long chip descriptions each said one fact in three clauses.)

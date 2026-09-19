@@ -12,8 +12,12 @@ It replaces `monero-gui`, which carries 109 QML files and 26 869 lines of QML, r
 idle.
 
 Read **[Status](#status)** before you believe anything here. Monero 0.18.5.1 **is** installed on
-the machine this was built on, and **no daemon has ever been started there** — not a `monerod`,
-not a `monero-wallet-rpc`. Every claim about a live daemon, local or remote, is unverified.
+the machine this was built on. A `monero-wallet-rpc` has been driven there against a public node
+since 2026-09-17 (the LIVE class below). A local `monerod` has started there exactly **once**, for
+thirty seconds on 2026-09-19, when a verification sandbox missed its own `systemctl` fixture: it
+reached block 40 536 of 3 765 450 and left about 147 MB in `~/.bitmonero` (`DECISIONS.md`, V18).
+Nothing was measured by that run, so every row below that needs a live local node is still RED and
+unverified.
 
 ## Why
 
@@ -206,7 +210,7 @@ your hands has run.
 |---|---|
 | GREEN | Verified end to end on this machine, with no daemon running, by `tests/e2e.sh` and the phase gates. |
 | AMBER | Verified against `crates/fmonero-mock`, a test-only server that replays fixtures derived from the Monero source at tag v0.18.5.1. This proves our wire format, our parsing and our error mapping. It proves nothing about a real daemon. |
-| LIVE | A real `monero-wallet-rpc` against a real public node, on a scratch wallet with no funds. **Run for the first time on 2026-09-17**, against `xmr-node.cakewallet.com:18081`, by an independent verifier; the full transcript is in `DECISIONS.md` under "Remote node mode verification". It is the only class in which this project has ever touched a real Monero node. |
+| LIVE | A real `monero-wallet-rpc` against a real public node, on a scratch wallet with no funds. **Run for the first time on 2026-09-17**, against `xmr-node.cakewallet.com:18081`, by an independent verifier; the full transcript is in `DECISIONS.md` under "Remote node mode verification". It is the only class in which this project has ever *deliberately* used a real Monero node; the one accidental local `monerod` start (V18) measured nothing and left every local row RED. |
 | RED | Never run. Unverified, and not claimed to work anywhere in this README, in `--help` or in `robot-docs`. |
 
 **GREEN.** `status` with both daemons absent (exit 0, `reachable: false`, warnings);

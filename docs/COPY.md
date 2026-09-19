@@ -248,8 +248,8 @@ the redesign needs.
 |---|---|---|---|
 | `screens.rs:1172` | `No wallet is open.` | unchanged | The one line on the old screen that was already right. |
 | `screens.rs:1162` | `Open wallet…      pick one of the {n} wallets in {dir}` | `Open wallet…      choose one of the {n} in {dir}` | Shorter; the chip already says "wallet". |
-| `screens.rs:1183` | `Create wallet…    a new wallet, on this machine, in that directory` | `Create wallet…    a new one, kept on this machine` | Rule 1: three clauses for one fact. |
-| `screens.rs:1188` | `Start the wallet daemon   (not needed first — opening or creating one starts it)` | **`Start the wallet service   (not needed: opening a wallet starts it)`, or `Stop the wallet service    (nothing is open, so nothing is interrupted)` — by state** (W15) | Vocabulary, rule 12 — and the label has to follow the key: §7a.5 says `W` stops the service when nothing is open, and in exactly that state the chip said `Start` and pressing it stopped it. One predicate (`Tui::wallet_daemon_key_stops`) decides both. |
+| `screens.rs:1183` | `Create wallet…    a new wallet, on this machine, in that directory` | `Create a wallet    (a new one, kept on this machine)` | Rule 1: three clauses for one fact. X36 then put the chip in one style with `[o] Open a wallet` — an article, no ellipsis, the gloss in brackets — and this row follows the code (round-4 verification). |
+| `screens.rs:1188` | `Start the wallet daemon   (not needed first — opening or creating one starts it)` | **`Stop the wallet service  (nothing is open, so nothing is interrupted)`, and nothing at all in the other states** (W15, then round 4 iteration 3: a chip whose own gloss says not to press it is not drawn; `W` stays in the keymap and the `?` overlay explains both halves) | Vocabulary, rule 12 — and the label has to follow the key: §7a.5 says `W` stops the service when nothing is open, and in exactly that state the chip said `Start` and pressing it stopped it. One predicate (`Tui::wallet_daemon_key_stops`) decides both. |
 | `screens.rs:1199` | `wallet daemon: {phrase}` | `wallet service: {phrase}` | Vocabulary. |
 | `screens.rs:1217` | `starting…` | unchanged | Already plain. |
 | `screens.rs:1220` | `reading status…` | `checking…` | Rule 5. |
@@ -320,7 +320,7 @@ the redesign needs.
 |---|---|---|---|
 | `screens.rs:112` | `no wallets in {dir}` | `No wallets in {dir}.` | Sentence. |
 | `screens.rs:113` | `fmonero wallet create <name> --yes` (the open modal's empty hint) | `Press c to create one.` | §2o.1: a command inside a modal, for a thing one key does. |
-| `screens.rs:120` | ` Open a wallet — Enter · Esc cancels ` | ` Open a wallet — Enter opens · Esc cancels ` | `Enter` alone named a key with no verb. |
+| `screens.rs:120` | ` Open a wallet — Enter · Esc cancels ` | ` Open a wallet ` | `Enter` alone named a key with no verb; W18 then moved the keys out of the title altogether, because `list_modal` states them once in its own last line (round-4 verification: the title the code renders). |
 | `screens.rs:1675` | `Enter · Esc cancels` | `Enter chooses · Esc cancels` | Same reason. |
 | `screens.rs:1792-1815` | fields `name / password / again / language` | `name / password / repeat / seed language` | `again` is not a label; `language` alone reads as the UI's language. |
 | `screens.rs:1826` | `↑↓ fields · Enter next, then create · Esc discards` | unchanged | Already plain. |
@@ -783,13 +783,15 @@ of 450 rows written by hand misses four, and a grep with a self-test does not.
 | `monerod_conf_mode`'s doctor title (§3.12) | unchanged, "already plain" | `~/.config/fmonero/monerod.conf is private (it carries a password)` | The old title named `rpc-login`, a flag, in prose. Rule 6 applies to the doctor's titles like everywhere else. |
 | the addresses pane title (§3.3) | ` Your addresses — Enter copies · a new · l rename ` | ` Addresses · Enter copies · a new · l rename ` | At the Wide tier that pane is 48 columns and the specified title clipped to `… · a new · l renam` — a title that lies about its own keys. The em-dash goes with it, which rule 12 wanted anyway. |
 
-**One thing rule 12 does not reach, stated so it is a decision and not an oversight.** Several modal
-titles keep a ` — `: ` Open a wallet — Enter opens · Esc cancels `, ` Payment — n edits the note ·
-Esc closes `, ` Keys — any key closes `. In those the dash separates a pane's **name** from its
-**controls**, which is the structural role rule 12 explicitly allows `·` to play — it is not prose
-punctuation inside a sentence, and §3's table keeps every one of them. Rule 12 is enforced by
-reading, not by the grep, for the same reason `build` is: a grep for `—` would fire on this
-document, on every comment that uses one and on the row separators of these very tables.
+**The exception this document used to keep is gone, and that is worth stating.** It read: several
+modal titles keep a ` — ` (` Open a wallet — Enter opens · Esc cancels `, ` Payment — n edits the
+note · Esc closes `, ` Keys — any key closes `), because there the dash separates a pane's **name**
+from its **controls**. The code no longer does that in any of the three: it renders ` Open a wallet `,
+` Payment · n edits the note · Esc closes ` and ` Keys · any key closes `, using the `·` rule 12
+already allows for structure. Read off a real pty by the round-4 verification, at 120x32 and 150x40.
+Rule 12's word grep is mechanised (`scripts/check.sh`) over string **literals**; it does not read the
+`///` doc comments that become `--help`, and three of those still carry a prose em-dash — reported by
+the round-4 verification, not fixed here.
 
 **Two words the grep did not police, stated so nobody mistakes silence for coverage — and v5.6.1
 polices both.** §2o rule 7 bans `build` (of a transaction) and `layout`; v5.6's step greps for

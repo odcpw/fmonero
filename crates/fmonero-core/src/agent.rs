@@ -42,10 +42,12 @@ What has never happened: no payment has ever been sent from this version. Sendin
 been tried against a stand-in that answers the way a wallet does. Until that changes, treat a send \
 as untested, and send nothing you could not lose.";
 
-/// The §4b summary, in prose, and honest about the one thing that matters: **no fmonero build
-/// has ever spoken to a real `monerod`**, and no build has ever broadcast a transaction. Since
-/// 2026-09-17 one build *has* driven a real `monero-wallet-rpc` against a real public node, on a
-/// scratch wallet with no funds — that is §4b's LIVE class and it is named below as such.
+/// The §4b summary, in prose, and honest about the one thing that matters: **no build has ever
+/// broadcast a transaction.** Since 2026-09-17 one build *has* driven a real `monero-wallet-rpc`
+/// against a real public node, on a scratch wallet with no funds — that is §4b's LIVE class and it
+/// is named below as such. A local `monerod` has been started here exactly once, for thirty
+/// seconds on 2026-09-19, by a verification sandbox that missed its own `systemctl` fixture
+/// (DECISIONS: V18); it measured nothing, so every local-node row stays RED.
 // copy-exempt-begin: BUILD_NOTE is the machine's §4b answer, read by an agent through
 // `version --json` and never printed to a person — `BUILD_SUMMARY` above is the person's half.
 pub const BUILD_NOTE: &str = "\
@@ -96,7 +98,8 @@ plans nothing there), and three consecutive wallet create against the public nod
 that fail. Both are recorded with their real output in DECISIONS.md.
 
 RED — never verified, and not claimed anywhere: a real node start, stop or restart, real sync \
-progress, real peers, and — against a local monerod, which has never run here — a real balance, \
+progress, real peers, and — against a local monerod, which has run here once for thirty seconds \
+by accident and measured nothing (V18) — a real balance, \
 a real refresh and a real open_wallet against a real wallet file. A REAL SEND OR SWEEP OF ANY \
 AMOUNT is RED in every mode, remote included: remote mode changes what a send is gated on, never \
 what a broadcast proves. Also RED: setup's system_unit refusal, the \
