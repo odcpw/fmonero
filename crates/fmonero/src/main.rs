@@ -2021,15 +2021,20 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                 let rendered = record
                     .as_ref()
                     .map(|r| PendingStatus::from_record(r, fmonero_core::now_unix()));
+                // **`payments`** (round 4 iteration 3): this was the last place in the product
+                // where the word `transaction` reached a person, on the command §2a.4 calls the
+                // escape hatch after a crash.
                 if record.is_some() {
-                    out.note("check whether these transactions landed before clearing the record:");
-                    out.note("  fmonero wallet history --limit 5");
+                    out.note("Check whether these payments landed before you clear the record.");
+                    out.note("Try: fmonero wallet history --limit 5");
                 } else if unreadable {
                     out.note(format!(
-                        "{} exists but cannot be parsed, so it names no transaction to check:",
+                        "{} cannot be read, so it names no payment to check.",
                         ctx.paths.pending_file().display()
                     ));
-                    out.note("  fmonero wallet history --limit 5   # check the last few by hand");
+                    out.note(
+                        "Try: fmonero wallet history --limit 5   # check the last few by hand",
+                    );
                 }
                 require_yes(yes, "fmonero wallet clear-pending", &[])?;
                 let cleared = record.is_some() || unreadable;
@@ -2376,11 +2381,31 @@ fn require_yes(yes: bool, what: &str, args: &[String]) -> Result<(), Error> {
         hint.push_str(&shell_quote(a));
     }
     hint.push_str(" --yes");
-    Err(
-        Error::safety(format!("{what} changes something, so it needs --yes."))
-            .with_reason("needs_yes")
-            .with_hint(hint),
-    )
+    // **The sentence names the action in words, never the command** (round 4 iteration 3). It read
+    // `fmonero: fmonero wallet clear-pending changes something, so it needs --yes.` — the program's
+    // own name twice in eleven words, because `Out::report` prefixes `fmonero:` and `what` is the
+    // command. And "changes something" told the reader nothing at all. The command is in the `Try:`
+    // line, which is where §2o rule 11 puts it.
+    //
+    // A `what` this table does not know comes back unchanged, deliberately: a new call site reads
+    // oddly once and is added, rather than printing a plausible wrong sentence — the convention
+    // `units::action_words` already follows.
+    let subject = match what {
+        "fmonero node down" => "Stopping your node",
+        "fmonero node restart" => "Stopping and starting your node",
+        "fmonero node remote" => "Switching to a public node",
+        "fmonero node local" => "Going back to your own node",
+        "fmonero wallet create" => "Making a new wallet",
+        "fmonero wallet clear-pending" => "Clearing that record",
+        "fmonero wallet book remove" => "Taking an address out of your address book",
+        "fmonero wallet set-daemon" => "Pointing this wallet at another node",
+        other => other,
+    };
+    Err(Error::safety(format!(
+        "{subject} needs --yes, so nothing changes by accident."
+    ))
+    .with_reason("needs_yes")
+    .with_hint(hint))
 }
 
 /// The `--yes` hint is the user's **own** command with `--yes` appended **verbatim** (§4).

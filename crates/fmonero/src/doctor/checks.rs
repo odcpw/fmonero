@@ -547,7 +547,7 @@ pub const CHECKS: &[CheckDef] = &[
         group: DoctorGroup::Security,
         class: Class::D,
         severity: Severity::Warn,
-        title: "Who is listening on the node and wallet ports",
+        title: "Only fmonero is listening on the node and wallet ports",
         detect: ports_owned,
     },
 ];
@@ -615,11 +615,16 @@ fn need_units(p: &Probes, about: Which) -> Option<Verdict> {
         // `wallet_daemon_matches_unit` and `wallet_port_consistent` are three checks of the
         // WALLET service, and all three read `fmonero has not set up the node service yet.`
         // because one word was chosen for all seven skips from whichever file happened to exist.
-        let what = match (about, node_missing, wallet_missing) {
-            (Which::Wallet, _, _) => "the wallet service",
-            (Which::Both, true, true) => "its two background services",
-            (Which::Both, true, false) => "your node",
-            (Which::Both, _, _) => "the wallet service",
+        // **One sentence for one state** (round 4 iteration 3). With both files absent this said
+        // `its two background services` for the five `Both` checks and `the wallet service` for the
+        // three `Wallet` ones, so the group's heading carried two hoisted notes describing one
+        // situation — above a row whose own detail described it a third way. W11's point stands
+        // where it applies: when only ONE of the two is missing, the subject is that one.
+        let _ = about;
+        let what = match (node_missing, wallet_missing) {
+            (true, true) => "its two background services",
+            (true, false) => "your node",
+            _ => "the wallet service",
         };
         Verdict::skip(
             "unit_missing",
@@ -1384,7 +1389,7 @@ fn units_present(p: &Probes) -> Verdict {
             // systemd user unit is never named and is part of *your node* / *the wallet service*,
             // and every other row in this group already reads that way. The file names are in
             // `doctor --json`, and in `settings list` under the keys that hold them.
-            bad.push(format!("{subject} has not been set up yet."));
+            bad.push(format!("{subject} is not set up yet."));
         } else if !matches {
             bad.push(format!(
                 "{subject} does not start the way fmonero writes it, so something has changed it."
@@ -2219,7 +2224,15 @@ fn state_perms(p: &Probes) -> Verdict {
         // M14: `(0755). It should be 0700.` is two numbers a reader cannot act on, in a check
         // whose verdict is `not working`. What it means is the first half of the sentence, and
         // the fix line below is what to do about it.
-        .map(|x| format!("{} can be read by others, and only you may read it", x.path))
+        // **The clause said the opposite of itself** (round 4 iteration 3): `… can be read by
+        // others, and only you may read it` joins two contradictory facts with "and", and ends
+        // with no full stop. One fact, then the rule, then a stop.
+        .map(|x| {
+            format!(
+                "{} can be read by others, and only you should be able to.",
+                x.path
+            )
+        })
         .collect();
     if ours.is_empty() {
         // Never chmod'ed: the daemon recreates them on every start and
@@ -2321,7 +2334,10 @@ fn ports_owned(p: &Probes) -> Verdict {
                 }
             ),
         )
-        .cmd("fmonero status --json");
+        // **Not `--json`** (round 4 iteration 3): the one runnable next step this row offered
+        // pointed a person at machine output, in a table of forty rows of English. `node info`
+        // answers the same question in words.
+        .cmd("fmonero node info");
     }
     let ours: Vec<String> = p
         .ports

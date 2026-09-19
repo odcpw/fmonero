@@ -811,6 +811,61 @@ fn node_mutations_are_refused_when_fmonero_does_not_own_the_node() {
 /// that nothing went out, directly beside a Notes bullet saying it may already have gone. The
 /// banner carries `PendingStatus::progress_words` instead, the same wording the widget and the
 /// warning use.
+/// **`wrap_bullet` dropped two characters at every break** (round 4 iteration 3), silently, with
+/// no marker, whenever a bullet carried a token longer than the modal. It wrapped the whole string
+/// to the full width and then prefixed two spaces to each continuation, so every continuation was
+/// two columns too wide and the modal clipped it: `…workspaces-eff1` / `0e-d485-…`, with the `ae`
+/// simply gone. The assertion is the one that matters — **every character survives, in order** —
+/// plus the two shapes a hanging indent owes: no rendered line wider than the width, and every
+/// continuation indented.
+#[test]
+fn a_wrapped_bullet_keeps_every_character_and_fits_its_width() {
+    use crate::tui::screens::{wrap_bullet, wrap_hanging};
+    use unicode_width::UnicodeWidthStr;
+    let long =
+        "/home/oliver/.config/Claude/scratch-workspaces-eff1ae0e-d485-4f42-9ffb-620b5efc18d5/x";
+    for width in [20usize, 33, 46, 70, 74] {
+        let bullet = format!("· nothing is lost either way. The blockchain stays in {long}");
+        let lines = wrap_bullet(&bullet, width);
+        for (i, l) in lines.iter().enumerate() {
+            assert!(
+                UnicodeWidthStr::width(l.as_str()) <= width,
+                "line {i} is {} wide at width {width}: {l:?}",
+                UnicodeWidthStr::width(l.as_str())
+            );
+            if i > 0 {
+                assert!(
+                    l.starts_with("  "),
+                    "continuation {i} lost its indent: {l:?}"
+                );
+            }
+        }
+        // Every non-space character, in order, with nothing added and nothing lost.
+        let want: String = bullet.chars().filter(|c| !c.is_whitespace()).collect();
+        let got: String = lines
+            .concat()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        assert_eq!(got, want, "characters lost or gained at width {width}");
+    }
+    // The three-space indent the open-a-wallet modal uses, on the same token.
+    let lines = wrap_hanging(&format!("in {long}"), 30, 3);
+    let want: String = format!("in {long}")
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    let got: String = lines
+        .concat()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    assert_eq!(got, want);
+    assert!(lines
+        .iter()
+        .all(|l| UnicodeWidthStr::width(l.as_str()) <= 30));
+}
+
 #[test]
 fn an_unresolved_pending_record_banners_every_screen() {
     let w = World::new("pending");
@@ -1509,7 +1564,7 @@ fn the_pickers_footer_reads_as_english_and_no_two_columns_share_a_header() {
         // set: no two cells in it may read the same, and monero.fail's height is always named.
         let header = text
             .lines()
-            .find(|l| l.contains("address") && l.contains("reliability"))
+            .find(|l| l.contains("address") && l.contains("answered"))
             .unwrap_or_default();
         assert!(header.contains("their block"), "{cols}x{rows}:\n{text}");
         let names: Vec<&str> = header
@@ -2624,8 +2679,11 @@ fn every_toast_is_a_capitalised_sentence() {
         if first == '{' || !trimmed.contains(' ') && !trimmed.ends_with('.') {
             continue;
         }
+        // The program's own name is lower case everywhere it appears, `fmonero:` in the CLI
+        // included, so a sentence that opens with it is capitalised correctly (round 4
+        // iteration 3, where the failed-action toasts became `fmonero could not …`).
         assert!(
-            first.is_uppercase() || first.is_ascii_digit(),
+            first.is_uppercase() || first.is_ascii_digit() || trimmed.starts_with("fmonero "),
             "a toast has to be a capitalised sentence: {lit:?}"
         );
     }

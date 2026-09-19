@@ -202,8 +202,19 @@ fn human_lines(out: &Out, report: &Report) -> Vec<String> {
                 .find(|g| g.name() == group)
                 .map_or(group.clone(), |g| g.title().to_string());
             lines.push(out.paint(&heading, Paint::Dim));
+            // **A hoisted note is a note, and it says what it explains** (round 4 iteration 3).
+            // It was printed as a bare indented sentence under the group heading and directly above
+            // the first row, with no dot leaders and no verdict — so it read as two more checks that
+            // had somehow returned nothing. A bullet is what this program uses for a supporting fact
+            // everywhere else, and the second half answers the reader's question: which of the rows
+            // below does this explain?
             for note in group_notes(report, &group) {
-                lines.push(out.paint(&format!("  {note}"), Paint::Dim));
+                lines.push(out.paint(
+                    &format!(
+                        "  · {note} That is what the rows marked \"not checked\" are waiting for."
+                    ),
+                    Paint::Dim,
+                ));
             }
         }
         let (verdict, paint) = verdict_phrase(check);

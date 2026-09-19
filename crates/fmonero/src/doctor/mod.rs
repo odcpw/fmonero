@@ -457,16 +457,15 @@ fn apply_one(
 
 /// The next moves, as runnable commands — Axiom 0's second question.
 fn next_commands(summary: &Summary, args: &DoctorArgs) -> Vec<String> {
+    // **One hint** (§2o rule 11, round 4 iteration 3). This printed two, and the second was
+    // `fmonero doctor --json | jq '.checks[] | select(.status != "pass")'` — a pipeline into machine
+    // output, showing the internal `status` value the table above has just rendered as words, in the
+    // footer a person reads after forty rows of English. An agent gets the same from `--json`, which
+    // `robot-docs` documents. At most one is printed, in the order a person needs them.
     let mut cmds = Vec::new();
     if summary.fixable > 0 && !args.fix {
         cmds.push("fmonero doctor --fix --dry-run".to_string());
-    }
-    if summary.fail > 0 || summary.warn > 0 {
-        cmds.push(
-            "fmonero doctor --json | jq '.checks[] | select(.status != \"pass\")'".to_string(),
-        );
-    }
-    if args.fix && !summary.dry_run && summary.fixed > 0 {
+    } else if args.fix && !summary.dry_run && summary.fixed > 0 {
         cmds.push("fmonero doctor undo latest".to_string());
     }
     cmds

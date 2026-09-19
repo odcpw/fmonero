@@ -15,7 +15,7 @@
   "status": "warn",
   "fixable": true,
   "detail_contains": [
-    "Your node has not been set up yet.",
-    "The wallet service has not been set up yet."
+    "Your node is not set up yet.",
+    "The wallet service is not set up yet."
   ]
 }

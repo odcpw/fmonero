@@ -271,7 +271,11 @@ impl Out {
         } else {
             human(self, label, &value);
         }
-        for note in footers(label, &value) {
+        // `json` reaches the footers because one of them exists **only** for JSON mode: a missing
+        // log file is `lines: []` in the payload and a sentence on stderr, and printing that
+        // sentence in both modes said it twice to a person — once from `log_human` and once here
+        // (round 4 iteration 3).
+        for note in footers(label, &value, self.json) {
             self.note(note);
         }
     }
@@ -334,13 +338,15 @@ impl Out {
             ) {
                 eprintln!("{line}");
             }
-            // The in-app route, when there is one (§2o.1): the key that fixes this without a
-            // command. It is the same sentence the TUI shows for the same error.
-            if let Some(action) = e.action() {
-                for line in wrap_to(&format!("  {action}"), term_width(), 4) {
-                    eprintln!("{line}");
-                }
-            }
+            // **One next step, and in the CLI it is the command** (round 4 iteration 3). X1 added
+            // the in-app route here beside the `Try:` line, and on most errors the two are the same
+            // instruction twice: `wallet balance` with nothing open printed `Press o on the Wallet
+            // screen to open a wallet.` and then `Try: fmonero wallet open <name>` — and the first
+            // of those names a screen the reader is not looking at. §2o.1's last paragraph settles
+            // which belongs here: *"The CLI's own human output keeps its commands. Its audience is
+            // scripts, agents and a person already at a prompt, and §9's one-runnable-hint rule is
+            // what makes an error actionable there."* `action` is unchanged in `--json`, and the
+            // TUI and the widget read it themselves — they are the surfaces it was written for.
             // v5.6, §2o: the technical text — a transport error, an RPC method name, a serde
             // message — is no longer in the sentence, and this is one of its two homes (the
             // other is `--json`'s `detail`). Behind `-v`, because the person who did not ask
@@ -754,7 +760,15 @@ pub fn status_human(out: &Out, v: &serde_json::Value) {
             out.paint(&format!("[{severity}]"), paint),
             cell(&w["text"])
         ));
-        out.line(format!("  Try: {}", cell(&w["hint"])));
+        // **A command under an `[info]` is noise** (round 4 iteration 3). `status` printed one
+        // `Try:` per warning, and on a correctly configured machine most of them are `info` — a
+        // state §5 raises precisely because it is the designed one (the wallet service idle until
+        // a wallet is opened, funds locked for twelve minutes). Three runnable commands under
+        // three sentences that need no action is how a reader learns to skip the footer that does.
+        // Every hint is unchanged in `--json`.
+        if severity != "info" {
+            out.line(format!("  Try: {}", cell(&w["hint"])));
+        }
     }
 }
 
@@ -766,7 +780,7 @@ pub fn status_human(out: &Out, v: &serde_json::Value) {
 
 /// Notes that go to **stderr in both modes** — the footers §4.1 promises and the one hint
 /// §4.1 attaches to an empty `wallet list`. stdout stays the data stream (§4).
-fn footers(label: &str, v: &serde_json::Value) -> Vec<String> {
+fn footers(label: &str, v: &serde_json::Value, json: bool) -> Vec<String> {
     let mut out = Vec::new();
     match label {
         // W3: with a public node the node rows are the cached check, and when there is no check
@@ -782,7 +796,7 @@ fn footers(label: &str, v: &serde_json::Value) -> Vec<String> {
         {
             out.push("Nothing has checked this public node yet.".to_string());
             out.push(
-                "Try: fmonero status --check-node   # starts one in the background".to_string(),
+                "Try: fmonero status --check-node   # checks it in the background".to_string(),
             );
         }
         "status --check-node"
@@ -829,7 +843,10 @@ fn footers(label: &str, v: &serde_json::Value) -> Vec<String> {
         // §4.1: a missing log file is exit 0 with "no log yet". In JSON mode the payload is
         // `lines: []` — the machine form — so the sentence goes to stderr, where it reaches a
         // human without ever entering the data stream (§4).
-        "node log" if v["lines"].as_array().is_some_and(|a| a.is_empty()) => {
+        //
+        // **JSON mode only** (round 4 iteration 3): in human mode `log_human` has already printed
+        // it, on stdout, where the answer belongs, and this printed it a second time on stderr.
+        "node log" if json && v["lines"].as_array().is_some_and(|a| a.is_empty()) => {
             out.push(format!(
                 "no log yet at {}",
                 v["path"].as_str().unwrap_or("the configured log file")
@@ -1269,7 +1286,14 @@ fn node_info_human(out: &Out, v: &serde_json::Value) {
         cell(&node["version"]),
         cell(&node["nettype"])
     ));
-    if let Some(sync) = v["sync"].as_object() {
+    // **Only while it is actually catching up** (round 4 iteration 3): this printed
+    // `fetching blocks from 2 peers` two lines under a row saying `synced`, because `sync_info`
+    // answers on a synced node too — and its peer count is already on the row above as
+    // `peers 16 out · 3 in`.
+    if let Some(sync) = v["sync"]
+        .as_object()
+        .filter(|_| node["synchronized"] != serde_json::Value::Bool(true))
+    {
         // **Both of these are arrays**, and `cell` renders an array by joining its elements —
         // which printed every field of every peer as one row (self-read, round 3). What a reader
         // wants from them is how many.
@@ -1324,7 +1348,12 @@ fn nodes_human(out: &Out, v: &serde_json::Value) {
     out.row(format!(
         "  {}  {}  {}  {}{}",
         pad("address", w[0]),
-        pad("reliability", w[1]),
+        // **The heading names what the figure counts** (round 4 iteration 3). It read
+        // `reliability` over `100% of 18`, and nothing anywhere said what the 18 were — the sample
+        // size travels with the percentage precisely so the two are comparable (§2n.1), and a
+        // reader who cannot tell what is being counted gets nothing from it. `answered` makes the
+        // cell a sentence: answered 100% of 18. The footer says who made those 18 checks.
+        pad("answered", w[1]),
         pad_right("their block", w[2]),
         pad("last seen", w[3]),
         if probed_any {
@@ -1462,6 +1491,7 @@ fn nodes_human(out: &Out, v: &serde_json::Value) {
     if invalid > 0 {
         parts.push(format!("{invalid} fmonero could not read"));
     }
+    parts.push("answered = how many of monero.fail's own checks each node answered".to_string());
     if any_own {
         parts.push("own = a node you added".to_string());
     }
@@ -2115,13 +2145,8 @@ mod tests {
             .with_detail("the reason an agent branches on")
             .with_hint("fmonero wallet list")
             .with_action("Press o on the Wallet screen to pick one.");
-        // The three lines `report` prints for a human, built the same way it builds them.
-        let human = [
-            format!("fmonero: {e}"),
-            format!("  {}", e.action().unwrap()),
-            format!("  Try: {}", e.hint()),
-        ]
-        .join("\n");
+        // The two lines `report` prints for a human, built the same way it builds them.
+        let human = [format!("fmonero: {e}"), format!("  Try: {}", e.hint())].join("\n");
         assert!(!human.contains("error["), "{human}");
         assert!(!human.contains("reason:"), "{human}");
         assert!(!human.contains("bad_args"), "{human}");
@@ -2130,13 +2155,22 @@ mod tests {
             "{human}"
         );
         assert!(human.contains("is not a wallet name."), "{human}");
-        assert!(human.contains("Press o on the Wallet screen"), "{human}");
         assert!(human.contains("Try: fmonero wallet list"), "{human}");
-        // And the two ids are still exactly where the agent contract puts them (§2o, §4).
+        // **One next step, and it is the command** (round 4 iteration 3): the in-app route is for
+        // the TUI and the widget, and printing it here as well was the same instruction twice.
+        assert!(
+            !human.contains("Press o on the Wallet screen"),
+            "the CLI prints one next step:\n{human}"
+        );
+        // And the three machine fields are still exactly where the agent contract puts them.
         let json = e.json().to_string();
         assert!(
             json.contains("bad_args") && json.contains("usage"),
             "{json}"
+        );
+        assert!(
+            json.contains("Press o on the Wallet screen"),
+            "the in-app route stays in --json, for the TUI and the widget: {json}"
         );
     }
 }

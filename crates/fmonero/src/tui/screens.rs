@@ -160,9 +160,9 @@ pub(super) fn view(m: &Tui, frame: &mut Frame) {
         // with six blank rows under the cut — V15's lesson exactly. An overlay, like the three
         // above it.
         Some(Modal::Confirm {
-            what: super::Confirm::LogLevel(level),
+            what: super::Confirm::LogLevel { from, to },
             ..
-        }) => log_level_modal(m, *level, frame),
+        }) => log_level_modal(m, *from, *to, frame),
         // **No generic `Confirm` arm any more** (X4): all four confirms are overlays, because
         // `Dialog` draws its message as one centred row in a fixed 58-column box and every one of
         // them has more than one sentence to state. The `Dialog` value is still built — the key
@@ -697,7 +697,9 @@ fn picker_pane(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
     // same question in the space the table already has: `their block` is what the list says,
     // `block here` is what this machine saw. Both fit the 12-cell column.
     if health {
-        header.push("reliability");
+        // **The heading names what the figure counts** (round 4 iteration 3): `reliability`
+        // over `72% of 18` left the 18 unexplained, here and in the CLI's own table.
+        header.push("answered");
         header.push("their block");
     }
     if checked {
@@ -958,6 +960,9 @@ fn picker_footer(m: &Tui, rows_data: &[&fmonero_core::PublicNode]) -> Option<Str
         // read` is what `{n} fmonero could not read` produces in a row of `·`-separated clauses.
         parts.push(format!("{} could not be read", list.skipped_invalid));
     }
+    // The `answered` column's own legend, under the table that draws it (round 4 iteration 3): the
+    // sample size is in every cell and nothing said whose checks they were.
+    parts.push("answered = how many of monero.fail's own checks it answered".to_string());
     if rows_data.iter().any(|r| r.custom) {
         // W17's legend, under the table that draws the marker.
         parts.push("own = a node you added".to_string());
@@ -1641,9 +1646,13 @@ fn pool_pane(m: &Tui, area: Rect, frame: &mut Frame) {
             let mut pairs = fees.into_iter();
             let first: Vec<String> = pairs.by_ref().take(2).collect();
             let rest: Vec<String> = pairs.collect();
+            // **The continuation keeps the label** (round 4 iteration 3). It was blank, so the
+            // second row read `fast 0.00000032 · fastest 0.00000400` with no unit and no subject at
+            // all — two money figures floating under a row that had both. Repeating eleven
+            // characters costs nothing and is the only wording that makes each row readable alone.
             lines.push(kv(th, "XMR a byte", first.join(" · ")));
             if !rest.is_empty() {
-                lines.push(kv(th, "", rest.join(" · ")));
+                lines.push(kv(th, "XMR a byte", rest.join(" · ")));
             }
         }
     }
@@ -1754,7 +1763,7 @@ fn wallet_screen(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
         &[
             (Button::RefreshWallet, "R", "Check for payments"),
             // M16's shape: the key that changes which payments show is a chip, not a pane title.
-            (Button::KindFilter, "t", "What shows"),
+            (Button::KindFilter, "t", "Choose which payments show"),
             (Button::Qr, "Q", "QR code"),
             (Button::CloseWallet, "x", "Close wallet"),
         ],
@@ -2026,9 +2035,19 @@ fn subaddress_pane(m: &Tui, area: Rect, frame: &mut Frame) {
     let focused = m.wallet.pane == Pane::Subaddresses;
     // `Addresses`, not `Your addresses`: this pane is 48 columns and the longer title clipped to
     // `… · a new · l renam`, which is a title that lies about its own keys.
-    let title = " Addresses · Enter copies · a new · l rename ";
+    //
+    // **And the keys only while this pane has them** (round 4 iteration 3). `←→` swaps which of the
+    // Wallet screen's two panes acts, and nothing on screen said which one had it — the reader
+    // could only tell by pressing Enter and seeing whether the toast said `Copied.` Meanwhile this
+    // title went on offering `Enter copies` while Enter was opening a payment two panes away. The
+    // `▸` is the marker, and the keys travel with it.
+    let title = if focused {
+        " ▸ Addresses · Enter copies · a new · l rename ".to_string()
+    } else {
+        " Addresses ".to_string()
+    };
     let Some(set) = &m.wallet.addresses else {
-        if let Some(inner) = framed(area, th, title, focused, frame) {
+        if let Some(inner) = framed(area, th, &title, focused, frame) {
             let (text, style) = match &m.wallet.err {
                 Some(why) => (format!("{why}\nPress r to try again."), th.err()),
                 None => ("checking…".to_string(), th.dimmed()),
@@ -2051,6 +2070,13 @@ fn subaddress_pane(m: &Tui, area: Rect, frame: &mut Frame) {
     // `1.23456789` on screen as a complete-looking amount that is not the amount. The column was
     // always wide enough to hide it until the NAME column arrived at 48 (M6).
     let bal_w = area.width.saturating_sub(4 + fixed_sum + gaps).max(1) as usize;
+    // **Whole, or not at all** (round 4 iteration 3). At the owner's 120 columns this column is ten
+    // cells and a balance is fourteen, so the header shrank to `XMR` and the value rendered
+    // `1.2345678…` — an amount a person cannot read, three rows under the same number in full in the
+    // ` Balance ` pane. A column that cannot hold its value is not a column; the cells it frees go
+    // to the address, and `fmonero wallet balance --subaddresses` is where the per-address figures
+    // are at any width.
+    let show_bal = bal_w >= 14;
     let rows = set
         .addresses
         .iter()
@@ -2066,9 +2092,7 @@ fn subaddress_pane(m: &Tui, area: Rect, frame: &mut Frame) {
                         .iter()
                         .find(|s| s.address_index == a.address_index)
                 })
-                .map_or("—".to_string(), |s| {
-                    fit(&s.balance.to_xmr_string(), bal_w)
-                });
+                .map_or("—".to_string(), |s| s.balance.to_xmr_string());
             // `used` is a marker on the address rather than a column of its own: at 48
             // columns a fifth column is a cut column, and a cut `used` reads as `us`.
             let addr = format!(
@@ -2081,29 +2105,24 @@ fn subaddress_pane(m: &Tui, area: Rect, frame: &mut Frame) {
                 cells.push(fit(&a.label, name_w.saturating_sub(1)));
             }
             cells.push(addr);
-            cells.push(bal);
+            if show_bal {
+                cells.push(bal);
+            }
             TableRow::new(cells)
         })
         .collect();
-    // X20: `BALANCE` is money and carries its unit.
-    let (header, fixed): (&[&str], &[u16]) = if wide {
-        (
-            // The header is trimmed to the column too: `BALANCE XMR` is eleven cells and the
-            // column is ten at 120 columns, so it rendered `BALANCE XM` — a heading cut mid-word.
-            // The unit alone is the heading when there is no room for both words, which is what
-            // the Node screen's fee row already does.
-            &[
-                "#",
-                "NAME",
-                "ADDRESS (✓ used)",
-                if bal_w >= 11 { "BALANCE XMR" } else { "XMR" },
-            ],
+    // X20: `BALANCE` is money and carries its unit — and there is no shrunken second heading for
+    // it any more, because the column is either wide enough for both words or gone (above).
+    let (header, fixed): (&[&str], &[u16]) = match (wide, show_bal) {
+        (true, true) => (
+            &["#", "NAME", "ADDRESS (✓ used)", "BALANCE XMR"],
             &[3, name_w as u16, 22],
-        )
-    } else {
-        (&["#", "ADDRESS (✓ used)", "BALANCE XMR"], &[3, 22])
+        ),
+        (true, false) => (&["#", "NAME", "ADDRESS (✓ used)"], &[3, name_w as u16]),
+        (false, true) => (&["#", "ADDRESS (✓ used)", "BALANCE XMR"], &[3, 22]),
+        (false, false) => (&["#", "ADDRESS (✓ used)"], &[3]),
     };
-    table(m, area, title, rows, header, fixed, frame);
+    table(m, area, &title, rows, header, fixed, frame);
 }
 
 /// Which columns of the payments table fit the pane it is drawn in (round 4).
@@ -2225,10 +2244,13 @@ fn history_pane(m: &Tui, area: Rect, frame: &mut Frame, wide: bool) {
     // pane and which appears nowhere else. The title says what is in the pane, the `[t]` chip on the
     // row below says which key changes it, and the words are `TransferKind::words()`, so the header
     // and the WHAT column cannot name one kind two ways.
+    // The `▸` marks the pane `←→` has handed the keys to (round 4 iteration 3), and the counts are
+    // honest now that the kind filter no longer narrows the query as well as the view.
+    let mark = if focused { "▸ " } else { "" };
     let title = match m.wallet.kind {
-        None => format!(" Payments  {} ", m.wallet.rows.len()),
+        None => format!(" {mark}Payments  {} ", m.wallet.rows.len()),
         Some(k) => format!(
-            " Payments  {} of {} · {} only ",
+            " {mark}Payments  {} of {} · {} only ",
             m.visible_history().len(),
             m.wallet.rows.len(),
             k.words()
@@ -2368,19 +2390,38 @@ fn detail_modal(m: &Tui, frame: &mut Frame) {
     };
     // Rows that are only there when they say something (M16, S10): the id row is gone, and the
     // unlock, payment-id and double-spend rows appear only when they carry a fact.
+    // The address is drawn whole, in as many rows as it takes at this width — the height is
+    // counted in ROWS, never in facts (V15), and an address is 95 characters.
+    const DETAIL_W: u16 = 76;
+    // 106 is the longest address form §1b.8 defines (an integrated address); a standard one is
+    // 95 and a subaddress 95, so sizing for the longest can only leave a blank row, never a cut.
+    let addr_rows = wrapped(
+        &"4".repeat(106),
+        (DETAIL_W as usize).saturating_sub(4).max(8),
+    )
+    .len() as u16;
     let h = 11
-        + t.destinations.len() as u16
+        + t.destinations.len() as u16 * (1 + addr_rows)
         + u16::from(t.unlock_time > 0)
         + u16::from(!t.payment_id.is_empty())
         + u16::from(t.double_spend_seen);
-    let Some(inner) = overlay(m, frame, 76, h, " Payment · n edits the note · Esc closes ")
-    else {
+    let Some(inner) = overlay(
+        m,
+        frame,
+        DETAIL_W,
+        h,
+        " Payment · n edits the note · Esc closes ",
+    ) else {
         return;
     };
     let bg = th.selection;
     let (dim, text) = (th.dimmed().bg(bg), th.text().bg(bg));
+    // **Capitalised, like every other label in the program** (round 4 iteration 3): the send
+    // confirm says `Address`, `Amount`, `Fee`, `Total`, `Account`, the create modal says `Name`
+    // and `Password`, and this modal alone said `what`, `amount`, `confirms`, `address #`, `note`
+    // and `paid to`. Twelve wide, because `Spendable` and `Paid to` need it.
     let pair = |k: &str, v: String| {
-        Line::from_spans([Span::styled(format!("{k:<11}"), dim), Span::styled(v, text)])
+        Line::from_spans([Span::styled(format!("{k:<12}"), dim), Span::styled(v, text)])
     };
     let dash = |s: &str| {
         if s.is_empty() {
@@ -2396,41 +2437,57 @@ fn detail_modal(m: &Tui, frame: &mut Frame) {
         // **A block number of zero is `not in a block yet`, not `block 0`** (round 4's own read of
         // the captures, §2j's rule that a zero may not stand in for unknown). Every `sending`,
         // `waiting` and `failed` row has height 0.
+        // **A failed payment is not waiting for a block** (round 4 iteration 3). `not in a block
+        // yet` was printed for every row with height 0, `failed` included — so this modal said
+        // `failed · not in a block yet · 09-15 13:20` two lines above `0 · spendable never`, which
+        // reads as a payment that is still coming. A payment that was never accepted never will
+        // be in a block, and that is what the row says.
         pair(
-            "what",
+            "What",
             format!(
                 "{} · {} · {}",
                 t.kind.words(),
-                if t.height == 0 {
-                    "not in a block yet".to_string()
-                } else {
-                    format!("block {}", grouped(t.height))
+                match (t.kind, t.height) {
+                    (fmonero_core::history::TransferKind::Failed, _) =>
+                        "never got into a block".to_string(),
+                    (_, 0) => "not in a block yet".to_string(),
+                    (_, h) => format!("block {}", grouped(h)),
                 },
                 short_time(t.timestamp)
             ),
         ),
+        // **The fee only where there is a fee of yours** (round 4 iteration 3): a received or
+        // mined payment carries the SENDER's fee, and printed beside `Amount` on a row he received
+        // it read as money he had paid.
         pair(
-            "amount",
-            format!(
-                "{} XMR · fee {} XMR",
-                t.amount.to_xmr_string(),
-                t.fee.to_xmr_string()
-            ),
+            "Amount",
+            match t.kind {
+                fmonero_core::history::TransferKind::In
+                | fmonero_core::history::TransferKind::Block => {
+                    format!("{} XMR", t.amount.to_xmr_string())
+                }
+                _ => format!(
+                    "{} XMR · your fee {} XMR",
+                    t.amount.to_xmr_string(),
+                    t.fee.to_xmr_string()
+                ),
+            },
         ),
         // M29: `locked true` printed a wire boolean as prose. One wording, from one function,
         // in the table and here.
         pair(
-            "confirms",
+            "Confirms",
             format!(
                 "{} · spendable {}",
                 history::confirmations(t, m.wallet.wh).map_or("—".into(), |c| c.to_string()),
                 history::lock_words(t, m.wallet.wh, m.wallet.now)
             ),
         ),
+        // **`Address #  0 (account 0)` read as an unfinished label** (round 4 iteration 3).
         pair(
-            "address #",
+            "Address",
             format!(
-                "{} (account {})",
+                "#{} of account {}",
                 t.subaddr_index.minor, t.subaddr_index.major
             ),
         ),
@@ -2440,7 +2497,7 @@ fn detail_modal(m: &Tui, frame: &mut Frame) {
     // block number or a time, and the row says which (§1b.4).
     if t.unlock_time > 0 {
         lines.push(pair(
-            "unlocks at",
+            "Unlocks at",
             if t.unlock_time < fmonero_core::history::MAX_BLOCK_NUMBER {
                 format!("block {}", grouped(t.unlock_time))
             } else {
@@ -2454,7 +2511,7 @@ fn detail_modal(m: &Tui, frame: &mut Frame) {
     // "there is no payment id" sentinel, so the row printed an identifier at a person that means
     // nothing. `--json` carries the field either way.
     if !t.payment_id.is_empty() && t.payment_id.bytes().any(|b| b != b'0') {
-        lines.push(pair("payment id", t.payment_id.clone()));
+        lines.push(pair("Payment id", t.payment_id.clone()));
     }
     // M16: `double spend false` was a phrase a reader looks up printed on every correct payment.
     // Said only when it is true, and then as the warning it is.
@@ -2464,22 +2521,27 @@ fn detail_modal(m: &Tui, frame: &mut Frame) {
             th.err().bg(bg),
         ));
     }
-    lines.push(pair("note", dash(&t.note)));
+    lines.push(pair("Note", dash(&t.note)));
     // `paid to`, not `destinations`: one vocabulary, and the label is what a person calls it.
     // The amount carries its unit (§2o rule 9), which this row did not.
-    lines.push(Line::styled("paid to", dim));
+    // **The whole address, on its own row** (round 4 iteration 3). It was elided to
+    // `44Kbx4sJ…XVUTp6BW` in a 76-column modal with eight blank rows under it — and this modal is
+    // the only place in the product that address is ever shown, so eliding it means the recipient
+    // of a payment he already made cannot be read anywhere. Same rule as the send confirm:
+    // an address is never elided (§2a, `docs/COPY.md` §4). It wraps in hard chunks if it must.
+    lines.push(Line::styled("Paid to", dim));
     if t.destinations.is_empty() {
         lines.push(Line::styled("  nobody: this payment came in", dim));
     }
+    let addr_w = (inner.width as usize).saturating_sub(2).max(8);
     for d in &t.destinations {
         lines.push(Line::styled(
-            format!(
-                "  {} XMR  {}",
-                d.amount.to_xmr_string(),
-                short_addr(&d.address)
-            ),
+            format!("  {} XMR", d.amount.to_xmr_string()),
             text,
         ));
+        for part in wrapped(&d.address, addr_w) {
+            lines.push(Line::styled(format!("  {part}"), text));
+        }
     }
     lines_at(lines, inner, false, frame);
 }
@@ -2579,7 +2641,12 @@ pub(super) fn list_modal(
     // /tmp/…/data/fmonero/w` at both sizes, with the folder's own name the part that was lost.
     const MODAL_W: u16 = 68;
     let text_w = (MODAL_W as usize).saturating_sub(4).max(8);
-    let wrapped: Vec<Vec<String>> = rows.iter().map(|r| wrap_words(r, text_w)).collect();
+    // **Wrapped with the indent inside the budget** (round 4 iteration 3): the continuations below
+    // are drawn `"   {part} "` — three columns of prefix — while this wrapped to the full `text_w`,
+    // so each continuation was three columns too wide and the overlay clipped three characters out
+    // of the middle of a path. `wrap_hanging` gives the first line its width and every continuation
+    // `width - 3`, so nothing is lost.
+    let wrapped: Vec<Vec<String>> = rows.iter().map(|r| wrap_hanging(r, text_w, 2)).collect();
     let drawn: usize = wrapped.iter().map(Vec::len).sum();
     let h = drawn as u16 + 5 + u16::from(input.is_some());
     let Some(inner) = overlay(m, frame, MODAL_W, h, title) else {
@@ -2593,14 +2660,10 @@ pub(super) fn list_modal(
         } else {
             th.text().bg(bg)
         };
-        for (j, part) in parts.into_iter().enumerate() {
-            // A continuation keeps a hanging indent, so a wrapped row cannot read as a second one.
-            let text = if j == 0 {
-                format!(" {part} ")
-            } else {
-                format!("   {part} ")
-            };
-            lines.push(Line::styled(text, style));
+        for part in parts {
+            // `wrap_hanging` has already put the hanging indent inside the width, so a wrapped row
+            // cannot read as a second one and cannot be wider than the overlay either.
+            lines.push(Line::styled(format!(" {part} "), style));
         }
     }
     // **X35: `Enter chooses` was said of a free-text field**, on rename, note and add-node alike —
@@ -3017,17 +3080,23 @@ fn node_power_modal(m: &Tui, up: bool, frame: &mut Frame) {
             ));
             text.push(("· press u to start it again".to_string(), th.text()));
         } else {
+            // **The confirm says what confirming does** (round 4 iteration 3). It opened
+            // `Your node is not running, so there is nothing to stop.` and then offered
+            // `· confirming makes sure it stays stopped` and `y to confirm` — a confirmation for
+            // nothing, which is how a person learns to stop reading these. The reason `d` still
+            // reaches this modal is real (a node that has not answered may be running), so the
+            // words are the reason.
             text.push((
-                "Your node is not running, so there is nothing to stop.".to_string(),
+                "Your node does not look like it is running.".to_string(),
                 th.accented(),
             ));
             text.push((String::new(), th.text()));
             text.push((
-                format!("· nothing is lost either way. The blockchain stays in {data_dir}"),
+                "· it may still be starting up, or running and not answering".to_string(),
                 th.text(),
             ));
             text.push((
-                "· confirming makes sure it stays stopped".to_string(),
+                format!("· confirming stops it either way. Nothing is lost: the blockchain stays in {data_dir}"),
                 th.text(),
             ));
             text.push(("· press u to start it instead".to_string(), th.text()));
@@ -3075,13 +3144,15 @@ fn node_power_modal(m: &Tui, up: bool, frame: &mut Frame) {
 /// The scale was the part nobody had explained, so it gets a line of its own rather than a clause
 /// squeezed in beside the keys: 0 is silent, 4 is everything, and the middle is where a person
 /// looking for a reason should be.
-fn log_level_modal(m: &Tui, level: i8, frame: &mut Frame) {
+fn log_level_modal(m: &Tui, from: i8, to: i8, frame: &mut Frame) {
     let th = &m.theme;
     const WIDTH: u16 = 74;
     let text_w = WIDTH.min(frame.bounds().width).saturating_sub(4).max(1) as usize;
     let mut text: Vec<(String, Style)> = vec![
         (
-            format!("Your node will write level {level} to its log file."),
+            // **Both levels** (round 4 iteration 3): it named only the one `y` would set, so a
+            // reader could not tell whether confirming changed anything at all.
+            format!("Your node writes level {from} now. This changes it to level {to}."),
             th.accented(),
         ),
         (String::new(), th.text()),
@@ -3095,14 +3166,12 @@ fn log_level_modal(m: &Tui, level: i8, frame: &mut Frame) {
             th.text(),
         ),
         (String::new(), th.text()),
-        (
-            // **S7: `n` does nothing on the Node screen.** The log is screen 4, and `n` is
-            // "next match" once you are there — so this line named a key that had no arm at all
-            // in `on_node_key`, in the confirm for the setting whose whole purpose is the log.
-            "Press 4 to read the log.".to_string(),
-            th.text(),
-        ),
-        (String::new(), th.text()),
+        // **The line that named a key doing the opposite is gone** (round 4 iteration 3). It read
+        // `Press 4 to read the log.` — and this modal swallows every key but `y` and `Esc`, so
+        // pressing `4` closed it and toasted `Cancelled.` while the tab strip still read
+        // `[ 1 Node ]`. Worse, two of the three bullets above use `4` to mean a log LEVEL, so the
+        // one use of `4` that meant a screen was also the one that did not work. The route to the
+        // log belongs where it works: the `?` overlay's own row, and the tab strip.
         ("y to confirm · Esc cancels".to_string(), th.dimmed()),
     ];
     // The height is counted in WRAPPED rows, never in sentences (V15).
@@ -3770,9 +3839,62 @@ pub(super) fn wrap_bullet(s: &str, width: usize) -> Vec<String> {
     if !s.starts_with("· ") {
         return wrap_words(s, width);
     }
-    let mut out = wrap_words(s, width.max(3));
-    for line in out.iter_mut().skip(1) {
-        *line = format!("  {line}");
+    wrap_hanging(s, width, 2)
+}
+
+/// Word-wrap with a hanging indent, where **every rendered line fits `width`** — the indent
+/// included.
+///
+/// This is the defect round 4 iteration 3 found by reading the Start-your-node confirm at 120x32
+/// with a long `node.data_dir`: `wrap_bullet` wrapped the whole bullet to `width` and then prefixed
+/// two spaces to each continuation, so every continuation was two columns too wide and the modal
+/// clipped two characters off it — silently, mid-token, with no marker. `…workspaces-eff1` /
+/// `0e-d485-…` is what reached the screen: the `ae` is simply gone, and two more characters at each
+/// later break. The open-a-wallet modal lost three the same way.
+///
+/// The fix is to give each line its own budget before anything is wrapped: the first line has
+/// `width`, every continuation `width - indent`, and the indent is added inside the loop so it can
+/// never be added to a line that was already full. A single token longer than the budget is
+/// hard-chunked, as [`wrap_words`] does — an amount or an address is never silently shortened, and
+/// a chunk boundary is visible where a lost character is not.
+pub(super) fn wrap_hanging(s: &str, width: usize, indent: usize) -> Vec<String> {
+    let pad = " ".repeat(indent);
+    let cont = width.saturating_sub(indent).max(1);
+    let mut out: Vec<String> = Vec::new();
+    // Owned, reversed, so a hard-chunked remainder can be pushed back without allocating for the
+    // lifetime of the program: this runs on every frame.
+    let mut rest: Vec<String> = s.split_whitespace().rev().map(str::to_string).collect();
+    let mut first = true;
+    while !rest.is_empty() {
+        let budget = if first { width.max(1) } else { cont };
+        let mut line = String::new();
+        while let Some(word) = rest.pop() {
+            if line.is_empty() {
+                line.push_str(&word);
+            } else if line.width() + 1 + word.width() <= budget {
+                line.push(' ');
+                line.push_str(&word);
+            } else {
+                rest.push(word);
+                break;
+            }
+            // One word wider than the budget: keep what fits and put the remainder back, so the
+            // next line continues it instead of the frame eating it.
+            if line.width() > budget {
+                let head: String = line.chars().take(budget).collect();
+                let tail: String = line.chars().skip(budget).collect();
+                line = head;
+                if !tail.is_empty() {
+                    rest.push(tail);
+                }
+                break;
+            }
+        }
+        out.push(if first { line } else { format!("{pad}{line}") });
+        first = false;
+    }
+    if out.is_empty() {
+        out.push(String::new());
     }
     out
 }

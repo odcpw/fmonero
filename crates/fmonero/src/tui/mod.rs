@@ -425,7 +425,12 @@ pub(super) enum Confirm {
     NodeUp,
     NodeDown,
     /// The next level in the 0–4 cycle. A mutation, so it asks first (§7a).
-    LogLevel(i8),
+    /// The level it is now, and the level `y` would set (round 4 iteration 3): the modal said
+    /// only the second, so a reader could not tell whether confirming changed anything.
+    LogLevel {
+        from: i8,
+        to: i8,
+    },
     /// v5.6, §7a.4's `l`: go back to your own node. It asks first for the same reason
     /// `Confirm::UseNode` does — it restarts the wallet service and can close the wallet this
     /// session is holding (§2m.5).
@@ -956,10 +961,22 @@ impl Tui {
         let ctx = self.ctx.clone();
         let account = self.account_index();
         // X17: the same default set `wallet history` uses, from one constant in core.
-        let kinds = self
-            .wallet
-            .kind
-            .map_or_else(|| TransferKind::DEFAULT_ROWS.to_vec(), |k| vec![k]);
+        //
+        // **The kind filter no longer narrows the QUERY** (round 4 iteration 3). It did, so with
+        // `t` on "received" the pane held only the received rows and its own title read
+        // `Payments  2 of 2 · in only` on a wallet holding six — "2 of 2" reads as *you have two*.
+        // It also made S5's third empty state unreachable: with a kind that matches nothing the
+        // query came back empty, so the pane fell to "Nothing yet. Press R to check" instead of
+        // "You have 6 payments, and none of them is sent." One query, the default set, and
+        // `visible_history` does the filtering — which it already did, which is why the count was
+        // filtered twice. `Pool` is added when it is the kind asked for, because it is the one
+        // kind the default set leaves out (it needs the node).
+        let mut kinds = TransferKind::DEFAULT_ROWS.to_vec();
+        if let Some(k) = self.wallet.kind {
+            if !kinds.contains(&k) {
+                kinds.push(k);
+            }
+        }
         Cmd::task(move || {
             let read = || -> Result<HistoryRead, Error> {
                 let w = WalletClient::from_ctx(&ctx)?;
@@ -1944,7 +1961,10 @@ impl Tui {
             KeyCode::Char('l') => return self.use_local(),
             KeyCode::Char('L') => {
                 let next = (self.logs.level + 1) % 5;
-                return self.confirm(Confirm::LogLevel(next));
+                return self.confirm(Confirm::LogLevel {
+                    from: self.logs.level,
+                    to: next,
+                });
             }
             KeyCode::Char('b') => return self.swap_peers_view(),
             // `↑↓` move the **picker** on this screen: it is the pane a user acts on, and the
@@ -1990,7 +2010,7 @@ impl Tui {
             KeyCode::Char('W') => return self.toggle_wallet_daemon(),
             KeyCode::Char('a') => {
                 let account = self.account_index();
-                return self.task("new address", move |ctx| {
+                return self.task("make a new address", move |ctx| {
                     let w = WalletClient::from_ctx(ctx)?;
                     let a = w.create_address(account, "")?;
                     // M21: a sentence, like every other toast — `Wallet closed.`, `Nothing to
@@ -2057,7 +2077,10 @@ impl Tui {
             }
             KeyCode::Char('L') => {
                 let next = (self.logs.level + 1) % 5;
-                return self.confirm(Confirm::LogLevel(next));
+                return self.confirm(Confirm::LogLevel {
+                    from: self.logs.level,
+                    to: next,
+                });
             }
             KeyCode::Char('n') => self.logs.viewer.borrow_mut().next_match(),
             KeyCode::Char('N') => self.logs.viewer.borrow_mut().prev_match(),
@@ -2138,14 +2161,14 @@ impl Tui {
                         self.picker.prev = fmonero_core::nodes::configured_address(&self.ctx);
                         self.start(Action::NodeLocal)
                     }
-                    Confirm::LogLevel(level) => {
+                    Confirm::LogLevel { to: level, .. } => {
                         // The daemon does not report its level, so the cycle pointer is the
                         // TUI's own and advances when the call is sent, not when it lands.
                         self.logs.level = level;
-                        self.task("log level", move |ctx| {
+                        self.task("change how much your node logs", move |ctx| {
                             let n = NodeClient::from_ctx(ctx)?;
                             n.mutators(ctx)?.set_log_level(level)?;
-                            Ok(format!("your node now logs at level {level}"))
+                            Ok(format!("Your node now logs at level {level}."))
                         })
                     }
                 },
@@ -2166,13 +2189,13 @@ impl Tui {
                     match what {
                         Prompt::Label { index } => {
                             let account = self.account_index();
-                            self.task("label", move |ctx| {
+                            self.task("rename it", move |ctx| {
                                 let w = WalletClient::from_ctx(ctx)?;
                                 w.label_address(account, index, &text)?;
                                 Ok("Name saved.".into())
                             })
                         }
-                        Prompt::Note { txid } => self.task("note", move |ctx| {
+                        Prompt::Note { txid } => self.task("save that note", move |ctx| {
                             let w = WalletClient::from_ctx(ctx)?;
                             w.set_tx_notes(&[txid], &[text])?;
                             Ok("Note saved.".into())
@@ -2499,7 +2522,7 @@ impl Tui {
                     // `L` is not about which node to use at all, which is why one shared refusal
                     // could never be right for it. **M13: no capitalised word** — `OWN` was the
                     // only shouted word in the product.
-                    Confirm::LogLevel(_) => {
+                    Confirm::LogLevel { .. } => {
                         "This sets how much your own node logs, and you are \
                                              using a public node. Press l to use your own node \
                                              first."
@@ -2513,6 +2536,26 @@ impl Tui {
         }
         if !matches!(units::may_mutate_node(&self.ctx), Ok(true)) {
             self.note(fmonero_core::FOREIGN_NODE_READ_ONLY, true);
+            return Cmd::none();
+        }
+        // **`L` is refused while the node is not answering** (round 4 iteration 3). How much a
+        // node logs is a setting the node itself holds, so with the node off the confirm was
+        // guaranteed to fail — a modal, a `y`, and then a red toast. `u` and `d` are different:
+        // they are the keys that change whether it runs at all.
+        if matches!(what, Confirm::LogLevel { .. })
+            && self
+                .status
+                .as_ref()
+                .is_some_and(|s| s.node.reachable != Some(true))
+        {
+            self.note(
+                format!(
+                    "Your node is {}. Only a node that is running can change how much it logs. \
+                     Press u to start it.",
+                    self.node_off_words()
+                ),
+                true,
+            );
             return Cmd::none();
         }
         // **All four confirms are overlays** (W2, V4, X4): each one has more than one sentence to
@@ -2577,7 +2620,20 @@ impl Tui {
 
     /// `x` — close the open wallet.
     fn close_wallet(&mut self) -> Cmd<Msg> {
-        self.task("close", |ctx| {
+        // **With nothing open, answer the question that was asked** (round 4 iteration 3). This
+        // went straight to the wallet service, which is not running when no wallet is open, so
+        // pressing `x` on an empty Wallet screen replied *"The wallet service is not answering.
+        // Press o on the Wallet screen to open a wallet."* — a fact about a service he did not ask
+        // about, and a route to `o`, which then answers `There are no wallets yet, in this folder:`.
+        if self
+            .status
+            .as_ref()
+            .is_some_and(|s| !s.wallet.open && s.wallet.name.is_none())
+        {
+            self.note("No wallet is open, so there is nothing to close.", false);
+            return Cmd::none();
+        }
+        self.task("close the wallet", |ctx| {
             let w = WalletClient::from_ctx(ctx)?;
             fmonero_core::wallet_session::close(ctx, &w)?;
             Ok("Wallet closed.".into())
@@ -2655,8 +2711,11 @@ impl Tui {
             what: Prompt::Label {
                 index: row.address_index,
             },
-            field: "name ".to_string(),
-            title: format!(" Name address {} ", row.address_index),
+            // **Capitalised**, like `Address`, `Amount`, `Password` and every other label in the
+            // program (round 4 iteration 3): three modals and the payment detail were the only
+            // lower-case ones.
+            field: "Name ".to_string(),
+            title: format!(" Name address #{} ", row.address_index),
             input: text_input(&self.theme)
                 .with_value(row.label.clone())
                 .with_focused(true),
@@ -2674,15 +2733,20 @@ impl Tui {
         // **M5: the modal names the payment the note belongs to.** It said only `Note for this
         // payment`, over a list the modal itself covers — so a reader who had moved the selection
         // could not tell which row he was about to annotate.
+        //
+        // **And it names it the way the table does** (round 4 iteration 3): `Note for the sending
+        // of 0.1000 XMR on 09-16 14:01` invented a phrase — "the sending of" — that nobody says.
+        // The three facts are the three columns of the row it belongs to, separated the way every
+        // other dense row in the program separates fields.
         let which = format!(
-            " Note for the {} of {} XMR on {} ",
-            t.kind.words(),
+            " Note for {} XMR · {} · {} ",
             t.amount.to_xmr_string(),
+            t.kind.words(),
             screens::short_time(t.timestamp)
         );
         self.modal = Some(Modal::Prompt {
             what: Prompt::Note { txid },
-            field: "note ".to_string(),
+            field: "Note ".to_string(),
             // X8, and `docs/COPY.md` §3.5 specified it a round ago: §2o.2 says `payment`.
             title: which,
             input: text_input(&self.theme).with_value(value).with_focused(true),
@@ -3031,7 +3095,15 @@ impl Model for Tui {
                     Err(e) => {
                         self.exit.store(e.code, Ordering::SeqCst);
                         // v5.6, §2o.1: the situation, then the in-app key — never the CLI's hint.
-                        self.note(format!("{label}: {}", e.toast()), true);
+                        //
+                        // **The prefix is a sentence, not a bare internal label** (round 4
+                        // iteration 3). It read `close: The wallet service is not answering.` and
+                        // `label: …` — and `label` is a word the interface never shows a user, where
+                        // every chip and help row says *rename*. `R`'s own failure carried no prefix
+                        // at all, so two frames in one session named the same failure two ways. Each
+                        // `task` now passes the verb phrase that completes "fmonero could not …",
+                        // and the one that had none has one.
+                        self.note(format!("fmonero could not {label}. {}", e.toast()), true);
                     }
                 }
                 Cmd::none()
