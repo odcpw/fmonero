@@ -179,6 +179,21 @@ pub struct WalletStatus {
     pub balance_xmr_short: Option<String>,
     pub unlocked_pico: Option<Piconero>,
     pub unlocked_xmr: Option<String>,
+    /// **The unlocked amount at four decimals, truncated** — [`Piconero::to_xmr_short`], the
+    /// companion of `balance_xmr_short` (round 4 iteration 3, v5.6.4).
+    ///
+    /// The bar's hero line reported `Wallet open · 1.2345 XMR` in a state where half of that could
+    /// not leave the wallet, and §2a.5 forbids the QML from shortening the unlocked figure itself.
+    pub unlocked_xmr_short: Option<String>,
+    /// **`balance - unlocked`, pre-rendered** (round 4 iteration 3, v5.6.4) — `None` when nothing
+    /// is locked, or when either figure is unknown.
+    ///
+    /// The TUI's locked line reads `0.5000 XMR locked for about 12 min` and the widget's otherwise
+    /// identical line read `locked for about 12 min` with no amount, because the subtraction is
+    /// arithmetic on money and §2a.5 forbids that in QML — a gap `Panel.qml:100` recorded as a
+    /// document gap rather than a QML one. This closes it: one subtraction, in Rust, with
+    /// `checked_sub`, and both surfaces print the same string.
+    pub locked_xmr: Option<String>,
     pub blocks_to_unlock: Option<u64>,
     pub time_to_unlock_sec: Option<u64>,
     /// `get_address.addresses.len()` — every generated subaddress. **Not**
@@ -306,6 +321,21 @@ pub struct PendingStatus {
     pub elapsed_sec: i64,
     pub relayed_count: usize,
     pub total_count: usize,
+    /// **What the record actually proves, in words** (round 4 iteration 3, v5.6.4).
+    ///
+    /// The three surfaces that show a pending send all rendered `relayed_count` as
+    /// `0 of 1 sent` — beside a warning, in the same frame, reading *"A payment of 0.5000 XMR was
+    /// prepared and may already have gone out."* `relayed_count` is fmonero's record of an
+    /// acknowledgement it never got, and §2a.9 is explicit that a relay failure is **not**
+    /// evidence the payment was refused. Printed as `0 of 1 sent` it asserts that none went out,
+    /// and the obvious next move for the person reading it is to send again: it is the one line
+    /// in the product that could cost a double spend.
+    ///
+    /// So one formatter renders the phrase here, and the TUI's banner and the widget's pending row
+    /// print it — the widget could not compute it (a count needs a plural and a hedge, which is
+    /// the same §6.5 reason `total_amount_xmr` is pre-rendered). The counts stay in the document
+    /// for the agent that wants them.
+    pub progress_words: String,
     pub total_amount_pico: Piconero,
     pub total_amount_xmr: String,
     pub total_fee_pico: Piconero,
@@ -343,20 +373,39 @@ impl PendingStatus {
                 relayed: t.relayed,
             });
         }
+        let relayed_count = p.txs.iter().filter(|t| t.relayed).count();
+        let total_count = p.txs.len();
         PendingStatus {
             kind: p.kind,
             dest: p.dest.clone(),
             account_index: p.account_index,
             built_at: p.built_at,
             elapsed_sec: now.saturating_sub(p.built_at),
-            relayed_count: p.txs.iter().filter(|t| t.relayed).count(),
-            total_count: p.txs.len(),
+            progress_words: progress_words(relayed_count, total_count),
+            relayed_count,
+            total_count,
             total_amount_pico: total_amount,
             total_amount_xmr: total_amount.to_xmr_string(),
             total_fee_pico: total_fee,
             total_fee_xmr: total_fee.to_xmr_string(),
             txs,
         }
+    }
+}
+
+/// [`PendingStatus::progress_words`] — the only place this sentence is written.
+///
+/// It never says a payment was **not** sent, because fmonero does not know that: what it knows is
+/// which relays it was acknowledged for, and §2a.9 says the rest may have gone out anyway. So the
+/// hedge is the default and a count only appears where one is genuinely informative — part way
+/// through a sweep, where some of the payments *are* known to have gone.
+fn progress_words(relayed: usize, total: usize) -> String {
+    if total > 1 && relayed >= total {
+        format!("all {total} payments have gone out")
+    } else if total > 1 && relayed > 0 {
+        format!("{relayed} of {total} payments have gone out, and the rest may have too")
+    } else {
+        "may already have gone out".to_string()
     }
 }
 
@@ -418,6 +467,8 @@ impl WalletStatus {
             balance_xmr_short: None,
             unlocked_pico: None,
             unlocked_xmr: None,
+            unlocked_xmr_short: None,
+            locked_xmr: None,
             blocks_to_unlock: None,
             time_to_unlock_sec: None,
             subaddress_count: None,
@@ -542,6 +593,15 @@ pub fn status(ctx: &Context) -> Result<Status, Error> {
                     wallet.balance_xmr_short = Some(b.balance.to_xmr_short());
                     wallet.unlocked_pico = Some(b.unlocked);
                     wallet.unlocked_xmr = Some(b.unlocked.to_xmr_string());
+                    wallet.unlocked_xmr_short = Some(b.unlocked.to_xmr_short());
+                    // One subtraction, in Rust, `checked_sub` — and `None` rather than `0 XMR`
+                    // when nothing is locked, so no surface prints a row about nothing (§5).
+                    wallet.locked_xmr = b
+                        .balance
+                        .0
+                        .checked_sub(b.unlocked.0)
+                        .filter(|p| *p > 0)
+                        .map(|p| Piconero(p).to_xmr_string());
                     wallet.blocks_to_unlock = Some(b.blocks_to_unlock);
                     wallet.time_to_unlock_sec = Some(b.time_to_unlock_sec);
                 }

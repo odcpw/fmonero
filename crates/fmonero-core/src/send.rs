@@ -414,14 +414,25 @@ pub fn relay(
             Ok(hash) => {
                 // §2a.9: the entry is NOT marked relayed, and this is the one exit-1 path
                 // where retrying is the wrong reflex.
-                return Err(Error::failure(format!(
-                    "The node reported a different payment id ({hash}) than the one fmonero \
-                     prepared ({}).",
-                    tx.txid
-                ))
+                //
+                // **Neither id is in the sentence** (round 4 iteration 3). It printed both, whole,
+                // 64 hexadecimal characters each — the only two such strings in 129 human captures
+                // — and they differed in their first two characters (`1ae7…` against `a1e7…`).
+                // Then it told the reader to *"check which one landed"*, which by eye is not
+                // possible: that instruction was the defect, not the length of the ids. What a
+                // person can do is look at the last few payments and see whether the amount went,
+                // and that is what the sentence and the hint say now. Both ids are whole in
+                // `detail`, so `--json` and `-v` carry them for whoever can compare them (rule 5).
+                // The hint also carried `transaction`, the word §2o.2 replaces with `payment`
+                // everywhere else in the program.
+                return Err(Error::failure(
+                    "The node says it took a different payment from the one fmonero prepared. \
+                     The money may have moved, so do not send it again until you have looked.",
+                )
+                .with_detail(format!("node {hash}, prepared {}", tx.txid))
                 .with_reason("txid_mismatch")
                 .with_hint(
-                    "fmonero wallet history --limit 5   # two transaction ids differ; check which one landed",
+                    "fmonero wallet history --limit 5   # look for this amount in the last few",
                 ));
             }
             Err(e) => {

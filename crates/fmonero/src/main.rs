@@ -28,28 +28,28 @@ use fmonero_core::{
     units, wallet_dir, wallet_session, CancelToken, Context, Error, Piconero,
 };
 
-use output::{Out, Paint};
+use output::Out;
 
 const ABOUT: &str = "A fast Monero node + wallet front end for Omarchy.";
 
 const LONG_ABOUT: &str = "A fast Monero node + wallet front end for Omarchy.
 
-Bare `fmonero` opens the TUI on a terminal; without a TTY it prints `status --json`.
-Every command accepts --json, and a non-TTY stdout implies it. Agents: start with
-`fmonero robot-docs` and `fmonero capabilities`, and branch on code_name + reason.
+Bare `fmonero` opens the TUI in a terminal; with its output going anywhere else it prints
+`status --json`. Every command accepts --json, and output that is not going to a terminal is
+JSON anyway. Agents: start with `fmonero robot-docs` and `fmonero capabilities`.
 
-`status` starts nothing and changes nothing, so it answers even while the node is syncing
+`status` starts nothing and changes nothing, so it answers even while the node is catching up
 or the wallet service is busy.
 
-Money safety: `wallet send` and `wallet sweep` prepare the payment without sending it,
+Money safety: `wallet send` and `wallet sweep` work the payment out without sending it,
 print the real fee, and send only with --yes.";
 
 const AFTER_HELP: &str =
     "Exit codes: 0 ok · 1 failure · 2 usage · 3 safety (needs --yes) · 4 backend ·
-5 upstream (a background program errored or was killed at its deadline) · 6 not found ·
-7 ambiguous ·
-8 timeout · 9 wallet locked · 10 node syncing · 11/12/13 doctor · 14 insufficient funds ·
-15 invalid address · 16 tx rejected · 130 interrupted.
+5 a background program failed or was stopped at its deadline · 6 not found · 7 ambiguous ·
+8 took too long · 9 wallet locked · 10 node still catching up · 11/12/13 doctor ·
+14 not enough money · 15 that is not an address · 16 the node would not take it ·
+130 interrupted.
 
 Amounts: a decimal XMR string (0.5, 1.234567891234, at most 12 decimals) or raw piconero
 with a `p` suffix (250000000000p). Recipients: an address, or @label from the address book.
@@ -82,13 +82,13 @@ struct Cli {
     /// Never emit colour (also honoured: NO_COLOR, CI, a non-TTY stdout)
     #[arg(long, global = true, display_order = 103)]
     no_color: bool,
-    /// Confirm an irreversible action: send, sweep, create, clear-pending, set-daemon, node down/restart, setup
+    /// Say yes to something that cannot be undone: a send, a sweep, a new wallet, stopping the node
     #[arg(long, global = true, display_order = 104)]
     yes: bool,
-    /// Build and print, change nothing (wallet send, wallet sweep, setup, doctor only)
+    /// Work it out and print it, change nothing (wallet send, wallet sweep, setup, doctor only)
     #[arg(long, global = true, display_order = 105)]
     dry_run: bool,
-    /// Ignore an armed 60 s stall breaker for this invocation (nothing else)
+    /// Try again even though something stalled less than a minute ago (this command only)
     #[arg(long, global = true, display_order = 106)]
     force: bool,
     #[command(subcommand)]
@@ -97,27 +97,27 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// The whole Status document (schema 1). Starts nothing and changes nothing
+    /// How things are: the node, the wallet, the background services. Starts nothing
     #[command(
         after_help = "Three questions to the wallet and the node with no wallet open, five
-with one, plus two checks on the background services. A node that is not answering is
-`reachable: false`, not an error: `status` exits 0 with warnings.
+with one, plus two looks at the background services. A node that is not answering is not an
+error: `status` still exits 0 and says so among its warnings.
 
---check-node prints exactly the same document and, when a public node is configured and the
-last check of it is older than node.remote_probe_sec, starts one in the background and returns
-at once. This call is not made fresher by it; the next one is."
+--check-node prints exactly the same thing and, when you are using a public node and the last
+check of it is older than node.remote_probe_sec, starts a fresh check in the background and
+returns at once. This run is not made fresher by it; the next one is."
     )]
     Status {
         /// Start a background check of the configured public node when the last one is stale
         #[arg(long)]
         check_node: bool,
     },
-    /// The local monerod: start, stop, inspect, peers, bans, limits
+    /// Your node: start it, stop it, look at it, its peers, blocked addresses, limits
     Node {
         #[command(subcommand)]
         cmd: NodeCmd,
     },
-    /// The wallet, through monero-wallet-rpc
+    /// Your wallet: open it, see the balance and the payments, send
     Wallet {
         #[command(subcommand)]
         cmd: WalletCmd,
@@ -127,13 +127,13 @@ at once. This call is not made fresher by it; the next one is."
         #[command(subcommand)]
         cmd: SettingsCmd,
     },
-    /// Write the systemd user units, link the bar widget, merge the menu entries
+    /// Set up the two background services, the bar widget and the menu entries
     Setup(setup::SetupArgs),
     /// Diagnose the installation, and optionally repair it
     Doctor(doctor::DoctorArgs),
     /// Terminal UI: Node · Wallet · Send · Log
     Tui(tui::TuiArgs),
-    /// The machine contract: exit codes, reasons, settings keys, warning ids
+    /// For agents: exit codes, settings keys and everything a script can branch on, as JSON
     Capabilities,
     /// Agent handbook, plain text
     #[command(alias = "docs")]
@@ -141,129 +141,130 @@ at once. This call is not made fresher by it; the next one is."
         /// Only `guide` exists today
         section: Option<String>,
     },
-    /// Version, build stage and what this build has actually been seen to do
+    /// Which version this is, how far it has been proved, and what it has been seen to do
     Version,
 }
 
 #[derive(Subcommand)]
 enum NodeCmd {
-    /// Start the node's systemd user unit and wait for it to answer
+    /// Start your node and wait until it answers
     #[command(
         after_help = "Refuses (exit 3) when another program is already using the chain folder,
-and when another program on this machine runs the node: two of them on one chain corrupt it.
-Without --wait a still-syncing node is exit 0 plus the node_syncing warning."
+and when another program on this machine runs the node: two of them on one chain wreck it.
+Without --wait a node that is still catching up is exit 0, with a warning that says so."
     )]
     Up {
-        /// Also wait until the node reports itself synchronized
+        /// Also wait until the node has caught up with the chain
         #[arg(long)]
         wait: bool,
-        /// Bound for --wait; 0 means "until interrupted" and is refused without a TTY
+        /// How long --wait waits; 0 waits until you interrupt it, and needs a terminal
         #[arg(long, value_name = "SECONDS", default_value_t = 1800)]
         wait_timeout: u64,
     },
-    /// Stop the node: stop_daemon over RPC first, so LMDB closes cleanly, then systemctl stop
+    /// Stop your node, giving it time to close its files cleanly first
     Down,
     /// Stop, then start
     Restart,
-    /// Everything the node knows about itself: sync, fork, fees, txpool, limits
+    /// Everything your node knows about itself: how far it has got, fees, what is waiting, limits
     Info,
-    /// Tail the node's log file
+    /// The last lines of your node's log file
     Log {
         /// How many lines from the end
         #[arg(long, value_name = "N", default_value_t = 200)]
         lines: usize,
-        /// Follow — only from the TUI's Log screen; refused here, where a pipe would hang
+        /// Keep watching — that is the Log screen's job; here it would never finish
         #[arg(long)]
         follow: bool,
         /// Keep only lines containing this text
         #[arg(long, value_name = "TEXT")]
         grep: Option<String>,
     },
-    /// Live connections and the node's peer lists
+    /// Who your node is connected to, and the addresses it knows
     Peers {
-        /// Only the white list
+        /// Only the ones it has reached before
         #[arg(long, conflicts_with = "gray")]
         white: bool,
-        /// Only the gray list
+        /// Only the ones it has just heard about
         #[arg(long)]
         gray: bool,
         /// Keep only the first N rows of each list
         #[arg(long, value_name = "N")]
         limit: Option<usize>,
     },
-    /// The node's ban list
+    /// The addresses your node has blocked
     Bans,
-    /// Ban a host
+    /// Block an address
     Ban {
-        /// A host or IP, e.g. 1.2.3.4
+        /// A host or IP address, like 1.2.3.4
         host: String,
-        /// How long, in seconds
+        /// For how long, in seconds
         #[arg(long, value_name = "N", default_value_t = 86400)]
         seconds: u64,
     },
-    /// Unban a host
+    /// Unblock an address
     Unban {
-        /// A host or IP, e.g. 1.2.3.4
+        /// A host or IP address, like 1.2.3.4
         host: String,
     },
-    /// Point monero-wallet-rpc at a REMOTE node and keep it there (§2m)
+    /// Use a public node someone else runs, and keep using it
     #[command(
-        after_help = "Writes node.mode, node.remote and node.remote_trusted, then sets up both
-background services again and restarts the wallet service if it was running. fmonero itself
-never talks to the public node; the wallet service does.
+        after_help = "Writes node.mode, node.remote and node.remote_trusted, sets the two
+background services up again, and starts the wallet service again if it was running. fmonero
+itself never talks to the public node; the wallet service does.
 
-A public node sees this machine's IP address and when you ask it anything, supplies the
-decoys every payment is made from, and can lie about the chain tip and the fee. So never pass
---trusted to one, and bound a send with --max-fee. The encryption here is opportunistic and
-nothing checks the certificate, and Tor is not in v0.1.
+A public node sees this machine's IP address and what you ask it, hands your wallet the decoys
+every payment is made from, and can be wrong about the top of the chain and about the fee. So
+never pass --trusted to one, and put a ceiling on a send with --max-fee. The encryption here is
+taken if it is offered and nothing checks who is on the other end, and Tor is not in v0.1.
 
-  fmonero node remote node.example.com:18089 --yes      # a public node
+  fmonero node remote node.example.com:18089 --yes      # use a public node
   fmonero node local --yes                              # the way back"
     )]
     Remote {
-        /// [http[s]://]host:port — the port is required, no path, no credential
+        /// [http[s]://]host:port — the port is needed, no path, no password
         addr: String,
-        /// Send `trusted` — only ever for a node YOU run (§2m.6)
+        /// Let it see which amounts your wallet holds. Only ever for a node YOU run
         #[arg(long)]
         trusted: bool,
     },
-    /// Go back to fmonero's own local monerod (§2m)
+    /// Go back to your own node on this machine
     Local,
-    /// Public nodes from monero.fail, cached — and, with --probe, measured from here (§2n)
+    /// Public nodes from monero.fail, saved — and, with --probe, checked from here
     #[command(
-        after_help = "Uses the saved list and fetches a new one only when --refresh is
-given or the saved list is absent or older than 24 h. --probe then checks the top --limit
-candidates from here, 8 at a time with a 5 s deadline each.
+        after_help = "Uses the saved list, and fetches a new one only when you pass --refresh
+or the saved list is missing or more than 24 h old. --probe then checks the top --limit of them
+from here, 8 at a time, five seconds each.
 
 Getting the list tells monero.fail this machine's IP address. Checking a node tells that node
-too. Nothing is contacted automatically except the node already configured, and that only
-while the TUI's Node screen is showing. monero.fail's figures are its own measurements. They
-are not a recommendation, and not this machine's.
+too. Nothing is contacted on its own except the node you already chose, and that only while the
+TUI's Node screen is showing. monero.fail's figures are its own measurements. They are not a
+recommendation, and they are not from this machine.
 
-Needs curl, as a child process: fmonero's own HTTP client only ever talks to this machine.
+Needs curl, run as a separate program: fmonero's own network code only ever talks to this
+machine.
 
-  fmonero node list                       # the cache, instantly
-  fmonero node list --refresh --probe     # refetch, then measure the top 20 from here
+  fmonero node list                       # the saved list, instantly
+  fmonero node list --refresh --probe     # fetch again, then check the top 20 from here
   fmonero node remote <host:port> --yes   # use one"
     )]
     List {
-        /// Refetch nodes.json and health.json from monero.fail now
+        /// Fetch the list from monero.fail again now
         #[arg(long)]
         refresh: bool,
-        /// Ask each listed node for get_info from THIS machine (each learns your IP)
+        /// Check each listed node from THIS machine (each one learns your IP address)
         #[arg(long)]
         probe: bool,
-        /// How many rows to print, and to probe
+        /// How many rows to print, and how many to check
         #[arg(long, value_name = "N", default_value_t = fmonero_core::nodes::DEFAULT_LIMIT)]
         limit: usize,
         /// Every usable candidate, not just --limit of them
         #[arg(long, conflicts_with = "limit")]
         all: bool,
     },
-    /// Read or set the node's rate limits and peer counts
+    /// Read or set how fast your node may transfer, and how many peers it may keep
     #[command(
-        after_help = "With no arguments this only reads, and changes nothing. All limits are
-kB/s, and -1 puts a limit back to the node's own default."
+        after_help = "With no arguments this only reads, and changes nothing. Limits are in
+kB/s, and -1 puts one back to the node's own default."
     )]
     Limit {
         /// Upload limit in kB/s (-1 = default)
@@ -283,13 +284,13 @@ kB/s, and -1 puts a limit back to the node's own default."
 
 #[derive(Subcommand)]
 enum WalletCmd {
-    /// The wallets in wallet.dir (*.keys basenames). Reads no wallet bytes
+    /// The wallets in your wallet folder. Reads nothing inside them
     List,
-    /// Open a wallet: start the unit if needed, open it, install the node credential, auto-refresh
+    /// Open a wallet, starting the wallet service first if it is not running
     #[command(
         after_help = "The password comes from --password-file, then $FMONERO_WALLET_PASSWORD,
-then a prompt in the terminal with echo off. It is never passed on a command line, fmonero's
-or the wallet service's."
+then a question in the terminal with nothing echoed back. It is never passed on a command line,
+fmonero's or the wallet service's."
     )]
     Open {
         /// The wallet's name inside wallet.dir (no `/`)
@@ -309,7 +310,7 @@ is refused without --allow-empty-password. The seed is never printed: back it up
     Create {
         /// The wallet's name inside wallet.dir (no `/`)
         name: String,
-        /// Seed language; `fmonero wallet create --help` lists what the daemon accepts
+        /// Which language the seed words are in
         #[arg(long, value_name = "L", default_value = coresettings::DEFAULT_SEED_LANGUAGE)]
         language: String,
         /// Create an UNENCRYPTED wallet on purpose
@@ -324,36 +325,37 @@ is refused without --allow-empty-password. The seed is never printed: back it up
         /// Account index
         #[arg(long, value_name = "N")]
         account: Option<u32>,
-        /// Also list the funded subaddresses
+        /// Also list the addresses that hold something
         #[arg(long)]
         subaddresses: bool,
     },
-    /// The account's primary address and its subaddresses
+    /// This account's main address, and the extra ones under it
     Address {
         /// Account index
         #[arg(long, value_name = "N")]
         account: Option<u32>,
-        /// Select one subaddress by index
+        /// Pick one of the extra addresses by its number
         #[arg(long, value_name = "N")]
         index: Option<u32>,
         /// Also draw the selected address as a QR (skipped when stdout is not a TTY)
         #[arg(long)]
         qr: bool,
     },
-    /// Generate a new subaddress
+    /// Make a new address for this account
     NewAddress {
         /// Account index
         #[arg(long, value_name = "N")]
         account: Option<u32>,
-        /// A label for the new subaddress
+        /// A name for the new address
         #[arg(long, value_name = "TEXT")]
         label: Option<String>,
     },
-    /// Transfer history, from a local snapshot plus one incremental fetch
+    /// Your payments, from a saved copy plus whatever is new since it was written
     #[command(
-        after_help = "--in selects `in` AND `block` (coinbase) rows: they arrive in the same
-list. --cached asks the wallet service nothing at all, and then `confirmations` and `locked`
-are null. Asking nothing and a live confirmation count cannot both be had."
+        after_help = "--in takes received payments and mined ones together: they arrive in one
+list. --cached asks the wallet service nothing at all, and then the confirmations and whether a
+payment is spendable are unknown. Asking nothing and a live confirmation count cannot both be
+had."
     )]
     History {
         /// Account index
@@ -368,30 +370,30 @@ are null. Asking nothing and a live confirmation count cannot both be had."
         /// Outgoing rows
         #[arg(long)]
         out: bool,
-        /// Not yet confirmed, built by this wallet
+        /// Sent by this wallet and not in a block yet
         #[arg(long)]
         pending: bool,
-        /// Built but never accepted
+        /// Tried and never accepted
         #[arg(long)]
         failed: bool,
-        /// In the node's txpool (this one needs the node)
+        /// Waiting to be mined (this one needs your node)
         #[arg(long)]
         pool: bool,
-        /// Only rows at or above this height (sent as an explicit height filter)
+        /// Only payments at or above this block
         #[arg(long, value_name = "HEIGHT")]
         since: Option<u64>,
-        /// Serve the snapshot alone: no RPC, and confirmations/locked are null
+        /// The saved copy alone: asks nothing, so confirmations and spendable are unknown
         #[arg(long)]
         cached: bool,
     },
     /// Send an exact amount to one recipient
     #[command(
-        after_help = "Prepares the payment without sending it and prints the real fee first.
+        after_help = "Works the payment out without sending it, and prints the real fee first.
 Without --yes it prints that fee and exits 3. --dry-run beats --yes: it never sends. --max-fee
-refuses to send when the prepared fee exceeds it. v0.1 prepares exactly ONE transaction; when
-the wallet needs more, the hint names `wallet sweep`.
+refuses to send when the fee comes out above it. v0.1 makes exactly ONE payment at a time; when
+the wallet needs more than one, the hint names `fmonero wallet sweep`.
 
-Tested against fmonero-mock only: no send has ever gone out from this version."
+Nothing has ever been sent from this version: it has only ever been tried against a stand-in."
     )]
     Send {
         /// A Monero address, or @label from the address book
@@ -407,17 +409,17 @@ Tested against fmonero-mock only: no send has ever gone out from this version."
         /// A note stored with the payment once it has gone out
         #[arg(long, value_name = "TEXT")]
         note: Option<String>,
-        /// Refuse the relay when the built total fee exceeds this
+        /// Refuse to send when the fee comes out above this
         #[arg(long, value_name = "AMOUNT")]
         max_fee: Option<String>,
     },
     /// Sweep an account to one recipient
     #[command(
-        after_help = "Sweeps the whole account (bounded by --below) and may need several
-payments. Each is sent in order under one crash-safe record. There is no amount argument and
-no way to pick one address: every address of the account is included.
+        after_help = "Sends the whole account (or only the outputs below --below) and may need
+several payments. They go in order, under one record that survives a crash. There is no amount
+to give and no way to pick one address: every address of the account is included.
 
-Tested against fmonero-mock only: no sweep has ever gone out from this version."
+Nothing has ever been sent from this version: it has only ever been tried against a stand-in."
     )]
     Sweep {
         /// A Monero address, or @label from the address book
@@ -431,17 +433,17 @@ Tested against fmonero-mock only: no sweep has ever gone out from this version."
         /// Only sweep outputs below this amount
         #[arg(long, value_name = "AMOUNT")]
         below: Option<String>,
-        /// Refuse the relay when the built total fee exceeds this
+        /// Refuse to send when the fee comes out above this
         #[arg(long, value_name = "AMOUNT")]
         max_fee: Option<String>,
     },
-    /// Clear the pending-send record after checking whether the transaction landed
+    /// Clear the record of a payment fmonero was in the middle of sending
     #[command(
-        after_help = "The manual escape hatch after a crash. A normal successful send clears
-the record itself, so if you find yourself typing this after every send, something is wrong."
+        after_help = "The way out by hand after a crash. A send that finishes clears the record
+itself, so if you find yourself typing this after every send, something is wrong."
     )]
     ClearPending,
-    /// Check an address: structurally, then against the wallet daemon
+    /// Check an address: its shape first, then with the wallet service
     Validate {
         /// The address to check
         address: String,
@@ -457,20 +459,21 @@ the record itself, so if you find yourself typing this after every send, somethi
         #[arg(long, value_name = "H")]
         start_height: Option<u64>,
     },
-    /// Read or write the note stored with a transaction
+    /// Read or write the note kept with a payment
     Notes {
         #[command(subcommand)]
         cmd: NotesCmd,
     },
-    /// Point the open wallet at another daemon
+    /// Point this wallet at another node, until the next time it is opened
     #[command(
-        after_help = "This is the only way a public node enters the picture: the wallet service
-reaches it, not fmonero, whose own HTTP client only ever speaks to this machine."
+        after_help = "fmonero itself only ever talks to this machine; the wallet service is what
+reaches a node somewhere else. Opening a wallet sets this again, so `fmonero node remote` is the
+lasting version of it."
     )]
     SetDaemon {
         /// host:port
         address: String,
-        /// Treat it as trusted (it may see which outputs are yours)
+        /// Let it see which amounts your wallet holds. Only ever for a node YOU run
         #[arg(long)]
         trusted: bool,
     },
@@ -496,14 +499,14 @@ enum BookCmd {
 
 #[derive(Subcommand)]
 enum NotesCmd {
-    /// Read the note of one transaction
+    /// Read the note of one payment
     Get {
-        /// A 64-character transaction id
+        /// A payment id, 64 characters
         txid: String,
     },
-    /// Write the note of one transaction
+    /// Write the note of one payment
     Set {
-        /// A 64-character transaction id
+        /// A payment id, 64 characters
         txid: String,
         /// The note
         text: String,
@@ -926,7 +929,16 @@ fn plan_payload(plan: &Plan, txids: &[String], relayed: bool, dry_run: bool) -> 
 /// The §5c money exception: a `send`/`sweep` refused at step 10 (`needs_yes`) emits the
 /// failure envelope **plus** the complete key set above, with the **built** transaction's
 /// real numbers — the fee §2a.1 exists to show may not be human-mode-only.
-fn refuse_with_plan(out: &Out, e: &Error, payload: serde_json::Value) -> i32 {
+///
+/// **The human half goes through [`Out::report`], and nothing else may print an error** (S1,
+/// round 4 iteration 3). This function had a printer of its own, written before X1 fixed
+/// `report`, and it survived X1 because X1 read the one function every *other* failure goes
+/// through. So the one screen in the product where money is about to move was the last place
+/// still printing `error[safety]`, `reason: needs_yes` and a field labelled `hint:` at a person.
+/// A second printer for the same thing is the defect, not the strings it happened to carry:
+/// there is one now, and `assert_no_second_error_printer` in `output.rs` fails the build if a
+/// `code_name()` or a `reason()` is ever formatted into a line outside `--json` again.
+fn refuse_with_plan(out: &Out, label: &str, e: &Error, payload: serde_json::Value) -> i32 {
     if out.json {
         let mut merged = e.json();
         if let (Some(m), Some(p)) = (merged.as_object_mut(), payload.as_object()) {
@@ -942,19 +954,25 @@ fn refuse_with_plan(out: &Out, e: &Error, payload: serde_json::Value) -> i32 {
             }
         }
         println!("{merged}");
-    } else {
-        output::human(out, "wallet send", &payload);
-        out.note(format!(
-            "{}: {}",
-            out.paint(&format!("fmonero: error[{}]", e.code_name()), Paint::Red),
-            e
-        ));
-        if let Some(reason) = e.reason() {
-            out.note(format!("  reason: {reason}"));
-        }
-        out.note(format!("  hint: {}", e.hint()));
+        return e.exit_code();
     }
-    e.exit_code()
+    output::human(out, label, &payload);
+    out.report(e)
+}
+
+/// The sentence that says how much money leaves, **with its unit** (round 4 iteration 3).
+///
+/// Two figures in that refusal carried `XMR` and the third — the only one that answers "how much
+/// am I out?" — did not, on the one line where a person decides whether to type `--yes`. And
+/// `plan.total()` was `unwrap_or_default()`, so an amount plus a fee that overflows `u64` printed
+/// a bare ` would leave this wallet.`: §5's "a zero may not stand in for unknown" on the money
+/// path. `Piconero::checked_add` already refuses to invent money; this says so.
+fn leaves_this_wallet(plan: &Plan) -> String {
+    match plan.total() {
+        Ok(t) => format!("{} XMR would leave this wallet.", t.to_xmr_string()),
+        Err(_) => "fmonero could not add the amount and the fee together, so do not send this."
+            .to_string(),
+    }
 }
 
 /// `wallet address --qr`: the address as a half-block QR on stdout. Skipped when stdout is not
@@ -1864,7 +1882,7 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                 // than inside `build`, whose `Err` would destroy it (§2a.2).
                 if let Err(e) = send::check_max_fee(&plan) {
                     let payload = plan_payload(&plan, &[], false, false);
-                    return Ok(refuse_with_plan(&out, &e, ok(payload)));
+                    return Ok(refuse_with_plan(&out, "wallet send", &e, ok(payload)));
                 }
                 if dry_run {
                     // --dry-run beats --yes: it never relays (§4).
@@ -1874,12 +1892,11 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                 if !yes {
                     let payload = plan_payload(&plan, &[], false, false);
                     let e = Error::safety(format!(
-                        "This would send {} XMR to {}, with a fee of {} XMR. {} would leave \
-                         this wallet.",
+                        "This would send {} XMR to {}, with a fee of {} XMR. {}",
                         plan.total_amount.to_xmr_string(),
                         plan.dest,
                         plan.total_fee.to_xmr_string(),
-                        plan.total().map(|t| t.to_xmr_string()).unwrap_or_default()
+                        leaves_this_wallet(&plan)
                     ))
                     .with_reason("needs_yes")
                     .with_hint(send_hint(
@@ -1893,7 +1910,7 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                             ("--note", note.as_deref()),
                         ],
                     ));
-                    return Ok(refuse_with_plan(&out, &e, ok(payload)));
+                    return Ok(refuse_with_plan(&out, "wallet send", &e, ok(payload)));
                 }
                 let payload = plan_payload(&plan, &[], true, false);
                 let txids = send::relay(&ctx, &w, plan, &|s| eprintln!("{s}"), &cancel)?;
@@ -1937,7 +1954,7 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                 let plan = send::build_sweep(&ctx, &w, node_gate(&ctx, n.as_ref()), &req, &cancel)?;
                 if let Err(e) = send::check_max_fee(&plan) {
                     let payload = plan_payload(&plan, &[], false, false);
-                    return Ok(refuse_with_plan(&out, &e, ok(payload)));
+                    return Ok(refuse_with_plan(&out, "wallet sweep", &e, ok(payload)));
                 }
                 if dry_run {
                     out.emit("wallet sweep", ok(plan_payload(&plan, &[], false, true)));
@@ -1965,7 +1982,7 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                             ("--max-fee", max_fee.as_deref()),
                         ],
                     ));
-                    return Ok(refuse_with_plan(&out, &e, ok(payload)));
+                    return Ok(refuse_with_plan(&out, "wallet sweep", &e, ok(payload)));
                 }
                 let payload = plan_payload(&plan, &[], true, false);
                 let txids = send::relay(&ctx, &w, plan, &|s| eprintln!("{s}"), &cancel)?;

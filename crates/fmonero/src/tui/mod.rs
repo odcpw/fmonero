@@ -636,7 +636,14 @@ impl Tui {
         let Some(s) = &self.status else {
             return ("not answering", "down");
         };
-        if self.status_err.is_some() || s.pending.is_some() || self.has_warning("node_stalled") {
+        // **A pending payment is not a fault of the node** (round 4 iteration 3). `s.pending`
+        // was in this condition, so a node that was synced, answering and holding nineteen peers
+        // reported `● node problem` in the three-cell summary a person reads on every screen —
+        // two inches under a hero reading `● Synced · blocks ████ 100% · peers 16 out · 3 in`.
+        // The reader's own conclusion: *"he will go and look at his node while the thing that
+        // needs attention is a payment."* A payment belongs to the wallet cell
+        // ([`Tui::wallet_state`]), and the red banner above every screen is where it is loudest.
+        if self.status_err.is_some() || self.has_warning("node_stalled") {
             return ("problem", "error");
         }
         // Remote mode answers first (§2m.3): `reachable` and `synchronized` are both `null`
@@ -731,17 +738,17 @@ impl Tui {
         let Some(s) = &self.status else {
             return ("not running", "down");
         };
+        // **The pending payment lands here, not on the node cell** (round 4 iteration 3): it is
+        // money, and the wallet is the cell a person reads for money. The words are the badge's
+        // own register — three of them, and they name the fact rather than a count.
+        if s.pending.is_some() {
+            return ("payment may be out", "error");
+        }
         if self.has_warning("wallet_stalled") {
             return ("problem", "error");
         }
         let ours = self.action.as_ref().is_some_and(|a| a.wallet_busy);
         match (s.wallet.reachable, s.wallet.open) {
-            // **`idle`, not `down`, when §5 says `wallet_idle`** (v5.5). The daemon is DESIGNED to
-            // be down until a wallet is opened (§4.2 writes both units disabled), and this line is
-            // the one a user reads on every screen — telling them `down` there while §5 calls the
-            // same state an *info* and §6.4 keeps the bar icon calm is the drift §2j is about, in
-            // the most-read place on the screen.
-            (false, _) if self.has_warning("wallet_idle") => ("closed", "down"),
             // **`starting`/`busy`, not `down`, while one of our own actions is the reason a poll
             // cannot answer** (DECISIONS: FINDING D). `W` and a TUI create both ran under a badge
             // reading `down` two lines below a panel reading `starting…`: an assertion about a
@@ -760,6 +767,13 @@ impl Tui {
             // service that is up without answering says so — the same split §2c makes between
             // `unreachable` and a service that is simply not there.
             (false, _) if s.wallet.unit_active => ("not answering", "down"),
+            // **One state, one word** (round 4 iteration 3). This said `closed` where the
+            // `wallet_idle` warning was raised and `not running` where it was not, so one fact —
+            // the service is down and nothing is open — read two ways depending on which mode
+            // the reader was in, and the Wallet screen's own row in the same frame said a third
+            // thing: `not running yet. It starts when you open or create a wallet.` That row is
+            // the wording. Calm-versus-alarm is `wallet_idle`'s job and the bar icon's, not this
+            // word's: both branches were the same `down` tone anyway.
             (false, _) => ("not running", "down"),
             (true, true) => ("open", "up"),
             (true, false) => ("catching up", "syncing"),

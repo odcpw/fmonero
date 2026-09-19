@@ -368,7 +368,7 @@ pub fn pending_send(ctx: &Context) -> Result<Option<PendingSend>, Error> {
         Err(e) => {
             // S6: the record that blocks a second send, in plain English.
             return Err(
-                Error::io("read", "its record of a payment in flight", &path, &e)
+                Error::io("read", "its record of a payment it was sending", &path, &e)
                     .with_hint("fmonero doctor --only storage"),
             );
         }
@@ -381,7 +381,7 @@ pub fn pending_send(ctx: &Context) -> Result<Option<PendingSend>, Error> {
     serde_json::from_slice(&bytes).map(Some).map_err(|e| {
         // S6: the serde text is `detail`, not part of the sentence.
         Error::safety(format!(
-            "{} exists and fmonero cannot read it, so a payment may be in flight.",
+            "{} exists and fmonero cannot read it, so a payment may already have gone out.",
             path.display()
         ))
         .with_detail(e.to_string())
@@ -395,7 +395,7 @@ pub fn pending_send(ctx: &Context) -> Result<Option<PendingSend>, Error> {
 pub fn set_pending_send(ctx: &Context, p: &PendingSend) -> Result<(), Error> {
     ctx.paths.ensure_dirs()?;
     let mut bytes = serde_json::to_vec_pretty(p).map_err(|e| {
-        Error::failure("fmonero could not write out its record of a payment in flight.")
+        Error::failure("fmonero could not write out its record of the payment it is sending.")
             .with_detail(e.to_string())
     })?;
     bytes.push(b'\n');
@@ -410,7 +410,8 @@ pub fn set_pending_send(ctx: &Context, p: &PendingSend) -> Result<(), Error> {
 pub fn mark_relayed(ctx: &Context, txid: &str) -> Result<(), Error> {
     let Some(mut record) = pending_send(ctx)? else {
         return Err(Error::failure(format!(
-            "no pending record to mark {txid} relayed in"
+            "fmonero has no record of the payment it was sending, so it cannot mark one as \
+             gone out."
         )));
     };
     let now = crate::now_unix();
@@ -442,7 +443,7 @@ pub fn clear_pending_send(ctx: &Context) -> Result<(), Error> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(Error::io(
             "clear",
-            "its record of a payment in flight",
+            "its record of a payment it was sending",
             &path,
             &e,
         )),

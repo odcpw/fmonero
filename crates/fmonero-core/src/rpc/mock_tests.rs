@@ -541,6 +541,32 @@ fn a_txid_mismatch_exits_one_and_leaves_the_entry_unrelayed() {
     let e = send::relay(&w.ctx, &client, plan, &|_| {}, &cancel).unwrap_err();
     assert_eq!(e.exit_code(), 1);
     assert_eq!(e.reason(), Some("txid_mismatch"));
+    // **Neither 64-character id is in the sentence a person reads, and both are in `detail`**
+    // (round 4 iteration 3, §2o rule 5). The sentence also must not tell the reader to work out
+    // which of two near-identical ids landed, which is what its old hint did.
+    let why = e.to_string();
+    for id in [
+        "a1e7b3c05d928f4617ac0e3b85d2f719c46b0a8e3f512d7409bc6ea18d35047f",
+        "1ae7b3c05d928f4617ac0e3b85d2f719c46b0a8e3f512d7409bc6ea18d35047f",
+    ] {
+        assert!(!why.contains(id), "an id reached the sentence: {why}");
+        assert!(
+            !e.hint().contains(id),
+            "an id reached the hint: {}",
+            e.hint()
+        );
+    }
+    assert!(
+        !why.contains("transaction"),
+        "§2o.2 says payment, not transaction: {why}"
+    );
+    let detail = e
+        .detail()
+        .expect("both ids stay in detail, for --json and -v");
+    assert!(
+        detail.contains("node ") && detail.contains("prepared "),
+        "detail names which id came from where: {detail}"
+    );
     let record = state::pending_send(&w.ctx)
         .unwrap()
         .expect("the record stays");

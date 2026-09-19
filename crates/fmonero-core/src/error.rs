@@ -7,6 +7,9 @@
 //! §1b.4/§1b.2, so that `main.rs` never interprets a daemon's error code itself.
 
 /// Exit-code dictionary (§4a). Printed verbatim by `capabilities` and `robot-docs`.
+// copy-exempt-begin: the §4a exit-code dictionary is the machine contract — `fmonero
+// capabilities` (forced JSON) and `robot-docs` are its only readers, and an agent branches on
+// these very words. A person reads the plain list in `fmonero --help`'s footer instead.
 pub const EXIT_CODES: &[(i32, &str, &str)] = &[
     (0, "ok", "success"),
     (1, "failure", "unexpected failure (bug or I/O); retrying rarely helps"),
@@ -79,6 +82,7 @@ pub const EXIT_CODES: &[(i32, &str, &str)] = &[
     ),
     (130, "interrupted", "SIGINT, or a cancelled TUI action"),
 ];
+// copy-exempt-end
 
 /// (exit code, reason) — the §4 table, printed by `capabilities`.
 ///
@@ -371,8 +375,8 @@ impl Error {
     /// A function that the frozen API declares but this build does not implement (§2h).
     /// Never presented as success: the caller sees exit 1 and a message naming the gap.
     pub fn unimplemented(what: &str) -> Error {
-        Error::failure(format!("{what} is not implemented in this build"))
-            .with_hint("fmonero capabilities   # what this build actually does")
+        Error::failure(format!("fmonero cannot do {what} yet."))
+            .with_hint("fmonero capabilities   # everything it can do")
     }
 
     /// Attach a runnable hint, overriding the default for this class.
@@ -570,7 +574,7 @@ impl Error {
             -16 | -19 => Error::tx_rejected(msg).with_reason("not_possible"),
             -17 | -37 => Error::insufficient_funds(msg),
             -18 => Error::tx_rejected(msg).with_reason("too_large").with_hint(
-                "fmonero wallet sweep <same address> --below <amount> --dry-run   # v0.1 builds one transaction; this send needs more",
+                "fmonero wallet sweep <same address> --below <amount> --dry-run   # this send needs more than one payment",
             ),
             -21 => Error::safety(msg).with_reason("wallet_exists"),
             -22 => Error::wallet_locked(msg).with_reason("bad_password"),

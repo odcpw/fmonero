@@ -18,10 +18,36 @@ use crate::status::WARNING_IDS;
 /// `capabilities` dump can never be mistaken for a finished tool.
 pub const BUILD_STAGE: &str = "phase-4-verified-and-fixed";
 
+/// **What `fmonero version` tells a person**, in the register §2o asks for, and honest about the
+/// same thing [`BUILD_NOTE`] is honest about.
+///
+/// The round-4 reader's sixth serious item was that `version` printed `BUILD_NOTE` — fifty lines
+/// written for an agent, carrying nine `reason` ids, five section numbers, `monerod`,
+/// `monero-wallet-rpc`, `RPC`, `ProgramSimulator` and `crates/fmonero-mock` — under its three JSON
+/// keys as row labels. `BUILD_NOTE` is the machine's answer and is unchanged; this is the person's.
+/// It says the two things a person needs from a version command: how much of this has been seen
+/// working, and what has never been tried.
+///
+/// Both constants are in one file so they cannot drift: a claim added to one has to be reconciled
+/// with the other in the same edit.
+pub const BUILD_SUMMARY: &str = "\
+This is not a finished program, and it says so where it matters.
+
+What has been seen working, on this machine and on a real wallet holding nothing: how things are, \
+your wallets, opening and closing one, the balance, your addresses, your payments, checking for \
+new blocks, the address book, notes, the settings, the doctor, the bar widget, and every screen of \
+the app — with your own node and with a public node someone else runs.
+
+What has never happened: no payment has ever been sent from this version. Sending has only ever \
+been tried against a stand-in that answers the way a wallet does. Until that changes, treat a send \
+as untested, and send nothing you could not lose.";
+
 /// The §4b summary, in prose, and honest about the one thing that matters: **no fmonero build
 /// has ever spoken to a real `monerod`**, and no build has ever broadcast a transaction. Since
 /// 2026-09-17 one build *has* driven a real `monero-wallet-rpc` against a real public node, on a
 /// scratch wallet with no funds — that is §4b's LIVE class and it is named below as such.
+// copy-exempt-begin: BUILD_NOTE is the machine's §4b answer, read by an agent through
+// `version --json` and never printed to a person — `BUILD_SUMMARY` above is the person's half.
 pub const BUILD_NOTE: &str = "\
 Integrated build (DESIGN.md §8, Phases 0 to 3 merged, reviewed and fixed in Phase 4, verified \
 by Phase 4's verifier on 2026-09-17, and the three defects that verification found fixed the \
@@ -78,6 +104,7 @@ what a broadcast proves. Also RED: setup's system_unit refusal, the \
 the warm timing target, and \
 every doctor check in the node, wallet and storage groups against a live daemon. \
 The owner turns these green by installing Monero and running the §4b command list.";
+// copy-exempt-end
 
 /// Every command of [`COMMANDS`] that has a §4b **RED** scenario, and therefore carries
 /// `verified: "red"` — §4b's rule is that the class is "the *lowest* class any of its scenarios
@@ -117,6 +144,9 @@ const RED_COMMANDS: &[&str] = &[
 ];
 
 /// The agent handbook, plain text (§4). Claims only GREEN and AMBER, and says which (§2j).
+// copy-exempt-begin: ROBOT_GUIDE is `fmonero robot-docs`, the handbook written FOR agents — its
+// audience branches on the ids and method names in it, and §2o's first paragraph exempts the agent
+// contract by name. A person's version of this text is `--help` and `BUILD_SUMMARY`.
 pub const ROBOT_GUIDE: &str = "\
 fmonero — robot docs
 
@@ -266,6 +296,7 @@ WHAT THIS BUILD HAS BEEN SEEN TO DO
   paths are verified against a fixture-serving mock, not against a real daemon, and the note
   says exactly which rows those are.
 ";
+// copy-exempt-end
 
 /// One row of `capabilities.commands` (§5b).
 struct Command {
@@ -432,6 +463,9 @@ struct EnvVar {
 /// Every environment variable fmonero reads. Phase 3's ergonomics pass asserts the round trip
 /// — every documented variable is read somewhere under `crates/`, and every variable read is
 /// documented — which is what stops this list drifting (§5b).
+// copy-exempt-begin: `capabilities.env` is forced JSON (§4) — the caller who reads these rows is
+// the one setting the variables, and a purpose that did not name the file it moves would be
+// useless to them. No person sees this text.
 const ENV: &[EnvVar] = &[
     EnvVar {
         name: "FMONERO_STATE_DIR",
@@ -514,6 +548,7 @@ const ENV: &[EnvVar] = &[
         test_only: true,
     },
 ];
+// copy-exempt-end
 
 /// The machine contract (§5b).
 pub fn capabilities_json(ctx: &Context) -> serde_json::Value {

@@ -148,7 +148,7 @@ pub struct DoctorArgs {
     /// Only run one group: binaries | node | wallet | units | storage | install | security
     #[arg(long, value_name = "GROUP")]
     pub only: Option<String>,
-    /// Write the run artifacts even without --fix
+    /// Save what this run found, even without --fix
     #[arg(long)]
     pub save: bool,
     #[command(subcommand)]
@@ -163,13 +163,13 @@ pub struct DoctorArgs {
 
 #[derive(Subcommand, Clone, Debug)]
 pub enum DoctorCmd {
-    /// Replay a `--fix` run in reverse (exit 13 if a backup is missing or altered)
+    /// Undo a `--fix` run (exit 13 if a backup is missing or has changed)
     Undo {
         /// A run id, or `latest`
         #[arg(default_value = "latest")]
         run: String,
     },
-    /// List the checks, groups and safety classes
+    /// List every check, its group and how risky its repair is
     Capabilities,
 }
 

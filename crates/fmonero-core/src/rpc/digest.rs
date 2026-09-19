@@ -137,13 +137,23 @@ pub fn challenge(www_authenticate: &[&str]) -> Result<Session, Error> {
             nc: 0,
         });
     }
-    Err(Error::backend(if saw_digest {
-        "the daemon offered only Digest challenges fmonero cannot answer (epee advertises MD5 and MD5-sess; only MD5 is implemented)"
+    // §2o: the wire's own vocabulary is `detail`, never the sentence. Both of these reached a
+    // person, the first of them 120 characters of `epee`, `MD5-sess` and `401`.
+    let (why, detail) = if saw_digest {
+        (
+            "That node asked fmonero to prove who it is in a way fmonero cannot.",
+            "only MD5 Digest is implemented; the server offered MD5-sess alone",
+        )
     } else {
-        "the daemon answered 401 with no Digest challenge"
-    })
-    .with_reason("auth_refused")
-    .with_hint("fmonero doctor --only security"))
+        (
+            "That node refused fmonero and did not say how to prove who it is.",
+            "401 with no Digest challenge in the WWW-Authenticate header",
+        )
+    };
+    Err(Error::backend(why)
+        .with_detail(detail)
+        .with_reason("auth_refused")
+        .with_hint("fmonero doctor --only security"))
 }
 
 fn md5_hex(data: &str) -> String {
@@ -217,7 +227,7 @@ mod tests {
         assert_eq!(e.reason(), Some("auth_refused"));
         // No Digest at all.
         let e = challenge(&["Basic realm=\"x\""]).unwrap_err();
-        assert!(e.to_string().contains("no Digest challenge"), "{e}");
+        assert!(e.to_string().contains("did not say how to prove"), "{e}");
     }
 
     #[test]

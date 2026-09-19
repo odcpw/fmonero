@@ -430,6 +430,9 @@ pub fn capabilities(ctx: &Context) -> serde_json::Value {
                 Class::D => Vec::new(),
                 _ => write_scopes(ctx).iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
             },
+            // copy-exempt-begin: `doctor capabilities` is forced JSON (doctor/mod.rs), the
+            // machine's half of §7 — an agent reads these strings to learn what a `--fix` may do,
+            // and they name the exact files and mechanisms it must know about.
             "never_does": match c {
                 Class::D => vec![
                     "anything: a class D finding is reported and the detail names the command",
@@ -443,6 +446,7 @@ pub fn capabilities(ctx: &Context) -> serde_json::Value {
                     "write outside the scopes above",
                 ],
             },
+            // copy-exempt-end
             "run_artifacts": match c {
                 Class::D => serde_json::Value::Null,
                 _ => serde_json::json!({

@@ -19,10 +19,10 @@ pub const MENU_TEMPLATE: &str = include_str!("../assets/menu.jsonc");
 /// `fmonero setup [--units] [--plugin] [--menu] [--all] [--rotate-rpc-login] [--full-chain]`.
 #[derive(Args, Clone, Debug, Default)]
 pub struct SetupArgs {
-    /// Write both systemd user units and monerod.conf, then daemon-reload
+    /// Set up the two background services and the node's own settings file
     #[arg(long)]
     pub units: bool,
-    /// Link, enable and place the oliver.monero bar widget
+    /// Put the oliver.monero widget on the bar and switch it on
     #[arg(long)]
     pub plugin: bool,
     /// Merge fmonero's entries into the Omarchy menu
@@ -31,10 +31,10 @@ pub struct SetupArgs {
     /// All of the above
     #[arg(long)]
     pub all: bool,
-    /// Mint a fresh node rpc-login credential (the node must then be restarted)
+    /// Make a fresh password for your node (start it again afterwards)
     #[arg(long)]
     pub rotate_rpc_login: bool,
-    /// Write a unit without --prune-blockchain (a full chain does not fit this disk)
+    /// Keep the whole chain, not the smaller copy (a full copy does not fit this disk)
     #[arg(long)]
     pub full_chain: bool,
     /// Set from the global --yes (not a flag of its own).

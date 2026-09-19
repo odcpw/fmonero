@@ -235,7 +235,9 @@ fn drain_fd(fd: libc::c_int, buf: &mut Vec<u8>) -> bool {
 pub fn spawn_detached(argv: &[&str], out: &std::path::Path) -> Result<(), Error> {
     use std::os::unix::fs::OpenOptionsExt;
     let Some((program, args)) = argv.split_first() else {
-        return Err(Error::failure("spawn_detached called with an empty argv"));
+        return Err(Error::failure(
+            "fmonero tried to start a program without naming one. This is a mistake in fmonero.",
+        ));
     };
     let file = std::fs::OpenOptions::new()
         .write(true)
@@ -279,7 +281,7 @@ pub fn run_with_deadline(
 ) -> Result<Output, Error> {
     let Some((program, args)) = argv.split_first() else {
         return Err(Error::failure(
-            "run_with_deadline called with an empty argv",
+            "fmonero tried to run a program without naming one. This is a mistake in fmonero.",
         ));
     };
     let started = Instant::now();

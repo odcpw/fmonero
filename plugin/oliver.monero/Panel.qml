@@ -97,9 +97,15 @@ Panel {
   readonly property bool lockedFunds:
     svc.walletOpen && Model.int(svc.wallet.blocks_to_unlock, 0) > 0
   // Minutes from `time_to_unlock_sec`, or two per block, which is Monero's block time. **The
-  // amount is absent here and present in the TUI's otherwise identical line**: it is
-  // `balance - unlocked`, arithmetic on money, which §2a.5 forbids in QML outright, and Status
-  // carries no pre-rendered locked amount to display instead (DECISIONS).
+  // amount comes from `wallet.locked_xmr`** (round 4 iteration 3): it is `balance - unlocked`,
+  // arithmetic on money, which §2a.5 forbids in QML outright — so Status now carries it
+  // pre-rendered and this row reads the same string the TUI's otherwise identical line does.
+  // `unlocked_xmr_short` is pre-rendered in Rust, for `balance_xmr_short`'s reason (§2a.5, §6.4).
+  readonly property string spendableLine: {
+    if (root.walletHidden) return "some of it is locked"
+    var short = svc.wallet.unlocked_xmr_short || svc.wallet.unlocked_xmr
+    return short ? String(short) + " XMR to spend" : "some of it is locked"
+  }
   readonly property int lockedMinutes: {
     if (!svc.walletOpen) return 0
     var sec = svc.wallet.time_to_unlock_sec
@@ -113,7 +119,11 @@ Panel {
   readonly property string heroMeta: {
     if (svc.binaryMissing || !svc.alive || svc.pending) return ""
     if (svc.walletBehind) return Model.walletSyncLabel(svc.status)
-    if (svc.walletOpen) return refreshedAgo()
+    // **With money locked, what is spendable is the supporting fact** (round 4 iteration 3): the
+    // header carries the balance, and reporting only that in a state where half of it cannot leave
+    // the wallet was the one glance surface with no spendable figure at all. When nothing is
+    // locked the freshness of the last refresh is the useful fact, as before.
+    if (svc.walletOpen) return root.lockedFunds ? root.spendableLine : refreshedAgo()
     if (svc.remote || !svc.node) return ""
     if (svc.nodeUp && !svc.synced && svc.node.target_height)
       return Model.grouped(svc.node.height) + " / " + Model.grouped(svc.node.target_height)
@@ -600,9 +610,13 @@ Panel {
               }
               // Minutes, not blocks, and with the amount: blocks are the mechanism, minutes are
               // the answer, and the TUI's line reads word for word the same (§2o rule 9).
+              // `locked_xmr` is pre-rendered in Status because the subtraction is arithmetic on
+              // money (§2a.5); with amounts hidden the row keeps the time and drops the figure.
               Text {
                 textFormat: Text.PlainText; visible: root.lockedFunds; width: parent.width
-                text: "locked for about " + root.lockedMinutes + " min"
+                text: (root.walletHidden || !svc.wallet.locked_xmr
+                       ? "locked for about " : String(svc.wallet.locked_xmr) + " XMR locked for about ")
+                      + root.lockedMinutes + " min"
                 color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall
               }
             }

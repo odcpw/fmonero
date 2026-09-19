@@ -472,6 +472,25 @@ pub fn human(out: &Out, label: &str, value: &serde_json::Value) {
         "setup" => return setup_human(out, value),
         // v5.2: the two mode commands share one key set and therefore one renderer (§5c).
         "node remote" | "node local" => return mode_human(out, value),
+        // The twenty-two that had none. `capabilities` is the only label that is MEANT to look
+        // like a JSON document, so the generic printer below is now its own and nothing else's.
+        "node up" | "node down" | "node restart" => return node_state_human(out, value),
+        "node bans" => return bans_human(out, value),
+        "node ban" | "node unban" => return ban_change_human(out, value),
+        "node limit" => return limit_human(out, value),
+        "wallet open" => return wallet_open_human(out, value),
+        "wallet close" => return wallet_close_human(out, value),
+        "wallet create" => return wallet_create_human(out, value),
+        "wallet validate" => return validate_human(out, value),
+        "wallet refresh" => return refresh_human(out, value),
+        "wallet notes get" | "wallet notes set" => return notes_human(out, value),
+        "wallet book list" => return book_list_human(out, value),
+        "wallet book add" | "wallet book remove" => return book_change_human(out, label, value),
+        "wallet set-daemon" => return set_daemon_human(out, value),
+        "wallet clear-pending" => return clear_pending_human(out, value),
+        "settings get" => return settings_get_human(out, value),
+        "settings set" => return settings_set_human(out, value),
+        "version" => return version_human(out, value),
         _ => {}
     }
     let Some(map) = value.as_object() else {
@@ -684,14 +703,41 @@ pub fn status_human(out: &Out, v: &serde_json::Value) {
         )
     };
     out.line(format!("wallet  {badge}  {rest}"));
+    // **What is spendable, on the row under the balance, whenever some of it is not**
+    // (round 4 iteration 3). The only balance line `status` printed was the total — the one figure
+    // he cannot spend all of — and the `[info] 0.5000 XMR unlocks in about 12 min.` warning three
+    // rows below never said what *is* spendable. One fact a line (§2o rule 1): what can go now,
+    // then what cannot and for how long. Both figures come from the document; `locked_xmr` is the
+    // subtraction, done once in core.
+    if wallet["open"] == serde_json::Value::Bool(true) {
+        if let Some(locked) = wallet["locked_xmr"].as_str() {
+            out.line(format!(
+                "        {} XMR can be spent now",
+                cell(&wallet["unlocked_xmr"])
+            ));
+            let mins = wallet["time_to_unlock_sec"]
+                .as_u64()
+                .map(|s| s.div_ceil(60))
+                .or_else(|| wallet["blocks_to_unlock"].as_u64().map(|b| b * 2));
+            out.line(out.paint(
+                &match mins {
+                    Some(m) => format!("        {locked} XMR locked for about {m} min"),
+                    None => format!("        {locked} XMR locked"),
+                },
+                Paint::Yellow,
+            ));
+        }
+    }
     if let Some(p) = v["pending"].as_object() {
+        // **`progress_words`, never `0 of 1 sent`** (round 4 iteration 3): the count is fmonero's
+        // record of an acknowledgement it never got, and printed as a count it asserts that
+        // nothing went out. One wording, shared with the TUI's banner, the widget and the warning.
         out.line(out.paint(
             &format!(
-                "sending {} of {} sent  {} XMR to {}",
-                cell(&p["relayed_count"]),
-                cell(&p["total_count"]),
+                "sending {} XMR to {} · {}",
                 cell(&p["total_amount_xmr"]),
-                cell(&p["dest"])
+                cell(&p["dest"]),
+                cell(&p["progress_words"])
             ),
             Paint::Red,
         ));
@@ -1569,6 +1615,351 @@ fn setup_human(out: &Out, v: &serde_json::Value) {
     }
     if dry {
         out.note("dry run: nothing was changed");
+    }
+}
+
+// ---------------------------------------------------------------- the twenty-two that had none
+//
+// **Every command now has a human rendering, and the generic printer is `capabilities`' alone.**
+// The round-4 reader's fifth serious item: seventeen labels had a renderer and twenty-two did not,
+// so those twenty-two fell through to the key/value printer and dumped the JSON document at the
+// reader — `host=203.0.113.66 ip=1114702027 seconds=84213`, `ssl_support disabled`,
+// `unit_started false`, `nettype mainnet`, `seed_backup_hint <the whole safety message again>`,
+// and a 64-character payment id under a plural JSON key. That is rule 5's own prohibition (an
+// identifier as a row label), six of rule 7's banned words, and §5's "unknown is never a zero"
+// read back as `synchronized —` in a sentence.
+//
+// The shape of all of them: **say what happened, then what to do next** (rule 2), one fact a line
+// (rule 1), a unit on every quantity (rule 9), and no id outside `--json` (rule 5).
+
+/// `node up` / `node restart` / `node down` — one key set, so one renderer (§5c).
+fn node_state_human(out: &Out, v: &serde_json::Value) {
+    let t = |k: &str| v[k] == serde_json::Value::Bool(true);
+    let (verdict, paint) = if !t("active") {
+        ("Your node is not running.", Paint::Dim)
+    } else if !t("reachable") {
+        (
+            "Your node was started, and it is not answering yet.",
+            Paint::Yellow,
+        )
+    } else if v["synchronized"] == serde_json::Value::Bool(true) {
+        (
+            "Your node is running, and it has caught up with the chain.",
+            Paint::Green,
+        )
+    } else if v["synchronized"] == serde_json::Value::Bool(false) {
+        (
+            "Your node is running, and it is still catching up.",
+            Paint::Yellow,
+        )
+    } else {
+        ("Your node is running and answering.", Paint::Green)
+    };
+    out.line(out.paint(verdict, paint));
+    if t("already_running") {
+        out.line("It was already running before this command.");
+    }
+    match v["waited_sec"].as_u64() {
+        Some(w) if w > 0 => out.line(format!("It took {} to answer.", fmonero_core::duration(w))),
+        _ => {}
+    }
+}
+
+/// `node bans` — the blocked addresses, in the words the TUI's own pane uses.
+fn bans_human(out: &Out, v: &serde_json::Value) {
+    let rows = v["bans"].as_array().map(Vec::as_slice).unwrap_or_default();
+    if rows.is_empty() {
+        out.line("Your node has not blocked any addresses.");
+        return;
+    }
+    out.line(format!(
+        "{} {} blocked",
+        rows.len(),
+        if rows.len() == 1 {
+            "address"
+        } else {
+            "addresses"
+        }
+    ));
+    let widest = rows
+        .iter()
+        .map(|b| UnicodeWidthStr::width(b["host"].as_str().unwrap_or("")))
+        .max()
+        .unwrap_or(16)
+        .clamp(16, 46);
+    let w = columns(&[widest, 12], &[widest, 14], 2, NO_FLEX);
+    // The 32-bit integer form of the address stays in `--json`: `ip=1114702027` was printed at a
+    // person beside the same address in dotted form.
+    for b in rows {
+        out.row(format!(
+            "  {}  {}",
+            pad(&cell(&b["host"]), w[0]),
+            pad(
+                &b["seconds"]
+                    .as_u64()
+                    .map(|sec| format!("{} left", fmonero_core::duration(sec)))
+                    .unwrap_or_else(|| "—".to_string()),
+                w[1]
+            )
+        ));
+    }
+}
+
+/// `node ban` / `node unban`.
+fn ban_change_human(out: &Out, v: &serde_json::Value) {
+    let host = cell(&v["host"]);
+    if v["banned"] == serde_json::Value::Bool(true) {
+        let how_long = v["seconds"]
+            .as_u64()
+            .map(fmonero_core::duration)
+            .unwrap_or_else(|| "—".to_string());
+        out.line(format!("Your node will not talk to {host} for {how_long}."));
+    } else {
+        out.line(format!("Your node may talk to {host} again."));
+    }
+}
+
+/// `node limit` — what the node may transfer and how many peers it may keep.
+fn limit_human(out: &Out, v: &serde_json::Value) {
+    let kbps = |k: &str| match v[k].as_i64() {
+        Some(n) if n < 0 => "the node's own default".to_string(),
+        Some(n) => format!("{} kB/s", grouped(n as u64)),
+        None => "—".to_string(),
+    };
+    out.line(format!(
+        "speed        down {} · up {}",
+        kbps("limit_down_kbps"),
+        kbps("limit_up_kbps")
+    ));
+    out.line(format!(
+        "connections  {} out · {} in at most",
+        cell(&v["out_peers"]),
+        cell(&v["in_peers"])
+    ));
+    if v["changed"] == serde_json::Value::Bool(true) {
+        out.line("Those are the new limits.");
+    } else {
+        out.note(
+            "Nothing was changed. Pass --up, --down, --out-peers or --in-peers to change one.",
+        );
+    }
+}
+
+/// `wallet open`. The network is `mainnet` on this machine and stays in `--json` (rule 7).
+fn wallet_open_human(out: &Out, v: &serde_json::Value) {
+    out.line(out.paint(&format!("{} is open.", cell(&v["name"])), Paint::Green));
+    if v["unit_started"] == serde_json::Value::Bool(true) {
+        out.line("The wallet service was started for it.");
+    }
+}
+
+/// `wallet close`.
+fn wallet_close_human(out: &Out, v: &serde_json::Value) {
+    match v["name"].as_str() {
+        Some(name) => out.line(format!("{name} is closed.")),
+        None => out.line("No wallet was open."),
+    }
+}
+
+/// `wallet create`. **The seed warning is printed once, by `main.rs`, the moment the wallet file
+/// exists** — including on the paths that fail afterwards (§4.2). The generic printer read it back
+/// out of the payload under the label `seed_backup_hint`, re-wrapped, so the single most important
+/// safety message in the product was said twice in one screen with its lines broken differently.
+fn wallet_create_human(out: &Out, v: &serde_json::Value) {
+    out.line(out.paint(
+        &format!("{} was made, and it is open.", cell(&v["name"])),
+        Paint::Green,
+    ));
+    if v["unit_started"] == serde_json::Value::Bool(true) {
+        out.line("The wallet service was started for it.");
+    }
+}
+
+/// `wallet validate`.
+fn validate_human(out: &Out, v: &serde_json::Value) {
+    if v["valid"] != serde_json::Value::Bool(true) {
+        out.line(out.paint("That is not a Monero address.", Paint::Red));
+        return;
+    }
+    out.line(out.paint("That is a Monero address.", Paint::Green));
+    if v["integrated"] == serde_json::Value::Bool(true) {
+        out.line("It carries a payment id inside it.");
+    }
+    if v["subaddress"] == serde_json::Value::Bool(true) {
+        out.line("It is one of a wallet's extra addresses.");
+    }
+    // Only the surprising case is worth a line: an address for another network is the one a
+    // person needs told about, and `mainnet` is what every address here is.
+    match v["nettype"].as_str() {
+        Some(net) if net != "mainnet" => {
+            out.line(out.paint(
+                &format!("It belongs to the {net} network, not the main one."),
+                Paint::Yellow,
+            ));
+        }
+        _ => {}
+    }
+    if v["structural_only"] == serde_json::Value::Bool(true) {
+        out.line("Only its shape was checked: the wallet service did not answer.");
+    }
+}
+
+/// `wallet refresh`.
+fn refresh_human(out: &Out, v: &serde_json::Value) {
+    match v["blocks_fetched"].as_u64() {
+        Some(0) | None => out.line("No new blocks. This wallet is up to date."),
+        Some(n) => out.line(format!(
+            "{} new {} checked.",
+            grouped(n),
+            if n == 1 { "block" } else { "blocks" }
+        )),
+    }
+    if v["received_money"] == serde_json::Value::Bool(true) {
+        out.line(out.paint("Money came in.", Paint::Green));
+        out.note("Try: fmonero wallet history --limit 5");
+    } else {
+        out.line("Nothing new came in.");
+    }
+}
+
+/// `wallet notes get` / `wallet notes set`. **No payment id** (rule 5): the id was printed under the
+/// plural JSON key `txids`, which is the shape §5c owes an agent and not a row label.
+fn notes_human(out: &Out, v: &serde_json::Value) {
+    match v["notes"]
+        .as_array()
+        .and_then(|a| a.first())
+        .and_then(|n| n.as_str())
+    {
+        Some(text) if !text.is_empty() => out.line(format!("note  {text}")),
+        _ => out.line("That payment has no note."),
+    }
+}
+
+/// `wallet book list`. An address is never wrapped and never elided, so it takes the row under
+/// its own name (the same rule `address_human` follows).
+fn book_list_human(out: &Out, v: &serde_json::Value) {
+    let rows = v["entries"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    if rows.is_empty() {
+        out.line("Your address book is empty.");
+        out.note("Try: fmonero wallet book add <address> <name>");
+        return;
+    }
+    for e in rows {
+        out.line(format!(
+            "#{}  {}",
+            cell(&e["index"]),
+            match e["description"].as_str() {
+                Some(d) if !d.is_empty() => d.to_string(),
+                _ => "(no name)".to_string(),
+            }
+        ));
+        out.row(format!("    {}", cell(&e["address"])));
+    }
+    out.note(format!(
+        "{} {} · @name works wherever a send takes an address",
+        rows.len(),
+        if rows.len() == 1 { "entry" } else { "entries" }
+    ));
+}
+
+/// `wallet book add` / `wallet book remove`.
+fn book_change_human(out: &Out, label: &str, v: &serde_json::Value) {
+    let name = match v["description"].as_str() {
+        Some(d) if !d.is_empty() => d.to_string(),
+        _ => format!("#{}", cell(&v["index"])),
+    };
+    if label == "wallet book add" {
+        out.line(format!(
+            "{name} is in your address book as #{}.",
+            cell(&v["index"])
+        ));
+        out.row(format!("  {}", cell(&v["address"])));
+        out.note(format!("Try: fmonero wallet send @{name} <amount>"));
+    } else {
+        out.line(format!("{name} is out of your address book."));
+    }
+}
+
+/// `wallet set-daemon`. **The two things §2o.2 says are never shown are not shown**: `ssl_support`
+/// had a row of its own reading `disabled`, and `trusted false` was a flag where the vocabulary
+/// table asks for what it means.
+fn set_daemon_human(out: &Out, v: &serde_json::Value) {
+    out.line(format!(
+        "This wallet is now using the node at {}.",
+        cell(&v["address"])
+    ));
+    if v["trusted"] == serde_json::Value::Bool(true) {
+        out.line(out.paint(
+            "fmonero will tell that node which amounts your wallet holds.",
+            Paint::Yellow,
+        ));
+    } else {
+        out.line("fmonero will not tell that node which amounts your wallet holds.");
+    }
+    if v["persistent"] == serde_json::Value::Bool(false) {
+        out.line("Opening a wallet sets this again, so it lasts until then.");
+        out.note("Try: fmonero node remote <host:port> --yes   # to keep using it");
+    }
+}
+
+/// `wallet clear-pending`.
+fn clear_pending_human(out: &Out, v: &serde_json::Value) {
+    if v["cleared"] == serde_json::Value::Bool(true) {
+        out.line("The record of the payment fmonero was sending is cleared.");
+        out.line("Sending is possible again.");
+    } else {
+        out.line("There was no record to clear. Sending was not blocked.");
+    }
+}
+
+/// `settings get`.
+fn settings_get_human(out: &Out, v: &serde_json::Value) {
+    let shown = |v: &serde_json::Value| match cell(v) {
+        s if s.is_empty() => "(none)".to_string(),
+        s => s,
+    };
+    let value = shown(&v["value"]);
+    let default = shown(&v["default"]);
+    out.row(format!("{}  {value}", cell(&v["key"])));
+    if value == default {
+        out.line(out.paint("    That is the default.", Paint::Dim));
+    } else {
+        out.line(out.paint(&format!("    The default is {default}."), Paint::Dim));
+    }
+}
+
+/// `settings set`.
+fn settings_set_human(out: &Out, v: &serde_json::Value) {
+    let shown = |v: &serde_json::Value| match cell(v) {
+        s if s.is_empty() => "(none)".to_string(),
+        s => s,
+    };
+    let key = cell(&v["key"]);
+    let old = shown(&v["old"]);
+    let new = shown(&v["new"]);
+    if old == new {
+        out.line(format!("{key} was already {new}. Nothing changed."));
+    } else {
+        out.line(format!("{key} is now {new}. It was {old}."));
+    }
+}
+
+/// `version`. **`build_note` is written for agents and does not print here** (round 4 iteration 3):
+/// fifty lines of it reached a person, carrying nine reason ids, five section numbers, `monerod`,
+/// `monero-wallet-rpc`, `RPC`, `ProgramSimulator` and `crates/fmonero-mock`, under the three JSON
+/// keys as row labels. It is unchanged in `--json`, which is where an agent reads it, and
+/// `fmonero robot-docs` is the handbook it belongs to.
+fn version_human(out: &Out, v: &serde_json::Value) {
+    out.line(format!("fmonero {}", cell(&v["version"])));
+    for line in fmonero_core::agent::BUILD_SUMMARY.lines() {
+        if line.is_empty() {
+            out.line("");
+        } else {
+            out.line(line);
+        }
     }
 }
 

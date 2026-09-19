@@ -952,9 +952,11 @@ pub fn refused_here(ctx: &Context, actions: &[Action]) -> Option<String> {
             }
         };
         if let Some(what) = outside {
+            // §2o: this sentence is a `status` a person reads in the doctor's table. It carried
+            // a `§`, an em-dash in prose and a Rust path (round 4 iteration 3's widening of the
+            // grep to every file that builds a string a person can read).
             return Some(format!(
-                "skipped: FMONERO_STATE_DIR is set, so the doctor will not {what} — the same \
-                 guard §4.2 puts on units::install"
+                "skipped: this run is pointed at a test folder, so the doctor will not {what}."
             ));
         }
     }

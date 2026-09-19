@@ -553,16 +553,16 @@ impl NodeClient {
         // names for this refusal, keep exit 3 `foreign_node` verbatim.
         if crate::units::detect_layout(ctx)? == crate::units::Layout::None {
             return Err(Error::backend(
-                "no fmonero node unit is installed, so there is no node to mutate",
+                "fmonero has not set your node up yet, so there is no node of yours to change.",
             )
             .with_reason("unit_missing")
             .with_hint("fmonero setup --units --yes"));
         }
         Err(Error::safety(
-            "fmonero does not mutate a node it does not own: this monerod is not fmonero's user unit",
+            "The node on this machine is not the one fmonero set up, so fmonero will not change it.",
         )
         .with_reason("foreign_node")
-        .with_hint("sudo systemctl <verb> monerod   # fmonero does not mutate a node it does not own"))
+        .with_hint("sudo systemctl <verb> monerod   # whoever set that node up is who may change it"))
     }
 }
 

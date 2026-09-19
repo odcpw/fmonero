@@ -393,7 +393,10 @@ BANNED_2O='(daemons?|units?|RPC|loopback|restricted|prob(e|es|ed|ing)|layouts?|s
 #     `--app-id=fmonerodoctor` contains the string `monerod` and is not a sentence anybody reads.
 # **v5.6.3 widens the bare-token shape by one character: a leading `/`.** `"/etc/monerod.conf"` is
 # an absolute path, which is the same thing as a bare token and not a sentence anybody reads.
-ALLOWED_2O='("(fmonero|omarchy|sudo|monero-wallet-cli|systemctl|which|wl-copy|chmod|df|timedatectl|cd)[ "]|^"(monerod|monero-wallet-rpc) --[A-Za-z0-9-]|In a terminal: |^"/?[A-Za-z0-9][A-Za-z0-9_.:@/+-]*"$|^"--[A-Za-z0-9-]+(=[A-Za-z0-9_.:@/+-]*)?"$)'
+# **Round 4 iteration 3 adds `{}`**, for the same reason in the other direction: after
+# `strip_fields`, `"monero-wallet-rpc.{}.login"` is one file NAME with a substitution in it — the
+# shape `paths.rs` builds every run-file path with, and never a sentence.
+ALLOWED_2O='("(fmonero|omarchy|sudo|monero-wallet-cli|systemctl|which|wl-copy|chmod|df|timedatectl|cd)[ "]|^"(monerod|monero-wallet-rpc) --[A-Za-z0-9-]|In a terminal: |^"/?[A-Za-z0-9][A-Za-z0-9_.:@/+{}-]*"$|^"--[A-Za-z0-9-]+(=[A-Za-z0-9_.:@/+-]*)?"$)'
 # §2o's first paragraph governs "every string a person can read", and v5.5's step read four
 # surfaces. v5.6 adds the three V8/V9/V10 found outside them, each one command away from the owner:
 # the shared RPC error family (`rpc/jsonrpc.rs`), the settings descriptions `settings list` prints
@@ -408,13 +411,27 @@ ALLOWED_2O='("(fmonero|omarchy|sudo|monero-wallet-cli|systemctl|which|wl-copy|ch
 # v5.6.1 documented fixing, in a file the grep did not read), `rpc/wallet.rs` (two failures on the
 # money path), `send.rs` (the line printed immediately before the money moves), `units.rs` and
 # `nodes.rs`.
+#
+# **Round 4 iteration 3 finishes the job X2 started: the list is now every file in the workspace
+# that builds a string a person can read, derived rather than curated.** X2 widened it from fifteen
+# to twenty-two by reading three commands; the reader after it found `no fmonero node unit is
+# installed, so there is no node to mutate` — two banned words and not a sentence — in
+# `rpc/node.rs`, a file the twenty-two did not include, one `fmonero node ban` away from the owner.
+# So the rule for membership is mechanical: a file that calls an `Error::` constructor, a
+# `with_hint`, or one of `Out`'s printers is a file whose strings a person reads. `agent.rs`'s two
+# agent-contract constants are `copy-exempt` with their reason, which is the mechanism for the one
+# case that genuinely is not prose.
 COPY_SURFACES=()
 for f in "$BIN"/tui/mod.rs "$BIN"/tui/screens.rs "$BIN"/tui/send.rs "$BIN"/tui/subs.rs \
          "$BIN"/tui/theme.rs "$BIN"/tui/hit.rs "$BIN"/output.rs "$BIN"/doctor/checks.rs \
-         "$BIN"/main.rs \
+         "$BIN"/doctor/mod.rs "$BIN"/doctor/mutate.rs "$BIN"/doctor/report.rs \
+         "$BIN"/main.rs "$BIN"/prompt.rs "$BIN"/setup.rs \
          "$CORE"/status.rs "$CORE"/settings.rs "$CORE"/rpc/jsonrpc.rs "$CORE"/rpc/mod.rs \
-         "$CORE"/rpc/wallet.rs "$CORE"/session.rs "$CORE"/send.rs "$CORE"/units.rs \
-         "$CORE"/nodes.rs \
+         "$CORE"/rpc/wallet.rs "$CORE"/rpc/node.rs "$CORE"/rpc/digest.rs \
+         "$CORE"/session.rs "$CORE"/send.rs "$CORE"/units.rs \
+         "$CORE"/nodes.rs "$CORE"/agent.rs "$CORE"/address.rs "$CORE"/amount.rs \
+         "$CORE"/error.rs "$CORE"/fsinfo.rs "$CORE"/history.rs "$CORE"/lib.rs "$CORE"/log.rs \
+         "$CORE"/paths.rs "$CORE"/proc.rs "$CORE"/state.rs "$CORE"/wallet_dir.rs \
          plugin/oliver.monero/Panel.qml plugin/oliver.monero/Service.qml \
          plugin/oliver.monero/MoneroIcon.qml plugin/oliver.monero/Model.js; do
   [ -f "$f" ] && COPY_SURFACES+=("$f")
@@ -448,9 +465,17 @@ strip_flags() { printf '%s' "$1" | sed 's/--[A-Za-z0-9][A-Za-z0-9-]*/--/g'; }
 strip_envs() { printf '%s' "$1" | sed 's/FMONERO_[A-Z0-9_]*/ENV/g'; }
 strip_keys() {
   printf '%s' "$1" | sed -e 's/node\.unit/KEY/g' -e 's/wallet\.unit/KEY/g' \
-    -e 's/node\.remote_probe_sec/KEY/g' -e 's/timeouts\.transfer_sec/KEY/g'
+    -e 's/node\.remote_probe_sec/KEY/g' -e 's/timeouts\.transfer_sec/KEY/g' \
+    -e 's/wallet\.priority/KEY/g'
 }
-strip_all() { strip_keys "$(strip_envs "$(strip_flags "$(strip_fields "$1")")")"; }
+# **A pipe-separated run of bare tokens is a list of VALUES the user types**, never a sentence:
+# `binaries | node | wallet | units | storage | install | security` is what `--only` accepts and
+# what `fmonero doctor capabilities` prints. Same carve-out as a settings key, in the shape a
+# choice list has — and narrow, because prose does not contain ` | `.
+strip_alts() {
+  printf '%s' "$1" | sed -E 's/([A-Za-z0-9_.-]+ \| )+[A-Za-z0-9_.-]+/ALTS/g'
+}
+strip_all() { strip_alts "$(strip_keys "$(strip_envs "$(strip_flags "$(strip_fields "$1")")")")"; }
 # The §5c `setup.actions[].what` values, exempt **by name**. They are payload values an agent
 # branches on — `tests/e2e.sh` selects rows with `select(.what == "wallet unit")` — and `setup`'s
 # human rendering puts them through `units::action_words`, which is where the sentence a person
@@ -538,6 +563,150 @@ if [ "$OS_FIRED" = 1 ]; then
   pass "self-test: S6 fires on the {e}-in-a-message line and on neither the with_detail nor the {why} one"
 else
   fail "self-test: S6 matched $OS_FIRED of the three planted lines; exactly the first must match"
+fi
+
+# ---------------------------------------------------------------- §2o over clap's help text
+#
+# **The third blind spot of the same shape as X1 and S6, and the one the round-4 reader found by
+# typing `fmonero node --help`.** `--help` is the first thing a person types when they are lost,
+# and every word of it is a `///` doc comment: `literals_2o` pulls STRING literals, so the
+# `after_help = "…"` blocks were checked from the first version of this step and the doc comments
+# beside them never were. What reached a reader: `The local monerod: start, stop, …`,
+# `stop_daemon over RPC first, so LMDB closes cleanly`, `Point monero-wallet-rpc at a REMOTE node
+# and keep it there (§2m)`, `--units  Write both systemd user units and monerod.conf`.
+#
+# Only the doc comments clap turns into help are read: a `///` on a function is a code comment and
+# §2o rule 4 allows `§` there by name. The region is a `#[derive(… Parser | Subcommand | Args …)]`
+# item, from the derive to the first `}` in column 0, which is how every one of these four files
+# is laid out.
+step "§2o  no banned word in a --help line (clap's own doc comments)"
+CLAP_FILES=("$BIN"/main.rs "$BIN"/setup.rs "$BIN"/doctor/mod.rs "$BIN"/tui/mod.rs)
+clap_help_lines() {
+  # A field marked `#[clap(skip)]` is not an argument and clap renders no help for it: its doc
+  # comment is a code comment, and §2o rule 4 allows `§` there. The doc comes BEFORE the
+  # attribute, so the lines are buffered and dropped when the attribute turns up.
+  awk '
+    function flush() { for (i = 1; i <= n; i++) print buf[i]; n = 0 }
+    function drop()  { n = 0 }
+    /^#\[derive\(/ && /Parser|Subcommand|Args/ { inblock = 1; drop(); next }
+    inblock && /^\}/ { flush(); inblock = 0; next }
+    !inblock { next }
+    /^[[:space:]]*\/\/\// {
+      line = $0
+      sub(/^[[:space:]]*\/\/\/[[:space:]]?/, "", line)
+      if (line != "") buf[++n] = line
+      next
+    }
+    /^[[:space:]]*#\[clap\(skip\)\]/ { drop(); next }
+    /^[[:space:]]*#\[/ { next }
+    { flush() }
+  ' "$1"
+}
+HITS_CLAP=""
+CLAP_COUNT=0
+for f in "${CLAP_FILES[@]}"; do
+  [ -f "$f" ] || continue
+  while IFS= read -r doc; do
+    [ -n "$doc" ] || continue
+    CLAP_COUNT=$((CLAP_COUNT + 1))
+    # The same three strippers the literal grep uses: a `--flag`, an `FMONERO_*` name and a
+    # settings key are argv the user types, not prose (§2o rule 5's own carve-out). A `$VAR` is
+    # one too. Backticked commands are the CLI's own hints, which §2o.1's last paragraph keeps.
+    probe="$(strip_all "$doc")"
+    probe="$(printf '%s' "$probe" | sed -e 's/`[^`]*`/CMD/g' -e 's/\$[A-Z_][A-Z0-9_]*/ENV/g')"
+    printf '%s\n' "$probe" | grep -qE "$BANNED_2O" || continue
+    HITS_CLAP="$HITS_CLAP$f: $doc"$'\n'
+  done < <(clap_help_lines "$f")
+done
+if [ -n "${HITS_CLAP//[$'\n' ]/}" ]; then
+  fail "§2o rule 7: a banned word reaches a --help line"
+  printf '%s' "$HITS_CLAP" | sed 's/^/        /'
+else
+  pass "§2o rule 7: no banned word in any --help line ($CLAP_COUNT doc comments, ${#CLAP_FILES[@]} files)"
+fi
+# Its self-test: the line the round-4 reader quoted must fire, and the two shapes that must not —
+# a `///` outside a clap item, and a help line whose only banned-looking token is a `--flag`.
+SELF_CLAP="$SELFTEST/clap-help"
+mkdir -p "$SELF_CLAP"
+{
+  printf '%s\n' '#[derive(Subcommand)]'
+  printf '%s\n' 'enum NodeCmd {'
+  printf '%s\n' '    /// Stop the node: stop_daemon over RPC first, then systemctl stop'
+  printf '%s\n' '    Down,'
+  printf '%s\n' '    /// Check each listed node from THIS machine, with --probe'
+  printf '%s\n' '    List,'
+  printf '%s\n' '}'
+  printf '%s\n' '/// A code comment about monerod and §2m, which nobody types --help to read.'
+  printf '%s\n' 'fn helper() {}'
+} > "$SELF_CLAP/probe.rs"
+CLAP_FIRED=0
+while IFS= read -r doc; do
+  probe="$(strip_all "$doc")"
+  probe="$(printf '%s' "$probe" | sed -e 's/`[^`]*`/CMD/g' -e 's/\$[A-Z_][A-Z0-9_]*/ENV/g')"
+  printf '%s\n' "$probe" | grep -qE "$BANNED_2O" && CLAP_FIRED=$((CLAP_FIRED + 1))
+done < <(clap_help_lines "$SELF_CLAP/probe.rs")
+if [ "$CLAP_FIRED" = 1 ]; then
+  pass "self-test: the clap grep fires on the stop_daemon help line, and on neither the --probe one nor the code comment"
+else
+  fail "self-test: the clap grep matched $CLAP_FIRED of the three planted lines; exactly the first must match"
+fi
+
+# ---------------------------------------------------------------- one error printer
+#
+# **The defect the round-4 reader found on the money screen, mechanised.** X1 fixed
+# `Out::report`, the function every failure goes through — and missed `refuse_with_plan`, a
+# SECOND printer written for the `send`/`sweep` no-`--yes` refusal, which went on formatting
+# `fmonero: error[safety]`, `reason: needs_yes` and a field labelled `hint:` on the one screen in
+# the product where money is about to move. `check.sh`'s §2o step could not see it: the strings
+# were built from `e.code_name()` and `e.reason()` at runtime, so the literal it greps was
+# `"fmonero: error[{}]"` — no banned word in it at all.
+#
+# The rule: **`code_name()` and `reason()` belong to `--json`.** They may be read where a
+# structured record is built (`Error::json`, the state file's record of a failure, the TUI's
+# subscription record) and may not be interpolated into anything printed. So a line that both
+# reads one and prints is a failure, and so is the literal `error[` anywhere outside `--json`.
+step "one error printer — code_name and reason reach --json and nothing else"
+PRINTERS='(format!|println!|eprintln!|write!|writeln!|\.note\(|\.line\(|\.row\(|\.verbose_note\(|\.toast\(|push_str\()'
+HITS_PRINTER=""
+while IFS= read -r hit; do
+  [ -n "$hit" ] || continue
+  HITS_PRINTER="$HITS_PRINTER$hit"$'\n'
+done < <(
+  for f in $(git -C . ls-files 'crates/*.rs' 2>/dev/null || find crates -name '*.rs'); do
+    case "$f" in *tests.rs | *fixture_tests.rs) continue ;; esac
+    sed '/^#\[cfg(test)\]/q' "$f" | grep -nE '(code_name\(\)|\.reason\(\))' |
+      grep -E "$PRINTERS" | sed "s|^|$f:|" || true
+  done
+)
+# `error[` as a literal: the shape a person was reading. `error:` is clap's own word and stays.
+while IFS= read -r hit; do
+  [ -n "$hit" ] || continue
+  HITS_PRINTER="$HITS_PRINTER$hit"$'\n'
+done < <(
+  for f in $(find crates -name '*.rs'); do
+    case "$f" in *tests.rs | *fixture_tests.rs) continue ;; esac
+    sed '/^#\[cfg(test)\]/q' "$f" | grep -n '"[^"]*error\[' | sed "s|^|$f:|" || true
+  done
+)
+if [ -n "${HITS_PRINTER//[$'\n' ]/}" ]; then
+  fail "a second error printer: code_name/reason reaches a printed line (§2o rule 5 — they belong to --json)"
+  printf '%s' "$HITS_PRINTER" | sed 's/^/        /'
+else
+  pass "one error printer: no code_name, reason or error[ in any printed line (Out::report is the only one)"
+fi
+# Its self-test: the exact line that shipped must fire; `Error::json`'s own use must not.
+SELF_PR="$SELFTEST/one-printer"
+mkdir -p "$SELF_PR"
+{
+  printf '%s\n' 'out.note(format!("{}: {}", out.paint(&format!("fmonero: error[{}]", e.code_name()), Paint::Red), e));'
+  printf '%s\n' 'json!({"code_name": self.code_name(), "reason": self.reason()})'
+  printf '%s\n' 'code_name: e.code_name().to_string(),'
+} > "$SELF_PR/probe.rs"
+PR_FIRED="$(grep -nE '(code_name\(\)|\.reason\(\))' "$SELF_PR/probe.rs" | grep -cE "$PRINTERS" || true)"
+if [ "$PR_FIRED" = 1 ]; then
+  pass "self-test: the one-printer grep fires on the shipped refuse_with_plan line and on neither record-building one"
+else
+  fail "self-test: the one-printer grep matched $PR_FIRED of the three planted lines; exactly the first must match"
 fi
 
 # ---------------------------------------------------------------- §2o rule 12, the em-dash

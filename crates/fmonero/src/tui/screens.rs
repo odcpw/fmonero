@@ -344,14 +344,21 @@ fn pending_banner_text(p: &fmonero_core::PendingStatus) -> String {
     // **No id here** (round 4, S10). It was elided to fifteen characters, which is a value a
     // reader can neither paste, nor type into the Payments filter, nor read out to anyone — it
     // added alarm and nothing else to the one banner that is already alarming. The amount, the
-    // destination and the counter are the three facts he can recognise, and the last clause is
+    // destination and what is known are the three facts he can recognise, and the last clause is
     // what to do next. Every character of the id is in `--json`.
+    //
+    // **And no `0 of 1 sent`** (round 4 iteration 3). That counter is `relayed_count`, fmonero's
+    // record of an acknowledgement it never got, and it sat in this banner beside a Notes bullet
+    // reading *"A payment of 0.5000 XMR was prepared and may already have gone out."* — the same
+    // state, asserted two opposite ways in one frame. Printed as `0 of 1 sent` it says none went
+    // out, and the obvious next move for the person reading that is to send again.
+    // `PendingStatus::progress_words` is the one wording, shared with the widget's pending row and
+    // with the warning itself.
     format!(
-        "SENDING {} XMR to {} · {} of {} sent · press 2 for the wallet",
+        "{} XMR to {} · {} · press 2 for the wallet",
         p.total_amount_xmr,
         short_addr(&p.dest),
-        p.relayed_count,
-        p.total_count
+        p.progress_words
     )
 }
 
@@ -1980,12 +1987,10 @@ fn wallet_header(m: &Tui, area: Rect, sync: Option<&str>, frame: &mut Frame) {
     if let Some(blocks) = w.blocks_to_unlock.filter(|b| *b > 0) {
         // The amount, and minutes rather than blocks: blocks are the mechanism, minutes are the
         // answer (§2o rule 9).
-        let locked = match (w.balance_pico, w.unlocked_pico) {
-            (Some(b), Some(u)) => {
-                fmonero_core::amount::Piconero(b.0.saturating_sub(u.0)).to_xmr_string()
-            }
-            _ => "some".to_string(),
-        };
+        // **`locked_xmr` from the document** (round 4 iteration 3): this subtraction lived here,
+        // and the widget's otherwise identical row had no amount at all because §2a.5 forbids the
+        // same arithmetic in QML. One field, rendered once in core, printed by both.
+        let locked = w.locked_xmr.clone().unwrap_or_else(|| "some".to_string());
         let mins = w
             .time_to_unlock_sec
             .map_or(blocks * 2, |sec| sec.div_ceil(60));

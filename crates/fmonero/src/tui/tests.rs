@@ -799,12 +799,18 @@ fn node_mutations_are_refused_when_fmonero_does_not_own_the_node() {
 }
 
 /// §7a: an unresolved `pending.json` record is a red banner on **every** screen, carrying the
-/// payment id and where to look — and it turns the node badge red (§7a's badge colours).
+/// amount, what is known and where to look — and it turns the **wallet** badge red.
 ///
 /// **v5.6 removed the two shell commands** (§2o.1): the banner named `wallet history --limit 5`
-/// and `wallet clear-pending --yes` at a user who cannot type into it. What it must still carry
-/// at every width is the amount, the destination, the counter, the id and the key that reaches
-/// the payments table.
+/// and `wallet clear-pending --yes` at a user who cannot type into it.
+///
+/// **Round 4 iteration 3 moved two things.** The badge: `node_state` returned `problem` for a
+/// pending payment, so a synced node answering nineteen peers reported a fault in the three-cell
+/// summary on every screen — the payment belongs to the wallet cell. And the counter: `0 of 1 sent`
+/// is `relayed_count`, an acknowledgement fmonero never got, and printed as a count it asserts
+/// that nothing went out, directly beside a Notes bullet saying it may already have gone. The
+/// banner carries `PendingStatus::progress_words` instead, the same wording the widget and the
+/// warning use.
 #[test]
 fn an_unresolved_pending_record_banners_every_screen() {
     let w = World::new("pending");
@@ -824,16 +830,25 @@ fn an_unresolved_pending_record_banners_every_screen() {
     state::set_pending_send(&w.ctx, &record).expect("the record");
     for screen in [Screen::Node, Screen::Wallet, Screen::Send, Screen::Log] {
         let s = sim(model(&w.ctx, screen));
-        assert_eq!(s.model().node_badge(), "problem", "{screen:?}");
+        assert_eq!(s.model().wallet_badge(), "payment may be out", "{screen:?}");
+        assert_ne!(
+            s.model().node_badge(),
+            "problem",
+            "a pending payment is not a fault of the node ({screen:?})"
+        );
         for (cw, ch) in [(150u16, 40u16), (120, 40), (70, 24), (45, 20)] {
             let text = sim_text(&s, cw, ch);
             // The banner wraps at a narrow width, so it is checked on the joined text: what
             // matters is that nothing is CUT OFF, which is what a fixed two-row banner did at
             // 45 columns.
             let flat = text.replace('\n', " ");
-            // **S10: no id in the banner**, so the three things checked are the amount, the
-            // counter and the route.
-            for needle in ["SENDING", "0.1000 XMR", "press 2 for the wallet"] {
+            // **S10: no id in the banner**, and no count of what was "sent": the three things
+            // checked are the amount, what is actually known, and the route.
+            for needle in [
+                "0.1000 XMR",
+                "may already have gone out",
+                "press 2 for the wallet",
+            ] {
                 assert!(
                     flat.contains(needle),
                     "{screen:?} at {cw}x{ch} lost {needle}:\n{text}"
@@ -1296,12 +1311,13 @@ fn every_wallet_empty_state_chip_is_a_hit_target_and_acts() {
 /// §7a.5's empty state, at the **Narrow** tier too: a screen whose whole content is three
 /// buttons has nothing to drop, and the tier where a user is most likely to be stuck is not the
 /// tier to hide the way out.
-/// The status bar's own badge follows §5: `idle`, not `down`, when the wallet daemon is behaving
-/// exactly as designed. That line is on every screen, so telling a user `down` there while §5 calls
-/// the same state an *info* and §6.4 keeps the bar icon calm would be the drift §2j is about, in
-/// the most-read place on the screen.
+/// **One state, one word** (round 4 iteration 3). This badge said `closed` where §5 raises
+/// `wallet_idle` and `not running` where it does not — the same fact, the service down with
+/// nothing open, read two ways depending on which mode the reader was in, while the Wallet
+/// screen's own row in the same frame said a third thing. The row's wording wins: `not running`.
+/// Calm-versus-alarm is the warning's job and the bar icon's; both branches painted the same tone.
 #[test]
-fn the_status_bar_says_idle_when_the_daemon_is_supposed_to_be_down() {
+fn the_status_bar_says_one_thing_when_the_wallet_service_is_down() {
     let w = World::new("idle-badge");
     let mut ctx = w.ctx.clone();
     ctx.settings.node.mode = fmonero_core::NodeMode::Remote;
@@ -1314,10 +1330,13 @@ fn the_status_bar_says_idle_when_the_daemon_is_supposed_to_be_down() {
         s.model().has_warning("wallet_idle"),
         "the fixture must actually reach the wallet_idle state, or this proves nothing"
     );
-    assert_eq!(s.model().wallet_badge(), "closed");
+    assert_eq!(s.model().wallet_badge(), "not running");
     let text = sim_text(&s, 120, 40);
-    assert!(text.contains("wallet closed"), "{text}");
-    assert!(!text.contains("wallet not running"), "{text}");
+    assert!(text.contains("wallet not running"), "{text}");
+    assert!(
+        !text.contains("wallet closed"),
+        "the frame must not offer a second word for this state:\n{text}"
+    );
 }
 
 /// **V3, as a render test.** Decision 7's own two lines — the ones v5.6 added so that a user who

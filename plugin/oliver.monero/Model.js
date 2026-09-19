@@ -255,15 +255,16 @@ function peersLabel(node) {
 // `status.pending` (§5) for the panel's pending row (§6.5). `showAmounts` is §6.2's showBalance:
 // with it off the row carries neither the amount nor the destination, because pending is the row
 // most likely to be on screen while someone is looking over a shoulder.
+// **No `0 of 1 sent`** (round 4 iteration 3). That counter was `relayed_count` — fmonero's record
+// of an acknowledgement it never got — printed directly above this panel's own warning saying the
+// payment *may already have gone out*. As a count it asserts that none went out, and the obvious
+// next move for whoever reads it is to send again. `pending.progress_words` is the one wording,
+// rendered once in Rust and shared with the TUI's banner and the warning (§5, §6.5).
 function pendingLabel(pending, showAmounts) {
   if (!pending) return ""
-  var head = "Sending"
-  if (showAmounts === true) {
-    head += " " + String(pending.total_amount_xmr) + " XMR to " + shortAddr(pending.dest)
-  }
-  var relayed = int(pending.relayed_count, 0), total = int(pending.total_count, 0)
-  if (total > 0 && relayed < total) head += " · " + relayed + " of " + total + " sent"
-  return head
+  var known = String(pending.progress_words || "may already have gone out")
+  if (showAmounts !== true) return "A payment " + known
+  return String(pending.total_amount_xmr) + " XMR to " + shortAddr(pending.dest) + " · " + known
 }
 
 // Highest severity among the Status warnings: "error", "warn", "info" or "".
