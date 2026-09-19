@@ -668,7 +668,13 @@ fn picker_pane(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
                         cells.push("—".into());
                     }
                     Some(p) if p.reachable => {
-                        cells.push(opt(p.latency_ms));
+                        // With its unit, as `node list`'s table says it (one vocabulary): the cell
+                        // read `20` under a header reading `ping`.
+                        cells.push(
+                            p.latency_ms
+                                .map(|ms| format!("{ms} ms"))
+                                .unwrap_or_else(|| "—".into()),
+                        );
                         cells.push(p.height.map(grouped).unwrap_or_else(|| "—".into()));
                         cells.push(match p.synchronized {
                             Some(true) => "yes".into(),
@@ -1388,15 +1394,22 @@ fn pool_pane(m: &Tui, area: Rect, frame: &mut Frame) {
                     .collect()
             },
         );
-        // **Two rows, so all four levels are on screen** (self-read, round 3): one row is 74
-        // cells and this pane is 42, so the third and fourth level were cut with nothing to say
-        // they existed — in the pane a user reads to choose between them.
-        let mut pairs = fees.into_iter();
-        let first: Vec<String> = pairs.by_ref().take(2).collect();
-        let rest: Vec<String> = pairs.collect();
-        lines.push(kv(th, "fee levels", first.join(" · ")));
-        if !rest.is_empty() {
-            lines.push(kv(th, "", rest.join(" · ")));
+        // **Two rows when one does not hold them** (self-read, round 3): all four levels are 74
+        // cells and this pane is 42 at the Wide tier, so the third and fourth were cut with nothing
+        // to say they existed — in the pane a user reads to choose between them. At 150 columns one
+        // row holds all four, and then splitting would be an arbitrary break.
+        let room = (inner.width as usize).saturating_sub(12);
+        let all = fees.join(" · ");
+        if all.width() <= room {
+            lines.push(kv(th, "fee levels", all));
+        } else {
+            let mut pairs = fees.into_iter();
+            let first: Vec<String> = pairs.by_ref().take(2).collect();
+            let rest: Vec<String> = pairs.collect();
+            lines.push(kv(th, "fee levels", first.join(" · ")));
+            if !rest.is_empty() {
+                lines.push(kv(th, "", rest.join(" · ")));
+            }
         }
     }
     lines_at(lines, inner, true, frame);
