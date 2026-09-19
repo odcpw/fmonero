@@ -1746,6 +1746,8 @@ fn wallet_screen(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
         body[1],
         &[
             (Button::RefreshWallet, "R", "Check for payments"),
+            // M16's shape: the key that changes which payments show is a chip, not a pane title.
+            (Button::KindFilter, "t", "What shows"),
             (Button::Qr, "Q", "QR code"),
             (Button::CloseWallet, "x", "Close wallet"),
         ],
@@ -1992,8 +1994,11 @@ fn wallet_header(m: &Tui, area: Rect, sync: Option<&str>, frame: &mut Frame) {
             th.warn(),
         ));
     }
+    // **The wallet's name says that it is one** (round 4's own read of the captures). It followed
+    // the balance bare, so the row read `1.234567891234 XMR   moneroli-test` — a figure and then a
+    // word, with nothing saying which of the two it names.
     if let Some(name) = &w.name {
-        spans.push(Span::styled(format!("   {name}"), th.dimmed()));
+        spans.push(Span::styled(format!("   in {name}"), th.dimmed()));
     }
     if let Some(behind) = w.blocks_behind.filter(|b| *b > 0) {
         spans.push(Span::styled(
@@ -2210,11 +2215,20 @@ impl RenderItem for HistoryItem<'_> {
 fn history_pane(m: &Tui, area: Rect, frame: &mut Frame, wide: bool) {
     let th = &m.theme;
     let focused = m.wallet.pane == Pane::History;
-    let title = format!(
-        " Payments  {} · t: {} ",
-        m.wallet.rows.len(),
-        m.wallet.kind.map_or("all", |k| k.as_str())
-    );
+    // **M16's shape, on this pane too** (round 4's own read): the title read `Payments  6 · t: all`
+    // — a key with a colon inside a pane title, which is the style that round removed from the peers
+    // pane and which appears nowhere else. The title says what is in the pane, the `[t]` chip on the
+    // row below says which key changes it, and the words are `TransferKind::words()`, so the header
+    // and the WHAT column cannot name one kind two ways.
+    let title = match m.wallet.kind {
+        None => format!(" Payments  {} ", m.wallet.rows.len()),
+        Some(k) => format!(
+            " Payments  {} of {} · {} only ",
+            m.visible_history().len(),
+            m.wallet.rows.len(),
+            k.words()
+        ),
+    };
     let Some(inner) = framed(area, th, &title, focused, frame) else {
         return;
     };

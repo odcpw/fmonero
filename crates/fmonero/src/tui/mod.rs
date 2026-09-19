@@ -1864,7 +1864,24 @@ impl Tui {
             hit::Button::PrevNode => self.previous_node(),
             // M16: the same code path the `b` key takes.
             hit::Button::SwapPeers => self.swap_peers_view(),
+            // M16's shape on the Payments pane: the same code path `t` takes.
+            hit::Button::KindFilter => self.cycle_kind(),
         }
+    }
+
+    /// `t` — step through which kinds of payment show (M16's chip).
+    fn cycle_kind(&mut self) -> Cmd<Msg> {
+        self.wallet.kind = match self.wallet.kind {
+            None => Some(TransferKind::In),
+            Some(TransferKind::In) => Some(TransferKind::Out),
+            Some(TransferKind::Out) => Some(TransferKind::Block),
+            Some(TransferKind::Block) => Some(TransferKind::Pending),
+            Some(TransferKind::Pending) => Some(TransferKind::Failed),
+            Some(TransferKind::Failed) => Some(TransferKind::Pool),
+            Some(TransferKind::Pool) => None,
+        };
+        self.wallet.list.borrow_mut().selected = Some(0);
+        self.load_history()
     }
 
     /// `b` — swap the peers table for the blocked addresses, and back (M16's chip).
@@ -1983,19 +2000,7 @@ impl Tui {
                 self.wallet.filter.set_focused(true);
                 self.wallet.pane = Pane::History;
             }
-            KeyCode::Char('t') => {
-                self.wallet.kind = match self.wallet.kind {
-                    None => Some(TransferKind::In),
-                    Some(TransferKind::In) => Some(TransferKind::Out),
-                    Some(TransferKind::Out) => Some(TransferKind::Block),
-                    Some(TransferKind::Block) => Some(TransferKind::Pending),
-                    Some(TransferKind::Pending) => Some(TransferKind::Failed),
-                    Some(TransferKind::Failed) => Some(TransferKind::Pool),
-                    Some(TransferKind::Pool) => None,
-                };
-                self.wallet.list.borrow_mut().selected = Some(0);
-                return self.load_history();
-            }
+            KeyCode::Char('t') => return self.cycle_kind(),
             KeyCode::Enter => match self.wallet.pane {
                 Pane::Subaddresses => {
                     if let Some(a) = self.selected_address() {

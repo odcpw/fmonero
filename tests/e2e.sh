@@ -744,7 +744,10 @@ else
   fm setup --units --dry-run --json
   expect_rc 3 "setup --units below the floor"
   expect_reason full_chain_refused "full_chain_refused"
-  expect_contains "ESTIMATE" "and the message says the floor is an estimate, not a measurement (§1.3)"
+  # Round 4: the word is lower case now — a refusal is a sentence, and a shouted word inside one
+  # was M13's finding about `OWN` on the Node screen.
+  expect_contains "an estimate rather than something measured here" \
+    "and the message says the floor is an estimate, not a measurement (§1.3)"
   # `--dry-run` so the global needs_yes check does not answer first: §4.2's own refusal is the
   # one being tested, and it is the flag PAIR that overrides the floor, never the flag.
   fm setup --units --full-chain --dry-run --json

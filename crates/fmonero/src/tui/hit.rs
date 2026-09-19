@@ -64,6 +64,8 @@ pub(super) enum Button {
     /// title — a style used nowhere else in the product and the one place a reader met a key
     /// without a chip around it.
     SwapPeers,
+    /// The same finding on the Payments pane, whose title read `Payments  6 · t: all`.
+    KindFilter,
     Help,
     NextScreen,
 }
