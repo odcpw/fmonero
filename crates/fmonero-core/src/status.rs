@@ -110,6 +110,13 @@ pub struct RemoteProbeStatus {
     pub version: Option<String>,
     pub latency_ms: Option<u64>,
     pub reason: Option<String>,
+    /// **`reason` in the words every surface shows** — [`crate::nodes::probe_reason_words`]
+    /// (round 4 iteration 3, v5.6.5). `None` when the check succeeded.
+    ///
+    /// The TUI reads the table directly and the widget could not, so `checkedLabel` had a `no
+    /// answer` of its own while the badge two inches away said `nothing listening`: one fact, two
+    /// wordings, on two surfaces of one document. Same reason `progress_words` is pre-rendered.
+    pub reason_words: Option<String>,
     pub probed_at: i64,
     pub age_sec: i64,
 }
@@ -126,6 +133,8 @@ impl RemoteProbeStatus {
             version: p.version.clone(),
             latency_ms: p.latency_ms,
             reason: p.reason.map(str::to_string),
+            reason_words: (!p.reachable)
+                .then(|| crate::nodes::probe_reason_words(p.reason).to_string()),
             probed_at: p.probed_at,
             age_sec: now.saturating_sub(p.probed_at).max(0),
         }

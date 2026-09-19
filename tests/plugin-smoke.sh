@@ -62,6 +62,16 @@ present() {
     bad "$name" "$PLUGIN/$file does not contain: $pattern"
   fi
 }
+# The other half of `present`: a pattern that must NOT be there. One string a round deleted comes
+# back the moment nothing asserts its absence (round 4 iteration 3).
+absent() {
+  local name="$1" file="$2" pattern="$3"
+  if grep -qF "$pattern" "$PLUGIN/$file" 2>/dev/null; then
+    bad "$name" "$PLUGIN/$file still contains: $pattern"
+  else
+    ok "$name"
+  fi
+}
 fires() {
   local name="$1" pattern="$2" content="$3" dir="$SELFTEST/$RANDOM$RANDOM"
   mkdir -p "$dir"
@@ -210,7 +220,7 @@ fires  "pico / 1e12" "$FLOATS" 'var xmr = status.wallet.balance_pico / 1e12'
 if command -v node >/dev/null 2>&1; then
   MODEL_TMP="$(mktemp -d)"
   sed '/^\.pragma library/d' "$PLUGIN/Model.js" > "$MODEL_TMP/model.js"
-  printf 'module.exports = { headerLine, walletSyncLabel, checkedLabel, walletStateLabel, nodeLabel, worstSeverity, age, blocksLeft, walletSyncPct, grouped, pendingLabel };\n' \
+  printf 'module.exports = { headerLine, checkedLabel, walletStateLabel, nodeLabel, worstSeverity, age, blocksLeft, walletSyncPct, grouped, pendingLabel };\n' \
     >> "$MODEL_TMP/model.js"
   # Fixture 1: the owner's machine as of 2026-09-18 — a public node, no wallet open, `wallet_idle`,
   # and a populated `node.remote_probe`.
@@ -268,7 +278,7 @@ console.log(JSON.stringify({
   checked: M.checkedLabel(s.node),
   checkedNoData: M.checkedLabel({}),
   wallet: M.walletStateLabel(s.wallet, s.warnings),
-  sync: M.walletSyncLabel(s),
+  sync: M.blocksLeft(s) > 0 ? M.grouped(M.blocksLeft(s)) + " blocks left" : "",
   left: M.blocksLeft(s),
   pct: M.walletSyncPct(s),
   worst: M.worstSeverity(s.warnings),
@@ -304,11 +314,13 @@ JS
   expect "an unchecked public node reads 'not checked yet'" "$CLOSED_OUT" \
     '"checkedNoData":"not checked yet"'
   # 5. **v5.6's wallet-sync fixture** (§6.7): the header is the wallet's, and the supporting line
-  #    carries the percentage and the remainder.
+  #    carries the remainder — **not the percentage again** (round 4 iteration 3): the two together
+  #    put `Wallet syncing 63%` over `Syncing 63% · 240 000 blocks left` on a two-line hero.
   expect "a wallet 240 000 blocks behind reads 'Wallet syncing 63%'" "$BEHIND_OUT" \
     '"header":"Wallet syncing 63%"'
-  expect "its supporting line is 'Syncing 63% · 240 000 blocks left'" "$BEHIND_OUT" \
-    '"sync":"Syncing 63% · 240 000 blocks left"'
+  expect "its supporting line is the remainder alone, not the percent again" "$BEHIND_OUT" \
+    '"sync":"240 000 blocks left"'
+  refuse "the old supporting line is gone" "$BEHIND_OUT" '"sync":"Syncing' 
   expect "the remainder is exact" "$BEHIND_OUT" '"left":240000'
   # 6. §2o rule 7 over the RENDERED rows, which is the half a source grep cannot prove.
   for word in daemon unit probe restricted trusted ssl "not available"; do
@@ -368,7 +380,12 @@ present "Model.checkedLabel exists" Model.js 'function checkedLabel'
 present "Panel.qml renders the node row from it" Panel.qml 'Model.nodeLabel'
 present "Panel.qml renders the check with its age" Panel.qml 'Model.checkedLabel'
 present "Model.headerLine is the hero's one string (§6.4)" Panel.qml 'Model.headerLine'
-present "Model.walletSyncLabel carries decision 7's line" Panel.qml 'Model.walletSyncLabel'
+# **The hero's second line carries the COUNT, and the header carries the percent** (round 4
+# iteration 3). `Model.walletSyncLabel` composed both into one string and the header already had the
+# percent, so a catching-up wallet read `Wallet syncing 99%` over `Syncing 99% · 6 122 blocks left`.
+# The function is gone; these two assertions are what stops it coming back.
+present "the hero's second line is the blocks-left count" Panel.qml 'Model.grouped(svc.blocksLeft) + " blocks left"'
+absent  "no walletSyncLabel: the percent is the header's alone" Model.js 'function walletSyncLabel'
 # W10: decision 7 is ONE sentence, and this is the assertion that keeps the widget's copy of it
 # from drifting from `fmonero_core::SYNC_KEEPS_GOING`. The Rust const is read out of the source
 # rather than restated here, so the two cannot be edited apart.

@@ -5948,10 +5948,35 @@ the assertion, because thirty payloads in a decisions log is bulk, not evidence.
 |---|---|---|
 | `manifest.json` | ~55 lines | schemaVersion 1, id `oliver.monero`, name "Monero", version, author, license, description, `kinds:["bar-widget"]`, `entryPoints.barWidget:"Panel.qml"`, `barWidget{displayName, description, category:"Finance", allowMultiple:false, defaultSection:"right", defaults{}, schema[]}` |
 | `Service.qml` | ≤ **360** (v5.6.4, was 340) | the state model (6.3), the two polls, the action queue |
-| `Panel.qml` | ≤ **870** (v5.6.5, was 850) | bar button + `KeyboardPanel` content (6.5) |
+| `Panel.qml` | ≤ **880** (v5.6.6, was 870) | bar button + `KeyboardPanel` content (6.5) |
 | `MoneroIcon.qml` | ≤ **112** (v5.6, was 96) | the Monero ⓜ glyph as `QtQuick.Shapes` + `PathSvg`; no image asset. The progress ring now draws the **wallet's** catch-up as well as a local node's sync (§6.4), which is one more arc and its percent source |
-| `Model.js` | ≤ **300** (v5.6.5, was 295) | pure formatters: `parseStatus(text)`, `shortAddr`, `age`, `rate`, `grouped`, **`headerLine(status)`** (v5.6 — §6.4's five-word header, from one first-match table), **`walletSyncLabel(status)`** (v5.6 — `Syncing 63% · 240 000 blocks left`), **`nodeLabel(node)`** (v5.6, renamed from `remoteLabel`), **`checkedLabel(node)`** (v5.6, renamed from `probeLabel`; still refuses to render a height without its age), `walletStateLabel`, `pendingLabel`, `peersLabel`, `worstSeverity`, `safeArgv` |
+| `Model.js` | ≤ **315** (v5.6.6, was 300) | pure formatters: `parseStatus(text)`, `shortAddr`, `age`, `rate`, `grouped`, **`headerLine(status)`** (v5.6 — §6.4's five-word header, from one first-match table), **`walletSyncLabel(status)`** (v5.6 — `Syncing 63% · 240 000 blocks left`), **`nodeLabel(node)`** (v5.6, renamed from `remoteLabel`), **`checkedLabel(node)`** (v5.6, renamed from `probeLabel`; still refuses to render a height without its age), `walletStateLabel`, `pendingLabel`, `peersLabel`, `worstSeverity`, `safeArgv` |
 | `README.md` | — | docs agent |
+
+**v5.6.6 raises the same two again, and this one is what the first live render paid for.** The
+session unlocked partway through round 4 iteration 3, `omarchy restart shell` went through, and this
+panel rendered in the live Omarchy shell for the first time — after which `plugin-smoke`'s live half
+passes for the first time too. Five items, four of them found by that render or by driving `Model.js`
+against documents this machine's binary produced.
+
+`Panel.qml` **+7**, to **871** measured: the journal carried two `TypeError: Value is null` warnings
+within a second of the restart, at `spendableLine` and at the locked row — `Service.qml:25` defines
+`wallet` as `status.wallet || null` and every other property in the file that touches it has the `&&`,
+while those two, both new that day, did not (**+4**). And the hero's second line is
+`grouped(blocksLeft) + " blocks left"`, built where it is used, because it read
+`Syncing 99% · 6 122 blocks left` under a header already saying `Wallet syncing 99%` (**+3**).
+
+`Model.js` **+11**, to **308** measured, **and one function deleted**. `walletSyncLabel` is gone: it
+composed the percent the header already owns. `nodeLabel` gains the two branches `output.rs`'s own
+first row has — `no node set up yet`, and `a node fmonero did not set up` for something answering on
+that port with nothing set up — because it said `your own node` under a hero reading
+`No node set up yet` (**+6**). And `checkedLabel` and `headerLine` read §5's new
+`remote_probe.reason_words` instead of a `no answer` of their own: the widget cannot call
+`probe_reason_words`, so the bar said `Public node · no answer` above a row reading
+`nothing listening · checked 4s ago` while the TUI's badge two inches away said the second (**+5**).
+
+So `Panel.qml` becomes **880** (measured 871) and `Model.js` **315** (measured 308). `QML_BUDGET`
+becomes **1 699**: 360 + 880 + 112 + 315 = 1 667, plus `manifest.json`'s 32 real lines.
 
 **v5.6.5 raises `Panel.qml` and `Model.js`, and states the arithmetic here before the code was
 written.** The measured v5.6.4 tree is **1 631** (`Panel` 846 · `Service` 351 · `MoneroIcon` 107 ·

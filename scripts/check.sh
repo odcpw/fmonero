@@ -953,6 +953,9 @@ fi
 # the same 32. `Panel.qml` +10 for X8 (`14 transactions` on the ` Waiting ` row) and `Model.js` +38
 # for X6 (one decimal byte formatter), X11 (one rounding, down), X13 (the public node's verdict on the
 # hero) and the notes for X10 and X30.
+# v5.6.6: **1699**, itemised in §6.1 before this line moved — 360 + 880 + 112 + 315 = 1 667 plus
+# manifest.json's 32 real lines. Five items, four found by the FIRST live render of this panel (the
+# session unlocked mid-round) and by driving Model.js against documents the binary produced.
 # v5.6.5: **1674**, itemised in §6.1 before this line moved — 360 + 870 + 112 + 300 = 1 642 plus
 # manifest.json's 32 real lines. Four items from round 4 iteration 3: the locked row's amount, the
 # hero's spendable line, the second problems-section exclusion, and `pendingLabel`'s wording.
@@ -961,7 +964,7 @@ fi
 # M26 (the in-app `action` a failed button never showed); `Model.js` +21 for M2 (one duration shape),
 # M27 (a row starting with a bare separator, and a header with no verdict) and M28 (the peers row
 # blaming a node that is off).
-QML_BUDGET=1674
+QML_BUDGET=1699
 if [ -d plugin/oliver.monero ]; then
   QML_LINES="$(cat plugin/oliver.monero/*.qml plugin/oliver.monero/*.js plugin/oliver.monero/manifest.json 2>/dev/null | grep -c '')"
   if [ "$QML_LINES" -le "$QML_BUDGET" ]; then
@@ -982,9 +985,9 @@ if [ -d plugin/oliver.monero ]; then
     fi
   done <<'PERFILE'
 360 Service.qml
-870 Panel.qml
+880 Panel.qml
 112 MoneroIcon.qml
-300 Model.js
+315 Model.js
 PERFILE
 else
   printf '  skip  §6.1 line budget: plugin/oliver.monero does not exist yet\n'

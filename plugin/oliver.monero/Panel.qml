@@ -30,7 +30,7 @@ Panel {
   // with the checked-out tree: a stale shell now fails the gate instead of decorating it. The token
   // is the first eight hex digits of the sha256 of the four widget files with this line removed, so
   // it cannot be left behind by an edit — the gate computes what it should be and says so.
-  readonly property string panelVersion: "qml-cfe3d947"
+  readonly property string panelVersion: "qml-2d885de2"
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent
@@ -122,7 +122,10 @@ Panel {
   // `checked 2m ago`, and the same sentence twice in a 380-pixel panel is what this removes.
   readonly property string heroMeta: {
     if (svc.binaryMissing || !svc.alive || svc.pending) return ""
-    if (svc.walletBehind) return Model.walletSyncLabel(svc.status)
+    // **What the header does not already say** (round 4 iteration 3): the header reads
+    // `Wallet syncing 99%` and this read `Syncing 99% · 6 122 blocks left` under it — the same
+    // percent twice on a two-line hero. The count is the half the header has no room for.
+    if (svc.walletBehind) return Model.grouped(svc.blocksLeft) + " blocks left"
     // **With money locked, what is spendable is the supporting fact** (round 4 iteration 3): the
     // header carries the balance, and reporting only that in a state where half of it cannot leave
     // the wallet was the one glance surface with no spendable figure at all. When nothing is

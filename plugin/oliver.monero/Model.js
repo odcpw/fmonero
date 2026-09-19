@@ -117,6 +117,13 @@ function shortAddr(addr) {
 function nodeLabel(node) {
   if (!node) return "—"
   if (node.layout === "remote") return "public node " + String(node.url || "")
+  // **Not `your own node` when there is not one yet** (round 4 iteration 3): the hero said
+  // `No node set up yet` while this row, in the same panel, said `your own node`. And something may
+  // still be answering on that port with nothing set up, which is a different fact from "there is no
+  // node" — the same two branches `output.rs`'s own first row draws.
+  if (node.layout === "none") {
+    return node.reachable === true ? "a node fmonero did not set up" : "no node set up yet"
+  }
   return "your own node"
 }
 
@@ -127,7 +134,11 @@ function checkedLabel(node) {
   var p = node && node.remote_probe ? node.remote_probe : null
   if (!p) return "not checked yet"
   var when = "checked " + age(int(p.age_sec, 0)) + " ago"
-  if (p.reachable !== true) return "no answer · " + when
+  // **`reason_words` from the document** (round 4 iteration 3, §5): this had a `no answer` of its
+  // own while the TUI's badge, its hero and its ` This node ` pane all rendered the specific
+  // phrase — `nothing listening`, `too slow`, `no secure connection` — from one table in Rust.
+  // One fact, one wording, and the widget cannot call that table.
+  if (p.reachable !== true) return String(p.reason_words || "no answer") + " · " + when
   var out = ""
   if (p.height !== null && p.height !== undefined) out += "block " + grouped(p.height)
   if (p.synchronized === true) out += (out === "" ? "" : " · ") + "synced"
@@ -178,13 +189,11 @@ function walletSyncPct(status) {
   return n > 0 && w > 0 ? Math.floor(w * 100 / n) : 0
 }
 
-// Decision 7's headline while a wallet is behind. The scanning happens inside the wallet
-// service, so it continues after the TUI's window closes — as fbittorrent's transfers do.
-function walletSyncLabel(status) {
-  var left = blocksLeft(status)
-  if (left <= 0) return ""
-  return "Syncing " + percent(walletSyncPct(status)) + " · " + grouped(left) + " blocks left"
-}
+// `walletSyncLabel` is **deleted** (round 4 iteration 3). It composed
+// `Syncing 99% · 6 122 blocks left` for the hero's second line, under a header already reading
+// `Wallet syncing 99%` — the same percent twice on a two-line hero, which is the defect §6.5 removes
+// from every other row. The hero's second line is `grouped(blocksLeft) + " blocks left"`, built
+// where it is used, and `headerLine` owns the percent.
 
 // §6.4's header line: **at most five words**, one first-match table, the only string the hero
 // renders. Ordered by what the user is waiting for — money moving, a wallet catching up, a
@@ -217,7 +226,9 @@ function headerLine(status, showAmounts, binaryMissing) {
     // was in one pane further down and nowhere else.
     var p = n.remote_probe
     if (!p) return "Public node · not checked yet"
-    if (p.reachable !== true) return "Public node · no answer"
+    // **`reason_words`, the same phrase the Checked row and the TUI's badge use** (round 4
+    // iteration 3): this said `no answer` above a row reading `nothing listening · checked 4s ago`.
+    if (p.reachable !== true) return "Public node · " + String(p.reason_words || "no answer")
     if (p.synchronized === true) return "Public node · synced · wallet closed"
     if (p.synchronized === false) return "Public node · syncing"
     // **M27: a verdict, even when the node did not give one.** A restricted public node answers
