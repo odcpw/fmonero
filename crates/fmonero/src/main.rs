@@ -1165,14 +1165,11 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                                 "rpc": serde_json::Value::Null,
                             })),
                         );
-                        // What cannot be known, said rather than implied (§2j, W20): nothing this
-                        // machine can ask reports a public node's own block, sync state or network
-                        // (§1b.9 item 5). The old sentence said it with two banned words and an
-                        // em-dash; the rows above now carry the cached check instead of dashes.
-                        out.note(format!(
-                            "fmonero cannot see this node's own block or whether it is on {}",
-                            ctx.settings.node.network
-                        ));
+                        // **The sentence that contradicted the row above it is gone** (X7). It
+                        // read `fmonero cannot see this node's own block` directly under a row
+                        // printing that block, unpunctuated, at column 0 against an eight-space
+                        // indent. What is true is in `node_info_human`, indented with the rows it
+                        // is about: the figures come from the last check rather than from now.
                         out.note("Try: fmonero status --check-node");
                         return Ok(0);
                     }
@@ -1752,12 +1749,9 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                     kinds.push(TransferKind::Pool);
                 }
                 if kinds.is_empty() {
-                    kinds = vec![
-                        TransferKind::In,
-                        TransferKind::Block,
-                        TransferKind::Out,
-                        TransferKind::Pending,
-                    ];
+                    // X17: one default set for the CLI and the TUI, so the same wallet cannot
+                    // read `5 payments` here and six rows on the Payments pane.
+                    kinds = TransferKind::DEFAULT_ROWS.to_vec();
                 }
                 let mut q = HistoryQuery {
                     account_index: acct,

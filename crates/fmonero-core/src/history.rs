@@ -108,6 +108,24 @@ impl TransferKind {
         TransferKind::Pool,
         TransferKind::Block,
     ];
+
+    /// **What "my payments" means when nobody asked for a subset** (X17).
+    ///
+    /// `wallet history` used `in`/`block`/`out`/`pending` and the TUI's Payments pane used those
+    /// plus `failed`, so one wallet read `5 payments` in the terminal and six rows on the screen —
+    /// the same question, two answers, and the row that differed was a payment that did not go
+    /// through. One constant, and both callers read it.
+    ///
+    /// `pool` is **not** here and that is deliberate on both surfaces: §4.1 sends the daemon round
+    /// trip `pool` needs only when the caller asked for pool rows. `--pool` asks for it in the CLI
+    /// and `t` reaches it in the TUI.
+    pub const DEFAULT_ROWS: &'static [TransferKind] = &[
+        TransferKind::In,
+        TransferKind::Block,
+        TransferKind::Out,
+        TransferKind::Pending,
+        TransferKind::Failed,
+    ];
 }
 
 impl std::fmt::Display for TransferKind {

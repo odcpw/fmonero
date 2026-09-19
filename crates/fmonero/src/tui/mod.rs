@@ -884,18 +884,11 @@ impl Tui {
     fn load_history(&self) -> Cmd<Msg> {
         let ctx = self.ctx.clone();
         let account = self.account_index();
-        let kinds = self.wallet.kind.map_or_else(
-            || {
-                vec![
-                    TransferKind::In,
-                    TransferKind::Out,
-                    TransferKind::Block,
-                    TransferKind::Pending,
-                    TransferKind::Failed,
-                ]
-            },
-            |k| vec![k],
-        );
+        // X17: the same default set `wallet history` uses, from one constant in core.
+        let kinds = self
+            .wallet
+            .kind
+            .map_or_else(|| TransferKind::DEFAULT_ROWS.to_vec(), |k| vec![k]);
         Cmd::task(move || {
             let read = || -> Result<HistoryRead, Error> {
                 let w = WalletClient::from_ctx(&ctx)?;

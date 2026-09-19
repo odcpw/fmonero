@@ -876,19 +876,23 @@ fn warnings(
         add(
             "node_restricted",
             Severity::Warn,
+            // §2o.2 says `payment`, and X8 found `transaction` on three surfaces at once.
             "This node only answers basic questions. Peers, traffic and bans are not shown, and \
-             the count of waiting transactions is a minimum."
+             the count of payments waiting is a minimum."
                 .into(),
             "fmonero doctor --only node",
             None,
         );
     }
     if s.node.synchronized == Some(false) {
-        let pct = s.node.sync_percent.unwrap_or(0.0);
+        // **One rounding for the whole program** (X11). `{:.0}` rounds, so a node at 33.5% read
+        // `Your node is 34% synced.` in the same frame as the bar's `Your node syncing 33%`.
+        // `crate::percent` rounds down, and every surface calls it.
+        let pct = crate::percent(s.node.sync_percent.unwrap_or(0.0));
         add(
             "node_syncing",
             Severity::Info,
-            format!("Your node is {pct:.0}% synced."),
+            format!("Your node is {pct} synced."),
             "fmonero node up --wait --wait-timeout 86400",
             Some("It keeps going on its own."),
         );
@@ -1031,16 +1035,25 @@ fn warnings(
         // rendered as prose is the shape this warning had on a bar 380 pixels wide, and it is
         // the most serious warning the program has. `pending.txs[].txid` carries the whole of
         // it for the agent that needs it.
-        let txid = s
+        // **The colon only when an id follows it** (X33). With an unreadable `pending.json` the
+        // sentence read `… may already have gone out: the recorded payment.` — a colon introducing
+        // something that is not an id, in the one state the reader most needs explained. Two
+        // sentences, and the second says what fmonero does not know.
+        let text = match s
             .pending
             .as_ref()
             .and_then(|p| p.txs.iter().find(|t| !t.relayed))
             .map(|t| crate::short_id(&t.txid))
-            .unwrap_or_else(|| "the recorded payment".to_string());
+        {
+            Some(id) => format!("A payment was prepared and may already have gone out: {id}."),
+            None => "A payment was prepared and may already have gone out. fmonero cannot read \
+                     which one it was."
+                .to_string(),
+        };
         add(
             "send_may_be_in_flight",
             Severity::Error,
-            format!("A payment was prepared and may already have gone out: {txid}."),
+            text,
             "fmonero wallet history --limit 5   # then: fmonero wallet clear-pending --yes",
             Some("Press 2 to look at your payments."),
         );

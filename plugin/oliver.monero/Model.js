@@ -44,17 +44,38 @@ function grouped(value) {
   return out
 }
 
+// A size, and the same divisor and the same labels as `fmonero_core::bytes` (X6). This divided by
+// **1024** and labelled the result `KiB`, so one waiting pool read `21.4 kB` in the CLI and
+// `20.9 KiB` here. `tests/plugin-smoke.sh` holds the two halves to the same output, as it does for
+// `grouped`. Integer arithmetic, with the one decimal place carried by hand, so the two cannot
+// drift through a rounding mode either.
 function bytes(n) {
   var v = Math.max(0, int(n, 0))
-  var u = ["B", "KiB", "MiB", "GiB", "TiB"]
+  var u = ["B", "kB", "MB", "GB", "TB"]
   var i = 0
-  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++ }
-  return (i === 0 ? v.toFixed(0) : v.toFixed(1)) + " " + u[i]
+  var scale = 1
+  while (i + 1 < u.length && Math.floor(v / scale) >= 1000) { scale *= 1000; i++ }
+  if (i === 0) return v + " B"
+  var whole = Math.floor(v / scale)
+  var tenths = Math.floor((v % scale) * 10 / scale)
+  return whole + "." + tenths + " " + u[i]
 }
 
 function rate(bps) {
   if (bps === null || bps === undefined) return "—"
   return bytes(bps) + "/s"
+}
+
+// How far along something is, and the same rounding as `fmonero_core::percent` (X11). The hero
+// floored and core's warning rounded, so one frame read `Your node syncing 33%` over `Your node is
+// 34% synced.` Rounded down is the half that cannot lie: only a node that is actually there
+// reads `100%`.
+function percent(p) {
+  var v = Number(p)
+  if (!isFinite(v)) v = 0
+  if (v < 0) v = 0
+  if (v > 100) v = 100
+  return Math.floor(v) + "%"
 }
 
 function age(sec) {
@@ -77,9 +98,15 @@ function shortAddr(addr) {
 }
 
 // §6.5's node row, in one line (v5.6). `node` is Status.node.
+//
+// **A node address is never shortened** (X10). `shortAddr` turned `public.example.net:18089` into
+// `public.e…:18089`, which names no node at all; the picker's own rule is address-first and
+// never-elided (§7a.4), and the owner's own 20-character address escaped only by being short
+// enough to fall under the threshold. A long one wraps in the panel, which is a row two lines
+// tall rather than a row that lies.
 function nodeLabel(node) {
   if (!node) return "—"
-  if (node.layout === "remote") return "public node " + shortAddr(String(node.url || ""))
+  if (node.layout === "remote") return "public node " + String(node.url || "")
   return "your own node"
 }
 
@@ -141,7 +168,7 @@ function walletSyncPct(status) {
 function walletSyncLabel(status) {
   var left = blocksLeft(status)
   if (left <= 0) return ""
-  return "Syncing " + walletSyncPct(status) + "% · " + grouped(left) + " blocks left"
+  return "Syncing " + percent(walletSyncPct(status)) + " · " + grouped(left) + " blocks left"
 }
 
 // §6.4's header line: **at most five words**, one first-match table, the only string the hero
@@ -158,7 +185,7 @@ function headerLine(status, showAmounts, binaryMissing) {
     return showAmounts === true
       ? "Sending " + String(status.pending.total_amount_xmr) + " XMR" : "Sending"
   }
-  if (walletBehind(status)) return "Wallet syncing " + walletSyncPct(status) + "%"
+  if (walletBehind(status)) return "Wallet syncing " + percent(walletSyncPct(status))
   if (w && w.open === true) {
     // **The SHORT field, never the exact one** (v5.6, §6.4, DECISIONS V16): a real balance is
     // `1.234567891234`, which makes this header 32 characters against a 380-pixel panel, and
@@ -170,25 +197,32 @@ function headerLine(status, showAmounts, binaryMissing) {
       ? "Wallet open · " + String(short) + " XMR" : "Wallet open"
   }
   if (n && n.layout === "remote") {
+    // **The verdict belongs on the hero too** (X13). With a public node that had been checked and
+    // had not answered, this read `Public node · wallet closed` — the one fact the reader needed
+    // was in one pane further down and nowhere else.
     var p = n.remote_probe
-    return p && p.reachable === true && p.synchronized === true
-      ? "Public node · synced · wallet closed" : "Public node · wallet closed"
+    if (!p) return "Public node · not checked yet"
+    if (p.reachable !== true) return "Public node · no answer"
+    if (p.synchronized === true) return "Public node · synced · wallet closed"
+    if (p.synchronized === false) return "Public node · syncing"
+    return "Public node · wallet closed"
   }
   if (!n || n.layout === "none") return "No node set up yet"
   if (n.reachable !== true) return "Your node is not running"
   if (n.synchronized !== true) {
-    var pct = n.sync_percent === null || n.sync_percent === undefined
-      ? 0 : Math.floor(n.sync_percent)
-    return "Your node syncing " + pct + "%"
+    return "Your node syncing " + percent(n.sync_percent)
   }
   return "Your node · synced · wallet closed"
 }
 
+// **One wording for peers, on all three surfaces** (X30). This read `↑ 16 out · ↓ 3 in`, the TUI's
+// status bar `16 out · 3 in` and `status` `peers 16 out / 3 in` — three renderings of one fact, and
+// the arrows added nothing the words `out` and `in` do not already say.
 function peersLabel(node) {
   if (!node) return "—"
   var out = node.outgoing_connections_count, inc = node.incoming_connections_count
   if (out === null || out === undefined) return "not shown by this node"
-  return "↑ " + int(out, 0) + " out · ↓ " + int(inc, 0) + " in"
+  return int(out, 0) + " out · " + int(inc, 0) + " in"
 }
 
 // `status.pending` (§5) for the panel's pending row (§6.5). `showAmounts` is §6.2's showBalance:

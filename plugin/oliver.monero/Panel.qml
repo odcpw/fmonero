@@ -513,10 +513,15 @@ Panel {
             DetailRow { label: "Peers"; value: Model.peersLabel(svc.node) }
             DetailRow {
               label: "Waiting"
+              // **`payments`, not `transactions`** (X8): §2o.2's vocabulary, and the word the
+              // TUI's own waiting pane and `node info` both use. Rule 7's list never carried
+              // `transaction`, which is why this surface, `output.rs` and the note modal all kept
+              // it through three rounds. Pluralised, because `1 payments` is the same defect as
+              // `Checked 1 nodes`.
               value: svc.node && svc.node.tx_pool_size !== null && svc.node.tx_pool_size !== undefined
-                ? Model.int(svc.node.tx_pool_size, 0) + " transactions"
-                  + (svc.node.restricted === true
-                     ? " (at least " + Model.int(svc.node.tx_pool_size, 0) + ")" : "")
+                ? Model.int(svc.node.tx_pool_size, 0)
+                  + (Model.int(svc.node.tx_pool_size, 0) === 1 ? " payment" : " payments")
+                  + (svc.node.restricted === true ? " or more" : "")
                 : "—"
             }
           }

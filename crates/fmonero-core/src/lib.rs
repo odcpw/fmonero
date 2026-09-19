@@ -122,6 +122,55 @@ pub fn age(seconds: u64) -> String {
     }
 }
 
+/// A size on disk or on the wire: `1.5 GB`, `842 kB`, `0 B` (X6).
+///
+/// **One implementation for the whole program.** There were three, and they disagreed about both
+/// halves: `output.rs` divided by 1000 and said `kB`, the TUI divided by 1024 and said `kB` (wrong
+/// for its own divisor), and the widget divided by 1024 and said `KiB` — so one waiting pool read
+/// `21.4 kB` in `node info`, `20.9 kB` in the TUI and `20.9 KiB` on the bar. The divisor is 1000
+/// and the labels are the decimal ones, which is what a disk meter and a download both show a
+/// person.
+///
+/// Integer arithmetic, with the one decimal place carried by hand: §2a.5's enforcement is a grep
+/// for `as f64` across `crates/*/src`, and a formatter that makes that grep fire is a formatter
+/// somebody later exempts — at which point the grep no longer protects the amount paths it exists
+/// for. Bytes are not money, but the grep cannot tell.
+pub fn bytes(n: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "kB", "MB", "GB", "TB"];
+    let mut unit = 0;
+    let mut scale: u64 = 1;
+    while unit + 1 < UNITS.len() && n / scale >= 1000 {
+        scale *= 1000;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{n} B")
+    } else {
+        let whole = n / scale;
+        let tenths = (n % scale) * 10 / scale;
+        format!("{whole}.{tenths} {}", UNITS[unit])
+    }
+}
+
+/// A size per second: `842 kB/s` (X29). The same formatter, so a rate and a total agree.
+pub fn bytes_per_sec(n: u64) -> String {
+    format!("{}/s", bytes(n))
+}
+
+/// How far along something is, in the one wording every surface uses: `34%`, `100%` (X11, X21).
+///
+/// **Rounded down, always.** There were three roundings — `{:.0}` in core's warning (which rounds
+/// 33.5 up to 34), `Math.floor` in the widget and the raw JSON number in the CLI (`100.0%`) — so
+/// one machine showed `Your node syncing 33%` over `Your node is 34% synced.` and `synced 100.0%`
+/// under a badge already reading `synced`. Rounding down is the half that cannot lie: a node at
+/// 99.97% reads `99%`, and only a node that is actually there reads `100%`.
+/// `plugin/oliver.monero/Model.js`'s `percent` is the JavaScript half of this function and
+/// `tests/plugin-smoke.sh` holds the two to the same output, the way `grouped` is held.
+pub fn percent(p: f64) -> String {
+    let clamped = if p.is_nan() { 0.0 } else { p.clamp(0.0, 100.0) };
+    format!("{}%", clamped.floor() as i64)
+}
+
 /// Enough of a payment id to recognise it: the first eight characters, then the last six (W8).
 ///
 /// A Monero id is 64 hexadecimal characters. Printed whole it is a paragraph in a panel 380
@@ -331,6 +380,33 @@ mod tests {
             !short_id(id).contains(&id[20..40]),
             "the middle of the id is what the shortening removes"
         );
+    }
+
+    /// X6 and X11: the two formatters round 4 collapsed, with the three answers the three old
+    /// implementations gave for one fact pinned as the thing that must not come back.
+    #[test]
+    fn one_byte_formatter_and_one_percent_for_every_surface() {
+        assert_eq!(bytes(0), "0 B");
+        assert_eq!(bytes(999), "999 B");
+        // The pool that read three ways: 21 400 bytes.
+        assert_eq!(bytes(21_400), "21.4 kB");
+        assert_eq!(bytes(2048), "2.0 kB");
+        assert_eq!(bytes(1_500_000_000), "1.5 GB");
+        assert_eq!(bytes(118_200_000_000), "118.2 GB");
+        assert!(
+            !bytes(2048).contains("KiB") && !bytes(2048).contains("2.0 kB/s"),
+            "the binary label and the rate suffix are not this function's"
+        );
+        assert_eq!(bytes_per_sec(0), "0 B/s");
+        assert_eq!(bytes_per_sec(8192), "8.1 kB/s");
+        // Rounded down: 33.5 is 33, and 99.97 is never "100".
+        assert_eq!(percent(33.5), "33%");
+        assert_eq!(percent(99.97), "99%");
+        assert_eq!(percent(100.0), "100%");
+        assert_eq!(percent(0.0), "0%");
+        assert_eq!(percent(-1.0), "0%");
+        assert_eq!(percent(101.0), "100%");
+        assert_eq!(percent(f64::NAN), "0%");
     }
 
     #[test]

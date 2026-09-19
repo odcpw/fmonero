@@ -20,6 +20,165 @@ pub fn stdout_is_tty() -> bool {
     unsafe { libc::isatty(1) == 1 }
 }
 
+/// How wide the line a person is reading may be (X3).
+///
+/// **The owner's rule is that nothing is clipped mid-word, and nothing here was wrapped at all**,
+/// so on his own 120-column terminal `doctor` split `se`/`rvice`, `status` split `esti`/`mate` and
+/// one `settings list` screen split fifteen words in half. The TUI has wrapped since W6; this file
+/// had no notion of a width.
+///
+/// Three sources, in this order, and the order is the seam the tests drive:
+/// 1. `COLUMNS`, when it parses to a sane width — what a test sets, and what a shell exports;
+/// 2. `TIOCGWINSZ` on stdout, which is the real terminal;
+/// 3. **100**, when stdout is not a terminal — a pipe has no width, and 100 is the width the
+///    project's own captures are read at.
+///
+/// Clamped to 40..=200: below 40 a table is unreadable whatever we do, and above 200 a paragraph
+/// stops being a paragraph.
+pub fn term_width() -> usize {
+    const FALLBACK: usize = 100;
+    const MIN: usize = 40;
+    const MAX: usize = 200;
+    if let Some(n) = std::env::var("COLUMNS")
+        .ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+    {
+        return n.clamp(MIN, MAX);
+    }
+    #[repr(C)]
+    struct WinSize {
+        rows: libc::c_ushort,
+        cols: libc::c_ushort,
+        xpixel: libc::c_ushort,
+        ypixel: libc::c_ushort,
+    }
+    let mut ws = WinSize {
+        rows: 0,
+        cols: 0,
+        xpixel: 0,
+        ypixel: 0,
+    };
+    // SAFETY: `TIOCGWINSZ` writes exactly one `struct winsize`, and that is the layout above.
+    let ok = unsafe { libc::ioctl(1, libc::TIOCGWINSZ, &mut ws) } == 0;
+    if ok && ws.cols > 0 {
+        return (ws.cols as usize).clamp(MIN, MAX);
+    }
+    FALLBACK
+}
+
+/// The display width of `s` with ANSI colour escapes discounted.
+///
+/// `paint` wraps a cell in `\x1b[32m…\x1b[0m`, and those bytes occupy no columns. A wrapper that
+/// counted them would wrap a green word four characters early and an uncoloured one correctly,
+/// which is a layout that changes when `--no-color` is passed.
+fn visible_width(s: &str) -> usize {
+    let mut width = 0;
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // `ESC [ … m` — consume through the final byte.
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for c in chars.by_ref() {
+                    if c.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        width += UnicodeWidthStr::width(c.to_string().as_str());
+    }
+    width
+}
+
+/// Wrap one line of prose to `width` columns, **never splitting a word**, with every continuation
+/// line indented to `hang` (X3).
+///
+/// The hanging indent is the other half of the defect: before this, a wrapped detail returned to
+/// column 0, so a continuation of an indented table row broke the table's own indent and a wrapped
+/// bullet read as a new bullet. A word longer than the whole width — an address, a 64-character id,
+/// a path — is put on its own line **whole**: §2a and `docs/COPY.md` §4 both say an address is
+/// never elided, and a word broken in half is exactly what this fix exists to remove.
+fn wrap_to(text: &str, width: usize, hang: usize) -> Vec<String> {
+    // The line's own leading spaces are structure, not prose: they start the first line and the
+    // hanging indent is measured from them.
+    let indent: String = text.chars().take_while(|c| *c == ' ').collect();
+    let body = &text[indent.len()..];
+    let hang_pad = " ".repeat(hang);
+    if body.is_empty() {
+        return vec![text.to_string()];
+    }
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = indent.clone();
+    let mut current_width = indent.chars().count();
+    let mut first_word = true;
+    for word in body.split(' ') {
+        if word.is_empty() {
+            // A run of spaces inside the line (a column gap) belongs to the word that follows.
+            if !first_word {
+                current.push(' ');
+                current_width += 1;
+            }
+            continue;
+        }
+        let w = visible_width(word);
+        let sep = usize::from(!first_word && !current.ends_with(' '));
+        if !first_word && current_width + sep + w > width {
+            lines.push(current.trim_end().to_string());
+            current = hang_pad.clone();
+            current_width = hang;
+            current.push_str(word);
+            current_width += w;
+        } else {
+            if sep == 1 {
+                current.push(' ');
+                current_width += 1;
+            }
+            current.push_str(word);
+            current_width += w;
+        }
+        first_word = false;
+    }
+    lines.push(current.trim_end().to_string());
+    lines
+}
+
+/// Wrap a line for a person: the terminal's width, and a hanging indent two columns in from the
+/// line's own indent so a continuation can never be read as a new row (X3).
+pub fn wrapped_lines(text: &str) -> Vec<String> {
+    let indent = text.chars().take_while(|c| *c == ' ').count();
+    wrap_to(text, term_width(), indent + 2)
+}
+
+/// Column widths for a table, from the terminal rather than from a constant (X3).
+///
+/// `mins` is what a column may never go below — an address column's minimum is the address, because
+/// `docs/COPY.md` §4 forbids eliding one — and `prefs` is what it takes when there is room. Slack
+/// goes to `flex`; a shortfall is taken from the widest column that is still above its minimum, one
+/// column at a time, so the table narrows evenly instead of one column collapsing.
+pub fn columns(mins: &[usize], prefs: &[usize], gap: usize, flex: usize) -> Vec<usize> {
+    debug_assert_eq!(mins.len(), prefs.len());
+    let total = term_width();
+    let gaps = gap * mins.len().saturating_sub(1);
+    let mut out: Vec<usize> = prefs.to_vec();
+    let sum = |v: &[usize]| -> usize { v.iter().sum::<usize>() + gaps };
+    while sum(&out) > total {
+        // The widest column that can still give a column back.
+        let Some(i) = (0..out.len())
+            .filter(|&i| out[i] > mins[i])
+            .max_by_key(|&i| out[i])
+        else {
+            break; // every column is at its minimum: the table is wider than the terminal, honestly
+        };
+        out[i] -= 1;
+    }
+    if sum(&out) < total && flex < out.len() {
+        out[flex] += total - sum(&out);
+    }
+    out
+}
+
 /// ANSI attributes, used only through [`Out::paint`].
 #[derive(Clone, Copy)]
 pub enum Paint {
@@ -103,35 +262,69 @@ impl Out {
         }
     }
 
-    /// A line of data on stdout.
+    /// A line of data on stdout, **wrapped to the terminal** with a hanging indent (X3).
+    ///
+    /// Wrapping is the default rather than an opt-in because the defect X3 names is a missed call
+    /// site: every one of `settings list`'s fifteen split words was a line somebody printed without
+    /// thinking about a width. A row whose columns are already measured uses [`Out::row`].
     pub fn line(&self, text: impl AsRef<str>) {
+        for line in wrapped_lines(text.as_ref()) {
+            println!("{line}");
+        }
+    }
+
+    /// A row whose width is already the terminal's: printed exactly as given.
+    ///
+    /// Tables size their own columns through [`columns`], so wrapping one here would undo that
+    /// work; a log line is the node's own output and is not ours to reflow either.
+    pub fn row(&self, text: impl AsRef<str>) {
         println!("{}", text.as_ref());
     }
 
-    /// A diagnostic on stderr. Never part of the data stream.
+    /// A diagnostic on stderr, wrapped the same way. Never part of the data stream.
     pub fn note(&self, text: impl AsRef<str>) {
-        eprintln!("{}", text.as_ref());
+        for line in wrapped_lines(text.as_ref()) {
+            eprintln!("{line}");
+        }
     }
 
     /// A diagnostic shown only with `-v`.
     pub fn verbose_note(&self, text: impl AsRef<str>) {
         if VERBOSE.load(std::sync::atomic::Ordering::SeqCst) > 0 {
-            eprintln!("{}", text.as_ref());
+            for line in wrapped_lines(text.as_ref()) {
+                eprintln!("{line}");
+            }
         }
     }
 
     /// Print an error the way the caller asked for it and return its exit code (§4).
+    ///
+    /// **A human gets a sentence, the in-app route and one runnable command — and no id** (X1).
+    /// This printed `fmonero: error[usage]: …` and `reason: non_loopback_url` at a person on every
+    /// single error. §2o's first paragraph puts `code_name` and `reason` in `--json`, where an agent
+    /// branches on them, and rule 5 says ids appear there **and nowhere else**. It is the same shape,
+    /// in the same kind of place — one function — that W1 closed in the doctor's table, and it
+    /// survived that round because the round read the doctor and not the CLI's envelope. `detail` was
+    /// already behind `-v` for exactly this reason, three lines below.
     pub fn report(&self, e: &Error) -> i32 {
         if self.json {
             println!("{}", e.json());
         } else {
-            eprintln!(
-                "{}: {}",
-                self.paint(&format!("fmonero: error[{}]", e.code_name()), Paint::Red),
-                e
-            );
-            if let Some(reason) = e.reason() {
-                eprintln!("  reason: {reason}");
+            // One sentence, with `fmonero:` in front of it so a person reading a scrollback knows
+            // which program is talking.
+            for line in wrap_to(
+                &format!("{}: {e}", self.paint("fmonero", Paint::Red)),
+                term_width(),
+                2,
+            ) {
+                eprintln!("{line}");
+            }
+            // The in-app route, when there is one (§2o.1): the key that fixes this without a
+            // command. It is the same sentence the TUI shows for the same error.
+            if let Some(action) = e.action() {
+                for line in wrap_to(&format!("  {action}"), term_width(), 4) {
+                    eprintln!("{line}");
+                }
             }
             // v5.6, §2o: the technical text — a transport error, an RPC method name, a serde
             // message — is no longer in the sentence, and this is one of its two homes (the
@@ -142,7 +335,9 @@ impl Out {
             }
             // §2o rule 11: `hint:` labelled a field; `Try:` is an instruction. The command
             // itself is unchanged — the CLI's own hints are the point of §9.
-            eprintln!("  Try: {}", e.hint());
+            for line in wrap_to(&format!("  Try: {}", e.hint()), term_width(), 8) {
+                eprintln!("{line}");
+            }
         }
         e.exit_code()
     }
@@ -160,26 +355,11 @@ pub use fmonero_core::grouped;
 
 /// `1.5 GB`, `842 kB` — decimal units, the way a disk meter reads.
 ///
-/// Integer arithmetic, with one decimal place carried by hand. Bytes are not money, but
-/// §2a.5's enforcement is a grep for float casts across `crates/*/src`, and a formatter that
-/// makes that grep fire is a formatter somebody later exempts — at which point the grep no
-/// longer protects the amount paths it exists for.
-pub fn human_bytes(n: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "kB", "MB", "GB", "TB"];
-    let mut unit = 0;
-    let mut scale: u64 = 1;
-    while unit + 1 < UNITS.len() && n / scale >= 1000 {
-        scale *= 1000;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{n} B")
-    } else {
-        let whole = n / scale;
-        let tenths = (n % scale) * 10 / scale;
-        format!("{whole}.{tenths} {}", UNITS[unit])
-    }
-}
+/// **The implementation is [`fmonero_core::bytes`]** and this is a re-export (X6). It lived here
+/// while the CLI was its only caller; the TUI and the widget then grew one each, with a different
+/// divisor and a different label, so one waiting pool read `21.4 kB`, `20.9 kB` and `20.9 KiB` on
+/// three surfaces of the same program.
+pub use fmonero_core::bytes as human_bytes;
 
 /// `3d 04h`, `2h 07m`, `45s`.
 pub fn human_uptime(secs: i64) -> String {
@@ -360,25 +540,46 @@ fn own_node_rows(out: &Out, node: &serde_json::Value) {
             .map(grouped)
             .unwrap_or_else(|| "—".to_string())
     ));
-    let size = node["database_size"]
-        .as_u64()
-        .map(human_bytes)
-        .unwrap_or_else(|| "—".to_string());
-    let up = node["uptime_sec"]
-        .as_i64()
-        .map(human_uptime)
-        .unwrap_or_else(|| "—".to_string());
-    // `disk {database_size}` labelled the chain's own size as free space (self-read, round 3):
-    // `disk 118.2 GB` beside a warning that 96 GB were free.
-    out.line(format!(
-        "        synced {}%  peers {} out / {} in  waiting {}  blockchain {}  running {}",
-        cell(&node["sync_percent"]),
-        cell(&node["outgoing_connections_count"]),
-        cell(&node["incoming_connections_count"]),
-        cell(&node["tx_pool_size"]),
-        size,
-        up
-    ));
+    // **Nothing is said with dashes** (X23). With the node off every field below is `null`, and the
+    // row read `synced —%  peers — out / — in  waiting —  blockchain —  running —` under a badge
+    // that had already said `not answering`: the shape §6.5 deleted from the widget and W3 deleted
+    // from the public-node rows above. The badge is the whole answer, and the footer carries the
+    // one thing to do about it.
+    if node["reachable"] != serde_json::Value::Bool(true) {
+        return;
+    }
+    // **Every field carries its noun and its unit** (X20, X21, X29, X30). It read
+    // `synced 100.0%` under a badge already saying `synced`, `peers 16 out / 3 in` against the
+    // TUI's `16 out · 3 in`, and a bare `waiting 12` whose noun was two panes away.
+    let mut fields = Vec::new();
+    if node["synchronized"] != serde_json::Value::Bool(true) {
+        if let Some(pct) = node["sync_percent"].as_f64() {
+            fields.push(format!("{} synced", fmonero_core::percent(pct)));
+        }
+    }
+    if let (Some(o), Some(i)) = (
+        node["outgoing_connections_count"].as_u64(),
+        node["incoming_connections_count"].as_u64(),
+    ) {
+        fields.push(format!("peers {o} out · {i} in"));
+    }
+    if let Some(n) = node["tx_pool_size"].as_u64() {
+        fields.push(format!(
+            "{n} {} waiting to be mined",
+            if n == 1 { "payment" } else { "payments" }
+        ));
+    }
+    if let Some(b) = node["database_size"].as_u64() {
+        // `disk {database_size}` labelled the chain's own size as free space (self-read, round 3):
+        // `disk 118.2 GB` beside a warning that 96 GB were free.
+        fields.push(format!("blockchain {}", human_bytes(b)));
+    }
+    if let Some(u) = node["uptime_sec"].as_i64() {
+        fields.push(format!("running {}", human_uptime(u)));
+    }
+    if !fields.is_empty() {
+        out.line(format!("        {}", fields.join("  ")));
+    }
 }
 
 /// `fmonero status` in human form, rendered from the §5 document's JSON so that the
@@ -529,11 +730,17 @@ fn money_human(out: &Out, v: &serde_json::Value) {
     ));
     let txs = v["txs"].as_array().map(Vec::as_slice).unwrap_or_default();
     if txs.len() > 1 {
-        out.line(format!("{} transactions:", txs.len()));
+        // **`payments`, not `transactions`** (X8): §2o.2's own word, on the one path where getting
+        // it wrong costs money. And the **short id** (X9), because 64 hexadecimal characters is a
+        // paragraph in a table; the whole id is two lines below under `payment id` and in `--json`.
+        out.line(format!("{} payments:", txs.len()));
         for t in txs {
             out.line(format!(
                 "  {}  {} XMR  fee {} XMR  {}",
-                cell(&t["txid"]),
+                t["txid"]
+                    .as_str()
+                    .map(fmonero_core::short_id)
+                    .unwrap_or_else(|| "—".to_string()),
                 cell(&t["amount_xmr"]),
                 cell(&t["fee_xmr"]),
                 if t["relayed"] == serde_json::Value::Bool(true) {
@@ -572,13 +779,22 @@ fn history_human(out: &Out, v: &serde_json::Value) {
         out.line("no payments");
         return;
     }
-    out.line(format!(
+    // **The columns are the terminal's and the headers carry their unit** (X3, X20). They were six
+    // constants adding up to 85 columns, and `amount` and `fee` were money with no unit in the cell
+    // or the header — rule 9, on the one table where the numbers are money.
+    let w = columns(
+        &[16, 7, 10, 9, 8, 6],
+        &[16, 7, 18, 12, 8, 6],
+        2,
+        2, // the amount column takes the slack: it is the widest real value here
+    );
+    out.row(format!(
         "{}  {}  {}  {}  {}  {}",
-        pad("date", 16),
-        pad("what", 7),
-        pad("amount", 18),
-        pad("fee", 12),
-        pad("confirms", 6),
+        pad("date", w[0]),
+        pad("what", w[1]),
+        pad("amount XMR", w[2]),
+        pad("fee XMR", w[3]),
+        pad("confirms", w[4]),
         "locked"
     ));
     for t in rows {
@@ -605,13 +821,13 @@ fn history_human(out: &Out, v: &serde_json::Value) {
             Some(false) => "",
             None => "—",
         };
-        out.line(format!(
+        out.row(format!(
             "{}  {}  {}  {}  {}  {}",
-            pad(&when, 16),
-            pad(kind, 7),
-            pad(&cell(&t["amount_xmr"]), 18),
-            pad(&cell(&t["fee_xmr"]), 12),
-            pad(&cell(&t["confirmations"]), 6),
+            pad(&when, w[0]),
+            pad(kind, w[1]),
+            pad(&cell(&t["amount_xmr"]), w[2]),
+            pad(&cell(&t["fee_xmr"]), w[3]),
+            pad(&cell(&t["confirmations"]), w[4]),
             locked
         ));
     }
@@ -631,18 +847,13 @@ fn history_human(out: &Out, v: &serde_json::Value) {
     ));
 }
 
+/// `wallet balance`. **No piconero** (X19): §2o.2 confines that word to the send confirm, where the
+/// exact integer is what the user is approving. Here it doubled the width of both figures and told
+/// a reader nothing they could use; `balance_pico` and `unlocked_pico` are unchanged in `--json`.
 fn balance_human(out: &Out, v: &serde_json::Value) {
     out.line(format!("account   {}", cell(&v["account_index"])));
-    out.line(format!(
-        "balance   {} XMR ({} piconero)",
-        cell(&v["balance_xmr"]),
-        cell(&v["balance_pico"])
-    ));
-    out.line(format!(
-        "unlocked  {} XMR ({} piconero)",
-        cell(&v["unlocked_xmr"]),
-        cell(&v["unlocked_pico"])
-    ));
+    out.line(format!("balance   {} XMR", cell(&v["balance_xmr"])));
+    out.line(format!("unlocked  {} XMR", cell(&v["unlocked_xmr"])));
     if v["blocks_to_unlock"].as_u64().unwrap_or(0) > 0 {
         out.line(out.paint(
             &format!(
@@ -657,18 +868,25 @@ fn balance_human(out: &Out, v: &serde_json::Value) {
         ));
     }
     if let Some(subs) = v["subaddresses"].as_array() {
-        // Only the FUNDED subaddresses are here (§5), so an absent row is not an absent
-        // subaddress — `wallet address` lists them all.
+        // Only the FUNDED addresses are here (§5), so an absent row is not an absent address —
+        // `wallet address` lists them all. `output(s)` became `1 piece` / `2 pieces`: a Monero
+        // output is not a word a reader looks up, and the count is only ever read as "how many
+        // separate bits this balance is in".
         out.line("addresses holding money:");
         for s in subs {
-            out.line(format!(
-                "  {} {}  {} XMR  unlocked {} XMR  {} output(s)  {}",
+            let pieces = s["num_unspent_outputs"].as_u64();
+            out.row(format!(
+                "  {} {}  {} XMR  unlocked {} XMR  in {} {}{}",
                 pad(&cell(&s["address_index"]), 3),
                 cell(&s["address"]),
                 cell(&s["balance_xmr"]),
                 cell(&s["unlocked_xmr"]),
-                cell(&s["num_unspent_outputs"]),
-                cell(&s["label"])
+                pieces.map(grouped).unwrap_or_else(|| "—".to_string()),
+                if pieces == Some(1) { "piece" } else { "pieces" },
+                match s["label"].as_str() {
+                    Some(l) if !l.is_empty() => format!("  {l}"),
+                    _ => String::new(),
+                }
             ));
         }
     }
@@ -682,7 +900,8 @@ fn address_human(out: &Out, v: &serde_json::Value) {
         .map(Vec::as_slice)
         .unwrap_or_default()
     {
-        out.line(format!(
+        // An address is never wrapped and never elided (§2a, `docs/COPY.md` §4).
+        out.row(format!(
             "  {} {}  {}{}",
             pad(&cell(&a["address_index"]), 3),
             cell(&a["address"]),
@@ -727,59 +946,70 @@ fn peers_human(out: &Out, v: &serde_json::Value) {
     match v["connections"].as_array() {
         Some(rows) => {
             out.line(format!(
-                "{} {} connected",
+                "{} {} connected right now",
                 rows.len(),
                 plural(rows.len(), "peer", "peers")
             ));
-            out.line(out.paint(
+            // **The columns are the terminal's, and every header is words with a unit** (X3, X20,
+            // X29). `average ↓ ↑` had no time unit at all and the cells read `↓2.1 kB ↑0 B`, which
+            // is a rate printed as a total; `STATE` rendered the node's own `synchronizing`
+            // against `synced` everywhere else in the program (§2o.2).
+            let w = columns(&[20, 5, 12, 11, 9, 20], &[40, 6, 12, 11, 9, 22], 2, 0);
+            out.row(out.paint(
                 &format!(
                     "  {}  {}  {}  {}  {}  {}",
-                    pad("host", 40),
-                    pad("port", 6),
-                    pad("state", 14),
-                    pad("block", 11),
-                    pad("connected", 9),
-                    "average ↓ ↑"
+                    pad("host", w[0]),
+                    pad("port", w[1]),
+                    pad("doing", w[2]),
+                    pad("block", w[3]),
+                    pad("for", w[4]),
+                    "average per second"
                 ),
                 Paint::Dim,
             ));
             for c in rows {
-                out.line(format!(
-                    "  {}  {}  {}  {}  {}  ↓{} ↑{}",
-                    pad(&cell(&c["host"]), 40),
-                    pad(&cell(&c["port"]), 6),
-                    pad(&cell(&c["state"]), 14),
+                out.row(format!(
+                    "  {}  {}  {}  {}  {}  {} down · {} up",
+                    pad(&cell(&c["host"]), w[0]),
+                    pad(&cell(&c["port"]), w[1]),
+                    pad(&peer_state_words(c["state"].as_str()), w[2]),
                     pad(
                         &c["height"]
                             .as_u64()
                             .map(grouped)
                             .unwrap_or_else(|| "—".to_string()),
-                        11
+                        w[3]
                     ),
                     pad(
                         &c["live_time"]
                             .as_i64()
                             .map(human_uptime)
                             .unwrap_or_else(|| "—".to_string()),
-                        9
+                        w[4]
                     ),
                     human_bytes(c["avg_download"].as_u64().unwrap_or(0)),
                     human_bytes(c["avg_upload"].as_u64().unwrap_or(0)),
                 ));
             }
         }
-        None => out.line(format!("connections   {NO_ANSWER}")),
+        None => out.line(format!("peers connected   {NO_ANSWER}")),
     }
-    for (key, title) in [("white", "known peers"), ("gray", "other peers")] {
+    // **Two lists a reader could not tell apart** (X29): `known peers` and `other peers` were the
+    // node's `white` and `gray` address books under names that say nothing, over a third heading
+    // reading `peers connected`. Each list now says what it is in the same line as its count.
+    for (key, title) in [
+        ("white", "Peers it has reached before"),
+        ("gray", "Peers it has only heard about"),
+    ] {
         match v[key].as_array() {
             Some(rows) => {
                 out.line(format!(
                     "{title}: {} {}",
                     rows.len(),
-                    plural(rows.len(), "peer", "peers")
+                    plural(rows.len(), "address", "addresses")
                 ));
                 for p in rows {
-                    out.line(format!(
+                    out.row(format!(
                         "  {}:{}  last seen {}",
                         cell(&p["host"]),
                         cell(&p["port"]),
@@ -794,6 +1024,23 @@ fn peers_human(out: &Out, v: &serde_json::Value) {
             }
             None => out.line(format!("{title}   {NO_ANSWER}")),
         }
+    }
+}
+
+/// A peer's connection state **in the program's own words** (X29).
+///
+/// `monerod` reports `synchronizing`, `normal`, `idle`, `standby` and `before_handshake`, and this
+/// table printed them raw: `synchronizing` in the `STATE` column against `synced` on every other
+/// surface, and `before_handshake` at a person. §2o.2 fixes `catching up` for the first.
+fn peer_state_words(state: Option<&str>) -> String {
+    match state {
+        Some("synchronizing") => "catching up".to_string(),
+        Some("normal") => "trading blocks".to_string(),
+        Some("idle") => "idle".to_string(),
+        Some("standby") => "waiting".to_string(),
+        Some("before_handshake") => "still connecting".to_string(),
+        Some(other) if !other.is_empty() => other.to_string(),
+        _ => "—".to_string(),
     }
 }
 
@@ -812,7 +1059,11 @@ fn node_info_human(out: &Out, v: &serde_json::Value) {
         public_node_rows(out, node);
         // §2m.3: no wallet-RPC method reports a public node's own state, so the rows above are
         // the whole of what this machine can know. Said once, in words, rather than implied by
-        // twenty-six dashes.
+        // twenty-six dashes — and **without contradicting the row above it** (X7): the figures
+        // are real, they are just not from now.
+        if !node["remote_probe"].is_null() {
+            out.line("        These figures are from the last check, not from now.");
+        }
         out.line("        Nothing else about a public node can be measured from this machine.");
         return;
     }
@@ -823,32 +1074,35 @@ fn node_info_human(out: &Out, v: &serde_json::Value) {
         cell(&node["nettype"])
     ));
     if let Some(p) = v["txpool"].as_object() {
+        // **`0 double spends` is gone** (X29): it is a phrase a reader looks up, it is zero on
+        // every healthy node, and nothing on this screen tells them what to do about it. The count
+        // stays in `node info --json`, where an agent reads it.
+        let n = p["txs_total"].as_u64();
         out.line(format!(
-            "        {} payments waiting to be mined  {}  fees {} XMR  {} double spends",
-            cell(&p["txs_total"]),
+            "        {} {} waiting to be mined  {}  fees {} XMR",
+            n.map(grouped).unwrap_or_else(|| "—".to_string()),
+            if n == Some(1) { "payment" } else { "payments" },
             p["bytes_total"]
                 .as_u64()
                 .map(human_bytes)
                 .unwrap_or_else(|| "—".to_string()),
             cell(&p["fee_total_xmr"]),
-            cell(&p["num_double_spends"]),
         ));
     }
     if let Some(sync) = v["sync"].as_object() {
         // **Both of these are arrays**, and `cell` renders an array by joining its elements —
         // which printed every field of every peer as one row (self-read, round 3). What a reader
         // wants from them is how many.
-        let count = |k: &str| {
-            sync[k]
-                .as_array()
-                .map(|a| a.len().to_string())
-                .unwrap_or_else(|| "—".to_string())
-        };
-        out.line(format!(
-            "        fetching blocks from {} peers, {} stretches in progress",
-            count("peers"),
-            count("spans"),
-        ));
+        //
+        // **`{n} stretches in progress` is gone** (X29): `spans` is the node's own word for a run
+        // of blocks it has asked one peer for, "stretches" was this program's translation of it,
+        // and neither is something a reader can act on. `sync.spans` stays in `--json`.
+        let peers = sync["peers"].as_array().map(|a| a.len());
+        out.line(match peers {
+            Some(1) => "        fetching blocks from 1 peer".to_string(),
+            Some(n) => format!("        fetching blocks from {n} peers"),
+            None => "        fetching blocks from an unknown number of peers".to_string(),
+        });
     }
 }
 
@@ -870,17 +1124,34 @@ fn nodes_human(out: &Out, v: &serde_json::Value) {
     // The picker's own column names (§7a.4): `their block` is what the list says, `block here` is
     // what this machine measured. They were both `block` under two group headings, and one of the
     // two headings carried a word §2o removes.
-    out.line(format!(
+    // **The columns come from the terminal** (X3), and the address column may never go below the
+    // widest address in the list: `docs/COPY.md` §4 forbids eliding one, here as in the picker.
+    let widest = rows
+        .iter()
+        .map(|r| UnicodeWidthStr::width(r["address"].as_str().unwrap_or("")) + 4)
+        .max()
+        .unwrap_or(24);
+    let w = if probed_any {
+        columns(
+            &[widest, 11, 11, 9, 8, 10, 6],
+            &[widest.max(44), 12, 12, 12, 8, 12, 6],
+            2,
+            0,
+        )
+    } else {
+        columns(&[widest, 11, 11, 9], &[widest.max(44), 12, 12, 12], 2, 0)
+    };
+    out.row(format!(
         "  {}  {}  {}  {}{}",
-        pad("address", 44),
-        pad("reliability", 12),
-        pad("their block", 12),
-        pad("last seen", 12),
+        pad("address", w[0]),
+        pad("reliability", w[1]),
+        pad("their block", w[2]),
+        pad("last seen", w[3]),
         if probed_any {
             format!(
                 "  {}  {}  {}",
-                pad("ping", 8),
-                pad("block here", 12),
+                pad("ping", w[4]),
+                pad("block here", w[5]),
                 "synced"
             )
         } else {
@@ -902,7 +1173,7 @@ fn nodes_human(out: &Out, v: &serde_json::Value) {
         let probe = &r["probe"];
         let probed = if probe.is_null() {
             if probed_any {
-                format!("  {}  {}  {}", pad("—", 8), pad("—", 12), "—")
+                format!("  {}  {}  {}", pad("—", w[4]), pad("—", w[5]), "—")
             } else {
                 String::new()
             }
@@ -914,14 +1185,14 @@ fn nodes_human(out: &Out, v: &serde_json::Value) {
                         .as_u64()
                         .map(|ms| format!("{ms} ms"))
                         .unwrap_or_else(|| "—".to_string()),
-                    8
+                    w[4]
                 ),
                 pad(
                     &probe["height"]
                         .as_u64()
                         .map(grouped)
                         .unwrap_or_else(|| "—".to_string()),
-                    12
+                    w[5]
                 ),
                 // The picker's three words, never the JSON `true`.
                 match probe["synchronized"].as_bool() {
@@ -941,43 +1212,57 @@ fn nodes_human(out: &Out, v: &serde_json::Value) {
                 )
             )
         };
-        out.line(format!(
-            "{mark} {}  {}  {}  {}{}{}",
-            pad(&cell(&r["address"]), 44),
-            pad(&health, 12),
+        // **`own` sits beside the address it describes** (X18). It was the row's last column, six
+        // columns to the right and under the heading `block here`, so every row carrying it
+        // misaligned: `slow.example:18081  —  —  —  too slow own`. The picker puts it in the
+        // address cell, and so does this table now.
+        //
+        // `web_compatible` is a flag for browser wallets and decides nothing here, so v5.6
+        // dropped its marker from the picker; W20 drops it from this table too, and leaves the
+        // field to `node list --json`.
+        let address = if custom {
+            format!("{} own", cell(&r["address"]))
+        } else {
+            cell(&r["address"])
+        };
+        out.row(format!(
+            "{mark} {}  {}  {}  {}{}",
+            pad(&address, w[0]),
+            pad(&health, w[1]),
             pad(
                 &r["health_last_height"]
                     .as_u64()
                     .map(grouped)
                     .unwrap_or_else(|| "—".to_string()),
-                12
+                w[2]
             ),
             pad(
                 &r["health_checked_at"]
                     .as_i64()
                     .map(|t| fmonero_core::age((fmonero_core::now_unix() - t).max(0) as u64))
                     .unwrap_or_else(|| "—".to_string()),
-                12
+                w[3]
             ),
             probed,
-            // `web_compatible` is a flag for browser wallets and decides nothing here, so v5.6
-            // dropped its marker from the picker; W20 drops it from this table too, and leaves the
-            // field to `node list --json`.
-            if custom {
-                out.paint(" own", Paint::Dim)
-            } else {
-                String::new()
-            },
         ));
     }
     // The footer, in the picker's words (W6, W20): what the list is, how old it is, and what was
     // left out of it, each count with the noun it counts.
+    // **One wording with the picker's own footer** (X31): this said `2 of 2 nodes from monero.fail`
+    // where the TUI said `2 nodes from monero.fail`, and `N of N` is a fraction that says nothing.
+    // The `N of M` form survives for the case it was written for — a list longer than `--limit`.
+    let total = v["total"].as_u64();
     let mut parts = vec![
-        format!(
-            "{} of {} nodes from monero.fail",
-            rows.len(),
-            cell(&v["total"])
-        ),
+        match total {
+            Some(t) if t as usize > rows.len() => {
+                format!("{} of {t} nodes from monero.fail", rows.len())
+            }
+            _ => format!(
+                "{} {} from monero.fail",
+                rows.len(),
+                if rows.len() == 1 { "node" } else { "nodes" }
+            ),
+        },
         format!(
             "list fetched {}",
             v["cache_age_sec"]
@@ -1016,7 +1301,9 @@ fn log_human(out: &Out, v: &serde_json::Value) {
         return;
     }
     for l in lines {
-        out.line(cell(l));
+        // The node's own log line, exactly as it wrote it (X3): a reflowed log is a log nobody can
+        // match against the file.
+        out.row(cell(l));
     }
     if v["truncated"] == serde_json::Value::Bool(true) {
         out.note("(earlier lines were not read)");
@@ -1050,7 +1337,11 @@ fn settings_human(out: &Out, v: &serde_json::Value) {
             &r["default_here"]
         });
         let marker = if value == default { " " } else { "*" };
-        out.line(format!(
+        // The key and its value are a measured row; the description below is prose and wraps with a
+        // hanging indent (X3). One screen of this table split fifteen words in half at 120 columns —
+        // `Se`/`t fmonero`, `yours`/`elf`, `defa`/`ult local` — and every continuation returned to
+        // column 0, breaking the indent the description sits in as well.
+        out.row(format!(
             "{marker} {}  {}",
             pad(&cell(&r["key"]), width),
             value
@@ -1134,11 +1425,165 @@ fn setup_human(out: &Out, v: &serde_json::Value) {
         // menu merge both pass it through `units::redact_login`.
         if let Some(diff) = a["diff"].as_str() {
             for line in diff.lines() {
-                out.line(format!("    {line}"));
+                // A diff line is the file's own text (X3): wrapping it would make it a diff of
+                // something else.
+                out.row(format!("    {line}"));
             }
         }
     }
     if dry {
         out.note("dry run: nothing was changed");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `COLUMNS` is process-wide, so the tests that drive the width seam take this first. Two of
+    /// them running at once would each read the other's width, which is a flake nobody can
+    /// reproduce.
+    static WIDTH_SEAM: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Set `COLUMNS`, run the body, put the environment back.
+    fn at_width<T>(cols: &str, body: impl FnOnce() -> T) -> T {
+        let _guard = WIDTH_SEAM.lock().unwrap_or_else(|e| e.into_inner());
+        let before = std::env::var("COLUMNS").ok();
+        // SAFETY: the mutex above is the only writer, and `term_width` is the only reader.
+        unsafe { std::env::set_var("COLUMNS", cols) };
+        let out = body();
+        match before {
+            Some(v) => unsafe { std::env::set_var("COLUMNS", v) },
+            None => unsafe { std::env::remove_var("COLUMNS") },
+        }
+        out
+    }
+
+    /// X3: the seam the whole wrapping fix hangs on. `COLUMNS` wins over the terminal, so a test
+    /// and a shell can both say how wide the reader's line is; a pipe gets 100.
+    #[test]
+    fn the_width_comes_from_columns_then_the_terminal_then_one_hundred() {
+        // The three widths the round asked for, driven through the environment seam.
+        for (set, want) in [("80", 80usize), ("100", 100), ("120", 120)] {
+            assert_eq!(at_width(set, term_width), want);
+        }
+        assert_eq!(
+            at_width("9", term_width),
+            40,
+            "a nonsense width is clamped, not obeyed"
+        );
+        assert_eq!(at_width("9000", term_width), 200);
+    }
+
+    /// X3, the assertion the owner's complaint is about: **no word is ever split**, at any of the
+    /// three widths, and every continuation line is indented past the first.
+    #[test]
+    fn no_word_is_split_at_eighty_one_hundred_or_one_hundred_and_twenty() {
+        // Three real lines from the captures the round read: the doctor's password-file detail,
+        // `status`'s clock warning and a `settings list` description.
+        let samples = [
+            "  Only you can read /run/user/1000/fmonero/run/monero-wallet-rpc.18693.login, and the wallet service asked fmonero for it.",
+            "  This machine's clock is 2h 39m away from real time. A clock this far out gets the times your money unlocks at wrong.",
+            "    Set fmonero's own log file yourself. Nothing is treated as the default local path when this is empty.",
+            "Where your wallet gets its blocks: local, a node on this machine, or remote, a public node someone else runs.",
+        ];
+        for width in [80usize, 100, 120] {
+            for sample in samples {
+                let indent = sample.chars().take_while(|c| *c == ' ').count();
+                let lines = wrap_to(sample, width, indent + 2);
+                // Every word of the original survives, in order, whole.
+                let want: Vec<&str> = sample.split_whitespace().collect();
+                let got: Vec<String> = lines
+                    .iter()
+                    .flat_map(|l| l.split_whitespace().map(str::to_string))
+                    .collect();
+                assert_eq!(
+                    want,
+                    got.iter().map(String::as_str).collect::<Vec<_>>(),
+                    "a word was split or lost at {width}: {lines:?}"
+                );
+                for l in &lines {
+                    assert!(
+                        visible_width(l) <= width || l.split_whitespace().count() == 1,
+                        "line over {width} columns and not a single long word: {l:?}"
+                    );
+                }
+                for l in lines.iter().skip(1) {
+                    assert!(
+                        l.starts_with(&" ".repeat(indent + 2)),
+                        "a continuation line must be indented past the first: {l:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// X3: a word longer than the line — an address, a 64-character id — goes on its own line
+    /// **whole**. `docs/COPY.md` §4 forbids eliding an address, and splitting one is worse.
+    #[test]
+    fn a_word_longer_than_the_line_is_never_broken() {
+        let a = "4".repeat(95);
+        let lines = wrap_to(&format!("To  {a}"), 80, 4);
+        assert!(lines.iter().any(|l| l.contains(&a)), "{lines:?}");
+        assert_eq!(lines.concat().matches('4').count(), 95);
+    }
+
+    /// X3: a coloured word occupies the columns it prints, not the bytes it carries.
+    #[test]
+    fn colour_escapes_do_not_count_towards_the_width() {
+        assert_eq!(visible_width("\x1b[32msynced\x1b[0m"), 6);
+        assert_eq!(visible_width("plain"), 5);
+    }
+
+    /// X3: a table narrows from the widest column that can still give a column back, and the
+    /// address column never goes below its minimum, because an address is never elided.
+    #[test]
+    fn a_table_takes_its_widths_from_the_terminal_and_protects_the_address() {
+        // 100 columns: the preferred widths fit, and the slack goes to the address.
+        let w = at_width("100", || columns(&[44, 11, 11, 9], &[44, 12, 12, 12], 2, 0));
+        assert_eq!(w.iter().sum::<usize>() + 6, 100, "{w:?}");
+        assert!(w[0] > 44, "the flexible column took the slack: {w:?}");
+        // 80 columns: every column is at its minimum, and the address column holds it — a row one
+        // column wider than the terminal is honest, an elided address is not.
+        let w = at_width("80", || columns(&[44, 11, 11, 9], &[44, 12, 12, 12], 2, 0));
+        assert_eq!(w, vec![44, 11, 11, 9], "{w:?}");
+        // 120 columns: it fits with room, and no column is ever below its minimum.
+        let w = at_width("120", || columns(&[44, 11, 11, 9], &[44, 12, 12, 12], 2, 0));
+        assert_eq!(w.iter().sum::<usize>() + 6, 120, "{w:?}");
+        assert!(w[1] >= 11 && w[2] >= 11 && w[3] >= 9, "{w:?}");
+    }
+
+    /// X1, from the other side: **no `code_name` and no `reason` reaches a human line.** The
+    /// envelope is asserted on the strings `report` builds, so a new arm cannot reintroduce one.
+    #[test]
+    fn a_human_error_carries_no_code_name_and_no_reason() {
+        let e = fmonero_core::Error::usage("'bad/name' is not a wallet name.")
+            .with_reason("bad_args")
+            .with_detail("the reason an agent branches on")
+            .with_hint("fmonero wallet list")
+            .with_action("Press o on the Wallet screen to pick one.");
+        // The three lines `report` prints for a human, built the same way it builds them.
+        let human = [
+            format!("fmonero: {e}"),
+            format!("  {}", e.action().unwrap()),
+            format!("  Try: {}", e.hint()),
+        ]
+        .join("\n");
+        assert!(!human.contains("error["), "{human}");
+        assert!(!human.contains("reason:"), "{human}");
+        assert!(!human.contains("bad_args"), "{human}");
+        assert!(
+            !human.contains("the reason an agent branches on"),
+            "{human}"
+        );
+        assert!(human.contains("is not a wallet name."), "{human}");
+        assert!(human.contains("Press o on the Wallet screen"), "{human}");
+        assert!(human.contains("Try: fmonero wallet list"), "{human}");
+        // And the two ids are still exactly where the agent contract puts them (§2o, §4).
+        let json = e.json().to_string();
+        assert!(
+            json.contains("bad_args") && json.contains("usage"),
+            "{json}"
+        );
     }
 }

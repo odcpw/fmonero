@@ -3060,24 +3060,13 @@ fn opt<T: std::fmt::Display>(v: Option<T>) -> String {
     v.map_or("—".to_string(), |x| x.to_string())
 }
 
-pub(super) fn bytes(n: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "kB", "MB", "GB", "TB"];
-    let mut v = n as f64;
-    let mut i = 0;
-    while v >= 1024.0 && i < UNITS.len() - 1 {
-        v /= 1024.0;
-        i += 1;
-    }
-    if i == 0 {
-        format!("{n} B")
-    } else {
-        format!("{v:.1} {}", UNITS[i])
-    }
-}
-
-fn rate(bps: u64) -> String {
-    format!("{}/s", bytes(bps))
-}
+/// A size, from the one formatter the CLI and the widget also read (X6).
+///
+/// This divided by **1024** and labelled the result `kB`, so it was wrong about its own divisor and
+/// disagreed with both other surfaces: the same waiting pool read `21.4 kB` in `node info` and
+/// `20.9 kB` here.
+pub(super) use fmonero_core::bytes;
+use fmonero_core::bytes_per_sec as rate;
 
 /// How long ago, in one wording for the whole program (W12). The implementation is
 /// [`fmonero_core::age`]: the doctor divided seconds by 60 itself and printed `342 min ago` for
