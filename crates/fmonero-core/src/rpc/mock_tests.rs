@@ -1985,3 +1985,283 @@ fn reap(pid: i32) {
         libc::waitpid(pid, &mut st, 0);
     }
 }
+
+#[test]
+fn selecting_a_node_preserves_the_open_wallet_and_updates_its_live_connection() {
+    let mut world = World::new("switch-preserves-wallet", &[], &[]);
+    let fixture = world.dir.join("systemctl.txt");
+    std::fs::write(
+        &fixture,
+        "fmonero-wallet-rpc.service active disabled yes 51002\n",
+    )
+    .unwrap();
+    world.ctx.systemctl = crate::context::Systemctl::Fixture(fixture.clone());
+    state::set_last_open(&world.ctx, "main", crate::address::NetType::Mainnet).unwrap();
+    let changed = crate::node_mode::set_remote(
+        &world.ctx,
+        "node.example:18081",
+        false,
+        false,
+        &CancelToken::new(),
+    )
+    .unwrap();
+    assert!(!changed.wallet_unit_restarted);
+    assert!(changed.wallet_must_reopen.is_none());
+    assert_eq!(state::last_open(&world.ctx).unwrap().unwrap().0, "main");
+    assert!(std::fs::read_to_string(fixture)
+        .unwrap()
+        .contains("active disabled yes 51002"));
+    let calls: Vec<_> = read_log(&world.wallet_log)
+        .into_iter()
+        .filter(|l| l["method"] == "set_daemon" && l["status"] == 200)
+        .map(|l| l["body"]["params"].clone())
+        .collect();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["address"], "node.example:18081");
+    assert_eq!(calls[0]["trusted"], false);
+    assert!(calls[0].get("username").is_none());
+    assert_eq!(
+        world.bodies(&world.wallet_log, "auto_refresh")[0]["enable"],
+        true
+    );
+    assert_eq!(world.count(&world.wallet_log, "close_wallet"), 0);
+    assert_eq!(world.count(&world.wallet_log, "open_wallet"), 0);
+}
+
+#[test]
+fn a_synced_local_node_does_not_make_a_behind_wallet_ready_to_send() {
+    let world = World::new("send-wallet-behind", &[], &["--scenario", "behind"]);
+    let error = send::build(
+        &world.ctx,
+        &world.wallet(),
+        send::NodeGate::Local(&world.node()),
+        &a_send(DEST),
+        &CancelToken::new(),
+    )
+    .unwrap_err();
+    assert_eq!(error.reason(), Some("wallet_catching_up"));
+    assert_eq!(world.count(&world.wallet_log, "transfer"), 0);
+    assert_eq!(world.count(&world.wallet_log, "relay_tx"), 0);
+}
+
+#[test]
+fn a_wallet_read_timeout_is_busy_and_does_not_erase_the_open_session() {
+    let mut world = World::new("status-wallet-busy", &[], &["--delay-ms", "300"]);
+    go_remote(&mut world.ctx, false);
+    world.ctx.timeouts.wallet = Duration::from_millis(50);
+    state::set_last_open(&world.ctx, "main", crate::address::NetType::Mainnet).unwrap();
+    let status = crate::status::status(&world.ctx).unwrap();
+    assert!(status.wallet.busy);
+    assert!(!status.wallet.reachable);
+    assert!(!status
+        .warnings
+        .iter()
+        .any(|w| w.id == "wallet_closed" || w.id == "wallet_idle"));
+    assert!(state::last_open(&world.ctx).unwrap().is_some());
+    assert_eq!(world.count(&world.wallet_log, "close_wallet"), 0);
+}
+
+#[test]
+fn creating_a_wallet_does_not_reopen_it() {
+    let world = World::new(
+        "create-once",
+        &[],
+        &["--fail", "open_wallet=-1:must not reopen"],
+    );
+    let created = crate::wallet_session::create(
+        &world.ctx,
+        &world.wallet(),
+        "new",
+        String::new(),
+        "English",
+        &|_| {},
+        &CancelToken::new(),
+    )
+    .unwrap();
+    assert_eq!(created.name, "new");
+    assert_eq!(world.count(&world.wallet_log, "open_wallet"), 0);
+    assert_eq!(world.count(&world.wallet_log, "close_wallet"), 0);
+    assert_eq!(state::last_open(&world.ctx).unwrap().unwrap().0, "new");
+}
+
+#[test]
+fn a_rejected_node_change_keeps_the_previous_selection_and_service_settings() {
+    let mut world = World::new(
+        "switch-rejected",
+        &[],
+        &["--fail", "set_daemon=-38:rejected"],
+    );
+    go_remote(&mut world.ctx, false);
+    let fixture = world.dir.join("systemctl.txt");
+    std::fs::write(
+        &fixture,
+        "fmonero-wallet-rpc.service active disabled yes 51002\n",
+    )
+    .unwrap();
+    world.ctx.systemctl = crate::context::Systemctl::Fixture(fixture);
+    world.ctx.settings.save(&world.ctx).unwrap();
+    crate::units::install(&world.ctx, false).unwrap();
+    let config = std::fs::read(world.ctx.paths.config_file()).unwrap();
+    let unit_path = world
+        .ctx
+        .paths
+        .systemd_user_dir
+        .join(&world.ctx.settings.wallet.unit);
+    let unit = std::fs::read(&unit_path).unwrap();
+    let error = crate::node_mode::set_remote(
+        &world.ctx,
+        "rejected.example:18081",
+        false,
+        false,
+        &CancelToken::new(),
+    )
+    .unwrap_err();
+    assert_eq!(error.reason(), Some("remote_address_rejected"));
+    assert_eq!(
+        std::fs::read(world.ctx.paths.config_file()).unwrap(),
+        config
+    );
+    assert_eq!(std::fs::read(unit_path).unwrap(), unit);
+}
+
+#[test]
+fn a_cancelled_node_change_does_not_save_the_selection() {
+    let world = World::new("switch-cancelled", &[], &[]);
+    let cancel = CancelToken::new();
+    cancel.cancel();
+    let error =
+        crate::node_mode::set_remote(&world.ctx, "cancelled.example:18081", false, false, &cancel)
+            .unwrap_err();
+    assert_eq!(error.exit_code(), 130);
+    assert!(!world.ctx.paths.config_file().exists());
+    assert_eq!(world.count(&world.wallet_log, "set_daemon"), 0);
+}
+
+#[test]
+fn failed_service_install_does_not_save_a_node_change() {
+    let mut world = World::new("switch-install-failed", &[], &[]);
+    let fixture = world.dir.join("systemctl.txt");
+    std::fs::write(&fixture, "").unwrap();
+    world.ctx.systemctl = crate::context::Systemctl::Fixture(fixture);
+    world.ctx.settings.save(&world.ctx).unwrap();
+    let config = std::fs::read(world.ctx.paths.config_file()).unwrap();
+    let blocked = world.dir.join("not-a-directory");
+    std::fs::write(&blocked, "blocked").unwrap();
+    world.ctx.paths.systemd_user_dir = blocked;
+    assert!(crate::node_mode::set_remote(
+        &world.ctx,
+        "unused.example:18081",
+        false,
+        false,
+        &CancelToken::new(),
+    )
+    .is_err());
+    assert_eq!(
+        std::fs::read(world.ctx.paths.config_file()).unwrap(),
+        config
+    );
+    assert_eq!(world.count(&world.wallet_log, "set_daemon"), 0);
+}
+
+#[test]
+fn a_wallet_client_reads_the_login_created_after_the_client() {
+    let world = World::new("login-after-client", &[], &[]);
+    let path = world
+        .ctx
+        .paths
+        .wallet_login_file(world.ctx.settings.wallet.port);
+    std::fs::remove_file(&path).unwrap();
+    let client = world.wallet();
+    assert_eq!(
+        client.get_version().unwrap_err().reason(),
+        Some("auth_refused")
+    );
+    write_login(&path);
+    assert!(client.get_version().is_ok());
+    assert_eq!(client.authenticated(), Some(true));
+}
+
+#[test]
+fn a_wallet_client_reloads_a_rotated_login_and_never_falls_back_to_the_old_one() {
+    let world = World::new("login-rotation", &[], &[]);
+    let path = world
+        .ctx
+        .paths
+        .wallet_login_file(world.ctx.settings.wallet.port);
+    std::fs::write(&path, "previous:outdated").unwrap();
+    let client = world.wallet();
+    assert!(client.get_version().is_err());
+    write_login(&path);
+    assert!(client.get_version().is_ok());
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(
+        client.get_version().unwrap_err().reason(),
+        Some("auth_refused")
+    );
+}
+
+#[test]
+fn wallet_controls_refuse_pending_payments_and_stop_preserves_the_node() {
+    let mut world = World::new("widget-wallet-controls", &[], &[]);
+    let fixture = world.dir.join("systemctl.txt");
+    std::fs::write(&fixture, "fmonero-wallet-rpc.service active disabled yes 51002\nfmonero-monerod.service active disabled yes 51003\n").unwrap();
+    world.ctx.systemctl = crate::context::Systemctl::Fixture(fixture);
+    state::set_last_open(&world.ctx, "main", crate::address::NetType::Mainnet).unwrap();
+    state::set_pending_send(
+        &world.ctx,
+        &PendingSend {
+            kind: PendingKind::Send,
+            account_index: 0,
+            dest: DEST.into(),
+            built_at: crate::now_unix(),
+            txs: vec![PendingTx {
+                txid: BUILT_TXID.into(),
+                amount: Piconero(1),
+                fee: Piconero(2),
+                relayed: false,
+                relayed_at: None,
+            }],
+        },
+    )
+    .unwrap();
+    let cancel = CancelToken::new();
+    assert_eq!(
+        crate::wallet_session::stop(&world.ctx, &cancel)
+            .unwrap_err()
+            .reason(),
+        Some("pending_send")
+    );
+    assert_eq!(
+        crate::wallet_session::close(&world.ctx, &world.wallet())
+            .unwrap_err()
+            .reason(),
+        Some("pending_send")
+    );
+    assert_eq!(
+        crate::wallet_session::open(&world.ctx, &world.wallet(), "other", String::new(), &cancel)
+            .unwrap_err()
+            .reason(),
+        Some("pending_send")
+    );
+    assert!(
+        crate::units::state(&world.ctx, &world.ctx.settings.wallet.unit)
+            .unwrap()
+            .active
+    );
+    assert_eq!(world.count(&world.wallet_log, "close_wallet"), 0);
+    assert_eq!(world.count(&world.wallet_log, "open_wallet"), 0);
+    assert!(state::last_open(&world.ctx).unwrap().is_some());
+    state::clear_pending_send(&world.ctx).unwrap();
+    crate::wallet_session::stop(&world.ctx, &cancel).unwrap();
+    assert!(
+        !crate::units::state(&world.ctx, &world.ctx.settings.wallet.unit)
+            .unwrap()
+            .active
+    );
+    assert!(
+        crate::units::state(&world.ctx, &world.ctx.settings.node.unit)
+            .unwrap()
+            .active
+    );
+    assert!(state::last_open(&world.ctx).unwrap().is_none());
+}

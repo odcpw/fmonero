@@ -179,7 +179,7 @@ done < <(jq -r '.barWidget.defaults | keys[]' "$M")
 # constant literal "--send" that opens the TUI's Send *screen* passes while a real
 # ["fmonero","wallet","send"] cannot — a substring grep would fail on this design's own widget, and
 # a grep that fails on correct code is a grep the first agent to hit it relaxes.
-MONEY_ARGV='"(send|sweep|open|create|restore|transfer|relay)"'
+MONEY_ARGV='"(send|sweep|create|restore|transfer|relay)"'
 forbid "no money argv element" "$MONEY_ARGV"
 fires  "money argv" "$MONEY_ARGV" 'Quickshell.execDetached(["fmonero","wallet","send"])'
 silent "money argv" "$MONEY_ARGV" 'Quickshell.execDetached(["fmonero","tui","--send"])'
@@ -197,9 +197,15 @@ SYSTEMCTL='systemctl'
 forbid "the widget never names systemctl" "$SYSTEMCTL"
 fires  "a planted systemctl argv" "$SYSTEMCTL" 'Quickshell.execDetached(["systemctl","--user","start","fmonero-wallet-rpc.service"])'
 
-SECRET='password'
-forbid "no wallet secret named in QML" "$SECRET"
-fires  "secret name" "$SECRET" 'property string password: ""   // the widget must never have one'
+# Owner-requested inline opening: a secret may exist transiently in a masked field and
+# private input pipe, never in an environment variable, file, command, or diagnostic log.
+SECRET='FMONERO_WALLET_PASSWORD|--password-file|console\.(log|warn|error).*secret'
+forbid "no password environment, file, or logging path" "$SECRET"
+fires "secret logging" "$SECRET" 'console.log(secret)'
+present "wallet opens through a private input pipe" Service.qml '"--password-stdin"'
+present "input is masked" Panel.qml 'password: true'
+present "secret buffer is cleared after writing" Service.qml 'secret = ""'
+present "power uses the guarded app command" Service.qml '["wallet", "stop", "--yes", "--json"]'
 
 # --- 7. no arithmetic on money in QML (DESIGN.md §2a.5, the QML half) ---------
 # Status JSON carries every amount as a pre-rendered `*_xmr` string, so the widget never needs a
@@ -328,7 +334,7 @@ JS
     '"header":"Wallet syncing 63%"'
   expect "its supporting line is the remainder alone, not the percent again" "$BEHIND_OUT" \
     '"sync":"240 000 blocks left"'
-  refuse "the old supporting line is gone" "$BEHIND_OUT" '"sync":"Syncing' 
+  refuse "the old supporting line is gone" "$BEHIND_OUT" '"sync":"Syncing'
   expect "the remainder is exact" "$BEHIND_OUT" '"left":240000'
   # 6. §2o rule 7 over the RENDERED rows, which is the half a source grep cannot prove.
   for word in daemon unit probe restricted trusted ssl "not available"; do

@@ -10,7 +10,7 @@
   "entryPoints": { "barWidget": "Panel.qml" },
   "barWidget": {
     "displayName": "Monero",
-    "description": "Watch the node sync, start and stop it, read the open wallet's balance, and open the fmonero TUI or doctor.",
+    "description": "Open and close wallets, watch syncing and balances, stop the wallet service, and reach advanced controls in the TUI.",
     "category": "Finance",
     "allowMultiple": false,
     "defaultSection": "right",

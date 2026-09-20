@@ -76,6 +76,8 @@ pub struct Transport {
     agent: crate::rpc::Agent,
     base: String,
     auth: Option<Login>,
+    /// Wallet services generate a new login at startup, after callers build their client.
+    wallet_login_file: Option<std::path::PathBuf>,
     probe: Duration,
     transfer: Duration,
     refresh: Duration,
@@ -97,6 +99,7 @@ impl Transport {
             agent: crate::rpc::agent(timeout),
             base: url.trim_end_matches('/').to_string(),
             auth,
+            wallet_login_file: None,
             probe: timeout,
             transfer: timeout,
             refresh: timeout,
@@ -133,6 +136,7 @@ impl Transport {
             agent: crate::rpc::agent(longest),
             base: url.trim_end_matches('/').to_string(),
             auth,
+            wallet_login_file: None,
             probe,
             transfer: t.transfer,
             refresh: t.refresh,
@@ -162,7 +166,19 @@ impl Transport {
     /// Whether this transport carries a credential at all — the doctor's `wallet_rpc_auth`
     /// and §2c's `auth_refused`/`unreachable` split read it.
     pub fn has_login(&self) -> bool {
-        self.auth.is_some()
+        self.request_login().is_some()
+    }
+
+    pub(crate) fn with_wallet_login_file(mut self, path: std::path::PathBuf) -> Self {
+        self.wallet_login_file = Some(path);
+        self
+    }
+
+    fn request_login(&self) -> Option<Login> {
+        match &self.wallet_login_file {
+            Some(path) => Login::from_wallet_login_file(path).unwrap_or(None),
+            None => self.auth.clone(),
+        }
     }
 
     pub fn base(&self) -> &str {
@@ -202,10 +218,14 @@ impl Transport {
         }
         let url = format!("{}{path}", self.base);
         let timeout = self.deadline(d);
+        // Re-read for each operation, including startup probes. Missing or invalid files
+        // never fall back to credentials from an earlier service instance. One operation
+        // still uses one credential and at most one Digest challenge retry.
+        let auth = self.request_login();
         let mut attempt = 0;
         loop {
             attempt += 1;
-            let authorization = match (&self.auth, live.session.as_mut()) {
+            let authorization = match (&auth, live.session.as_mut()) {
                 (Some(login), Some(session)) => {
                     Some(digest::authorization(session, login, "POST", path))
                 }
@@ -230,7 +250,7 @@ impl Transport {
             if answer.status == 401 {
                 // A second 401 in a row is exit 4 (§2c): either we have no credential, or
                 // the one we have is wrong.
-                if attempt >= 2 || self.auth.is_none() {
+                if attempt >= 2 || auth.is_none() {
                     live.authenticated = None;
                     return Err(RpcError::Unauthorized);
                 }

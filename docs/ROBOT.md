@@ -81,7 +81,7 @@ REMOTE NODE (§2m)
     wallet.autostart       start the wallet daemon when `fmonero tui` launches. false.
   Two commands, both --yes, both --dry-run capable, both idempotent:
     fmonero node remote <host:port> --yes     # writes the keys, re-renders the units,
-                                              # restarts monero-wallet-rpc if it was running
+                                              # updates the open wallet without restarting it
                                               # AND the rendered unit changed
     fmonero node local --yes                  # the way back
   And, since v5.5, the command that finds the address the first one needs:
@@ -141,6 +141,14 @@ TIMEOUTS AND HANGS
 
 WALLETS WITHOUT A TERMINAL
   FMONERO_WALLET_PASSWORD=… fmonero wallet open <name>    # or --password-file <0600 file>
+  fmonero wallet open <name> --password-stdin --json
+  With --password-stdin, supply a single newline-terminated UTF-8 line over a pipe. Trailing
+  spaces are preserved; missing newline, more than 16384 bytes, or a 10-second input timeout
+  is an error. Interactive terminals should use the ordinary prompt. The widget uses this pipe
+  and clears its masked input immediately after submission; it writes no password file.
+  fmonero wallet stop --yes --json saves and stops the wallet service, leaving the local node
+  alone. Payload: {ok, schema, stopped: true, open: false}. Open, create, close, and stop all
+  refuse while a payment is pending or being prepared.
   The password never reaches argv, and no seed, spend key, view key or transaction key ever
   appears in output, in state or in a log line.
 

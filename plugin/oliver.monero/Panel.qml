@@ -5,48 +5,23 @@ import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
+import qs.Ui as Ui
 import "Model.js" as Model
 
-// Bar button plus keyboard-driven panel for Monero. Everything shown here comes from
-// `fmonero status --json` (DESIGN.md §5) and every action is an argv array; the QML holds no
-// Monero logic of its own (§6). Amounts are the pre-rendered `*_xmr` strings Status already
-// carries — the panel never does arithmetic on money (§2a.5, §6.5).
 Panel {
   id: root
   moduleName: "oliver.monero"
   ipcTarget: "oliver.monero"
   manageIpc: false
 
-  // **Which QML the shell is actually running** (v5.6.1, DECISIONS V1).
-  //
-  // The v5.6 redesign — the whole answer to the owner's *"the text in the widget isn't clear or
-  // useful"* — had never rendered on his bar: Quickshell holds the loaded QML, a symlink does not
-  // hot-reload (§1.5), `omarchy restart shell` is refused while the session is locked, and nothing
-  // could tell. `tests/plugin-smoke.sh` asserted only that `cursor` returned a JSON object, and the
-  // evidence that the panel was the PREVIOUS one — a section named `warnings`, which this file does
-  // not build — sat unread inside the passing assertion's own message.
-  //
-  // So the panel states its own version, the `cursor` payload carries it, and the gate compares it
-  // with the checked-out tree: a stale shell now fails the gate instead of decorating it. The token
-  // is the first eight hex digits of the sha256 of the four widget files with this line removed, so
-  // it cannot be left behind by an edit — the gate computes what it should be and says so.
-  readonly property string panelVersion: "qml-5fba81b1"
+  readonly property string panelVersion: "qml-63e18992"
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
-  // ---- bar icon state (DESIGN.md §6.4, first match wins) -------------------
   readonly property bool anyError: Model.worstSeverity(svc.warnings) === "error"
-  // Cases 6 and 7 are v5.2's remote rows, and they sit ABOVE the three node rows deliberately
-  // (§6.4): `!nodeUp`, `!synced` and the percent ring all read fields that are null in remote
-  // mode, so left below they would draw a crossed glyph and a 0 % ring for a wallet that is
-  // working perfectly — a bar icon claiming the node is down.
-  // Case 8 is v5.6's `walletBehind`, and it sits ABOVE both remote rows deliberately (§6.4): a
-  // wallet catching up is the one long-running thing this product does that the user waits on, it
-  // happens in both modes, and with a public node v5.5 had no ring at all — the icon said "public
-  // node, wallet open" for twenty minutes while the wallet scanned a million blocks.
   readonly property int iconCase: !svc.alive ? 0
     : anyError ? 1
     : svc.walletBehind ? 8
@@ -56,26 +31,17 @@ Panel {
     : !svc.synced ? 3
     : svc.walletOpen ? 4 : 5
   readonly property color barIconColor: iconCase === 1 ? urgent
-    : (iconCase === 0 || iconCase === 2) ? Qt.darker(barForeground, 1.55) : barForeground
+    : (iconCase === 0 || iconCase === 2 || (!svc.walletUp && !svc.walletReachable)) ? Qt.darker(barForeground, 1.55) : barForeground
   readonly property bool iconCrossed: iconCase === 0 || iconCase === 2
   readonly property bool iconWarning: iconCase <= 1
   readonly property bool iconFilled: iconCase === 4 || iconCase === 6 || iconCase === 8
-  // A small chevron in the same badge slot the warning badge uses, in `barForeground` rather
-  // than `urgent`: remote mode is a configuration, not a fault (§6.4).
   readonly property bool iconRemote: iconCase === 6 || iconCase === 7 || (iconCase === 8 && svc.remote)
-  // The ring draws the **wallet's** catch-up in case 8 and the node's own sync in case 3. The
-  // wallet's percent is available with a public node precisely because the cached check supplies a
-  // node height (§6.3); when it is not, case 8 does not match and no ring is drawn from a guess.
   readonly property real iconRing: iconCase === 8 ? svc.walletSyncPct / 100
     : iconCase === 3 ? svc.syncPct / 100 : -1
-  // The number only when the bar is tall enough to draw two legible digits inside the ring.
   readonly property string iconPercent: !(bar && bar.barSize >= 30) ? ""
     : iconCase === 8 ? String(svc.walletSyncPct)
     : iconCase === 3 ? String(svc.syncPct) : ""
 
-  // **The header line, plus at most two supporting facts** (§6.4, v5.6). It never contains a
-  // block number, a peer count or a sync phrase it does not have, and with a public node the
-  // check's age travels with its height in one string, for §5's reason.
   readonly property string headerLine:
     Model.headerLine(svc.status, svc.showBalance, svc.binaryMissing)
   readonly property string tooltipText: {
@@ -85,26 +51,53 @@ Panel {
     return parts.join(" · ")
   }
 
-  // ---- panel state ---------------------------------------------------------
   property bool cursorActive: false
   property string focusSection: "header"
   property int selectedIndex: 0
+  property bool choosingWallet: false
+  property string selectedWallet: ""
+  function showWalletPicker() {
+    if (svc.busy) return
+    choosingWallet = true
+    selectedWallet = ""
+    unlockField.clear()
+    svc.listWallets()
+    setCursor("picker", 0)
+    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
+  function chooseWallet(index) {
+    if (svc.busy || index < 0 || index >= svc.wallets.length) return
+    if (svc.walletOpen && svc.wallet.name === svc.wallets[index]) { dismissPicker(); return }
+    selectedWallet = String(svc.wallets[index])
+    unlockField.clear()
+    Qt.callLater(function() { unlockField.forceActiveFocus(); scrollItemIntoView(unlockForm) })
+  }
+  function dismissPicker() {
+    unlockField.clear()
+    selectedWallet = ""
+    choosingWallet = false
+    setCursor("header", 0)
+    keyCatcher.forceActiveFocus()
+  }
+  function submitWallet() {
+    if (svc.openWallet(selectedWallet, unlockField.text)) unlockField.clear()
+  }
+  function powerAction() {
+    if (svc.busy) return
+    if (svc.walletUp || svc.walletReachable) svc.stopWallet()
+    else showWalletPicker()
+  }
+  function activateHeader(index) {
+    if (index === 0) showWalletPicker()
+    else if (index === 1) { svc.openTui(); root.close() }
+    else if (index === 2) { svc.refresh(); if (choosingWallet) svc.listWallets() }
+    else powerAction()
+  }
 
   readonly property bool walletHidden: !svc.showBalance
-  // 0 = nothing to act on, 2 = copy + check for payments. A **closed wallet is a state, never a
-  // warning** (§6.5), and the `Open wallet…` button below is its action — so it has no row here.
-  readonly property int walletTargets: svc.walletOpen ? 2 : 0
+  readonly property int walletTargets: svc.walletOpen && !choosingWallet ? 3 : 0
   readonly property bool lockedFunds:
     svc.walletOpen && Model.int(svc.wallet.blocks_to_unlock, 0) > 0
-  // Minutes from `time_to_unlock_sec`, or two per block, which is Monero's block time. **The
-  // amount comes from `wallet.locked_xmr`** (round 4 iteration 3): it is `balance - unlocked`,
-  // arithmetic on money, which §2a.5 forbids in QML outright — so Status now carries it
-  // pre-rendered and this row reads the same string the TUI's otherwise identical line does.
-  // `unlocked_xmr_short` is pre-rendered in Rust, for `balance_xmr_short`'s reason (§2a.5, §6.4).
-  // **`svc.wallet` is `status.wallet || null`** (Service.qml:25), so every read of it is guarded —
-  // which is how the first live render of this panel found two `TypeError: Value is null` warnings
-  // in the journal within a second of the shell restarting (round 4 iteration 3). Every other
-  // property in this file that touches `wallet` has the same `&&`, and these two did not.
   readonly property string spendableLine: {
     if (root.walletHidden || !svc.wallet) return "some of it is locked"
     var short = svc.wallet.unlocked_xmr_short || svc.wallet.unlocked_xmr
@@ -117,19 +110,10 @@ Panel {
     return Model.int(svc.wallet.blocks_to_unlock, 0) * 2
   }
 
-  // §6.5: **the one fact that explains the header**, and nothing when a row below would repeat
-  // it — which is why a `Public node…` header has no second line: the `Checked` row already says
-  // `checked 2m ago`, and the same sentence twice in a 380-pixel panel is what this removes.
   readonly property string heroMeta: {
     if (svc.binaryMissing || !svc.alive || svc.pending) return ""
-    // **What the header does not already say** (round 4 iteration 3): the header reads
-    // `Wallet syncing 99%` and this read `Syncing 99% · 6 122 blocks left` under it — the same
-    // percent twice on a two-line hero. The count is the half the header has no room for.
+    if (svc.walletBusy) return "A scan may be in progress. Checking again shortly."
     if (svc.walletBehind) return Model.grouped(svc.blocksLeft) + " blocks left"
-    // **With money locked, what is spendable is the supporting fact** (round 4 iteration 3): the
-    // header carries the balance, and reporting only that in a state where half of it cannot leave
-    // the wallet was the one glance surface with no spendable figure at all. When nothing is
-    // locked the freshness of the last refresh is the useful fact, as before.
     if (svc.walletOpen) return root.lockedFunds ? root.spendableLine : refreshedAgo()
     if (svc.remote || !svc.node) return ""
     if (svc.nodeUp && !svc.synced && svc.node.target_height)
@@ -137,9 +121,6 @@ Panel {
     return ""
   }
 
-  // `wallet.last_refresh_at` is the last refresh **fmonero itself issued** (§5) — not the wallet
-  // service's own 20 s auto-refresh, which fmonero cannot observe. Date arithmetic on a timestamp
-  // is not arithmetic on money.
   function refreshedAgo() {
     var raw = svc.walletOpen ? svc.wallet.last_refresh_at : null
     if (!raw) return ""
@@ -148,13 +129,6 @@ Panel {
     return "refreshed " + Model.age(Math.floor((Date.now() - t) / 1000)) + " ago"
   }
 
-  // **The problems section, which is not the warnings list** (§6.5, v5.6). `info` warnings are
-  // the state the rows above already show, and v5.5 put them in the alarm channel — on the
-  // owner's correctly configured machine that meant an alarm about a wallet service designed to
-  // be down. Two exclusions, and both are the same rule: a warning the hero has already rendered
-  // is not repeated here. `send_may_be_in_flight` while the pending row shows it, and
-  // `wallet_behind` while the hero reads `Wallet syncing 99%` over `Syncing 99% · 6 122 blocks
-  // left` — which put one fact on three rows of a 380-pixel panel (round 4 iteration 3).
   readonly property var problems: {
     var out = []
     for (var i = 0; i < svc.warnings.length; i++) {
@@ -169,13 +143,11 @@ Panel {
     return out
   }
 
-  // Two or three: `Start your node` / `Stop your node` only with your own node (§6.5). Five
-  // buttons in a 380-pixel panel is a menu, and the owner's complaint was that the widget did not
-  // answer a question — not that it was missing a sixth control.
   readonly property int footerCount: svc.remote || !svc.alive ? 2 : 3
 
   readonly property var navSections: {
     var s = ["header"]
+    if (choosingWallet) { s.push("picker"); return s }
     if (problems.length > 0) s.push("problems")
     if (walletTargets > 0) s.push("wallet")
     if (svc.pending) s.push("pending")
@@ -184,12 +156,14 @@ Panel {
   }
 
   function sectionCount(name) {
+    if (name === "header") return 4
+    if (name === "picker") return svc.wallets.length
     if (name === "problems") return problems.length
     if (name === "wallet") return walletTargets
     if (name === "footer") return footerCount
     return 1
   }
-  function isHorizontal(name) { return name === "footer" }
+  function isHorizontal(name) { return name === "footer" || name === "header" }
 
   function ensureCursor() {
     if (navSections.indexOf(focusSection) < 0) { focusSection = "header"; selectedIndex = 0 }
@@ -238,17 +212,14 @@ Panel {
 
   function activateCursor() {
     ensureCursor()
-    if (focusSection === "header") { svc.openTui(); root.close() }
+    if (focusSection === "header") activateHeader(selectedIndex)
+    else if (focusSection === "picker") chooseWallet(selectedIndex)
     else if (focusSection === "problems") activateProblem(selectedIndex)
     else if (focusSection === "wallet") activateWallet(selectedIndex)
     else if (focusSection === "pending") { svc.openTui(); root.close() }
     else if (focusSection === "footer") activateFooter(selectedIndex)
   }
 
-  // **§2o.1: a problem row's action is something the user can do here**, never a command to copy
-  // into a terminal. The doctor is where a machine-shaped problem is diagnosed and it is the one
-  // thing this panel can run itself; everything else opens the TUI screen the action names, which
-  // is where the keys the action mentions actually are.
   function activateProblem(index) {
     var w = problems[index]
     if (!w) return
@@ -259,26 +230,23 @@ Panel {
     if (id === "remote_node" || id === "remote_node_trusted" || id === "node_down") {
       svc.openNodeScreen(); root.close(); return
     }
-    svc.openWalletScreen(); root.close()
+    root.showWalletPicker()
   }
 
   function activateWallet(index) {
     if (index === 0) svc.copyAddress()
-    else svc.refreshWallet()
+    else if (index === 1) svc.refreshWallet()
+    else svc.closeWallet()
   }
 
   function activateFooter(index) {
-    // Both of the first two open the TUI on a screen — the affordance that LEADS to the thing the
-    // owner could not find, not a shortcut past the prompt (§6.3).
-    if (index === 0) {
-      if (svc.walletOpen) svc.refreshWallet()
-      else { svc.openWalletScreen(); root.close() }
-    } else if (index === 1) { svc.openNodeScreen(); root.close() }
+    if (index === 0) showWalletPicker()
+    else if (index === 1) { svc.openNodeScreen(); root.close() }
     else svc.toggleNode()
   }
 
-  // ---- scrolling -----------------------------------------------------------
   function sectionColumn(name) {
+    if (name === "picker") return pickerRows
     if (name === "problems") return warningColumn
     if (name === "wallet") return walletActionColumn
     return null
@@ -315,7 +283,7 @@ Panel {
 
   onOpenedChanged: {
     svc.opened = opened
-    if (!opened) return
+    if (!opened) { unlockField.clear(); selectedWallet = ""; choosingWallet = false; return }
     cursorActive = false
     focusSection = "header"
     selectedIndex = 0
@@ -328,6 +296,9 @@ Panel {
   Service {
     id: svc
     settings: root.settings
+    onWalletOpened: root.dismissPicker()
+    onWalletOpenFailed: Qt.callLater(function() { if (root.opened && root.selectedWallet !== "") unlockField.forceActiveFocus() })
+    onWalletStopped: root.close()
   }
 
   IpcHandler {
@@ -340,7 +311,6 @@ Panel {
     function refresh(): string { svc.refresh(); return "ok" }
     function nodeUp(): string { svc.startNode(); return "ok" }
     function nodeDown(): string { svc.stopNode(); return "ok" }
-    // Test hook: where the keyboard cursor is, without a screenshot.
     function cursor(): string {
       return JSON.stringify({ version: root.panelVersion,
                               section: root.focusSection, index: root.selectedIndex,
@@ -374,10 +344,6 @@ Panel {
       }
     }
     onPressed: function(buttonCode) {
-      // v5.6: **right refreshes** and middle opens the TUI. v5.5 gave right-click the node
-      // toggle, which is inert with a public node and had to be special-cased into an error
-      // message; a toggle that does nothing on the owner's machine is not worth a button, and
-      // refresh is what a person clicking a stale-looking bar icon means (§6.4).
       if (buttonCode === Qt.RightButton) svc.refresh()
       else if (buttonCode === Qt.MiddleButton) svc.openTui()
       else root.toggle()
@@ -391,34 +357,29 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(380))
-    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(520))
+    contentWidth: panel.fittedContentWidth(Style.space(400))
+    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(560))
 
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      blocked: root.selectedWallet !== "" && !svc.busy
       onMoveRequested: function(dx, dy) {
         if (!root.cursorActive) { root.cursorActive = true; return }
         root.moveCursor(dx, dy)
       }
       onActivateRequested: if (root.cursorActive) root.activateCursor()
-      onCloseRequested: root.close()
+      onCloseRequested: { if (root.choosingWallet) root.dismissPicker(); else root.close() }
       onTabRequested: function(direction) { root.switchPanel(direction) }
-      // h j k l are consumed by the catcher as movement and never reach here (DESIGN.md §6.5).
       onTextKey: function(t) {
         var k = String(t).toLowerCase()
-        // v5.6: `n` opens `Choose node…` in **both** modes. v5.5 made it a node toggle with your
-        // own node and a picker with a public one — one key, two acts — and the panel now has
-        // explicit Start/Stop buttons for the toggle.
         if (k === "n") { svc.openNodeScreen(); root.close() }
         else if (k === "r") svc.refresh()
         else if (k === "t") { svc.openTui(); root.close() }
         else if (k === "c") svc.copyAddress()
         else if (k === "d") { svc.openDoctor(); root.close() }
-        // v5.5: one key whose meaning follows the mode exactly as the rows above it do. In remote
-        // mode there is no node of ours to toggle, and "which node" is the only node question
-        // left; `w` is the panel's own route to the thing the owner could not find.
-        else if (k === "w") { svc.openWalletScreen(); root.close() }
+        else if (k === "w") root.showWalletPicker()
+        else if (k === "q") root.powerAction()
       }
 
       Flickable {
@@ -430,8 +391,6 @@ Panel {
         boundsBehavior: Flickable.StopAtBounds
         flickableDirection: Flickable.VerticalFlick
         interactive: contentHeight > height
-        // AsNeeded is the QQC2 default: transparent until the user scrolls, which is no
-        // affordance at all for content they do not know exists.
         ScrollBar.vertical: ScrollBar { policy: panelFlick.contentHeight > panelFlick.height
                                                 ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff }
 
@@ -440,116 +399,121 @@ Panel {
           width: panelFlick.width
           spacing: Style.space(10)
 
-          // ---- header ------------------------------------------------------
-          Item {
+          PanelHero {
             id: heroBlock
             width: parent.width
-            implicitHeight: hero.implicitHeight
-            // The hero's trailingControl resolves `root` to PanelHero, so panel state is reached
-            // through this wrapper instead.
-            readonly property bool ringVisible: root.cursorActive && root.focusSection === "header"
-            function focusHero() { root.setCursor("header", 0) }
-
-            // **One header line and at most one supporting fact** (§6.4/§6.5). v5.5's lines were
-            // `Node · 3 541 122` and `remote: 185.220.101.63:18081 · trusted`, and neither answers
-            // what someone glances at a bar widget to answer — is my money there, is anything
-            // wrong. The `detail` row (the nettype) was a third line of chrome on a two-line hero.
-            PanelHero {
-              id: hero
-              width: parent.width
-              title: root.headerLine
-              meta: root.heroMeta
-              detail: ""
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              iconOpacity: svc.nodeUp ? 1.0 : 0.5
-              iconComponent: Component {
-                MoneroIcon {
-                  iconSize: Style.font.display
-                  color: svc.nodeUp ? root.foreground : root.dim
-                  badgeColor: root.urgent
-                  crossed: svc.alive && !svc.remote && !svc.nodeUp
-                  warning: !svc.alive || root.anyError
-                  filled: svc.walletOpen
-                  remote: svc.remote
-                }
-              }
-              // **Node up / Node down are rendered only in local mode** (v5.5, §6.5, tightening
-              // §6.3's note from "disabled" to "absent"): in remote mode both commands are
-              // specified to exit 4 `remote_node`, and a visible-but-disabled control that can
-              // never be enabled from this panel is a control that teaches the user the app is
-              // broken. `Choose node…` in the footer is what stands in its place, which is also
-              // the honest mapping — in remote mode the node question is *which* node.
-              trailingControl: Component {
-                ToggleSwitch {
-                  id: nodeSwitch
-                  // Not drawn at all in remote mode — `visible: false`, not `enabled: false`.
-                  visible: !svc.remote
-                  checked: svc.desiredOn
-                  busy: svc.busy
-                  hasCursor: heroBlock.ringVisible
-                  foreground: hero.foreground
-                  onHovered: function(on) { if (on) heroBlock.focusHero() }
-                  onToggled: svc.toggleNode()
-
-                  PanelToolTip {
-                    visible: nodeSwitch.containsMouse
-                    text: svc.desiredOn ? "Stop your node" : "Start your node"
-                    fontFamily: hero.fontFamily
-                  }
-                }
+            title: "Monero"
+            meta: svc.walletOpen && svc.wallet.name ? String(svc.wallet.name) : "Wallets"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            iconOpacity: svc.walletUp || svc.walletReachable ? 1 : 0.5
+            iconComponent: Component {
+              MoneroIcon { iconSize: Style.font.display; color: heroBlock.foreground; filled: svc.walletOpen; remote: svc.remote }
+            }
+            trailingControl: Component {
+              Row {
+                spacing: Style.space(4)
+                HeaderAction { idx: 0; iconText: "󰖄"; tooltipText: "Open wallet (w)"; enabled: !svc.busy; onClicked: root.showWalletPicker() }
+                HeaderAction { idx: 1; iconText: "󰆍"; tooltipText: "More in the TUI (t)"; onClicked: { svc.openTui(); root.close() } }
+                HeaderAction { idx: 2; iconText: "󰑐"; tooltipText: "Refresh (r)"; enabled: !svc.busy; onClicked: root.activateHeader(2) }
+                HeaderAction { idx: 3; iconText: "󰐥"; tooltipText: svc.walletUp || svc.walletReachable ? "Save and stop wallet service (q)" : "Open a wallet (q)"; enabled: !svc.busy; onClicked: root.powerAction() }
               }
             }
           }
+          Column {
+            width: parent.width
+            visible: !root.choosingWallet
+            spacing: Style.space(4)
+            Text { textFormat: Text.PlainText; width: parent.width; text: root.headerLine; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body; wrapMode: Text.WordWrap }
+            Text { textFormat: Text.PlainText; width: parent.width; visible: text !== ""; text: root.heroMeta; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall; wrapMode: Text.WordWrap }
+            Rectangle {
+              visible: svc.walletBehind
+              width: parent.width; height: Style.space(3); radius: height / 2
+              color: Qt.darker(root.foreground, 3)
+              Rectangle { width: parent.width * svc.walletSyncPct / 100; height: parent.height; radius: height / 2; color: root.foreground }
+            }
+          }
+          Column {
+            id: pickerBlock
+            width: parent.width
+            visible: root.choosingWallet
+            spacing: Style.space(8)
+            PanelSeparator { foreground: root.foreground }
+            PanelSectionHeader { text: root.selectedWallet === "" ? "OPEN WALLET" : root.selectedWallet; foreground: root.foreground; fontFamily: root.fontFamily }
+            Text {
+              textFormat: Text.PlainText; width: parent.width
+              visible: root.selectedWallet === "" && (svc.listingWallets || svc.walletListError !== "" || svc.wallets.length === 0)
+              text: svc.listingWallets ? "Loading wallets…" : svc.walletListError !== "" ? svc.walletListError : "No wallets yet. Create or restore one in the TUI."
+              color: svc.walletListError !== "" ? root.urgent : root.dim
+              font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall; wrapMode: Text.WordWrap
+            }
+            Column {
+              id: pickerRows
+              width: parent.width; spacing: Style.space(4)
+              visible: root.selectedWallet === ""
+              Repeater {
+                model: svc.wallets
+                ListRow {
+                  required property string modelData
+                  required property int index
+                  section: "picker"; idx: index; width: pickerRows.width
+                  title: modelData
+                  meta: svc.walletOpen && svc.wallet.name === modelData ? "Open" : "Open →"
+                }
+              }
+            }
+            Column {
+              id: unlockForm
+              width: parent.width; spacing: Style.space(8)
+              visible: root.selectedWallet !== ""
+              Keys.onEscapePressed: { if (!svc.busy) root.showWalletPicker() }
+              Ui.TextField {
+                id: unlockField
+                objectName: "walletPassword"
+                width: parent.width
+                password: true
+                maximumLength: 4096
+                placeholderText: "Wallet password"
+                enabled: !svc.busy
+                inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText | Qt.ImhHiddenText
+                onAccepted: root.submitWallet()
+                Keys.onEscapePressed: root.showWalletPicker()
+              }
+              Row {
+                spacing: Style.space(6)
+                Ui.Button { text: svc.busy ? "Opening…" : "Open wallet"; bordered: true; focusable: true; enabled: !svc.busy; onClicked: root.submitWallet() }
+                Ui.Button { text: "Back"; bordered: true; focusable: true; enabled: !svc.busy; onClicked: root.showWalletPicker() }
+              }
+            }
+            Ui.Button { visible: root.selectedWallet === ""; text: "Back"; bordered: true; onClicked: root.dismissPicker() }
+          }
 
-          // ---- node: one row, plus the one or two that carry information (§6.5) ----
-          //
-          // **A row renders only when it carries information for the current state.** Not
-          // "renders —", not "renders not available": absent. Five of v5.5's rows were `null`
-          // with a public node and each one spent a line saying so, which is how a 520-pixel
-          // panel came to be mostly disclaimers. The `Checked` row is read from
-          // `status.node.remote_probe` and **the panel never checks anything itself**: it polls
-          // `status`, and §6.3's `--check-node` variant is what keeps that cache fresh.
           Column {
             width: parent.width
             spacing: Style.space(3)
-            visible: svc.alive && !svc.binaryMissing
+            visible: !root.choosingWallet && svc.alive && !svc.binaryMissing
 
-            DetailRow { label: "node"; value: Model.nodeLabel(svc.node) }
+            DetailRow { label: "Node"; value: Model.nodeLabel(svc.node) }
             DetailRow {
               visible: svc.remote
               label: "Checked"; value: Model.checkedLabel(svc.node)
             }
           }
 
-          // ---- your own node: two more rows, and no others (§6.5) ----------
-          //
-          // `Last block` and `Traffic` are gone: with your own node they are two rows nobody
-          // glances at a bar for, and `Open TUI` is one key away and has all of them.
           Column {
             width: parent.width
             spacing: Style.space(3)
-            visible: svc.alive && svc.nodeUp && !svc.remote && !svc.binaryMissing
+            visible: !root.choosingWallet && svc.alive && svc.nodeUp && !svc.remote && !svc.binaryMissing
 
             DetailRow { label: "Peers"; value: Model.peersLabel(svc.node) }
             DetailRow {
               label: "Waiting"
-              // **`payments`, not `transactions`** (X8): §2o.2's vocabulary, and the word the
-              // TUI's own waiting pane and `node info` both use. Rule 7's list never carried
-              // `transaction`, which is why this surface, `output.rs` and the note modal all kept
-              // it through three rounds. Pluralised, because `1 payments` is the same defect as
-              // `Checked 1 nodes`.
-              // **M8: whose payments these are.** `14 payments` on a panel whose every other
-              // figure is this machine's read as the owner's own; they are strangers'. One phrase,
-              // and `fmonero_core::payments_across_the_network` is the Rust half of it.
               value: svc.node && svc.node.tx_pool_size !== null && svc.node.tx_pool_size !== undefined
                 ? Model.waitingLabel(svc.node.tx_pool_size, svc.node.restricted === true)
                 : "—"
             }
           }
 
-          // Whatever the panel most recently learned: the action it is running, the error that
-          // action returned, or the error Status still carries.
           Text {
             textFormat: Text.PlainText; visible: text !== ""; width: parent.width
             text: svc.actionStatus !== "" ? svc.actionStatus
@@ -566,11 +530,10 @@ Panel {
             font.pixelSize: Style.font.body; wrapMode: Text.WordWrap
           }
 
-          // ---- problems (§6.5) ---------------------------------------------
           Column {
             width: parent.width
             spacing: Style.space(6)
-            visible: root.problems.length > 0
+            visible: !root.choosingWallet && root.problems.length > 0
 
             PanelSeparator { foreground: root.foreground }
 
@@ -588,14 +551,6 @@ Panel {
                   idx: index
                   width: warningColumn.width
                   message: String(modelData.text || "")
-                  // §2o.1: the warning's **action**, not its `hint` — which is where
-                  // `fmonero node local --yes` reached the bar.
-                  //
-                  // **Round 5, S7: `panel_action`, not `action`.** `action` is written for the TUI
-                  // keymap, and of the nine warnings that reach this panel seven named a key it does
-                  // not bind — two of them naming `d`, which here opens the doctor and there stops
-                  // your node. §5 carries both sentences now; `action` is the fallback only for a
-                  // document written by an older binary.
                   hint: String(modelData.panel_action || modelData.action || "")
                   severity: String(modelData.severity || "warn")
                 }
@@ -603,8 +558,8 @@ Panel {
             }
           }
 
-          // ---- wallet ------------------------------------------------------
           Column {
+            visible: !root.choosingWallet
             width: parent.width
             spacing: Style.space(6)
 
@@ -626,10 +581,6 @@ Panel {
                 value: root.walletHidden ? "•••••"
                   : (svc.walletOpen && svc.wallet.unlocked_xmr ? String(svc.wallet.unlocked_xmr) + " XMR" : "—")
               }
-              // Minutes, not blocks, and with the amount: blocks are the mechanism, minutes are
-              // the answer, and the TUI's line reads word for word the same (§2o rule 9).
-              // `locked_xmr` is pre-rendered in Status because the subtraction is arithmetic on
-              // money (§2a.5); with amounts hidden the row keeps the time and drops the figure.
               Text {
                 textFormat: Text.PlainText; visible: root.lockedFunds; width: parent.width
                 text: (root.walletHidden || !(svc.wallet && svc.wallet.locked_xmr)
@@ -659,15 +610,14 @@ Panel {
                         && svc.wallet.blocks_behind !== undefined
                   ? Model.int(svc.wallet.blocks_behind, 0) + " blocks to go" : ""
               }
+              ListRow {
+                visible: svc.walletOpen
+                enabled: !svc.busy
+                section: "wallet"; idx: 2; width: parent.width
+                title: "Close wallet"; meta: "Keep service running"
+              }
             }
 
-            // **Decision 7, said out loud.** The wallet keeps scanning inside the wallet service
-            // whether or not the TUI is open, exactly as fbittorrent's transfers keep running when
-            // its window closes, and until v5.6 nothing on either surface said so.
-            //
-            // **The sentence is `fmonero_core::SYNC_KEEPS_GOING`, byte for byte** (W10): this
-            // widget, the TUI's two screens and core's own warning said one fact three ways.
-            // `tests/plugin-smoke.sh` asserts the two literals are the same sentence.
             Text {
               textFormat: Text.PlainText; visible: svc.alive && svc.walletBehind
               width: parent.width
@@ -676,17 +626,12 @@ Panel {
               font.pixelSize: Style.font.bodySmall; wrapMode: Text.WordWrap
             }
 
-            // **A closed wallet is a state, and never a warning** (§6.5, and §5 makes
-            // `wallet_idle` an `info` for the same reason): one row, and the `Open wallet…` button
-            // below it is the route. The service's own state follows in the quieter line, because
-            // "not running" and "starts when you open a wallet" are the same fact in two
-            // situations that are not the same.
             Column {
               width: parent.width
               spacing: Style.space(2)
               visible: !svc.walletOpen
 
-              DetailRow { visible: svc.alive; label: "wallet"; value: "Wallet closed" }
+              DetailRow { visible: svc.alive; label: "wallet"; value: svc.walletBusy ? "Waiting for the wallet" : "Wallet closed" }
               Text {
                 textFormat: Text.PlainText; width: parent.width
                 text: svc.alive
@@ -698,7 +643,6 @@ Panel {
             }
           }
 
-          // ---- pending (DESIGN.md §2a.4, §6.5) -----------------------------
           Column {
             width: parent.width
             spacing: Style.space(6)
@@ -721,9 +665,6 @@ Panel {
                 spacing: Style.space(2)
 
                 Text {
-                  // `total_amount_xmr` is a pre-rendered string from Status JSON (§5b); a sweep's
-                  // record holds several transactions and summing them here would be money
-                  // arithmetic in QML (§2a.5, §6.5).
                   textFormat: Text.PlainText; width: parent.width
                   text: Model.pendingLabel(svc.pending, svc.showBalance)
                   color: root.urgent; font.family: root.fontFamily
@@ -737,24 +678,20 @@ Panel {
             }
           }
 
-          // ---- footer ------------------------------------------------------
           Column {
             id: footerBlock
+            visible: !root.choosingWallet
             width: parent.width
             spacing: Style.space(6)
 
             PanelSeparator { foreground: root.foreground }
 
-            // **Two or three** (§6.5). `Open TUI` stays on `t` and on the hero, `Doctor` appears
-            // as the action of the problem row that needs it — the only place a person wants it —
-            // and `Send` was a button on a bar panel that opens a money screen, one key from a
-            // route that is not.
             Row {
               width: parent.width
               spacing: Style.space(6)
               Chip {
                 section: "footer"; idx: 0
-                label: svc.walletOpen ? "Check for payments" : "Open wallet…"
+                label: svc.walletOpen ? "Switch wallet…" : "Open wallet…"
               }
               Chip { section: "footer"; idx: 1; label: "Choose node…" }
               Chip {
@@ -769,7 +706,15 @@ Panel {
     }
   }
 
-  // ---- reusable pieces -------------------------------------------------------
+  component HeaderAction: PanelActionButton {
+    property int idx: 0
+    foreground: root.foreground
+    fontFamily: root.fontFamily
+    bordered: true
+    hasCursor: root.cursorActive && root.focusSection === "header" && root.selectedIndex === idx
+    onHovered: function(on) { if (on) root.setCursor("header", idx) }
+  }
+
   component DetailRow: Row {
     property string label: ""
     property string value: ""
@@ -795,6 +740,7 @@ Panel {
     hasCursor: root.cursorActive && root.focusSection === section && root.selectedIndex === idx
     foreground: root.foreground
     implicitHeight: Style.spacing.popupRowHeight
+    enabled: !svc.busy
 
     MouseArea {
       anchors.fill: parent

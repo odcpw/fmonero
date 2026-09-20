@@ -8557,3 +8557,77 @@ it found it, which `tests/e2e.sh`'s own last step now asserts.
   everywhere it matters.
 - **Planning:** `~/.claude/skills/planning-workflow/SKILL.md` — the three properties this document
   is built to satisfy: self-contained, dependency-aware, justified.
+
+## 2026-09-20 repair: wallet continuity and status freshness
+
+This amendment supersedes §2m.5's restart-on-node-change behavior. Selecting a node saves the
+configuration and renders future service settings, then calls `set_daemon` and enables automatic
+refresh on the running wallet. It never stops or starts the wallet service. A closed wallet
+(`-13`) is handled by installing the target at its next open. Other errors are reported without
+a restart fallback. The send lock and pending-payment interlock remain mandatory. The existing
+JSON fields `wallet_unit_restarted` and `wallet_must_reopen` remain present, false/null.
+
+The widget requests `status --check-node --timeout 2` whether open or closed, and its watchdog
+allows 60 seconds for the complete status sequence. The TUI requests checked status on every
+screen. The shared, nonblocking `remote-check.lock` serializes automatic harvest/start operations;
+`node.remote_probe_sec` still sets the frequency and zero disables automatic checking. A partial
+check response is left for its writer until completion or deadline.
+
+`wallet.busy` is an additive boolean, defaulting to false on older JSON. It means the wallet read
+hit its deadline, not that scanning is proven or that a wallet is closed. No stale balance is
+claimed as current. Both interfaces display this distinction. Height zero is valid sync progress.
+The TUI's open/create followup reads use the same refresh budget as the CLI. History confirmation
+and unlock calculations advance with each observed wallet height. Preparing a transaction through
+a local node requires both a synchronized node and a wallet at that node's observed height.
+
+### Follow-up: failed changes and asynchronous reads
+
+Node selection installs future service settings before saving the selected target. A definite
+`set_daemon` rejection restores the old rendering and leaves the saved selection unchanged.
+Successful application saves the target before enabling refresh. A transport failure can leave
+the request executing in wallet-rpc, so it saves the desired target and reports the uncertain
+operation with a retry action; selecting the currently configured target is allowed. Cancellation
+observed before installation and installation failure do not save a new selection. These steps
+do not constitute a transaction across wallet-rpc and the filesystem: save or restoration errors
+are still reported to the caller.
+
+Wallet creation uses the already-open wallet returned by `create_wallet`, then installs the
+daemon, refresh settings, and session record. It does not call `open_wallet` a second time.
+TUI background reads carry a wallet/configuration generation. History also carries a request
+sequence and the status revision at launch, preventing late replies from replacing newer rows
+or rewinding confirmation observations. Invalid settings pause background polling and new
+actions until a successful reload; a previously built payment retains its existing relay flow.
+
+### Follow-up: authenticated wallet startup
+
+A context-backed wallet client reads the service login at each operation, not at construction:
+`monero-wallet-rpc` generates that file during startup and rotates its contents on restart.
+One operation uses one credential and retains the existing single Digest challenge retry. A
+missing or invalid file never falls back to an earlier credential. Explicit credentials passed
+to `WalletClient::new` and the node client's credentials retain their existing behavior.
+`ensure_running` checks whether the unit was already active before issuing a start. Timeout
+cleanup stops only a unit this call attempted to start from inactive; an already-active wallet
+service is left running and the timeout message says so.
+
+### 2026-09-20 — Wallet controls in the widget
+
+The owner requested the torrent widget's compact header and power control, and opening an
+existing wallet directly in the widget. This supersedes earlier sections routing every wallet
+open to the TUI and forbidding password input in QML. Creation, recovery, and payments remain
+in the TUI. The header has wallet picker, TUI, refresh, and power controls. Power saves and stops
+only the wallet service and closes the popup; the bar entry remains to open a wallet again.
+The separate Close wallet action leaves the service running.
+
+The list comes from `wallet list --json`. The masked input sends one newline-terminated UTF-8
+line to `wallet open NAME --password-stdin --json` through the child process's standard input.
+No password appears in argv, environment, logs, settings, or a temporary file. The field and
+transient QML property are cleared after submission and on dismissal; this is not a claim that
+Qt/JavaScript can guarantee erasure of all memory copies. CLI input has a ten-second deadline,
+a 16384-byte bound, and preserves trailing spaces. Existing empty-password wallets may open.
+
+`wallet stop --yes` uses the existing bounded service stop path; open/create/close/stop share
+the payment lock and refuse unresolved payments. Status responses carry an action generation,
+so a pre-action result cannot overwrite the new state. Failed-action messages survive ordinary
+successful status polls and clear on the next action. The password editor consumes ordinary
+navigation and power shortcut letters as text; Escape clears it and returns to the list.
+All four widget files remain within the existing per-file and aggregate line budgets.

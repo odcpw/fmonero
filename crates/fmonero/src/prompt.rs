@@ -22,6 +22,70 @@ use fmonero_core::Error;
 /// The environment variable §5b documents as the way an agent opens a wallet with no TTY.
 pub const PASSWORD_ENV: &str = "FMONERO_WALLET_PASSWORD";
 
+/// The widget supplies one line through a private pipe. Never echo it, consult the environment,
+/// or wait indefinitely for an abandoned writer. The same one-newline rule applies as for files.
+pub fn wallet_password_stdin() -> Result<String, Error> {
+    let fd = std::io::stdin().as_raw_fd();
+    // SAFETY: fd is the process's standard input descriptor.
+    if unsafe { libc::isatty(fd) } == 1 {
+        return Err(Error::usage(
+            "Use the normal password prompt in a terminal.",
+        ));
+    }
+    password_line(fd, std::time::Duration::from_secs(10))
+}
+
+fn password_line(fd: i32, timeout: std::time::Duration) -> Result<String, Error> {
+    let started = std::time::Instant::now();
+    let mut bytes = Vec::new();
+    let result = (|| {
+        loop {
+            let left = timeout.saturating_sub(started.elapsed());
+            let mut poll = libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: poll points to one initialized descriptor and lives for this call.
+            let ready =
+                unsafe { libc::poll(&mut poll, 1, left.as_millis().min(i32::MAX as u128) as i32) };
+            if ready == 0 || left.is_zero() {
+                return Err(Error::timeout(
+                    "The password was not received in time. Try opening the wallet again.",
+                ));
+            }
+            if ready < 0 {
+                if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(Error::failure("Could not read the password input."));
+            }
+            let mut byte = 0u8;
+            // SAFETY: byte is writable for one byte; fd remains owned by the caller.
+            let n = unsafe { libc::read(fd, (&mut byte as *mut u8).cast(), 1) };
+            if n < 0 {
+                return Err(Error::failure("Could not read the password input."));
+            }
+            if n == 0 {
+                return Err(Error::usage(
+                    "The password input ended before a complete line arrived.",
+                ));
+            }
+            bytes.push(byte);
+            if bytes.len() > 16384 {
+                return Err(Error::usage("The password input is too long."));
+            }
+            if byte == b'\n' {
+                let text = std::str::from_utf8(&bytes)
+                    .map_err(|_| Error::usage("The password input is not valid text."))?;
+                return Ok(strip_one_newline(text).to_string());
+            }
+        }
+    })();
+    bytes.fill(0);
+    result
+}
+
 /// Read the wallet password (§2b.1).
 ///
 /// `confirm` prompts **twice and compares** — `wallet create` on a TTY, where a mistyped
@@ -184,6 +248,30 @@ impl Drop for Tty {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn piped_passwords_preserve_spaces_and_have_a_deadline() {
+        use std::os::unix::net::UnixStream;
+        let (mut writer, reader) = UnixStream::pair().unwrap();
+        writer.write_all(b"synthetic value \n").unwrap();
+        assert_eq!(
+            password_line(reader.as_raw_fd(), std::time::Duration::from_secs(1)).unwrap(),
+            "synthetic value "
+        );
+        assert_eq!(
+            password_line(reader.as_raw_fd(), std::time::Duration::from_millis(1))
+                .unwrap_err()
+                .exit_code(),
+            8
+        );
+        writer.write_all(b"\n").unwrap();
+        assert_eq!(
+            password_line(reader.as_raw_fd(), std::time::Duration::from_secs(1)).unwrap(),
+            ""
+        );
+        drop(writer);
+        assert!(password_line(reader.as_raw_fd(), std::time::Duration::from_secs(1)).is_err());
+    }
 
     #[test]
     fn one_trailing_newline_is_stripped_and_nothing_else_is() {

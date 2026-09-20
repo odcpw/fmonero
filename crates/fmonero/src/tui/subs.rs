@@ -178,7 +178,7 @@ impl Action {
                 7 * (targets.len().div_ceil(nodes::PROBE_CONCURRENCY)).max(1) as u64
             }
             Action::NodeUseRemote { .. } | Action::NodeLocal => {
-                ctx.timeouts.systemctl.as_secs() * 3
+                ctx.timeouts.systemctl.as_secs() * 3 + ctx.timeouts.refresh.as_secs() * 2
             }
         }
     }
@@ -307,8 +307,9 @@ pub fn execute(
                 Ok(Outcome::Note("Your node is stopped.".into()))
             }
             Action::WalletOpen { name, password } => {
-                let w = WalletClient::from_ctx(ctx)?;
-                let opened = wallet_session::open(ctx, &w, &name, password, cancel)?;
+                let ctx = ctx.clone().with_wallet_probe_at_refresh();
+                let w = WalletClient::from_ctx(&ctx)?;
+                let opened = wallet_session::open(&ctx, &w, &name, password, cancel)?;
                 Ok(Outcome::Opened(opened.name))
             }
             Action::WalletRefresh { start_height } => {
@@ -353,13 +354,14 @@ pub fn execute(
                 password,
                 language,
             } => {
-                let w = WalletClient::from_ctx(ctx)?;
+                let ctx = ctx.clone().with_wallet_probe_at_refresh();
+                let w = WalletClient::from_ctx(&ctx)?;
                 // **The same sequence `wallet create` calls** (§4.1): `ensure_running`, then
                 // `create_wallet`, then the last three steps of `wallet_session::open` on the
                 // wallet `create_wallet` left open (`wallet_rpc_server.cpp:3639`). The TUI adds
                 // no step and skips none, which is why this is one core call and not four.
                 let created =
-                    wallet_session::create(ctx, &w, &name, password, &language, &say, cancel)?;
+                    wallet_session::create(&ctx, &w, &name, password, &language, &say, cancel)?;
                 Ok(Outcome::Created {
                     name: created.name,
                     hint: created.seed_backup_hint,

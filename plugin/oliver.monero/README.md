@@ -60,12 +60,12 @@ One benign line appears on every reload and the smoke test whitelists it:
 | File | Budget | Contents |
 |---|---|---|
 | `manifest.json` | ~55 | id, kinds, `entryPoints.barWidget`, and the Setup > Plugins form (`barWidget.defaults` / `schema`) |
-| `Service.qml` | ≤ 380 | the state model: one poll process, the serialized action queue |
-| `Panel.qml` | ≤ 700 | the bar button and the panel content, including the keyboard state machine |
-| `MoneroIcon.qml` | ≤ 80 | the Monero mark as `QtQuick.Shapes` + `PathSvg`; no image asset |
-| `Model.js` | ≤ 150 | pure formatters: `parseStatus`, `shortAddr`, `age`, `rate`, `syncLabel`, `pendingLabel` |
+| `Service.qml` | ≤ 360 | the state model: one poll process, the serialized action queue |
+| `Panel.qml` | ≤ 885 | the bar button and the panel content, including the keyboard state machine |
+| `MoneroIcon.qml` | ≤ 112 | the Monero mark as `QtQuick.Shapes` + `PathSvg`; no image asset |
+| `Model.js` | ≤ 340 | pure formatters: `parseStatus`, `shortAddr`, `age`, `rate`, `syncLabel`, `pendingLabel` |
 
-The budgets are `DESIGN.md` §6.1 and total 1 310 lines; the plugin gate records the real counts
+The budgets are `DESIGN.md` §6.1 and allow 1 725 lines including the manifest; the plugin gate records the real counts
 against them in `DECISIONS.md`.
 
 ## Settings
@@ -86,56 +86,48 @@ one.
 
 The two intervals differ because the two situations differ: 3 s while you are watching a sync
 percentage tick, 8 s while the widget only has to pick an icon state. Each poll is a process
-spawn, and that spawn is the expensive part.
+spawn, and that spawn is the expensive part. Both poll variants request a bounded node check;
+core shares and throttles it with the TUI, so the remote height stays fresh while the panel is
+closed. Each status operation has a two-second deadline and the overall watchdog allows sixty
+seconds for the full sequence. A slow wallet read is shown as busy, not as a closed wallet.
 
 ## Using it
 
-Bar icon: left click toggles the panel, right click toggles the node, middle click refreshes the
-poll. First match wins for the icon state: fmonero unreachable is dimmed and crossed with a
-warning badge; any `error`-severity warning (a send that may be in flight, an armed stall
-breaker, Monero not installed) turns it urgent; a node that is down is dimmed and crossed; a
-node that is not synchronized gets a percent ring; an open wallet fills the glyph; otherwise it
-is the outline. The tooltip reads `Monero · <height> · <peers> peers · <sync>`, plus the balance
-when a wallet is open and `showBalance` is `on`.
+The compact header follows the torrent widget: **Open wallet**, **More in the TUI**,
+**Refresh**, and **Power**. Hover a control for its label. The bar stays available after stopping
+so you can open a wallet again. Left click opens the panel, right click refreshes, and middle
+click opens the TUI.
 
-In the panel, sections in cursor order: header (node state and a toggle), node detail (sync bar,
-peers in and out, mempool, last block age, net rates), the current warning with its hint,
-wallet (balance, unlocked, locked-for-N-blocks, the shortened primary address with a copy
-action, a refresh row), the pending-send row, and the footer (Open TUI, Send, Doctor).
+- **Open wallet / Switch wallet** shows the wallet list directly in the panel. Choose a wallet,
+  enter its password in the masked field, and press Enter or **Open wallet**. The service starts
+  automatically if needed. A wrong-password message stays visible, and the field is cleared.
+- **Close wallet** saves and closes the open wallet while leaving the service running.
+- **Power** saves and stops the wallet service, including background scanning. It leaves your
+  local node alone. When the service is stopped, the same button opens the wallet picker.
+- Balances, sync progress, address copying, payment checks, and pending-payment warnings stay
+  in the panel. Creating/restoring wallets, sending payments, node selection, and diagnostics
+  remain available in the TUI.
 
-Keys: `j`/`k` or the arrows move, Enter or Space activates, Esc closes, Tab moves to the next
-bar panel. Shortcuts: `n` toggles the node, `r` refreshes the poll, `t` opens the TUI, `c`
-copies the primary address, `d` opens the doctor. `h j k l` are consumed by the key catcher and
-are not shortcuts.
+Keys: arrows or `h j k l` move the cursor; Enter/Space activates; Esc backs out of the picker
+or closes the panel; Tab switches bar panels. `w` opens the wallet list, `q` is power, `t` opens
+the TUI, `r` refreshes, `c` copies the receiving address, `n` opens node selection, and `d` opens
+the doctor. While entering a password, typing belongs exclusively to the field; Tab moves to
+its Open/Back buttons and Esc returns to the wallet list.
 
-Under Arch's system `monerod.service`, `node up` and `node down` exit 3 without issuing an RPC.
-The panel renders that refusal's `hint` like any other failure, and its toggle stays bound to
-the real `node.reachable`, so the widget never appears to have done something it did not.
+## Passwords and payments
 
-## Safety
+The widget cannot construct or broadcast payments. The static checks still forbid send, sweep,
+create, restore, transfer, and relay command arguments, and arithmetic on monetary values.
 
-The widget cannot move money, and that is enforced by greps rather than by care:
+Opening a wallet is now explicitly supported. The password is transient: the field is masked,
+cleared after submission or dismissal, and passed to `wallet open --password-stdin` through a
+private process-input pipe. It is never put in arguments, environment variables, clipboard,
+settings, logs, or a temporary file. The receiving command requires a complete line within ten
+seconds and bounds its size. Wallet names are separate argv elements from the app's wallet list.
 
-- No `wallet open`, `create`, `send`, `sweep`, `transfer` or `relay` argv anywhere, and no
-  `password` string in any QML file. `tests/plugin-smoke.sh` matches on whole argv elements, so
-  the constant literal `--send` that opens the TUI's Send screen passes while
-  `[bin, "wallet", "send", …]` cannot. It shows a balance only when `status.wallet.open` is
-  already true, and it has no password field.
-- No `parseFloat`, no `Number(`, no `/ 1e`. Amounts come out of Status JSON as pre-rendered
-  strings, including the pending total, which Rust sums with a checked add precisely so the QML
-  never has to.
-- `bar.run()` is never used: it is `bash -lc <string>`. Every action is
-  `Quickshell.execDetached([...])` with an argv array.
-- `omarchy-launch-or-focus-tui`, `omarchy-launch-or-focus` and
-  `omarchy-launch-floating-terminal-with-presentation` all end up feeding a string to `eval` or
-  `bash -c`, so only constant literals reach them: never an address, an amount, a label, or
-  anything derived from Status JSON. `omarchy-notification-send` is genuinely argv-shaped and is
-  the only one that may carry computed text.
-- The doctor opens under app-id `fmonerodoctor`, not `fmonero-doctor`:
-  `omarchy-launch-or-focus` matches `\b<pattern>\b` against the window class and the title, so a
-  hyphenated id would also match the TUI window.
-- The one value that travels from Status JSON into an argv is the primary address, into
-  `["wl-copy", "--", <address>]`, which is argv-shaped and came from our own JSON.
+Open, create, close, and stop operations honor the payment lock and pending-payment interlock.
+The power button calls `fmonero wallet stop --yes`; the widget never invokes systemctl directly.
+Closing a panel does not cancel an opening operation already submitted to Monero.
 
 ## Status
 
@@ -146,6 +138,6 @@ unverified: see the Status section of the [main README](../../README.md#status).
 
 ## Credits
 
-The panel's chrome and its keyboard handling follow Omarchy's first-party Tailscale plugin.
+The panel shares Omarchy controls with the sibling torrent and FProton widgets.
 `MoneroIcon.qml` draws the Monero mark as paths, so it takes the theme foreground instead of the
 brand colours.

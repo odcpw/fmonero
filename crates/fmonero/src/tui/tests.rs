@@ -41,6 +41,14 @@ fn fixtures() -> PathBuf {
         .expect("tests/fixtures must exist: Phase 0 wrote it")
 }
 
+fn test_context(dir: &std::path::Path) -> Result<Context, fmonero_core::Error> {
+    let mut ctx = Context::for_test(dir)?;
+    let fixture = dir.join("systemctl.txt");
+    std::fs::write(&fixture, "").unwrap();
+    ctx.systemctl = fmonero_core::Systemctl::Fixture(fixture);
+    Ok(ctx)
+}
+
 /// One test's world: its own state directory, its own mocks, its own request log.
 struct World {
     dir: PathBuf,
@@ -72,7 +80,7 @@ impl World {
             std::thread::current().id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
-        let mut ctx = Context::for_test(&dir).expect("test context");
+        let mut ctx = test_context(&dir).expect("test context");
         let fx = fixtures().display().to_string();
         let wallet_log = dir.join("wallet.jsonl");
         let mut node_args = vec![
@@ -169,7 +177,7 @@ fn offline_model(screen: Screen) -> Tui {
         std::process::id(),
         std::thread::current().id()
     ));
-    let mut ctx = Context::for_test(&dir).expect("test context");
+    let mut ctx = test_context(&dir).expect("test context");
     // Ports nothing listens on: `status` must render `reachable: false`, never an error.
     ctx.settings.node.url = "http://127.0.0.1:1".into();
     ctx.settings.wallet.url = "http://127.0.0.1:2".into();
@@ -837,7 +845,7 @@ fn node_mutations_are_refused_with_the_sentence_that_is_true_of_this_machine() {
         std::thread::current().id()
     ));
     let _ = std::fs::remove_dir_all(&dir);
-    let mut ctx = Context::for_test(&dir).expect("test context");
+    let mut ctx = test_context(&dir).expect("test context");
     let fixture = dir.join("systemctl.fixture");
     std::fs::write(
         &fixture,
@@ -1081,7 +1089,7 @@ fn the_node_screen_in_remote_mode_shows_the_address_and_no_gauge() {
         std::process::id(),
         std::thread::current().id()
     ));
-    let mut ctx = Context::for_test(&dir).expect("test context");
+    let mut ctx = test_context(&dir).expect("test context");
     ctx.settings.node.remote = "node.example.com:18089".into();
     ctx.settings.node.mode = fmonero_core::NodeMode::Remote;
     ctx.settings.wallet.url = "http://127.0.0.1:2".into();
@@ -1862,10 +1870,9 @@ fn the_add_node_modal_validates_as_you_type_and_shows_the_key_that_commits() {
     );
 }
 
-/// Revision 4, both guards: nothing is selected on entry, and the configured row refuses
-/// activation. Either alone still leaves a shape where one click costs the user something.
+/// Nothing is selected on entry. The current target remains selectable for a confirmed retry.
 #[test]
-fn the_picker_selects_nothing_on_entry_and_refuses_the_configured_node() {
+fn the_picker_selects_nothing_on_entry_and_can_retry_the_configured_node() {
     let w = World::new("picker-guards");
     let mut ctx = w.ctx.clone();
     ctx.settings.node.mode = fmonero_core::NodeMode::Remote;
@@ -1886,15 +1893,15 @@ fn the_picker_selects_nothing_on_entry_and_refuses_the_configured_node() {
     // `Enter` with nothing selected does not open a confirm either.
     s.inject_event(key(KeyCode::Enter));
     assert!(s.model().modal.is_none(), "{}", s.model().note);
-    // The configured node sorts first and refuses activation with a toast.
+    // The configured node can be retried after an uncertain connection update.
     s.inject_event(key(KeyCode::Down));
     assert_eq!(s.model().picker.table.borrow().selected, Some(0));
     s.inject_event(key(KeyCode::Enter));
-    assert!(
-        s.model().modal.is_none(),
-        "activating the node already in use must not open the confirm"
-    );
-    assert_eq!(s.model().note, "This is the node you are using.");
+    assert!(matches!(
+        s.model().modal,
+        Some(super::Modal::UseNode { .. })
+    ));
+    s.inject_event(key(KeyCode::Escape));
     // The next row DOES open it, with all three consequences named.
     s.inject_event(key(KeyCode::Down));
     s.inject_event(key(KeyCode::Enter));
@@ -2147,7 +2154,7 @@ fn the_picker_never_elides_the_configured_address_at_any_width() {
         std::thread::current().id()
     ));
     let _ = std::fs::remove_dir_all(&dir);
-    let mut ctx = Context::for_test(&dir).expect("test context");
+    let mut ctx = test_context(&dir).expect("test context");
     ctx.settings.node.mode = fmonero_core::NodeMode::Remote;
     ctx.settings.node.remote = MINE.into();
     ctx.settings.wallet.url = "http://127.0.0.1:2".into();
@@ -2296,7 +2303,7 @@ fn the_wallet_badge_never_says_down_for_a_daemon_the_tui_is_itself_working() {
             std::thread::current().id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
-        let mut ctx = Context::for_test(&dir).expect("test context");
+        let mut ctx = test_context(&dir).expect("test context");
         // A port nothing listens on, so every poll fails; the §2i fixture decides whether the
         // unit is active, which is the other half of the state the badge reads.
         ctx.settings.wallet.url = "http://127.0.0.1:2".into();
@@ -2359,7 +2366,7 @@ fn stale_node_ctx(tag: &str) -> (std::path::PathBuf, Context) {
         std::thread::current().id()
     ));
     let _ = std::fs::remove_dir_all(&dir);
-    let mut ctx = Context::for_test(&dir).expect("test context");
+    let mut ctx = test_context(&dir).expect("test context");
     ctx.settings.node.mode = fmonero_core::NodeMode::Remote;
     ctx.settings.node.remote = NODE_A.into();
     // A port nothing listens on, so no wallet answers and the screen is the public-node one.
@@ -2553,7 +2560,7 @@ fn a_sandboxed_log_screen_never_opens_the_machines_own_chain_folder() {
     ));
     let _ = std::fs::remove_dir_all(&dir);
     // Deliberately NOT overriding `node.log_file`: the default is the thing under test.
-    let mut ctx = Context::for_test(&dir).expect("test context");
+    let mut ctx = test_context(&dir).expect("test context");
     ctx.settings.node.url = "http://127.0.0.1:1".into();
     ctx.settings.wallet.url = "http://127.0.0.1:2".into();
     let home_chain = ctx.paths.home.join(".bitmonero");
@@ -2597,6 +2604,11 @@ fn the_start_and_stop_confirms_state_what_they_do() {
         b"[Unit]\n",
     )
     .expect("a unit file to detect");
+    std::fs::write(
+        w.dir.join("systemctl.txt"),
+        "fmonero-monerod.service inactive disabled yes 0\n",
+    )
+    .unwrap();
     for (k, want) in [
         (
             'u',
@@ -2893,7 +2905,7 @@ fn the_picker_renders_every_address_whole_at_every_width() {
         std::thread::current().id()
     ));
     let _ = std::fs::remove_dir_all(&dir);
-    let mut ctx = Context::for_test(&dir).expect("test context");
+    let mut ctx = test_context(&dir).expect("test context");
     ctx.settings.node.mode = fmonero_core::NodeMode::Remote;
     ctx.settings.node.remote = MINE.into();
     ctx.settings.wallet.url = "http://127.0.0.1:2".into();
@@ -2945,7 +2957,7 @@ fn the_open_wallet_modal_renders_a_248_character_path_character_complete() {
         std::thread::current().id()
     ));
     let _ = std::fs::remove_dir_all(&dir);
-    let mut ctx = Context::for_test(&dir).expect("test context");
+    let mut ctx = test_context(&dir).expect("test context");
     ctx.settings.node.url = "http://127.0.0.1:1".into();
     ctx.settings.wallet.url = "http://127.0.0.1:2".into();
     // The exact shape the capture found: a scratch path 248 characters long, with no wallets in it,
@@ -2997,7 +3009,7 @@ fn the_privacy_notice_shows_its_keys_at_both_sizes() {
         std::thread::current().id()
     ));
     let _ = std::fs::remove_dir_all(&dir);
-    let mut ctx = Context::for_test(&dir).expect("test context");
+    let mut ctx = test_context(&dir).expect("test context");
     ctx.settings.node.mode = fmonero_core::NodeMode::Remote;
     ctx.settings.node.url = "http://127.0.0.1:1".into();
     ctx.settings.wallet.url = "http://127.0.0.1:2".into();
@@ -3211,7 +3223,7 @@ fn the_log_screen_names_its_file_whole_at_every_width() {
         std::thread::current().id()
     ));
     let _ = std::fs::remove_dir_all(&dir);
-    let mut ctx = Context::for_test(&dir).expect("test context");
+    let mut ctx = test_context(&dir).expect("test context");
     ctx.settings.node.url = "http://127.0.0.1:1".into();
     ctx.settings.wallet.url = "http://127.0.0.1:2".into();
     // A path no title can hold: 168 characters, the shape a scratch workspace produces.
@@ -3298,4 +3310,136 @@ fn the_empty_wallet_panel_says_there_are_none_and_every_row_names_a_step() {
         "the sentence must not survive a wallet appearing:\n{text}"
     );
     assert!(text.contains("[o] Open a wallet"), "{text}");
+}
+
+#[test]
+fn wallet_badges_distinguish_closed_syncing_and_busy() {
+    let world = World::new("wallet-badges");
+    let mut status = fmonero_core::status::status(&world.ctx).unwrap();
+    let mut m = model(&world.ctx, Screen::Wallet);
+    status.wallet.open = false;
+    status.wallet.reachable = true;
+    m.status = Some(status.clone());
+    assert_eq!(m.wallet_badge(), "closed");
+    status.wallet.open = true;
+    status.wallet.height = Some(0);
+    m.status = Some(status.clone());
+    assert_eq!(m.wallet_badge(), "syncing");
+    assert!(super::screens::wallet_sync_line(&status)
+        .unwrap()
+        .starts_with("Syncing 0%"));
+    status.wallet.busy = true;
+    status.wallet.reachable = false;
+    status.wallet.open = false;
+    m.status = Some(status);
+    assert_eq!(m.wallet_badge(), "busy");
+    let text = screen_text(&m, 120, 40);
+    assert!(text.contains("Waiting for the wallet"), "{text}");
+    assert!(!text.contains("No wallet is open"), "{text}");
+}
+
+#[test]
+fn status_updates_advance_the_wallet_confirmation_clock() {
+    let world = World::new("confirmation-clock");
+    let mut status = fmonero_core::status::status(&world.ctx).unwrap();
+    let mut m = model(&world.ctx, Screen::Wallet);
+    m.wallet.wh = Some(1);
+    status.wallet.height = Some(2345);
+    let _ = m.update(Msg::Status(Box::new(Ok(status))));
+    assert_eq!(m.wallet.wh, Some(2345));
+    assert!(m.wallet.now.is_some());
+}
+
+#[test]
+fn tui_wallet_open_uses_the_refresh_budget_for_followup_reads() {
+    let mut world = World::with_wallet("open-slow-reads", &["--delay-ms", "80"]);
+    world.ctx.timeouts.wallet = std::time::Duration::from_millis(20);
+    world.ctx.timeouts.refresh = std::time::Duration::from_secs(1);
+    let announce = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let result = subs::execute(
+        &world.ctx,
+        subs::Action::WalletOpen {
+            name: "main".into(),
+            password: String::new(),
+        },
+        &announce,
+        &CancelToken::new(),
+    );
+    assert!(matches!(result, Ok(subs::Outcome::Opened(_))));
+}
+
+#[test]
+fn invalid_settings_pause_every_poll_until_the_file_is_fixed() {
+    let world = World::new("invalid-settings-pause");
+    world.ctx.settings.save(&world.ctx).unwrap();
+    let mut m = model(&world.ctx, Screen::Wallet);
+    std::fs::write(world.ctx.paths.config_file(), "invalid = = =").unwrap();
+    let _ = m.update(Msg::Poll);
+    assert!(!m.config_valid);
+    assert!(!m.poll_inflight);
+    m.note.clear();
+    let _ = m.update(Msg::Poll);
+    assert!(!m.poll_inflight);
+    assert!(m.note.is_empty());
+    world.ctx.settings.save(&world.ctx).unwrap();
+    let _ = m.update(Msg::Poll);
+    assert!(m.config_valid, "{}", m.note);
+    assert!(m.poll_inflight);
+}
+
+#[test]
+fn a_wallet_change_discards_old_addresses_and_late_responses() {
+    let world = World::new("wallet-data-generation");
+    let mut status = fmonero_core::status::status(&world.ctx).unwrap();
+    status.wallet.name = Some("first".into());
+    let mut m = model(&world.ctx, Screen::Wallet);
+    m.status = Some(status.clone());
+    m.wallet.addresses = Some(Default::default());
+    let old_epoch = m.read_epoch;
+    status.wallet.name = Some("second".into());
+    let _ = m.update(Msg::Status(Box::new(Ok(status))));
+    assert!(m.wallet.addresses.is_none());
+    assert_ne!(m.read_epoch, old_epoch);
+    let _ = m.update(Msg::WalletData(
+        old_epoch,
+        Box::new(Ok((Default::default(), Default::default()))),
+    ));
+    assert!(m.wallet.addresses.is_none());
+    assert!(
+        m.wallet.inflight,
+        "an old result must not clear the new request's guard"
+    );
+    let mut stale = m.status.clone().unwrap();
+    stale.wallet.name = Some("first".into());
+    let _ = m.update(Msg::StatusRead(old_epoch, Box::new(Ok(stale))));
+    assert_eq!(
+        m.status.as_ref().unwrap().wallet.name.as_deref(),
+        Some("second")
+    );
+}
+
+#[test]
+fn late_history_does_not_rewind_confirmations_or_replace_a_newer_request() {
+    let world = World::new("history-generation");
+    let status = fmonero_core::status::status(&world.ctx).unwrap();
+    let mut m = model(&world.ctx, Screen::Wallet);
+    let _ = m.load_history();
+    let seq = m.history_seq;
+    let revision = m.status_revision;
+    let _ = m.update(Msg::Status(Box::new(Ok(status.clone()))));
+    let _ = m.update(Msg::History(
+        m.read_epoch,
+        seq,
+        revision,
+        Box::new(Ok((vec![], Some(1), Some(1)))),
+    ));
+    assert_eq!(m.wallet.wh, status.wallet.height);
+    let _ = m.load_history();
+    let _ = m.update(Msg::History(
+        m.read_epoch,
+        seq,
+        revision,
+        Box::new(Err("obsolete failure".into())),
+    ));
+    assert!(m.wallet.rows_err.is_none());
 }

@@ -521,6 +521,10 @@ pub fn human(out: &Out, label: &str, value: &serde_json::Value) {
         "node limit" => return limit_human(out, value),
         "wallet open" => return wallet_open_human(out, value),
         "wallet close" => return wallet_close_human(out, value),
+        "wallet stop" => {
+            out.line("The wallet service is stopped.");
+            return;
+        }
         "wallet create" => return wallet_create_human(out, value),
         "wallet validate" => return validate_human(out, value),
         "wallet refresh" => return refresh_human(out, value),

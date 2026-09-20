@@ -13630,3 +13630,144 @@ that variable**, and the way to find the next one is to diff the four `export`s 
   owner unlocks fixes that, and `~/.local/bin/fmonero` is already this commit's binary, so the panel
   will be current the moment it reloads. On the strength of the reading rather than of the tests: this
   is a build worth opening, with a first send of an amount he could lose.
+
+## 2026-09-20 — Repair wallet continuity, sync reporting, and widget polling
+
+Owner reported wallet reads, widget updates, synchronization/readiness, and node rereads breaking
+wallet synchronization. Applied the JSM-managed multi-pass-bug-hunting skill and Omarchy plugin
+guidance. The concrete defect was §2m.5's wallet-service restart on node selection: a restart
+closes the wallet. The DESIGN amendment above replaces that behavior with a live `set_daemon`
+and `auto_refresh`, preserving the send/pending interlocks and reporting RPC failures without
+falling back to a restart. Future service startup still reads the rendered unit, and wallet open
+still installs the configured target.
+
+Additional fixes: remote-node checks from closed widget panels and every TUI screen; serialized
+automatic check harvest/start with partial-response protection; widget poll deadlines compatible
+with the full status sequence; CLI/TUI open/create timeout parity; explicit busy versus closed
+wallet state; initial height-zero progress; current wallet height for confirmation/unlock display;
+and wallet-height verification before local-node transaction construction. A stopped service with
+a recorded open wallet also remains a warning rather than being mistaken for intentional idle.
+
+Verification (all run against this change):
+
+- `cargo test --workspace`: 154 binary + 200 core + 3 mock tests passed (357 total).
+- `cargo clippy --all-targets -- -D warnings`: passed; `scripts/check.sh`: PASS.
+- `tests/e2e.sh`: 598 passed, 0 failed, 3 existing skips; both owner's units stayed inactive.
+- `tests/plugin-smoke.sh --static`: 78 passed, 0 failed.
+- `node tests/widget-model.cjs`: passed.
+- `tests/widget-poll.sh`: real offscreen Quickshell loaded Service.qml, accepted a nine-second
+  first response, and then accepted an updated second response. Old eight-second watchdog fails
+  this case.
+- `python3 tests/real-wallet-session.py`: installed monero-wallet-rpc, offline, isolated empty
+  wallet and all sandbox paths/systemctl fixture; two node switches kept the same process and
+  address open; a closed-wallet switch also succeeded. No transaction was constructed or sent.
+- UBS was run on the repository and again on the changed runtime paths. It is not a clean scan:
+  broad inventories include test panics/assertions, local confirmation comparisons, indexing and
+  casts. The targeted critical findings were reviewed as test-only panics and local UI comparisons;
+  no blanket suppressions were added. Details and limits: docs/REPAIR-2026-09-20.md.
+
+Installed the release binary atomically with `scripts/install.sh --yes --no-setup`; its SHA-256
+matches target/release/fmonero. The previous binary is retained at target/fmonero-before-sync-fix.
+The widget symlink already points to this repository. `rescanPlugins` retained the cached old
+qml-5fba81b1 component; the new files identify as qml-9eb8be2b. `omarchy restart shell` refused
+because the desktop session is locked. The widget code is ready but its live reload awaits unlock.
+The owner's wallet service was stopped; live authenticated wallet synchronization and funded
+payment delivery remain untested.
+
+## 2026-09-20 — Follow-up bug pass: failed changes and stale reads
+
+The owner's follow-up asked about further bugs. Confirmed and repaired:
+
+- Wallet creation unnecessarily called `open_wallet` after `create_wallet` had left the wallet
+  open. Both commands now share only the daemon/refresh/session-record step. A drop guard clears
+  the owned password buffer on early error paths as well as successful RPC calls.
+- A node-selection failure could leave the new node saved without wallet acceptance. Cancellation
+  and installation failure no longer save it; definite wallet rejection restores the old service
+  rendering. Transport failures preserve the desired target because their outcome is uncertain.
+  The TUI allows reapplying the current public or local target through confirmation.
+- Wallet, status, and history replies lacked a generation check, allowing old requests to replace
+  current data after a wallet/configuration change. Generation and history sequence checks reject
+  late replies without clearing the newer request's busy flag. A newer status observation takes
+  precedence over the confirmation clock in an older history request.
+- The first pass introduced a settings-error regression when expanding checked polling to every
+  screen. Invalid settings now pause polling and new actions until repaired. Configuration stamps
+  include inode and size to detect atomic replacement within one modification-time tick.
+
+Added seven regression tests: workspace totals are 157 binary + 204 core + 3 mock (364 passing).
+Compiler linting with warnings denied passed. The command-line suite again passed 598 cases with
+zero failures and three existing skips. The real offline integration check now creates its empty
+disposable wallet through `fmonero wallet create`; creation and two live node changes succeeded
+while retaining the same wallet process and address. No transaction was constructed or sent.
+The earlier widget tests still cover unchanged widget code; the locked-shell reload limitation
+and the absence of a funded/live-owner-wallet validation remain as recorded above.
+
+The final repository check passed after moving rollback error details out of the normal UI
+message and into diagnostic output. Installed the updated release with `--no-setup`; the
+installed and built binary checksums match. The original pre-repair backup remains in place.
+
+## 2026-09-20 — Owner-reported 30-second wallet startup timeout
+
+The owner's real attempt started wallet-rpc at 09:20:46 and fmonero stopped it at 09:21:16.
+The client loaded the login before startup; Monero generated a new one on startup. All readiness
+probes reused the obsolete (or missing) credential. Two regression tests reproduced that failure
+before the fix and passed afterward. Context-backed wallet transports now read the current login
+per operation, with the existing one-challenge retry and no fallback to obsolete credentials.
+
+Also corrected startup cleanup ownership: a failed probe of an already-active service must not
+make fmonero stop that service. Added a regression proving it remains active on timeout.
+
+The earlier real-wallet script disabled authentication, so it did not cover the reported failure.
+It now starts the app first, then launches authenticated real Monero in the isolated test's run
+directory. Creation and reopening after a service restart/login rotation both passed, as did
+wallet continuity across two node changes and closed-wallet selection. No transaction was built
+or sent. The full command-line suite again passed 598 checks with three existing skips.
+
+`scripts/check.sh` passed, including compiler linting and the now-367-test workspace suite.
+Installed the corrected release with `--no-setup` and verified matching build/installed checksums.
+Started the owner's wallet service to verify the reported startup failure: the installed client's
+status now reports reachable=true, authenticated=true, unit_active=true, busy=false, open=false.
+Left the service running for the owner's retry; did not open the owner's wallet or request its
+password. An already-open TUI must be relaunched to load the corrected code.
+
+## 2026-09-20 — Inline wallet picker and torrent-style widget controls
+
+The owner requested a compact header matching the torrent widget, a power control, and opening
+existing wallets inside the widget. Added wallet picker, masked input, refresh/TUI/power header
+buttons, and Close wallet. Power invokes the guarded `wallet stop --yes` command, which stops
+only the wallet service. The bar remains available to reopen a wallet. Creation and payments
+remain in the TUI. Password input uses a bounded stdin pipe and clears on submit/dismiss; no
+password is put in argv, environment, settings, or temporary files by this flow.
+
+Open/create/close/stop now share the payment lock and pending-payment guard. Widget status
+responses are invalidated when an action starts, and successful polls no longer erase failed
+action messages. The existing QML line budgets still pass: Service 321, Panel 824, icon 107,
+Model 334. Earlier QML password/open prohibitions are superseded by the owner's explicit request
+and the design amendment above; no blanket exception was made for payments or seed access.
+
+Tests initially inherited the owner's live systemd state. TUI/core tests and the end-to-end
+sandboxes now explicitly model service state, and the doctor idle-machine case has an empty
+process/port view. End-to-end teardown compares the owner's service states and PIDs with their
+starting values, rather than asserting the owner's services must be stopped.
+
+Validation:
+- `scripts/check.sh` passed, including all Rust tests, warnings-denied compiler linting, source
+  checks, and the existing QML budgets. The workspace now has 369 tests (158 binary, 208 core,
+  3 mock-server tests).
+- `tests/e2e.sh`: 604 passed, zero failed, three existing skips; owner's service states and PIDs
+  unchanged. Generated robot documentation matches the built binary.
+- `tests/widget-wallet.sh`: actual Quickshell process/event-loop coverage of listing, private
+  input, incorrect password, persistent error, retry, close, and power passed.
+- Widget model and slow-poll regressions passed. A rendered-panel keyboard check showed h/j/k/l/q
+  and spaces enter the masked field, and Escape clears it and returns to the list. The offscreen
+  rendering uses the installed Omarchy controls with a Window adapter for KeyboardPanel only.
+- The real Monero offline integration passed authenticated cold creation, reopen through stdin
+  after login rotation, two node changes retaining the same process/address, and closed-wallet
+  node selection. No transaction was constructed or sent.
+- Restarting the desktop shell succeeded this time. `tests/plugin-smoke.sh` passed all 87 checks,
+  including the running `qml-63e18992` version and no widget load errors. A later status confirmed
+  the widget was alive. The owner service was left running with no wallet open.
+
+Installed the final release with `--no-setup`; build and installed SHA-256 both equal
+`fa4d7de2ce2c6066ada34afebb0e5e89aafb7ac0222303f0f572aa346482fa0a`. The original backup remains.
+Live synchronization of the owner's wallet and a funded payment were not exercised. The owner
+also requested committing and pushing the full repair and widget changes.

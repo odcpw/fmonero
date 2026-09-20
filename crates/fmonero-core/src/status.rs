@@ -162,6 +162,10 @@ pub struct FeeStatus {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WalletStatus {
+    /// A read reached its deadline. Wallet RPC may be occupied by a scan; this does not
+    /// establish that a wallet is closed, nor prove that synchronization is progressing.
+    #[serde(default)]
+    pub busy: bool,
     pub unit_active: bool,
     pub reachable: bool,
     pub authenticated: Option<bool>,
@@ -522,6 +526,7 @@ impl WalletStatus {
     /// As [`NodeStatus::unreachable`], for the wallet daemon.
     pub fn unreachable(url: String, account_index: u32) -> WalletStatus {
         WalletStatus {
+            busy: false,
             unit_active: false,
             reachable: false,
             authenticated: None,
@@ -573,8 +578,7 @@ pub fn status_checking_node(ctx: &Context) -> Result<Status, Error> {
         // Harvest first. An answer that landed since the last poll is what makes this one
         // fresh, and testing staleness before harvesting would start a second check for an
         // answer already on disk.
-        let _ = crate::nodes::harvest_check(ctx, &address);
-        let _ = crate::nodes::spawn_check(ctx, &address);
+        let _ = crate::nodes::check_configured(ctx, &address);
     }
     status(ctx)
 }
@@ -687,6 +691,9 @@ pub fn status(ctx: &Context) -> Result<Status, Error> {
                 wallet.reachable = true;
                 wallet.authenticated = w.authenticated();
                 closed_behind_our_back = crate::state::last_open(ctx).ok().flatten().is_some();
+            }
+            Err(e) if e.reason() == Some("killed_at_deadline") => {
+                wallet.busy = true;
             }
             // A transport error: unreachable. `status` exits 0 and warns (§2e).
             Err(_) => {}
@@ -1126,7 +1133,7 @@ fn warnings(
             Some("Nothing to do. Press 1 to see what it is doing."),
         );
     }
-    if !s.wallet.unit_active && !s.wallet.reachable {
+    if !s.wallet.unit_active && !s.wallet.reachable && !s.wallet.busy {
         // **Narrowed in v5.5.** In remote mode with no wallet recorded open this is
         // `wallet_idle`, severity **info**: the wallet service is *designed* to be down until a
         // wallet is opened, and a warning that fires on every correct fresh install is the
@@ -1134,7 +1141,7 @@ fn warnings(
         // was urgent about a service that was behaving correctly). In local mode, and in remote
         // mode with a wallet recorded open, the warning is unchanged: an inactive unit under an
         // open wallet is a real fault, the wallet went away behind us.
-        let idle = s.node.layout == units::Layout::Remote && s.wallet.name.is_none();
+        let idle = s.node.layout == units::Layout::Remote && state.last_open.is_none();
         if idle {
             add(
                 "wallet_idle",
@@ -1370,7 +1377,10 @@ mod tests {
     #[test]
     fn with_both_daemons_absent_the_document_is_all_null_and_still_ok() {
         let dir = std::env::temp_dir().join(format!("fmonero-status-{}", std::process::id()));
-        let ctx = Context::for_test(&dir).expect("context");
+        let mut ctx = Context::for_test(&dir).expect("context");
+        let fixture = dir.join("systemctl.txt");
+        std::fs::write(&fixture, "").unwrap();
+        ctx.systemctl = crate::context::Systemctl::Fixture(fixture);
         let s = status(&ctx).expect("status never fails on a machine with no daemons");
         let v = serde_json::to_value(&s).unwrap();
         assert_eq!(v["ok"], true);
@@ -1845,6 +1855,28 @@ mod tests {
                 .map(|c| c.reachable),
             Some(false),
             "the earlier failure is still the cached check, not the stranger's height"
+        );
+    }
+    #[test]
+    fn an_incomplete_node_check_is_not_consumed_before_the_writer_finishes() {
+        let ctx = remote_ctx("partial-check");
+        let address = crate::nodes::configured_address(&ctx).unwrap();
+        crate::state::note_remote_check(&ctx, &address).unwrap();
+        let file = crate::nodes::check_file(&ctx);
+        std::fs::write(&file, b"{\"result\":").unwrap();
+        assert!(crate::nodes::harvest_check(&ctx, &address)
+            .unwrap()
+            .is_none());
+        assert!(file.exists());
+        assert!(crate::state::remote_check(&ctx, &address)
+            .unwrap()
+            .is_some());
+        std::fs::write(&file, answered(3_765_346)).unwrap();
+        assert!(
+            crate::nodes::harvest_check(&ctx, &address)
+                .unwrap()
+                .unwrap()
+                .reachable
         );
     }
 }

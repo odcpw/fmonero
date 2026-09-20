@@ -1269,7 +1269,7 @@ pub(super) fn wallet_sync_line(s: &Status) -> Option<String> {
             .filter(|p| p.reachable)
             .and_then(|p| p.height)
     })?;
-    if wallet == 0 || node <= wallet {
+    if node == 0 || node <= wallet {
         return None;
     }
     let pct = wallet.saturating_mul(100) / node.max(1);
@@ -1828,6 +1828,18 @@ fn wallet_screen(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
     // `— XMR   unlocked — XMR` above the empty state — two dashes where the one thing the screen
     // is about would go — so the empty state now owns the whole screen, and it already opens with
     // `No wallet is open.`
+    if m.status.as_ref().is_some_and(|s| s.wallet.busy) {
+        let th = &m.theme;
+        if let Some(inner) = framed(area, th, " Wallet ", true, frame) {
+            para(
+                "Waiting for the wallet. A scan may be in progress; checking again shortly.",
+                th.dimmed(),
+                true,
+            )
+            .render(inner, frame);
+        }
+        return;
+    }
     let open = m.status.as_ref().is_some_and(|s| s.wallet.open);
     if !open {
         wallet_empty(m, area, frame);
@@ -3243,7 +3255,7 @@ fn use_node_modal(m: &Tui, address: &str, wallet_open: Option<&str>, frame: &mut
     // M10's shape here too: the service restarts only when it is running.
     lines.push(Line::styled(
         if m.status.as_ref().is_some_and(|s| s.wallet.unit_active) {
-            "· the wallet service restarts, pointed at this node"
+            "· the open wallet switches to this node without closing"
         } else {
             "· the wallet service will use this node when it next starts"
         },
@@ -3251,7 +3263,7 @@ fn use_node_modal(m: &Tui, address: &str, wallet_open: Option<&str>, frame: &mut
     ));
     if let Some(name) = wallet_open {
         lines.push(Line::styled(
-            format!("· {name} will be closed. You will be offered it again."),
+            format!("· {name} stays open and continues syncing."),
             th.text().bg(bg),
         ));
     }
@@ -3545,8 +3557,7 @@ fn log_level_modal(m: &Tui, from: Option<i8>, to: i8, frame: &mut Frame) {
 }
 
 /// §7a.4's `l` confirm — the way back to your own node, and **the same shape as the picker's
-/// `Enter` confirm above** (v5.6.1, V4). Three sentences, in the order a user needs them: what
-/// restarts, which wallet closes and that it will be offered again, and — when the node is not
+/// `Enter` confirm above** (v5.6.1, V4). It explains the connection change and — when the node is not
 /// running — that this switch will not start it, with the key that does.
 fn local_node_modal(m: &Tui, frame: &mut Frame) {
     let th = &m.theme;
@@ -3578,7 +3589,7 @@ fn local_node_modal(m: &Tui, frame: &mut Frame) {
         (String::new(), th.text()),
         (
             if wallet_up {
-                "· the wallet service restarts, pointed at your own node".to_string()
+                "· the open wallet switches to your own node without closing".to_string()
             } else {
                 "· the wallet service will use your own node when it next starts".to_string()
             },
@@ -3587,7 +3598,7 @@ fn local_node_modal(m: &Tui, frame: &mut Frame) {
     ];
     if let Some(name) = wallet {
         text.push((
-            format!("· {name} will be closed. You will be offered it again."),
+            format!("· {name} stays open and continues syncing."),
             th.text(),
         ));
     }

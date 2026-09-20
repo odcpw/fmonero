@@ -164,7 +164,8 @@ impl WalletClient {
         })
     }
 
-    /// Reads `user:pass` from the login file (§2c). **An absent file is `Ok` with
+    /// Reads `user:pass` from the login file for each request (§2c), including after startup.
+    /// **An absent file is `Ok` with
     /// `auth: None`, never an error**: steps 1–4 of §2a.1's refusal order must still run in
     /// order, so no constructor may decide a money-path exit code. The absence surfaces at
     /// the first request as exit 4 — `reason: unreachable` for a refused connect,
@@ -193,11 +194,9 @@ impl WalletClient {
         crate::rpc::require_loopback(url)?;
         // An absent login file is `None`, not an error (§2c): the absence must surface at
         // the first request, so that §2a.1's refusal order decides the exit code.
-        let auth =
-            Login::from_wallet_login_file(&ctx.paths.wallet_login_file(ctx.settings.wallet.port))
-                .unwrap_or(None);
         Ok(WalletClient {
-            t: Transport::from_ctx(ctx, url, auth, Daemon::Wallet, breaker),
+            t: Transport::from_ctx(ctx, url, None, Daemon::Wallet, breaker)
+                .with_wallet_login_file(ctx.paths.wallet_login_file(ctx.settings.wallet.port)),
         })
     }
 

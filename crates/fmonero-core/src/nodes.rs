@@ -1000,6 +1000,28 @@ pub fn check_file(ctx: &Context) -> std::path::PathBuf {
     ctx.paths.state_dir.join("remote-check.json")
 }
 
+/// Serialize the TUI and widget's harvest/start pair. A separate lock avoids holding the
+/// state lock while the two operations update state themselves. Contention skips this poll.
+pub(crate) fn check_configured(ctx: &Context, address: &str) -> Result<(), Error> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = ctx.paths.state_dir.join("remote-check.lock");
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .mode(0o600)
+        .open(&path)
+        .map_err(|e| Error::io("open", "node check lock", &path, &e))?;
+    // Closing the file releases flock, including on an error below.
+    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Ok(());
+    }
+    harvest_check(ctx, address)?;
+    spawn_check(ctx, address)?;
+    Ok(())
+}
+
 /// v5.6, §5. Read a finished detached check of `address`, record it as that address's cached
 /// check, and clean up. **Reads a file and spawns nothing**, so it is inside §2e.
 ///
@@ -1050,6 +1072,11 @@ pub fn harvest_check(ctx: &Context, address: &str) -> Result<Option<Probe>, Erro
         crate::state::clear_remote_check(ctx)?;
         let _ = std::fs::remove_file(&path);
         return Ok(Some(probe));
+    }
+    // curl writes this file incrementally. A partial JSON body is still in flight,
+    // not a failed node check; leave it for the next poll until the deadline expires.
+    if !overdue && serde_json::from_slice::<serde_json::Value>(&bytes).is_err() {
+        return Ok(None);
     }
     let latency = std::fs::metadata(&path)
         .and_then(|m| m.modified())

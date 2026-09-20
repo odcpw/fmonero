@@ -51,6 +51,14 @@ bad()  { FAIL=$((FAIL+1)); printf '  FAIL  %s\n' "$1"; shift; for l in "$@"; do 
 skip() { SKIP=$((SKIP+1)); printf '  skip  %s\n' "$1"; }
 step() { printf '\n== %s\n' "$1"; }
 
+# Compare the owner's service state before and after; it may already be running.
+owner_services() {
+  for unit in fmonero-monerod.service fmonero-wallet-rpc.service; do
+    systemctl --user show -p ActiveState -p MainPID "$unit" 2>/dev/null || true
+  done
+}
+OWNER_SERVICES_BEFORE="$(owner_services)"
+
 # ---------------------------------------------------------------- build
 step "build"
 if out="$(cargo build --release 2>&1)"; then
@@ -89,7 +97,7 @@ done
 #
 # No case starts or stops a real systemd unit: every one that could either finds no unit file
 # (exit 4 in milliseconds, §2i) or runs under a `FMONERO_SYSTEMCTL_FIXTURE`, and the last step of
-# this file asserts both of the owner's units are still inactive afterwards.
+# this file asserts both of the owner's unit states and process IDs are unchanged.
 CASE=""
 sandbox() {
   # The ports are fixed (the login file is named after the bind port, §2c), so a previous
@@ -129,6 +137,8 @@ sandbox() {
   # lines against 200 of somebody else's monerod. A case named "with no log file" must own the path
   # it claims is empty.
   "$FM" settings set node.log_file "$ROOT/target/e2e-data/$CASE/bitmonero/bitmonero.log" >/dev/null
+  systemctl_fixture none
+  export FMONERO_NODES_URL="http://127.0.0.1:1"
 }
 
 OUT=""; ERR=""; RC=0
@@ -303,7 +313,6 @@ after="$(cat "$FMONERO_SYSTEMCTL_FIXTURE")"
 if [ "$before" = "$after" ]; then ok "§2e: status started nothing"; else
   bad "§2e: status changed the unit state" "$after"
 fi
-unset FMONERO_SYSTEMCTL_FIXTURE
 
 fm wallet list --json
 expect_rc 0 "wallet list on an empty directory"
@@ -490,6 +499,7 @@ esac
 #     `systemctl --user start` could neither start nor leave flapping one of the owner's units.
 step "§2i: a unit that is installed with no Monero binary is exit 4 not_installed"
 sandbox notinstalled
+unset FMONERO_SYSTEMCTL_FIXTURE
 if command -v monerod >/dev/null 2>&1; then
   skip "monerod is on PATH on this machine, so not_installed is unobservable here"
 else
@@ -576,6 +586,7 @@ expect_json '.hint' '"fmonero setup --units --yes"' "§4: and setup hints the us
 # §4.2's two gate lines, run against the REAL config dir's renderer but writing nothing.
 step "setup --units --dry-run (§4.2)"
 sandbox setup
+unset FMONERO_SYSTEMCTL_FIXTURE
 # The one case that needs `wallet.dir` ABSENT: §4.2 promises a `CreateDir` action per missing
 # ancestor, and `sandbox` creates the directory for every other case.
 rm -rf "$XDG_DATA_HOME/fmonero"
@@ -659,6 +670,7 @@ fi
 fm settings set node.url "http://127.0.0.1:19999" >/dev/null
 fm settings set wallet.port 19998 >/dev/null
 cp "$FMONERO_CONFIG_DIR/config.toml" "$WORK/setup/config.before"
+unset FMONERO_SYSTEMCTL_FIXTURE
 fm setup --units --yes --json
 expect_rc 3 "setup --units --yes refuses to write under FMONERO_STATE_DIR (§4.2)"
 # v5.3: the refusal is classified and its hint is the user's own command, not a different one
@@ -694,6 +706,7 @@ expect_rc 2 "setup with no target is exit 2"
 # that do not exist, which is not the case that cost the owner 147 MB.
 step "V18: a sandbox with no systemctl fixture may not start or stop a real service"
 sandbox sandboxstart
+unset FMONERO_SYSTEMCTL_FIXTURE
 SHIM="$WORK/$CASE/shim"
 mkdir -p "$SHIM"
 export SHIM_LOG="$WORK/$CASE/systemctl.log"
@@ -977,6 +990,19 @@ expect_keys "node restart" "ok schema unit active reachable synchronized waited_
 fm --timeout 3 node down --json
 expect_rc 3 "node down without --yes is exit 3"
 unset FMONERO_SYSTEMCTL_FIXTURE
+
+step "widget wallet controls"
+sandbox walletcontrols
+systemctl_fixture user_unit
+fm wallet stop --json
+expect_rc 3 "wallet stop requires --yes"
+fm wallet stop --yes --json
+expect_rc 0 "wallet stop through the isolated service fixture"
+expect_keys "wallet stop" "ok schema stopped open"
+expect_json '.stopped' 'true' "the stop result confirms completion"
+fm status --json
+expect_json '.wallet.unit_active' 'false' "wallet service stopped"
+expect_json '.units.node.active' 'true' "the local node was left running"
 
 # ---- the money rows, in all three outcomes (§5c) -----------------------------
 step "the money path against the mock (§2a, §5c)"
@@ -1545,6 +1571,11 @@ fi
 # nothing is running.
 step "§4b GREEN: doctor on this machine — exit 11 and that exact failure set"
 sandbox doctor
+# Model an idle machine for this case; an owner's live listener is not part of the sandbox.
+export FMONERO_PROC_ROOT="$WORK/$CASE/proc"
+mkdir -p "$FMONERO_PROC_ROOT/net"
+printf '  sl  local_address rem_address st\n' > "$FMONERO_PROC_ROOT/net/tcp"
+printf '  sl  local_address rem_address st\n' > "$FMONERO_PROC_ROOT/net/tcp6"
 fm doctor --json
 expect_rc 11 "doctor with Monero installed and no daemon running"
 expect_keys "doctor" ok schema run_id checks summary
@@ -1919,7 +1950,7 @@ fm node remote "$REMOTE_ADDR" --yes --json
 expect_rc 0 "node remote --yes"
 expect_json '.mode' '"remote"' "  mode remote"
 expect_json '.changed' 'true' "  changed"
-expect_json '.wallet_unit_restarted' 'true' "  and the active wallet unit was restarted"
+expect_json '.wallet_unit_restarted' 'false' "  and the active wallet stays open during the switch"
 fm settings get node.mode --json
 expect_json '.value' '"remote"' "  the mode key was written"
 fm settings get node.remote --json
@@ -2391,18 +2422,11 @@ fi
 # rather than an argument.
 step "no side effect: the owner's two units are untouched by this run"
 if command -v systemctl >/dev/null 2>&1; then
-  LEFT_RUNNING=""
-  for unit in fmonero-monerod.service fmonero-wallet-rpc.service; do
-    ACTIVE="$(systemctl --user show -p ActiveState --value "$unit" 2>/dev/null || echo unknown)"
-    case "$ACTIVE" in
-      active|activating|reloading|deactivating) LEFT_RUNNING="$LEFT_RUNNING $unit=$ACTIVE" ;;
-    esac
-  done
-  if [ -z "${LEFT_RUNNING// /}" ]; then
-    ok "both fmonero units are inactive — no case started one"
+  OWNER_SERVICES_AFTER="$(owner_services)"
+  if [ "$OWNER_SERVICES_BEFORE" = "$OWNER_SERVICES_AFTER" ]; then
+    ok "the owner's service states and process ids are unchanged"
   else
-    bad "a case started one of the owner's units and left it running" "$LEFT_RUNNING" \
-        "stop it with: systemctl --user stop$LEFT_RUNNING"
+    bad "the owner's services changed during the test run"
   fi
 else
   skip "systemctl is not on PATH, so there are no user units to leave behind"

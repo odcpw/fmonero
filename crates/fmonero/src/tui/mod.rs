@@ -347,9 +347,7 @@ pub(super) struct PickerUi {
     /// The cache as `nodes::cached` read it — `None` means no cache, which renders §7a.4's
     /// no-cache panel and not an empty table with a broken footer (revision 8).
     pub list: Option<fmonero_core::NodeList>,
-    /// **No row is selected on entry** (revision 4): with row 0 selected and the configured
-    /// node sorted first, a mouse user's first click here would activate the node they are
-    /// already using and §2m.5 step 9 would close an open wallet for a change of nothing.
+    /// No row is selected on entry: the first click selects a target before confirmation.
     pub table: RefCell<TableState>,
     pub filter: TextInput,
     pub filter_open: bool,
@@ -430,7 +428,7 @@ pub(super) enum Modal {
     /// the three consequences before the fact.
     UseNode {
         address: String,
-        /// The wallet that is open and will be closed by the restart, named when there is one.
+        /// The open wallet whose connection will change, named when there is one.
         wallet_open: Option<String>,
     },
     /// v5.5, §7a.4. One field, validated live by `Settings::parse_remote_address` — the same
@@ -486,9 +484,7 @@ pub(super) enum Confirm {
         from: Option<i8>,
         to: i8,
     },
-    /// v5.6, §7a.4's `l`: go back to your own node. It asks first for the same reason
-    /// `Confirm::UseNode` does — it restarts the wallet service and can close the wallet this
-    /// session is holding (§2m.5).
+    /// v5.6, §7a.4's `l`: confirm switching the wallet connection to your own node.
     NodeLocal,
     /// Round 5, S8: `P` on the Wallet screen, the in-app half of `wallet clear-pending`. It asks
     /// first because the record it deletes is the interlock that stops a second spend (§2a.4), and
@@ -527,9 +523,10 @@ pub enum Msg {
     /// 120 ms: the spinner frame budget and the note expiry. It touches no daemon.
     Tick,
     Status(Box<Result<Status, String>>),
+    StatusRead(u64, Box<Result<Status, String>>),
     Extras(Box<Result<NodeExtras, String>>),
-    WalletData(Box<Result<(Balance, AddressSet), String>>),
-    History(Box<Result<HistoryRead, String>>),
+    WalletData(u64, Box<Result<(Balance, AddressSet), String>>),
+    History(u64, u64, u64, Box<Result<HistoryRead, String>>),
     LogLines(Box<Result<(Vec<String>, PathBuf), String>>),
     Book(Vec<BookEntry>),
     /// `validate_address` + the nettype check, before the Send screen builds (§7a step 2).
@@ -545,6 +542,13 @@ impl From<Event> for Msg {
     }
 }
 
+// Include inode and size: atomic saves can share an mtime on coarse clocks.
+fn settings_stamp(path: &std::path::Path) -> Option<(SystemTime, u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.modified().ok()?, m.ino(), m.len()))
+}
+
 pub struct Tui {
     ctx: Context,
     exit: Arc<AtomicI32>,
@@ -554,7 +558,11 @@ pub struct Tui {
     /// a settings change made **anywhere else** — the CLI in another terminal, an editor, a
     /// `doctor --fix` that repaired a key — is noticed on the 1 s poll instead of being invisible
     /// until the TUI is restarted. `stat` on one file per second is not a cost worth optimising.
-    config_mtime: Option<SystemTime>,
+    config_mtime: Option<(SystemTime, u64, u64)>,
+    config_valid: bool,
+    read_epoch: u64,
+    history_seq: u64,
+    status_revision: u64,
     screen: Screen,
     tabs: RefCell<TabsState>,
     show_help: bool,
@@ -634,9 +642,11 @@ impl Tui {
             theme_mtime: std::fs::metadata(theme::colors_path())
                 .and_then(|m| m.modified())
                 .ok(),
-            config_mtime: std::fs::metadata(ctx.paths.config_file())
-                .and_then(|m| m.modified())
-                .ok(),
+            config_mtime: settings_stamp(&ctx.paths.config_file()),
+            config_valid: true,
+            read_epoch: 0,
+            history_seq: 0,
+            status_revision: 0,
             node: NodeUi::default(),
             picker: PickerUi {
                 filter: text_input(&theme),
@@ -688,9 +698,23 @@ impl Tui {
     // ------------------------------------------------------------ what the screens ask
 
     pub(super) fn account_index(&self) -> u32 {
-        self.status
-            .as_ref()
-            .map_or(self.ctx.settings.wallet.account, |s| s.wallet.account_index)
+        self.ctx.settings.wallet.account
+    }
+
+    fn invalidate_wallet_reads(&mut self) {
+        self.read_epoch += 1;
+        self.poll_inflight = false;
+        self.wallet.inflight = false;
+        self.wallet.balance = None;
+        self.wallet.addresses = None;
+        self.wallet.rows.clear();
+        self.wallet.wh = None;
+        self.wallet.now = None;
+        self.wallet.err = None;
+        self.wallet.rows_err = None;
+        self.wallet.detail = false;
+        self.wallet.table.borrow_mut().selected = None;
+        self.wallet.list.borrow_mut().selected = None;
     }
 
     /// The node badge as **the word a person reads** and the **tone the theme paints it**
@@ -812,6 +836,9 @@ impl Tui {
         if self.has_warning("wallet_stalled") {
             return ("problem", "error");
         }
+        if s.wallet.busy {
+            return ("busy", "syncing");
+        }
         let ours = self.action.as_ref().is_some_and(|a| a.wallet_busy);
         match (s.wallet.reachable, s.wallet.open) {
             // **`starting`/`busy`, not `down`, while one of our own actions is the reason a poll
@@ -840,8 +867,9 @@ impl Tui {
             // the wording. Calm-versus-alarm is `wallet_idle`'s job and the bar icon's, not this
             // word's: both branches were the same `down` tone anyway.
             (false, _) => ("not running", "down"),
+            (true, true) if screens::wallet_sync_line(s).is_some() => ("syncing", "syncing"),
             (true, true) => ("open", "up"),
-            (true, false) => ("catching up", "syncing"),
+            (true, false) => ("closed", "down"),
         }
     }
 
@@ -952,15 +980,17 @@ impl Tui {
     // ------------------------------------------------------------ short reads
 
     fn poll(&mut self) -> Cmd<Msg> {
-        if self.poll_inflight {
+        if self.poll_inflight || !self.config_valid {
             return Cmd::none();
         }
         self.poll_inflight = true;
+        let epoch = self.read_epoch;
         let ctx = self.ctx.clone();
         Cmd::task(move || {
-            Msg::Status(Box::new(
-                corestatus::status(&ctx).map_err(|e| e.to_string()),
-            ))
+            Msg::StatusRead(
+                epoch,
+                Box::new(corestatus::status_checking_node(&ctx).map_err(|e| e.to_string())),
+            )
         })
     }
 
@@ -1002,10 +1032,11 @@ impl Tui {
     }
 
     fn load_wallet(&mut self) -> Cmd<Msg> {
-        if self.wallet.inflight {
+        if self.wallet.inflight || !self.config_valid {
             return Cmd::none();
         }
         self.wallet.inflight = true;
+        let epoch = self.read_epoch;
         let ctx = self.ctx.clone();
         let account = self.account_index();
         Cmd::task(move || {
@@ -1013,11 +1044,18 @@ impl Tui {
                 let w = WalletClient::from_ctx(&ctx)?;
                 Ok((w.get_balance(account)?, w.get_address(account)?))
             };
-            Msg::WalletData(Box::new(read().map_err(|e| e.to_string())))
+            Msg::WalletData(epoch, Box::new(read().map_err(|e| e.to_string())))
         })
     }
 
-    fn load_history(&self) -> Cmd<Msg> {
+    fn load_history(&mut self) -> Cmd<Msg> {
+        if !self.config_valid {
+            return Cmd::none();
+        }
+        self.history_seq += 1;
+        let seq = self.history_seq;
+        let epoch = self.read_epoch;
+        let revision = self.status_revision;
         let ctx = self.ctx.clone();
         let account = self.account_index();
         // X17: the same default set `wallet history` uses, from one constant in core.
@@ -1051,7 +1089,12 @@ impl Tui {
                 // what keeps the NODE's height out of `confirmations` (§1b.4).
                 Ok((rows, q.wallet_height, q.adjusted_now))
             };
-            Msg::History(Box::new(read().map_err(|e| e.to_string())))
+            Msg::History(
+                epoch,
+                seq,
+                revision,
+                Box::new(read().map_err(|e| e.to_string())),
+            )
         })
     }
 
@@ -1135,6 +1178,10 @@ impl Tui {
     /// only `ActionDone` can leave, with the built `Plan` (and its §2a.11 lock) dropped and
     /// nothing on screen saying a transaction had existed. Those two callers put it back.
     fn try_start(&mut self, action: Action) -> Result<Cmd<Msg>, Box<Action>> {
+        if !self.config_valid && !matches!(action, Action::Relay(_)) {
+            self.note("Fix your settings before starting another action.", true);
+            return Err(Box::new(action));
+        }
         if let Some(a) = &self.action {
             self.note(format!("Already {}. Esc cancels it.", a.label), true);
             return Err(Box::new(action));
@@ -1288,10 +1335,8 @@ impl Tui {
         self.start(Action::NodeProbe { targets })
     }
 
-    /// `Enter` on the picker. Two guards, because either alone leaves a bad shape (revision 4):
-    /// nothing is selected on entry, so a first click can only select; and the row already
-    /// configured is refused with a toast rather than opening the confirm — otherwise a stray
-    /// click would restart the wallet unit and close an open wallet for a change of nothing.
+    /// `Enter` on the picker confirms the selected target. Selecting the configured target
+    /// again is allowed: it retries a connection whose previous application failed or timed out.
     fn use_selected_node(&mut self) -> Cmd<Msg> {
         let Some(sel) = self.picker.table.borrow().selected else {
             self.note("Select a node first, with ↑↓ or a click, then Enter.", true);
@@ -1300,10 +1345,6 @@ impl Tui {
         let Some(address) = self.picker_rows().get(sel).map(|n| n.address.clone()) else {
             return Cmd::none();
         };
-        if nodes::configured_address(&self.ctx).as_deref() == Some(address.as_str()) {
-            self.note("This is the node you are using.", false);
-            return Cmd::none();
-        }
         let wallet_open = self
             .status
             .as_ref()
@@ -1334,45 +1375,9 @@ impl Tui {
 
     /// v5.6, §7a.4's `l` and §2o.1's destination for the command the old refusal printed.
     ///
-    /// It goes through a confirm modal rather than acting, for the reason `Confirm::UseNode`
-    /// does: the switch re-renders the wallet service and closes the wallet this session may be
-    /// holding (§2m.5). With your own node already in force it is a no-op with a sentence.
+    /// Confirm the connection change, including retries of the current local target.
     fn use_local(&mut self) -> Cmd<Msg> {
-        if !self.remote_mode() {
-            self.note("You are already using your own node.", false);
-            return Cmd::none();
-        }
         self.confirm_local()
-    }
-
-    /// The §2n.4 cadence: probe **the configured node** on entering the Node screen and every
-    /// `node.remote_probe_sec` seconds **while that screen is showing**. It is the only automatic
-    /// probe in this design, and it never needs the §2n.5 notice: it is the node already in use.
-    fn maybe_probe_configured(&mut self) -> Cmd<Msg> {
-        if self.screen != Screen::Node || self.action.is_some() {
-            return Cmd::none();
-        }
-        let every = self.ctx.settings.node.remote_probe_sec;
-        if every == 0 {
-            return Cmd::none();
-        }
-        let Some(address) = nodes::configured_address(&self.ctx) else {
-            return Cmd::none();
-        };
-        let due = match self.picker.probed_at {
-            None => true,
-            Some(at) => at.elapsed() >= Duration::from_secs(u64::from(every)),
-        };
-        if !due {
-            return Cmd::none();
-        }
-        let Ok(target) = ProbeTarget::parse(&address) else {
-            return Cmd::none();
-        };
-        self.picker.probed_at = Some(Instant::now());
-        self.start(Action::NodeProbe {
-            targets: vec![target],
-        })
     }
 
     /// The toast, set from a test. §7a's tests drive the real key paths wherever they can; a long
@@ -1403,13 +1408,22 @@ impl Tui {
     /// in a toast — a TUI that exited on an unreadable settings file would be worse than one
     /// showing a stale address it tells you about.
     fn reload_ctx(&mut self) -> Result<(), Error> {
-        let settings = coresettings::Settings::load(&self.ctx.paths)?;
+        let settings = match coresettings::Settings::load(&self.ctx.paths) {
+            Ok(settings) => settings,
+            Err(e) => {
+                self.config_valid = false;
+                self.invalidate_wallet_reads();
+                return Err(e);
+            }
+        };
         let timeouts = coresettings::Timeouts::from_settings(&settings.timeouts);
+        if self.ctx.settings != settings {
+            self.invalidate_wallet_reads();
+        }
+        self.config_valid = true;
         self.ctx.settings = settings;
         self.ctx.timeouts = timeouts;
-        self.config_mtime = std::fs::metadata(self.ctx.paths.config_file())
-            .and_then(|m| m.modified())
-            .ok();
+        self.config_mtime = settings_stamp(&self.ctx.paths.config_file());
         self.logs.path = self.ctx.settings.node.log_file.clone();
         Ok(())
     }
@@ -1421,11 +1435,9 @@ impl Tui {
     /// the settings that name them, and — the reason the return value exists at all — an action
     /// armed in the same tick would overwrite the toast this raised with its own label.
     fn maybe_reload_settings(&mut self) -> bool {
-        let m = std::fs::metadata(self.ctx.paths.config_file())
-            .and_then(|m| m.modified())
-            .ok();
+        let m = settings_stamp(&self.ctx.paths.config_file());
         if m == self.config_mtime {
-            return true;
+            return self.config_valid;
         }
         // Record the new mtime even when the load fails, so an unreadable file raises **one**
         // toast rather than one per second until it is fixed.
@@ -1528,7 +1540,7 @@ impl Tui {
                 // schedule. A picker that measured 158 nodes because someone pressed `1` would be
                 // the automatic behaviour §2n.5 rule 1 forbids.
                 self.reload_picker();
-                let probe = self.maybe_probe_configured();
+                let probe = self.poll();
                 if self.node.extras.is_none() {
                     Cmd::batch(vec![self.load_extras(), probe])
                 } else {
@@ -2628,8 +2640,7 @@ impl Tui {
         // In public-node mode `u`, `d` and `L` say so instead of acting (§7a): all three exit 4
         // `remote_node`. **v5.6 names the two keys that do something about it** rather than the
         // shell command the refusal used to print (§2o.1) — `f` to pick another public node, `l`
-        // to go back to your own. The switch still asks first: it restarts the wallet service and
-        // closes the wallet this session is holding (§2m.5).
+        // to go back to your own. The connection change still asks first.
         if self.remote_mode() {
             // **X5: the situation first, and one refusal per key.** This was one 40-column toast
             // for three keys — `Press f for the list, or l for your own.` — which is rule 11's
@@ -3116,16 +3127,12 @@ impl Model for Tui {
                 self.maybe_reload_theme();
                 // §7a.7 part 2, before the poll that would otherwise ask `status` about the
                 // node this process still thinks is configured.
-                let settings_ok = self.maybe_reload_settings();
+                if !self.maybe_reload_settings() {
+                    return Cmd::none();
+                }
                 let mut cmds = vec![self.poll()];
                 if self.logs.follow && self.screen == Screen::Log {
                     cmds.push(self.load_log());
-                }
-                // §2n.4's cadence, and it is the **only** automatic probe in this design: the node
-                // already in use, only while the Node screen is showing, only every
-                // `node.remote_probe_sec` seconds, and never from `status`.
-                if settings_ok {
-                    cmds.push(self.maybe_probe_configured());
                 }
                 Cmd::batch(cmds)
             }
@@ -3136,6 +3143,12 @@ impl Model for Tui {
                     self.note.clear();
                 }
                 Cmd::none()
+            }
+            Msg::StatusRead(epoch, r) => {
+                if epoch != self.read_epoch || !self.config_valid {
+                    return Cmd::none();
+                }
+                self.update(Msg::Status(r))
             }
             Msg::Status(r) => {
                 self.poll_inflight = false;
@@ -3148,7 +3161,22 @@ impl Model for Tui {
                             self.node.rx.push_back(bps as f64);
                         }
                         self.update_eta(&s);
+                        self.status_revision += 1;
+                        if let Some(old) = &self.status {
+                            let changed_wallet = s.wallet.open
+                                && (old.wallet.name != s.wallet.name
+                                    || old.wallet.account_index != s.wallet.account_index
+                                    || old.wallet.url != s.wallet.url
+                                    || matches!((&old.wallet.primary_address, &s.wallet.primary_address),
+                                    (Some(a), Some(b)) if a != b));
+                            let closed_wallet = s.wallet.reachable && !s.wallet.open;
+                            if changed_wallet || (closed_wallet && old.wallet.open) {
+                                self.invalidate_wallet_reads();
+                            }
+                        }
                         let opened = s.wallet.open;
+                        self.wallet.wh = s.wallet.height;
+                        self.wallet.now = Some(fmonero_core::now_unix());
                         self.status_err = None;
                         self.status = Some(s);
                         // Load once when a wallet appears, and **not** again every second
@@ -3158,7 +3186,7 @@ impl Model for Tui {
                         if opened && self.wallet.addresses.is_none() && self.wallet.err.is_none() {
                             return Cmd::batch(vec![self.load_wallet(), self.load_history()]);
                         }
-                        if !opened {
+                        if !opened && !self.status.as_ref().is_some_and(|s| s.wallet.busy) {
                             self.wallet.addresses = None;
                             self.wallet.balance = None;
                         }
@@ -3177,7 +3205,10 @@ impl Model for Tui {
                 }
                 Cmd::none()
             }
-            Msg::WalletData(r) => {
+            Msg::WalletData(epoch, r) => {
+                if epoch != self.read_epoch {
+                    return Cmd::none();
+                }
                 self.wallet.inflight = false;
                 match *r {
                     Ok((b, a)) => {
@@ -3189,13 +3220,18 @@ impl Model for Tui {
                 }
                 Cmd::none()
             }
-            Msg::History(r) => {
+            Msg::History(epoch, seq, revision, r) => {
+                if epoch != self.read_epoch || seq != self.history_seq {
+                    return Cmd::none();
+                }
                 match *r {
                     Ok((rows, wh, now)) => {
                         self.wallet.rows_err = None;
                         self.wallet.rows = rows;
-                        self.wallet.wh = wh;
-                        self.wallet.now = now;
+                        if revision == self.status_revision {
+                            self.wallet.wh = wh;
+                            self.wallet.now = now;
+                        }
                         let total = self.visible_history().len();
                         let mut st = self.wallet.list.borrow_mut();
                         st.selected = (total > 0).then(|| st.selected.unwrap_or(0).min(total - 1));
@@ -3295,6 +3331,7 @@ impl Model for Tui {
                         self.note(text, false);
                     }
                     Ok(Outcome::Opened(name)) => {
+                        self.invalidate_wallet_reads();
                         self.exit.store(0, Ordering::SeqCst);
                         self.note(format!("{name} is open."), false);
                     }
@@ -3323,6 +3360,7 @@ impl Model for Tui {
                     }
                     // ---- v5.5 -------------------------------------------------------
                     Ok(Outcome::Created { name, hint }) => {
+                        self.invalidate_wallet_reads();
                         self.exit.store(0, Ordering::SeqCst);
                         self.note(format!("{name} created and open."), false);
                         // The seed-backup modal carries `seed_backup_hint` verbatim from core —

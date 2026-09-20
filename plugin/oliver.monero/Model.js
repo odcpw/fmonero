@@ -178,6 +178,7 @@ function checkedLabel(node) {
 // the state the TUI's badge calls `not answering`.
 function walletStateLabel(wallet, warnings) {
   var w = wallet || {}
+  if (w.busy === true) return "busy · waiting for the wallet"
   if (w.reachable === true) return w.unit_active === true ? "running" : "running (not fmonero's)"
   if (w.unit_active === true) return "not answering"
   var idle = Array.isArray(warnings) && warnings.some(function (w2) {
@@ -204,13 +205,13 @@ function walletHeight(status) {
 }
 function blocksLeft(status) {
   var n = nodeHeight(status), w = walletHeight(status)
-  return n > 0 && w > 0 ? Math.max(0, n - w) : -1
+  return n > 0 && w >= 0 ? Math.max(0, n - w) : -1
 }
 
 function walletBehind(status) { return blocksLeft(status) > 0 }
 function walletSyncPct(status) {
   var n = nodeHeight(status), w = walletHeight(status)
-  return n > 0 && w > 0 ? Math.floor(w * 100 / n) : 0
+  return n > 0 && w >= 0 ? Math.min(100, Math.floor(w * 100 / n)) : 0
 }
 
 // `walletSyncLabel` is **deleted** (round 4 iteration 3). It composed
@@ -233,6 +234,7 @@ function headerLine(status, showAmounts, binaryMissing) {
     return showAmounts === true
       ? "Sending " + String(status.pending.total_amount_xmr) + " XMR" : "Sending"
   }
+  if (w && w.busy === true) return "Wallet busy · checking"
   if (walletBehind(status)) return "Wallet syncing " + percent(walletSyncPct(status))
   if (w && w.open === true) {
     // **The SHORT field, never the exact one** (v5.6, §6.4, DECISIONS V16): a real balance is

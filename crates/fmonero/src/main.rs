@@ -298,9 +298,14 @@ fmonero's or the wallet service's."
         /// Read the password from this file (must have no group or other permission bit)
         #[arg(long, value_name = "PATH")]
         password_file: Option<std::path::PathBuf>,
+        /// Read one password line from a private input pipe, without a terminal prompt
+        #[arg(long, conflicts_with = "password_file")]
+        password_stdin: bool,
     },
     /// Close the open wallet
     Close,
+    /// Save and stop the wallet service; background wallet scanning stops too
+    Stop,
     /// Create a new wallet. Does NOT print the seed
     #[command(
         after_help = "In a terminal the password is asked for twice and compared. An empty one
@@ -904,6 +909,7 @@ fn command_path(cmd: &Cmd) -> String {
                 WalletCmd::List => "list",
                 WalletCmd::Open { .. } => "open",
                 WalletCmd::Close => "close",
+                WalletCmd::Stop => "stop",
                 WalletCmd::Create { .. } => "create",
                 WalletCmd::Balance { .. } => "balance",
                 WalletCmd::Address { .. } => "address",
@@ -1612,6 +1618,7 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
             WalletCmd::Open {
                 name,
                 password_file,
+                password_stdin,
             } => {
                 check_wallet_name(&name)?;
                 // v5.3: the open sequence runs under `timeouts.refresh_sec`, because every one
@@ -1619,7 +1626,11 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                 // daemon — in remote mode, over the internet (§4.2, §2m.3).
                 let ctx = ctx.clone().with_wallet_probe_at_refresh();
                 let w = WalletClient::from_ctx(&ctx)?;
-                let password = prompt::wallet_password(password_file.as_deref(), false)?;
+                let password = if password_stdin {
+                    prompt::wallet_password_stdin()?
+                } else {
+                    prompt::wallet_password(password_file.as_deref(), false)?
+                };
                 let opened = wallet_session::open(&ctx, &w, &name, password, &cancel)?;
                 out.emit(
                     "wallet open",
@@ -1629,6 +1640,15 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                         "unit_started": opened.unit_started,
                         "nettype": opened.net.as_str(),
                     })),
+                );
+                Ok(0)
+            }
+            WalletCmd::Stop => {
+                require_yes(yes, "fmonero wallet stop", &[])?;
+                wallet_session::stop(&ctx, &cancel)?;
+                out.emit(
+                    "wallet stop",
+                    ok(serde_json::json!({"stopped": true, "open": false})),
                 );
                 Ok(0)
             }
@@ -2584,6 +2604,7 @@ mod tests {
     /// seventh call site cannot arrive without a row here, and
     /// [`every_needs_yes_hint_parses_under_clap`] runs every hint through the clap tree.
     const NEEDS_YES: &[(&str, &[&str], &str)] = &[
+        ("fmonero wallet stop", &[], "fmonero wallet stop --yes"),
         ("fmonero node down", &[], "fmonero node down --yes"),
         ("fmonero node restart", &[], "fmonero node restart --yes"),
         (

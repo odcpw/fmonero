@@ -443,23 +443,31 @@ pub fn ensure_running(
     if probe() {
         return Ok(false);
     }
-    // Only now, when a start is actually about to happen (§2i, v5.1).
-    preflight(ctx, unit, unit_binary(ctx, unit))?;
-    start(ctx, unit, cancel)?;
+    // A failed probe does not mean a running service belongs to this request. In particular,
+    // an open wallet can be busy synchronizing; a timeout must not stop that existing session.
+    let already_active = state(ctx, unit)?.active;
+    if !already_active {
+        preflight(ctx, unit, unit_binary(ctx, unit))?;
+        start(ctx, unit, cancel)?;
+    }
     let started = std::time::Instant::now();
     loop {
         if cancel.is_cancelled() {
             return Err(Error::Interrupted);
         }
         if probe() {
-            return Ok(true);
+            return Ok(!already_active);
         }
         if started.elapsed() >= deadline {
             // We started it and it never answered, so we own it: leave nothing flapping in a
             // `Restart=on-failure` loop behind a command that has already failed (v5.1).
-            let stopped = stop_after_failed_start(ctx, unit, cancel);
+            let stopped = if already_active {
+                " It was already running and has been left running.".to_string()
+            } else {
+                stop_after_failed_start(ctx, unit, cancel)
+            };
             return Err(Error::timeout(format!(
-                "The {} started and did not answer within {} seconds.{stopped}",
+                "The {} did not answer within {} seconds.{stopped}",
                 service_phrase(ctx, unit),
                 deadline.as_secs()
             ))
@@ -1966,6 +1974,29 @@ mod tests {
             !state(&ctx, &unit).unwrap().active,
             "the unit must be inactive again, not flapping"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_running_unit_is_not_stopped_when_its_probe_times_out() {
+        let dir = std::env::temp_dir().join(format!("fmonero-busy-unit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut ctx = ctx_in(&dir);
+        let unit = ctx.settings.wallet.unit.clone();
+        let fixture = dir.join("systemctl.txt");
+        std::fs::write(&fixture, format!("{unit} active disabled yes 51002\n")).unwrap();
+        ctx.systemctl = Systemctl::Fixture(fixture);
+        let error = ensure_running(
+            &ctx,
+            &unit,
+            &|| false,
+            Duration::from_millis(1),
+            &CancelToken::new(),
+        )
+        .unwrap_err();
+        assert_eq!(error.exit_code(), 8);
+        assert!(state(&ctx, &unit).unwrap().active);
+        assert!(error.to_string().contains("left running"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

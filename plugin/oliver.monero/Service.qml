@@ -3,51 +3,32 @@ import Quickshell
 import Quickshell.Io
 import "Model.js" as Model
 
-// The widget's whole state model: one `fmonero status --json` poll and one serialized action
-// queue. Nothing is computed about Monero here — Status JSON is the single source of truth
-// (DESIGN.md §5, §6.3) — and every action is an argv array handed to fmonero. No shell strings,
-// ever (§2f), and no arithmetic on money (§2a.5): the panel renders the `*_xmr` strings Status
-// already carries.
-//
-// The widget never opens, creates or restores a wallet, never sends and never sweeps (§2b.5,
-// §6.3). There is no argv below that can move money; `wallet open` is a terminal action and the
-// panel's entry point for it is the TUI button.
 Item {
   id: root
 
   property var settings: ({})
   property bool opened: false
 
-  // ---- the last Status document (DESIGN.md §6.3) ---------------------------
   property var status: ({ ok: false })
+  property string pollError: ""
   readonly property bool alive:      status.ok === true
   readonly property var  node:       status.node || null
   readonly property var  wallet:     status.wallet || null
   readonly property var  pending:    status.pending || null
   readonly property var  units:      status.units || null
   readonly property var  warnings:   Array.isArray(status.warnings) ? status.warnings : []
-  readonly property string lastError: String((status.last_error && status.last_error.text) || "")
-  // v5.2, §2m: the one discriminator the icon, the panel and the toggle all branch on. Every
-  // node field is null in remote mode, and `nodeUp`/`synced` already read null as false because
-  // both compare with `=== true` — so only the rows that render a NUMBER need this.
+  readonly property string lastError: pollError || String((status.last_error && status.last_error.text) || "")
   readonly property bool remote:     !!(node && node.layout === "remote")
   readonly property bool nodeUp:     !!(node && node.reachable === true)
   readonly property bool synced:     !!(node && node.synchronized === true)
   readonly property int  syncPct:    node && node.sync_percent !== null && node.sync_percent !== undefined
                                        ? Math.floor(node.sync_percent) : 0
+  readonly property bool walletBusy: !!(wallet && wallet.busy === true)
   readonly property bool walletOpen: !!(wallet && wallet.open === true)
   readonly property bool walletUnitActive: !!(wallet && wallet.unit_active === true)
   readonly property bool walletReachable:  !!(wallet && wallet.reachable === true)
-  // v5.5: `walletUp` is the panel's own name for the daemon's unit state, and `probe` is §5's
-  // `node.remote_probe` — a measurement an EARLIER invocation took and cached, which the panel
-  // renders with its age and never measures itself (§2e, §2n.4).
   readonly property bool walletUp:   !!(wallet && wallet.unit_active === true)
   readonly property var  probe:      (node && node.remote_probe) || null
-  // v5.6, §6.3: the wallet's own catch-up, because the widget's headline is now the wallet's.
-  // `nodeHeight` is the live `get_info` height with your own node and the **cached check's** with
-  // a public one — the only source there is — and `blocksLeft` is `-1` when either side is
-  // unknown, so nothing renders a 0 that would read as "caught up". Integer arithmetic on block
-  // numbers, never on money (§2a.5).
   readonly property int  walletHeight: Model.walletHeight(status)
   readonly property int  nodeHeight:   Model.nodeHeight(status)
   readonly property int  blocksLeft:   Model.blocksLeft(status)
@@ -57,12 +38,15 @@ Item {
   property string actionStatus: ""     // transient label, cleared 2.2 s after an action exits
   property string localError: ""       // stderr (or the JSON error) of the last failed action
   property int _desired: -1            // optimism bridge: -1 follow, 0 want down, 1 want up
-  readonly property bool busy: actionProc.running
+  readonly property bool busy: actionProc.running || walletOpenProc.running
+  property var wallets: []
+  property string walletListError: ""
+  readonly property bool listingWallets: walletListProc.running
+  property int _statusEpoch: 0
+  signal walletOpened()
+  signal walletOpenFailed()
+  signal walletStopped()
 
-  // What the node ToggleSwitch shows. `_desired` is set on a toggle and cleared as soon as a
-  // Status agrees or an action fails, so a refusal (exit 3 under the §2i system_unit layout)
-  // puts the switch straight back on the real `node.reachable` — the widget never appears to
-  // have done something it did not (§6.3).
   readonly property bool desiredOn: _desired === -1 ? nodeUp : _desired === 1
 
   property bool binaryChecked: false
@@ -75,9 +59,6 @@ Item {
   readonly property string tuiCommand:
     String(setting("tuiCommand", "omarchy-launch-or-focus-tui --app-id=fmonero fmonero tui"))
 
-  // Manifest `barWidget.defaults` are never merged into `settings` (DESIGN.md §1.5): enabling the
-  // widget writes only `{"id":"oliver.monero"}` into shell.json, so every default above repeats
-  // its manifest value verbatim. tests/plugin-smoke.sh asserts that pairing.
   function setting(name, fallback) {
     var v = settings ? settings[name] : undefined
     return v === undefined || v === null ? fallback : v
@@ -88,25 +69,12 @@ Item {
     return Math.max(min, Math.min(max, n))
   }
 
-  // ---- the poll ------------------------------------------------------------
-  // `status` never starts a daemon and never calls a wallet mutator (DESIGN.md §2e), which is why
-  // it is safe to run it every few seconds from a bar widget.
   function refresh() {
-    // A missing binary pauses polling until the panel is opened again: re-running `which` on
-    // every tick would be a process spawn per tick, forever.
     if (binaryMissing) return
     if (!binaryChecked) { checkBinary(); return }
-    if (statusProc.running) return
-    // **v5.6, §6.3: the second poll variant.** `status` spawns nothing (§2e), which is what makes
-    // this poll cheap — and also why a public node's block number and sync flag went stale on the
-    // bar with nobody to refresh them. While the panel is OPEN the poll asks for `--check-node`,
-    // which prints the identical document and, only when the cached check of the configured node
-    // is older than `node.remote_probe_sec`, starts the bounded check in the background and
-    // returns at once with the cached values — so the next poll is fresh. The closed-panel poll
-    // at 8 s stays plain `status --json`.
-    statusProc.command = opened
-      ? [root.bin, "status", "--json", "--check-node"]
-      : [root.bin, "status", "--json"]
+    if (statusProc.running || busy) return
+    statusProc.epoch = _statusEpoch
+    statusProc.command = [root.bin, "status", "--json", "--check-node", "--timeout", "2"]
     statusProc.running = true
     if (!pollWatchdog.running) pollWatchdog.start()
   }
@@ -117,21 +85,19 @@ Item {
     whichProc.running = true
   }
 
-  // ---- actions (DESIGN.md §6.3) -------------------------------------------
-  // One at a time, in order, each followed by a 600 ms refresh. `label` is the transient line
-  // under the hero; an empty label shows nothing.
   property var _queue: []
   function runAction(args, label) {
-    if (binaryMissing) return
+    if (binaryMissing || busy) return
     _queue.push({ args: args, label: String(label || "") })
     pump()
   }
   function pump() {
-    if (actionProc.running || _queue.length === 0) return
+    if (busy || _queue.length === 0) return
     var next = _queue.shift()
     actionStatus = next.label
     actionStatusTimer.stop()
     localError = ""
+    _statusEpoch++
     actionProc.command = [root.bin].concat(next.args)
     actionProc.running = true
   }
@@ -146,30 +112,16 @@ Item {
     desiredTimer.restart()
     runAction(["node", "down", "--yes", "--json"], "Stopping your node…")
   }
-  // **Inert in remote mode** (§6.4): `node up`/`node down` are specified to exit 4
-  // `remote_node` there, and firing a command that cannot succeed would put a red error on the
-  // bar every time someone mis-clicks. `_desired` is never set either: `node.reachable` is
-  // null, so the optimism bridge has nothing to converge on (§6.3).
   function toggleNode() {
-    // §2o.1: never a shell command on the bar — this is where `fmonero node local --yes` reached
-    // it. The panel does not render the toggle with a public node at all (§6.5), so this is a
-    // belt for the IPC handlers.
     if (remote) { localError = "You are using a public node."; return }
     desiredOn ? stopNode() : startNode()
   }
 
-  // Shown only while a wallet is open, so it can never be the call that starts a wallet daemon.
   function refreshWallet() {
     if (!walletOpen) return
     runAction(["wallet", "refresh", "--json"], "Checking for payments…")
   }
 
-  // ---- detached launches ---------------------------------------------------
-  // Only constant literals reach `omarchy-launch-*`: all three of those scripts end in `eval` or
-  // `bash -c` on a joined string (DESIGN.md §1.5). `wl-copy` is genuinely argv-shaped, and the
-  // address it carries came out of our own Status JSON.
-  // `flash` is the one way to set the transient label: a caller that assigns `actionStatus`
-  // directly would leave it on screen for ever, because actionStatusTimer is private to this file.
   function flash(text) {
     actionStatus = String(text)
     actionStatusTimer.restart()
@@ -192,17 +144,32 @@ Item {
     Quickshell.execDetached(argv)
   }
   function openSendScreen() {
-    // `--send` is the TUI's Send *screen* flag (§7a), not a money argv: the widget has no send
-    // path at all (§2b.5). Constant literals only.
     Quickshell.execDetached(["omarchy-launch-or-focus-tui", "--app-id=fmonero", "fmonero", "tui", "--send"])
   }
-  // v5.5, §6.3. Both of these **open the TUI on a screen** and do nothing themselves: opening a
-  // wallet needs a secret §2b.5 says the widget may not have a field for, and picking a node
-  // restarts the wallet daemon and can close an open wallet (§2m.5), which is a confirm modal's
-  // job and not a bar button's. The ellipsis in each label says so. Constant literals only.
-  function openWalletScreen() {
-    Quickshell.execDetached(["omarchy-launch-or-focus-tui", "--app-id=fmonero", "fmonero", "tui", "--wallet"])
+  function listWallets() {
+    if (walletListProc.running || binaryMissing) return
+    walletListError = ""
+    walletListProc.command = [bin, "wallet", "list", "--json"]
+    walletListProc.running = true
   }
+  function openWallet(name, secret) {
+    if (busy || binaryMissing || wallets.indexOf(name) < 0) return false
+    localError = ""
+    actionStatusTimer.stop()
+    actionStatus = "Opening " + name + "…"
+    _statusEpoch++
+    walletOpenProc.secret = secret
+    walletOpenProc.command = [bin, "wallet", "open", name, "--password-stdin", "--json"]
+    walletOpenProc.running = true
+    return true
+  }
+  function closeWallet() { runAction(["wallet", "close", "--json"], "Closing wallet…") }
+  function stopWallet() { runAction(["wallet", "stop", "--yes", "--json"], "Saving and stopping wallet…") }
+  function actionError(raw) {
+    var doc = Model.parseJson(raw)
+    return doc && doc.error ? String(doc.error) : "That did not work. Please try again."
+  }
+
   function openNodeScreen() {
     Quickshell.execDetached(["omarchy-launch-or-focus-tui", "--app-id=fmonero", "fmonero", "tui", "--node"])
   }
@@ -210,25 +177,15 @@ Item {
     Quickshell.execDetached(["omarchy-launch-or-focus-tui", "--app-id=fmonerodoctor", "fmonero", "doctor"])
   }
 
-  // ---- status --------------------------------------------------------------
   function applyStatus(text, exitCode, stderrText) {
     var parsed = Model.parseStatus(text)
     if (parsed.ok === true) {
       root.status = parsed
-      root.localError = ""
+      root.pollError = ""
     } else {
-      // Keep the last good node/wallet rows — the panel gates every rendered value on `alive`
-      // (§6.3), so nothing is presented as current — and `pending` with them: it is the one row
-      // that warns a send may be in flight, and a failed poll dropping it made the warning
-      // vanish at exactly the moment the balance beside it went stale.
       root.status = { ok: false, node: root.node, wallet: root.wallet, pending: root.pending }
-      // **S8: neither an exit number nor the program's own first stderr line.** This read
-      // `fmonero status failed (exit 4)` and, when stderr had anything at all, whatever its first
-      // line said — which is how `Input/output error (os error 5)` reached a 380-pixel bar. An exit
-      // code is an internal identifier (§2o rule 5) and a bar is the one surface that cannot
-      // explain one. One sentence and one route, and `fmonero doctor` is the button below.
       var _unused = String(stderrText || "")
-      root.localError = "fmonero could not say how things are. Press d for the doctor."
+      root.pollError = "fmonero could not say how things are. Press d for the doctor."
     }
     if (root._desired !== -1) {
       if (root.alive && (root._desired === 1) === root.nodeUp) { root._desired = -1; desiredTimer.stop() }
@@ -242,8 +199,6 @@ Item {
     stdout: StdioCollector {}
     stderr: StdioCollector {}
     onExited: function(exitCode) {
-      // The name may have changed while this check was in flight (shell.json hot-reloads); an
-      // answer about the old name says nothing about the new.
       if (whichProc.command.length > 1 && String(whichProc.command[1]) !== root.bin) {
         root.checkBinary()
         return
@@ -257,12 +212,14 @@ Item {
 
   Process {
     id: statusProc
+    property int epoch: 0
     running: false
     command: [root.bin, "status", "--json"]   // replaced per poll by refresh() (§6.3)
     stdout: StdioCollector { id: statusOut; waitForEnd: true }
     stderr: StdioCollector { id: statusErr; waitForEnd: true }
     onExited: function(exitCode) {
       pollWatchdog.stop()
+      if (epoch !== root._statusEpoch) { delayedRefresh.restart(); return }
       root.applyStatus(String(statusOut.text || ""), exitCode, String(statusErr.text || ""))
     }
   }
@@ -275,16 +232,9 @@ Item {
     stderr: StdioCollector { id: actionErr; waitForEnd: true }
     onExited: function(exitCode) {
       if (exitCode !== 0) {
-        // Includes the §2i refusal: under a `system_unit` layout `node up`/`node down` exit 3
-        // without issuing an RPC, and its hint is what the panel shows.
         root._desired = -1
         var doc = Model.parseJson(String(actionOut.text || ""))
         var msg = doc && doc.error ? String(doc.error) : String(actionErr.text || "").trim().split("\n")[0]
-        // **S8 and M26: a sentence, and the in-app route beside it.** The `hint` is still not
-        // appended — it is a shell command and this panel is not a terminal (§2o.1) — but the
-        // error's **`action`** is the in-app sentence written for exactly this, and it was never
-        // read. Without it a failed button gave him a message and no route; with `exit 3` in
-        // place of the message it gave him an internal identifier (S8).
         var act = doc && doc.action ? String(doc.action) : ""
         var said = msg !== "" && msg.indexOf("os error") === -1
           ? msg
@@ -294,6 +244,7 @@ Item {
       } else {
         root.localError = ""
         root.actionStatus = ""
+        if (actionProc.command[1] === "wallet" && actionProc.command[2] === "stop") root.walletStopped()
       }
       actionStatusTimer.restart()
       delayedRefresh.restart()
@@ -301,10 +252,36 @@ Item {
     }
   }
 
+  Process {
+    id: walletListProc
+    stdout: StdioCollector { id: walletListOut; waitForEnd: true }
+    stderr: StdioCollector { waitForEnd: true }
+    onExited: function(code) {
+      var doc = Model.parseJson(String(walletListOut.text || ""))
+      if (code === 0 && doc && Array.isArray(doc.wallets)) root.wallets = doc.wallets
+      else { root.wallets = []; root.walletListError = "Could not read your wallet list. Try refreshing." }
+    }
+  }
+  Process {
+    id: walletOpenProc
+    property string secret: ""
+    stdinEnabled: true
+    stdout: StdioCollector { id: walletOpenOut; waitForEnd: true }
+    stderr: StdioCollector { waitForEnd: true }
+    onStarted: {
+      write(secret + "\n")
+      secret = ""
+    }
+    onExited: function(code) {
+      secret = ""
+      root.actionStatus = ""
+      if (code === 0) { root.localError = ""; root.walletOpened() }
+      else { root.localError = root.actionError(String(walletOpenOut.text || "")); root.walletOpenFailed() }
+      delayedRefresh.restart()
+    }
+  }
+
   Timer {
-    // 3 s while the panel is open, when the user is watching a sync percentage tick; 8 s while it
-    // is closed, when a bar widget needs only enough to pick an icon state. Each poll is a
-    // process spawn, which is the expensive part of the §2l budget.
     id: pollTimer
     interval: root.opened ? root.refreshMs : root.idleRefreshMs
     running: true
@@ -314,11 +291,8 @@ Item {
   }
 
   Timer {
-    // Every tick is skipped while the poll is still running (the §2d poll_inflight guard), so a
-    // status call that never exits would stop the panel refreshing for good. Armed on the launch
-    // that needs watching and never restarted while armed.
     id: pollWatchdog
-    interval: 8000
+    interval: 60000
     repeat: false
     onTriggered: if (statusProc.running) statusProc.running = false
   }
@@ -327,16 +301,12 @@ Item {
   Timer { id: actionStatusTimer; interval: 2200; repeat: false; onTriggered: root.actionStatus = "" }
 
   Timer {
-    // Last resort for the optimism bridge: a node that neither came up nor went down within 5 s
-    // stops being claimed either way.
     id: desiredTimer
     interval: 5000
     repeat: false
     onTriggered: root._desired = -1
   }
 
-  // The binary name can change under us: shell.json hot-reloads, so someone editing the setting in
-  // Setup > Plugins must not leave the panel polling a name that no longer exists.
   onBinChanged: {
     binaryChecked = false
     binaryMissing = false

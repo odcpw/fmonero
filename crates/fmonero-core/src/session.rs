@@ -19,6 +19,15 @@ use crate::rpc::WalletClient;
 pub mod wallet_session {
     use super::*;
 
+    // Keep the owned buffer covered on validation, service-start, and RPC failures too.
+    struct WalletPassword(String);
+    impl Drop for WalletPassword {
+        fn drop(&mut self) {
+            // SAFETY: replacing every byte with zero preserves valid UTF-8.
+            unsafe { self.0.as_mut_vec().fill(0) };
+        }
+    }
+
     /// What an open produced.
     #[derive(Clone, Debug)]
     pub struct Opened {
@@ -50,6 +59,9 @@ pub mod wallet_session {
         password: String,
         cancel: &CancelToken,
     ) -> Result<Opened, Error> {
+        let password = WalletPassword(password);
+        let _lock = crate::send::take_send_lock(ctx)?;
+        crate::send::refuse_if_send_in_flight(ctx)?;
         // The units are written DISABLED and started on demand (§4.2), and `ensure_running`
         // probes first — so this is a no-op against `fmonero-mock` with no unit installed.
         let unit_started = crate::units::ensure_running(
@@ -59,9 +71,9 @@ pub mod wallet_session {
             ctx.timeouts.unit_probe,
             cancel,
         )?;
-        let opened = open_already_running(ctx, w, name, password);
-        // `password` is moved in and zeroed before return (§5b). It is owned, so this is the
-        // only copy; `open_already_running` takes it by value and drops it.
+        let opened = w.open_wallet(name, &password.0);
+        drop(password);
+        let opened = opened.and_then(|()| install_daemon_and_record(ctx, w, name));
         opened.map(|net| Opened {
             unit_started,
             name: name.to_string(),
@@ -126,6 +138,9 @@ pub mod wallet_session {
         announce: &dyn Fn(&str),
         cancel: &CancelToken,
     ) -> Result<Created, Error> {
+        let password = WalletPassword(password);
+        let _lock = crate::send::take_send_lock(ctx)?;
+        crate::send::refuse_if_send_in_flight(ctx)?;
         crate::settings::validate_seed_language(language)?;
         let unit_started = crate::units::ensure_running(
             ctx,
@@ -134,45 +149,22 @@ pub mod wallet_session {
             ctx.timeouts.unit_probe,
             cancel,
         )?;
-        w.create_wallet(name, &password, language)?;
+        let created = w.create_wallet(name, &password.0, language);
+        drop(password);
+        created?;
         let hint = seed_backup_hint(ctx, name);
         announce(&hint);
         // `on_create_wallet` left the wallet OPEN, so the last three steps still have to run:
         // without them the wallet has no daemon credential and no recorded name, `status` would
         // report `wallet.open: true` with `wallet.name: null`, and every wallet→daemon call
         // would 401 (§4.1).
-        let net = open_already_running(ctx, w, name, password)?;
+        let net = install_daemon_and_record(ctx, w, name)?;
         Ok(Created {
             unit_started,
             name: name.to_string(),
             net,
             seed_backup_hint: hint,
         })
-    }
-
-    /// `open_wallet`, then the three steps that must follow it.
-    ///
-    /// `wallet create` reaches the same three through [`open`] — `on_create_wallet` ends
-    /// `m_wallet = wal.release()` (`wallet_rpc_server.cpp:3639`), so the new wallet is left
-    /// open, and re-opening it with its own password is what lets one code path install the
-    /// daemon credential and record the name for both commands (§4.1).
-    fn open_already_running(
-        ctx: &Context,
-        w: &WalletClient,
-        name: &str,
-        mut password: String,
-    ) -> Result<NetType, Error> {
-        let result = w.open_wallet(name, &password);
-        // Overwrite the buffer before it is freed (§2b.4's rule, applied to the CLI path too).
-        // SAFETY-adjacent: `String` may reallocate on push, so write over the bytes in place.
-        unsafe {
-            for b in password.as_mut_vec().iter_mut() {
-                *b = 0;
-            }
-        }
-        drop(password);
-        result?;
-        install_daemon_and_record(ctx, w, name)
     }
 
     /// `set_daemon` carrying the node credential, then `auto_refresh`, then
@@ -241,7 +233,18 @@ pub mod wallet_session {
 
     /// `close_wallet { autosave_current: true }` then `state::clear_last_open`.
     pub fn close(ctx: &Context, w: &WalletClient) -> Result<(), Error> {
+        let _lock = crate::send::take_send_lock(ctx)?;
+        crate::send::refuse_if_send_in_flight(ctx)?;
         w.close_wallet()?;
+        crate::state::clear_last_open(ctx)
+    }
+
+    /// A clean service stop saves its wallet. Do not interrupt a payment being prepared or
+    /// one whose delivery is uncertain, and clear the session record only after a successful stop.
+    pub fn stop(ctx: &Context, cancel: &CancelToken) -> Result<(), Error> {
+        let _lock = crate::send::take_send_lock(ctx)?;
+        crate::send::refuse_if_send_in_flight(ctx)?;
+        crate::units::stop(ctx, &ctx.settings.wallet.unit, cancel)?;
         crate::state::clear_last_open(ctx)
     }
 
@@ -462,9 +465,8 @@ pub mod node_session {
 /// call `systemctl` — three core responsibilities — and because `main.rs` is frozen at the 1a
 /// gate (§5b, §2k).
 ///
-/// The TUI does **not** call them: it toasts the command (§7a). A modal that restarts a daemon
-/// and closes the wallet the session is holding is a screen this design would have to specify a
-/// recovery for.
+/// The CLI and TUI share this implementation. It changes the running wallet's connection
+/// without closing it and renders the selected target for future service starts.
 pub mod node_mode {
     use super::*;
     use crate::settings::{NodeMode, Settings, SslSupport};
@@ -485,9 +487,8 @@ pub mod node_mode {
         /// The same `units::FileAction[]` shape and the same renderer `setup` uses (§5b).
         pub actions: Vec<FileAction>,
         pub wallet_unit_restarted: bool,
-        /// The wallet that was open and was closed by the restart, and must be reopened
-        /// (§2m.5 step 9). Reporting success while `status` still claimed a wallet was open
-        /// would be a stale fact about money.
+        /// Kept for JSON compatibility. Node changes now preserve the open wallet, so
+        /// this is always None and wallet_unit_restarted is always false.
         pub wallet_must_reopen: Option<String>,
         /// `false` on an idempotent second run.
         pub changed: bool,
@@ -585,55 +586,56 @@ pub mod node_mode {
         let _lock = crate::send::take_send_lock(ctx)?;
         crate::send::refuse_if_send_in_flight(ctx)?;
 
-        // Read **before** the render: a running `monero-wallet-rpc` holds `--daemon-address`
-        // from its argv, so whether it must be restarted is a fact about the old state.
+        if cancel.is_cancelled() {
+            return Err(Error::Interrupted);
+        }
         let was_active = units::state(ctx, &ctx.settings.wallet.unit)?.active;
-        // Step 7: the three keys in ONE save, so a crash cannot leave `mode == remote` with no
-        // address — §2m.1's invariant is a property of the file, not of three writes.
+        let w = WalletClient::from_ctx(&next_ctx.clone().with_wallet_probe_at_refresh())?;
+        // Validate and install before saving the selection. A sandbox refusal or an
+        // unwritable unit directory must not leave a new node selected in config.toml.
+        let actions = units::install(&next_ctx, false)?;
+        let wrote = actions.iter().any(|a| a.status == FileStatus::Written);
+        if was_active || w.get_version().is_ok() {
+            let login = if mode.is_remote() {
+                None
+            } else {
+                crate::rpc::Login::from_monerod_conf(&next_ctx.paths.monerod_conf())?
+            };
+            match w.set_daemon(&target.address, target.trusted, login.as_ref(), target.ssl) {
+                Ok(()) => {
+                    // The target changed even if enabling refresh subsequently fails.
+                    if settings_changed {
+                        next.save(ctx)?;
+                    }
+                    w.auto_refresh(true, wallet_session::AUTO_REFRESH_PERIOD_SEC)?;
+                    return Ok(done(actions, settings_changed || wrote, false, None));
+                }
+                Err(e) if e.exit_code() == 9 => {} // The next open applies the target.
+                Err(e) if matches!(e.reason(), Some("killed_at_deadline" | "unreachable")) => {
+                    // The request may still complete in wallet-rpc after our connection dies.
+                    // Keep the desired target and give both interfaces a way to retry it.
+                    if settings_changed {
+                        next.save(ctx)?;
+                    }
+                    return Err(e.with_action("Choose this node again to retry the connection."));
+                }
+                Err(e) => {
+                    // A definite rejection did not change the wallet. Restore future-start
+                    // settings too, and never hide a failure to restore them.
+                    if let Err(restore) = units::install(ctx, false) {
+                        return Err(Error::backend(
+                            "The node change failed, and its previous service settings could not be restored.",
+                        )
+                        .with_detail(format!("node change: {e}; restore: {restore}"))
+                        .with_hint("fmonero setup --units --yes"));
+                    }
+                    return Err(e);
+                }
+            }
+        }
         if settings_changed {
             next.save(ctx)?;
         }
-        // Step 8: both units and `monerod.conf` are re-rendered in **both** modes. The node
-        // unit and the conf are unused in remote mode, but `node local --yes` must find them
-        // and the doctor's `units_present` compares them byte for byte in every mode.
-        let actions = units::install(&next_ctx, false)?;
-        let wrote = actions.iter().any(|a| a.status == FileStatus::Written);
-        // **The WALLET unit specifically** (v5.5, revision 4). The reason a restart is needed at
-        // all is that a running `monero-wallet-rpc` holds `--daemon-address` in its argv, so the
-        // only file whose change can justify one is the file that carries that argv — not
-        // `monerod.conf` and not the node unit, both of which are re-rendered in both modes and
-        // neither of which a running wallet daemon has read. Keyed on `wrote` alone, a switch
-        // that changed only the node unit would stop and start the wallet daemon and (step 10)
-        // close an open wallet for a change it could not see.
-        let wallet_unit_changed = actions.iter().any(|a| {
-            a.status == FileStatus::Written
-                && a.path.file_name().and_then(|n| n.to_str())
-                    == Some(ctx.settings.wallet.unit.as_str())
-        });
-
-        // Step 9: restart the wallet unit **iff it was active and its own rendered argv changed**.
-        // Keying the restart on that rather than on "the mode changed" is what makes a second run
-        // idempotent — and it is exactly right: if the rendered argv is identical there is nothing
-        // for a restart to install.
-        let mut wallet_unit_restarted = false;
-        let mut wallet_must_reopen = None;
-        if was_active && wallet_unit_changed {
-            let open_now = crate::state::last_open(ctx)?.map(|(name, _)| name);
-            units::stop(ctx, &ctx.settings.wallet.unit, cancel)?;
-            units::start(ctx, &ctx.settings.wallet.unit, cancel)?;
-            wallet_unit_restarted = true;
-            // Step 10: the restart closed whatever was open, so say so rather than leave
-            // `status` claiming a wallet that is gone.
-            if let Some(name) = open_now {
-                crate::state::clear_last_open(ctx)?;
-                wallet_must_reopen = Some(name);
-            }
-        }
-        Ok(done(
-            actions,
-            settings_changed || wrote,
-            wallet_unit_restarted,
-            wallet_must_reopen,
-        ))
+        Ok(done(actions, settings_changed || wrote, false, None))
     }
 }

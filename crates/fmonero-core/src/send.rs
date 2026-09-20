@@ -704,6 +704,15 @@ fn require_node_current(
     };
     let info = n.get_info()?;
     if info.synchronized {
+        let wallet_height = w.get_height()?;
+        if wallet_height < info.height {
+            return Err(Error::node_syncing(format!(
+                "The wallet has {} blocks to scan before it can prepare a payment.",
+                crate::grouped(info.height - wallet_height)
+            ))
+            .with_reason("wallet_catching_up")
+            .with_hint("fmonero wallet refresh"));
+        }
         return Ok(());
     }
     let pct = if info.target_height > info.height {
