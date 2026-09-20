@@ -61,11 +61,7 @@ pub(super) enum Stage {
     /// The confirm modal, holding the plan `send::relay` will consume.
     Built(Box<Plan>),
     Relaying,
-    /// The toast after a successful relay; any key returns to Form.
-    ///
-    /// It carried the txid until round 4's S10 deleted every id from the TUI's prose. The
-    /// variant carries nothing now: the screen says where the payment is, and `--json` has
-    /// the id.
+    /// Successful relay; the next key returns to the form.
     Sent,
 }
 
@@ -270,6 +266,16 @@ impl SendScreen {
     /// While an action is in flight they own none, so `Esc` reaches the model and cancels it.
     pub fn owns_keys(&self) -> bool {
         self.confirming() || self.picker.is_some() || (self.editing && !self.busy())
+    }
+
+    pub fn on_paste(&mut self, event: &Event) {
+        if self.editing
+            && matches!(self.stage, Stage::Form)
+            && self.picker.is_none()
+            && matches!(self.field, Field::To | Field::Amount | Field::Note)
+        {
+            self.focused_input_mut().handle_event(event);
+        }
     }
 
     /// `accounts` is how many the wallet has (§5's `wallet.accounts`), so the selector
@@ -637,10 +643,7 @@ pub(super) fn view(m: &Tui, area: Rect, frame: &mut ftui::Frame, tier: Tier) {
             style,
         ));
     }
-    // **A wrapped key line keeps a hanging indent** (X15's shape, found by round 4's own read of the
-    // captures): `WrapMode::Word` returned the continuation to column 0, so at 120 columns
-    // `· Esc leaves` ended one row and `the form` started the next flush left, reading as a new
-    // line of its own. The wrapping happens here and the paragraph is rendered unwrapped.
+    // Wrap the key line with a hanging indent at narrow widths.
     let footer = format!(
         "account {} · ↑↓ fields · ⇥ screens · @ address book · {}",
         s.account,

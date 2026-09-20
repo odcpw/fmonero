@@ -533,6 +533,11 @@ print a command, each because fmonero has no code that could do the job from ins
 (installing a package, reading a seed, restoring from one, and `wallet sweep`, which v0.1 keeps out
 of the TUI); each is phrased `In a terminal: …`, and `docs/COPY.md` §2 lists them with the reason.
 
+Paste an address into Send's **To** field with your terminal's paste shortcut (Ctrl+Shift+V
+or Shift+Insert in the standard Omarchy terminal configuration). Paste also works in the amount,
+note, and other text fields. Pasted line breaks stay text; they never submit the form or confirm
+a payment. Use ↑↓ to move between Send fields.
+
 The Send screen validates each keystroke locally, then builds once and shows a confirm modal
 with the full destination address (never elided), the amount, the real fee, the total, the
 account and the fee level. That modal wants the word `send` typed, not just Enter:

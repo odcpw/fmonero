@@ -23,7 +23,7 @@ use ftui::{Event, Frame, GraphemePool, KeyCode, KeyEvent, Model, Modifiers};
 use fmonero_core::{state, CancelToken, Context, PendingKind, PendingSend, PendingTx, Piconero};
 
 use super::send::{Stage, CONFIRM_WORD, NO_SWEEP};
-use super::{subs, Msg, Screen, Tui, KEYS};
+use super::{send, subs, text_input, Modal, Msg, Screen, Tui, KEYS};
 
 /// The mock's own credential, and the one written to the login file (§2c). There is **no
 /// unauthenticated wallet path that works**: a test that omits the file is testing exit 4.
@@ -676,11 +676,11 @@ fn the_send_screen_builds_once_and_relays_that_exact_transaction() {
     sim.init();
 
     // 1. Form — every keystroke is local (§7a step 1).
-    type_str(&mut sim, DEST);
+    sim.inject_event(paste(DEST));
     // v5.5: fields move with `↑↓`. `Tab` switches screens now, on every screen and in every
     // focus state (§7a.1, and §5b.4 row 10 records the binding this takes away).
     sim.inject_event(key(KeyCode::Down));
-    type_str(&mut sim, "0.1");
+    sim.inject_event(paste("0.1"));
     assert_eq!(w.count("transfer"), 0, "the form must send nothing");
 
     // 2. Enter → `validate_address` in a Cmd::task, then 3. Building.
@@ -732,6 +732,13 @@ fn the_send_screen_builds_once_and_relays_that_exact_transaction() {
             "the narrow confirm modal lost {needle}:\n{narrow}"
         );
     }
+
+    sim.inject_event(paste("send\n"));
+    assert!(
+        sim.model().send.typed.is_empty(),
+        "paste must not confirm a payment"
+    );
+    assert_eq!(w.count("relay_tx"), 0);
 
     // The typed word IS the TUI's --yes: Enter alone does not broadcast.
     sim.inject_event(key(KeyCode::Enter));
@@ -3442,4 +3449,84 @@ fn late_history_does_not_rewind_confirmations_or_replace_a_newer_request() {
         Box::new(Err("obsolete failure".into())),
     ));
     assert!(m.wallet.rows_err.is_none());
+}
+
+fn paste(text: &str) -> Event {
+    Event::Paste(ftui::PasteEvent::bracketed(text))
+}
+
+#[test]
+fn paste_edits_only_the_active_send_text_field_and_never_submits() {
+    let mut m = offline_model(Screen::Send);
+    let _ = m.update(Msg::Raw(paste(&format!("{DEST}\n"))));
+    assert_eq!(m.send.to.value().trim(), DEST);
+    assert_eq!(m.screen, Screen::Send);
+    assert!(matches!(m.send.stage, Stage::Form));
+    assert!(m.action.is_none());
+    m.send.focus(send::Field::Amount);
+    let _ = m.update(Msg::Raw(paste("0.1")));
+    assert_eq!(m.send.request(None).unwrap().amount.0, 100_000_000_000);
+    m.send.focus(send::Field::Note);
+    let _ = m.update(Msg::Raw(paste("q\nsend\t3")));
+    assert_eq!(m.send.note.value(), "q send 3");
+    assert!(m.action.is_none());
+    for field in [send::Field::Priority, send::Field::Account] {
+        m.send.focus(field);
+        let _ = m.update(Msg::Raw(paste("9")));
+        assert_eq!(m.send.to.value().trim(), DEST);
+    }
+    m.send.focus(send::Field::To);
+    m.send.editing = false;
+    let _ = m.update(Msg::Raw(paste("ignored")));
+    m.send.editing = true;
+    m.send.stage = Stage::Validating;
+    let _ = m.update(Msg::Raw(paste("ignored")));
+    m.send.stage = Stage::Form;
+    m.show_help = true;
+    let _ = m.update(Msg::Raw(paste("ignored")));
+    m.show_help = false;
+    m.send.picker = Some((vec![], 0));
+    let _ = m.update(Msg::Raw(paste("ignored")));
+    assert_eq!(m.send.to.value().trim(), DEST);
+}
+
+#[test]
+fn paste_reaches_visible_modal_and_filter_inputs_without_leaking_to_send() {
+    let mut m = offline_model(Screen::Send);
+    m.modal = Some(Modal::AddNode {
+        input: text_input(&m.theme),
+    });
+    let _ = m.update(Msg::Raw(paste("node.example:18081\n")));
+    let Some(Modal::AddNode { input }) = &m.modal else {
+        panic!("modal dismissed");
+    };
+    assert_eq!(input.value().trim(), "node.example:18081");
+    assert!(m.send.to.value().is_empty());
+    m.modal = Some(Modal::OpenWallet {
+        names: vec![],
+        sel: 0,
+        pass: text_input(&m.theme),
+        asking: false,
+    });
+    let _ = m.update(Msg::Raw(paste("sample")));
+    if let Some(Modal::OpenWallet { pass, asking, .. }) = &mut m.modal {
+        assert!(pass.value().is_empty());
+        *asking = true;
+    }
+    let _ = m.update(Msg::Raw(paste("sample")));
+    let Some(Modal::OpenWallet { pass, .. }) = &m.modal else {
+        panic!("modal dismissed");
+    };
+    assert_eq!(pass.value().len(), 6);
+    m.modal = None;
+    m.screen = Screen::Wallet;
+    m.wallet.filter_open = true;
+    let _ = m.update(Msg::Raw(paste("coffee")));
+    assert_eq!(m.wallet.filter.value(), "coffee");
+    m.screen = Screen::Node;
+    m.picker.filter_open = true;
+    let _ = m.update(Msg::Raw(paste("example")));
+    assert_eq!(m.picker.filter.value(), "example");
+    assert!(m.send.to.value().is_empty());
+    assert!(m.action.is_none());
 }

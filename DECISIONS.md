@@ -13771,3 +13771,24 @@ Installed the final release with `--no-setup`; build and installed SHA-256 both 
 `fa4d7de2ce2c6066ada34afebb0e5e89aafb7ac0222303f0f572aa346482fa0a`. The original backup remains.
 Live synchronization of the owner's wallet and a funded payment were not exercised. The owner
 also requested committing and pushing the full repair and widget changes.
+
+## 2026-09-20 — Pasting into the TUI
+
+The owner reported that Send would not accept a pasted address. The terminal runtime already
+emitted bracketed paste events and TextInput supported them, but Tui::update discarded every
+raw event except keys and mouse. Added explicit paste routing to the active editor. Send's
+To/Amount/Note fields accept pasted text in the editable Form stage; selectors, the address
+book picker, help, busy states, and payment confirmations do not. Modal text fields and visible
+filters now receive paste too. TextInput sanitizes line breaks as spaces, so a pasted newline
+never becomes Enter or another shortcut. The confirmation word must still be typed.
+
+Added two focused dispatch/guard tests and changed the existing build-once/relay-exact-plan test
+to paste its address and amount. That test also proves pasting the confirmation word cannot
+relay. `scripts/check.sh` passed, including the 371-test workspace and warnings-denied compiler
+linting. Condensed historical comments to keep the TUI at its existing 10100-line ceiling.
+`python3 tests/tui-paste.py` passed against the release binary through an actual pseudo-terminal:
+a complete fixture recipient with a trailing newline appeared in Send, and Ctrl+C exited cleanly.
+It isolates configuration, state, data, systemd, and RPC addresses and never opens a wallet or
+constructs a payment. Installed the release with `--no-setup`; installed and built checksums match
+`3c0d32f8628c9d47045c79f7700cd5af4d89c3bb143bcb2caa8482c06ee04f75`.
+Already-running TUI processes need reopening to load the fix. No wallet service restart is needed.

@@ -386,12 +386,7 @@ pub(super) enum NodeView {
 }
 
 pub(super) enum Modal {
-    /// **Just the `what`** (X4). It used to carry a `Dialog` and its `DialogState` as well, built
-    /// for a renderer that no longer exists: `Dialog` draws its message as one centred row in a
-    /// fixed 58-column box, so W2 and V4 moved three of the four confirms to overlays and X4 moved
-    /// the fourth — the log level, whose three middle messages were 60 characters and were cut
-    /// mid-word at every width. Each overlay registers its own button with `hits`, so nothing read
-    /// the two fields any more.
+    /// The renderer owns confirmation layout and hit targets.
     Confirm {
         what: Confirm,
     },
@@ -413,29 +408,19 @@ pub(super) enum Modal {
     Qr {
         address: String,
     },
-    /// v5.5, §7a.5. Four controls — name, password, password again, language — moving with
-    /// `Up`/`Down`, `Enter` advancing from every one but the last where it submits (§7a.1,
-    /// revision 1). Without a field key this modal is a trap: it is one of the exactly two that
-    /// consume `Tab`, so a keyboard-only user would type a name and be stuck, which is the
-    /// complaint (4) flow made unreachable by the fix for complaint (1).
+    /// Name, password, confirmation, and language; arrows/Enter advance (§7a.5).
     CreateWallet(Box<CreateForm>),
-    /// v5.5, §7a.5. Dismiss-only, carrying `seed_backup_hint` verbatim from core — the same
-    /// string the CLI prints, not a second wording. **fmonero never displays a seed.**
+    /// Backup guidance only; the TUI never displays a seed.
     SeedBackup {
         lines: Vec<String>,
     },
-    /// v5.5, §7a.4. The picker's safety surface: the full address, `untrusted` as a fact, and
-    /// the three consequences before the fact.
+    /// Full node address and consequences before confirmation (§7a.4).
     UseNode {
         address: String,
         /// The open wallet whose connection will change, named when there is one.
         wallet_open: Option<String>,
     },
-    /// v5.5, §7a.4. One field, validated live by `Settings::parse_remote_address` — the same
-    /// function the CLI uses, so the TUI cannot accept a string the CLI refuses. **No
-    /// `--trusted` toggle**: `fmonero node remote <addr> --trusted --yes` is the documented
-    /// place, and a path to request trusted from this screen would make the confirm modal's
-    /// rendered `untrusted` line an untruth (revision 5).
+    /// Validated by Settings::parse_remote_address; trust changes remain CLI-only.
     AddNode {
         input: TextInput,
     },
@@ -447,9 +432,7 @@ pub(super) enum Modal {
     },
 }
 
-/// §7a.5's create-wallet form. **Boxed** in [`Modal`]: four `TextInput`s beside a one-word
-/// `Confirm` variant is the size difference clippy objects to, and the box costs one allocation
-/// per modal open.
+/// Boxed to keep Modal small; three text inputs and a language selector (§7a.5).
 pub(super) struct CreateForm {
     pub name: TextInput,
     /// Masked (§2b.4): both buffers are overwritten with zeroes when the modal closes.
@@ -608,13 +591,7 @@ pub struct Tui {
 /// otherwise, `Ok(130)` on Ctrl+C — the TUI never invents an exit code (§7a).
 pub fn run(args: TuiArgs, ctx: Context) -> anyhow::Result<i32> {
     let exit = Arc::new(AtomicI32::new(0));
-    // §7a.2. `MouseCapturePolicy::Auto` already resolves to *on* in `AltScreen`, which is what
-    // `App::fullscreen` uses — so a fullscreen ftui app arguably had capture all along and simply
-    // threw the events away. `.with_mouse()` is written explicitly because relying on `Auto` would
-    // make the behaviour a consequence of the screen mode rather than a decision, and
-    // `tui.mouse = false` has to be able to turn it off: mouse capture takes the terminal's own
-    // selection and scrollback away for as long as the TUI runs, and which modifier gives them
-    // back differs per terminal.
+    // Mouse capture is configurable; terminal selection modifiers remain terminal-specific.
     let mouse = ctx.settings.tui.mouse;
     let app = Tui::new(args.screen(), ctx, exit.clone());
     let builder = App::fullscreen(app);
@@ -1598,6 +1575,45 @@ impl Tui {
 
     // ------------------------------------------------------------ keys
 
+    // A paste is text, never a sequence of shortcuts or an implicit Enter.
+    fn on_paste(&mut self, event: &Event) -> Cmd<Msg> {
+        if let Some(modal) = self.modal.as_mut() {
+            let input = match modal {
+                Modal::Prompt { input, .. } | Modal::AddNode { input } => Some(input),
+                Modal::OpenWallet {
+                    pass, asking: true, ..
+                } => Some(pass),
+                Modal::CreateWallet(form) => match form.field {
+                    0 => Some(&mut form.name),
+                    1 => Some(&mut form.pass),
+                    2 => Some(&mut form.again),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(input) = input {
+                input.handle_event(event);
+            }
+        } else if !self.show_help && !self.send.confirming() {
+            match self.screen {
+                Screen::Send => self.send.on_paste(event),
+                Screen::Wallet if self.wallet.filter_open && !self.wallet.detail => {
+                    self.wallet.filter.handle_event(event);
+                    self.reveal();
+                }
+                Screen::Node if self.picker.filter_open => {
+                    self.picker.filter.handle_event(event);
+                    self.picker.table.borrow_mut().select(None);
+                }
+                Screen::Log if self.logs.search_open && self.logs.search.handle_event(event) => {
+                    return self.apply_search();
+                }
+                _ => {}
+            }
+        }
+        Cmd::none()
+    }
+
     fn on_key(&mut self, k: KeyEvent) -> Cmd<Msg> {
         if k.kind == KeyEventKind::Release {
             return Cmd::none();
@@ -1606,13 +1622,7 @@ impl Tui {
         if ctrl_c {
             return self.quit(130);
         }
-        // **§7a.1: `Tab` and `Shift+Tab` are resolved HERE and nowhere else.** Above the modal
-        // branch, above the Send branch, above the filter/search branch, above the per-screen
-        // dispatch — because "never captured" is a property only when one arm, checked first,
-        // owns the key. The v5.4 code dispatched `Tab` per screen and two branches ahead of
-        // those ate it (the filter's `TextInput` and `send.rs`'s `Tab | Down`), which silently
-        // removed the only advertised way to change screens on a machine with no usable mouse:
-        // the owner's first report, and two locally reasonable rules combining into a trap.
+        // Tab switches screens before dispatching to an editor (§7a.1).
         if matches!(k.code, KeyCode::Tab | KeyCode::BackTab) {
             return self.switch_screen(k.code == KeyCode::Tab);
         }
@@ -1623,11 +1633,7 @@ impl Tui {
             self.show_help = false;
             return Cmd::none();
         }
-        // The Send screen owns every key while its form, its picker or its confirm modal is
-        // focused — otherwise typing an address would switch screens. The confirm modal owns
-        // them wherever it is drawn: a build finishes even if the user moved to another screen,
-        // and a visible modal that ignored `send`/`Esc` is the worst state the money surface
-        // could be in.
+        // Confirmations retain keyboard ownership even after a screen change.
         if self.send.confirming() || (self.screen == Screen::Send && self.send.owns_keys()) {
             return self.on_send_key(k);
         }
@@ -3083,10 +3089,7 @@ impl Model for Tui {
             Screen::Node => cmds.push(self.load_extras()),
             _ => {}
         }
-        // `wallet.autostart` (§7a.5), default **false**: the owner's problem was finding the
-        // switch, not that a program had failed to guess, and a tool that starts a daemon on launch
-        // has done something the user did not ask for. This is its **one** reader — `status` must
-        // never start anything (§2e), and neither may the widget or the doctor.
+        // Wallet startup on launch is opt-in; status polling never starts it.
         if self.ctx.settings.wallet.autostart && self.action.is_none() {
             cmds.push(self.start(Action::WalletDaemonStart));
         }
@@ -3122,6 +3125,7 @@ impl Model for Tui {
         match msg {
             Msg::Raw(Event::Key(k)) => self.on_key(k),
             Msg::Raw(Event::Mouse(ev)) => self.on_mouse(ev),
+            Msg::Raw(event @ Event::Paste(_)) => self.on_paste(&event),
             Msg::Raw(_) => Cmd::none(),
             Msg::Poll => {
                 self.maybe_reload_theme();

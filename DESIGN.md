@@ -8631,3 +8631,13 @@ so a pre-action result cannot overwrite the new state. Failed-action messages su
 successful status polls and clear on the next action. The password editor consumes ordinary
 navigation and power shortcut letters as text; Escape clears it and returns to the list.
 All four widget files remain within the existing per-file and aggregate line budgets.
+
+### 2026-09-20 — Terminal paste events
+
+The TUI routes `Event::Paste` directly to the visible text editor, never through key bindings.
+Send accepts paste only in its editable To/Amount/Note fields in the Form stage, with no address
+book picker open. Help, confirmations, busy stages, selectors, and unfocused forms ignore it.
+Visible modal fields and screen filters receive paste with their ordinary text-editing behavior;
+log searches rerun and changed node filters clear their row selection. TextInput's single-line
+sanitization maps line breaks/tabs to spaces and removes other control characters. Pasting never
+submits, builds, confirms, or relays. The payment confirmation still requires typing its word.
