@@ -88,22 +88,25 @@ The two intervals differ because the two situations differ: 3 s while you are wa
 percentage tick, 8 s while the widget only has to pick an icon state. Each poll is a process
 spawn, and that spawn is the expensive part. Both poll variants request a bounded node check;
 core shares and throttles it with the TUI, so the remote height stays fresh while the panel is
-closed. Each status operation has a two-second deadline and the overall watchdog allows sixty
+closed while fmonero is active. While the app is closed, only `app status` checks local
+activity; it makes no wallet reads or public-node requests. Each active status operation has a two-second deadline and the overall watchdog allows sixty
 seconds for the full sequence. A slow wallet read is shown as busy, not as a closed wallet.
 
 ## Using it
 
 The compact header follows the torrent widget: **Open wallet**, **More in the TUI**,
-**Refresh**, and **Power**. Hover a control for its label. The bar stays available after stopping
-so you can open a wallet again. Left click opens the panel, right click refreshes, and middle
+**Refresh**, and **Power**. Hover a control for its label. The widget appears only while
+fmonero is open or one of its owned services is running. Launch fmonero from the menu or terminal
+to bring it back after closing. Left click opens the panel, right click refreshes, and middle
 click opens the TUI.
 
 - **Open wallet / Switch wallet** shows the wallet list directly in the panel. Choose a wallet,
   enter its password in the masked field, and press Enter or **Open wallet**. The service starts
   automatically if needed. A wrong-password message stays visible, and the field is cleared.
 - **Close wallet** saves and closes the open wallet while leaving the service running.
-- **Power** saves and stops the wallet service, including background scanning. It leaves your
-  local node alone. When the service is stopped, the same button opens the wallet picker.
+- **Power** saves and closes fmonero: it stops the wallet service and fmonero's own local node,
+  closes existing TUI windows, and removes the icon from the bar. It preserves pending-payment
+  guards and does not control separately managed node services.
 - Balances, sync progress, address copying, payment checks, and pending-payment warnings stay
   in the panel. Creating/restoring wallets, sending payments, node selection, and diagnostics
   remain available in the TUI.
@@ -126,7 +129,7 @@ settings, logs, or a temporary file. The receiving command requires a complete l
 seconds and bounds its size. Wallet names are separate argv elements from the app's wallet list.
 
 Open, create, close, and stop operations honor the payment lock and pending-payment interlock.
-The power button calls `fmonero wallet stop --yes`; the widget never invokes systemctl directly.
+The power button calls `fmonero app stop --yes`; the widget never invokes systemctl directly.
 Closing a panel does not cancel an opening operation already submitted to Monero.
 
 ## Status

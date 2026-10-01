@@ -1,16 +1,7 @@
 //! The FrankenTUI app: Node · Wallet · Send · Log (DESIGN.md §7a).
 //!
-//! One `Model`, one 1 s `status` poll, one 120 ms tick for the spinner, and at most one long
-//! action at a time — which runs in [`subs::ActionSub`] so `Esc` can cancel it (a `Cmd`
-//! cannot be cancelled). Short reads go through `Cmd::task`. The TUI owns a `Context` clone
-//! and calls `fmonero-core` **in process**; it never spawns `fmonero`, and it never prints:
-//! the runtime owns the terminal.
-//!
-//! Every money guarantee of §2a is a property of `fmonero_core::send`, not of this file: the
-//! TUI never calls `build_transfer`, `build_sweep_all` or `relay_tx`, and never writes the
-//! `pending.json` record (§2a.3). `u`/`d` go through `node_session`, the open modal through
-//! `wallet_session` (§5b), so the §2i single-writer precondition and the `set_daemon` step
-//! exist in exactly one place.
+//! One model polls status every second and drives cancellable actions through ActionSub.
+//! Core owns wallet/node operations and all payment guarantees; the runtime owns the terminal.
 
 mod hit;
 mod screens;
@@ -534,13 +525,11 @@ fn settings_stamp(path: &std::path::Path) -> Option<(SystemTime, u64, u64)> {
 
 pub struct Tui {
     ctx: Context,
+    session: Option<fmonero_core::app::Session>,
     exit: Arc<AtomicI32>,
     theme: Theme,
     theme_mtime: Option<SystemTime>,
-    /// v5.6, §7a.7. `config.toml`'s modification time as of the last time this model read it, so
-    /// a settings change made **anywhere else** — the CLI in another terminal, an editor, a
-    /// `doctor --fix` that repaired a key — is noticed on the 1 s poll instead of being invisible
-    /// until the TUI is restarted. `stat` on one file per second is not a cost worth optimising.
+    /// Settings reload stamp for changes outside this window (§7a.7).
     config_mtime: Option<(SystemTime, u64, u64)>,
     config_valid: bool,
     read_epoch: u64,
@@ -593,7 +582,9 @@ pub fn run(args: TuiArgs, ctx: Context) -> anyhow::Result<i32> {
     let exit = Arc::new(AtomicI32::new(0));
     // Mouse capture is configurable; terminal selection modifiers remain terminal-specific.
     let mouse = ctx.settings.tui.mouse;
-    let app = Tui::new(args.screen(), ctx, exit.clone());
+    let session = fmonero_core::app::Session::enter(&ctx)?;
+    let mut app = Tui::new(args.screen(), ctx, exit.clone());
+    app.session = Some(session);
     let builder = App::fullscreen(app);
     let builder = if mouse {
         builder.with_mouse()
@@ -616,6 +607,7 @@ impl Tui {
             send.resume();
         }
         Tui {
+            session: None,
             theme_mtime: std::fs::metadata(theme::colors_path())
                 .and_then(|m| m.modified())
                 .ok(),
@@ -3128,6 +3120,13 @@ impl Model for Tui {
             Msg::Raw(event @ Event::Paste(_)) => self.on_paste(&event),
             Msg::Raw(_) => Cmd::none(),
             Msg::Poll => {
+                if self
+                    .session
+                    .as_ref()
+                    .is_some_and(|s| s.stop_requested(&self.ctx).unwrap_or(false))
+                {
+                    return self.quit(0);
+                }
                 self.maybe_reload_theme();
                 // §7a.7 part 2, before the poll that would otherwise ask `status` about the
                 // node this process still thinks is configured.

@@ -8,6 +8,7 @@ Item {
 
   property var settings: ({})
   property bool opened: false
+  property bool appRunning: false
 
   property var status: ({ ok: false })
   property string pollError: ""
@@ -45,7 +46,7 @@ Item {
   property int _statusEpoch: 0
   signal walletOpened()
   signal walletOpenFailed()
-  signal walletStopped()
+  signal appStopped()
 
   readonly property bool desiredOn: _desired === -1 ? nodeUp : _desired === 1
 
@@ -72,7 +73,12 @@ Item {
   function refresh() {
     if (binaryMissing) return
     if (!binaryChecked) { checkBinary(); return }
-    if (statusProc.running || busy) return
+    if (appProc.running || statusProc.running || busy) return
+    appProc.epoch = _statusEpoch
+    appProc.running = true
+  }
+  function pollStatus() {
+    if (!appRunning || statusProc.running || busy) return
     statusProc.epoch = _statusEpoch
     statusProc.command = [root.bin, "status", "--json", "--check-node", "--timeout", "2"]
     statusProc.running = true
@@ -85,20 +91,13 @@ Item {
     whichProc.running = true
   }
 
-  property var _queue: []
   function runAction(args, label) {
     if (binaryMissing || busy) return
-    _queue.push({ args: args, label: String(label || "") })
-    pump()
-  }
-  function pump() {
-    if (busy || _queue.length === 0) return
-    var next = _queue.shift()
-    actionStatus = next.label
+    actionStatus = String(label || "")
     actionStatusTimer.stop()
     localError = ""
     _statusEpoch++
-    actionProc.command = [root.bin].concat(next.args)
+    actionProc.command = [root.bin].concat(args)
     actionProc.running = true
   }
 
@@ -164,7 +163,7 @@ Item {
     return true
   }
   function closeWallet() { runAction(["wallet", "close", "--json"], "Closing wallet…") }
-  function stopWallet() { runAction(["wallet", "stop", "--yes", "--json"], "Saving and stopping wallet…") }
+  function stopApp() { runAction(["app", "stop", "--yes", "--json"], "Saving and closing fmonero…") }
   function actionError(raw) {
     var doc = Model.parseJson(raw)
     return doc && doc.error ? String(doc.error) : "That did not work. Please try again."
@@ -211,6 +210,22 @@ Item {
   }
 
   Process {
+    id: appProc
+    property int epoch: 0
+    command: [root.bin, "app", "status", "--json", "--timeout", "2"]
+    stdout: StdioCollector { id: appOut; waitForEnd: true }
+    stderr: StdioCollector { waitForEnd: true }
+    onExited: function(code) {
+      if (epoch !== root._statusEpoch) { delayedRefresh.restart(); return }
+      var doc = Model.parseJson(String(appOut.text || ""))
+      if (code !== 0 || !doc || doc.ok !== true) { root.pollError = "Could not check whether fmonero is running."; return }
+      root.appRunning = doc.running === true
+      if (root.appRunning) root.pollStatus()
+      else root.status = { ok: false }
+    }
+  }
+
+  Process {
     id: statusProc
     property int epoch: 0
     running: false
@@ -244,11 +259,14 @@ Item {
       } else {
         root.localError = ""
         root.actionStatus = ""
-        if (actionProc.command[1] === "wallet" && actionProc.command[2] === "stop") root.walletStopped()
+        if (actionProc.command[1] === "app" && actionProc.command[2] === "stop") {
+          root.appRunning = false
+          root.status = { ok: false }
+          root.appStopped()
+        }
       }
       actionStatusTimer.restart()
       delayedRefresh.restart()
-      root.pump()
     }
   }
 

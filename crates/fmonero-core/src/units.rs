@@ -296,6 +296,17 @@ pub fn stop(ctx: &Context, unit: &str, cancel: &CancelToken) -> Result<(), Error
     run_unit_verb(ctx, "stop", unit, cancel)
 }
 
+/// Installation is on demand even when an unchanged unit was manually enabled earlier.
+pub fn disable_autostart(ctx: &Context, unit: &str, cancel: &CancelToken) -> Result<(), Error> {
+    if !state(ctx, unit)?.enabled {
+        return Ok(());
+    }
+    if let Systemctl::Fixture(path) = &ctx.systemctl {
+        return fixture_set_field(path, unit, 2, "disabled");
+    }
+    run_unit_verb(ctx, "disable", unit, cancel)
+}
+
 /// **A sandbox may not start, stop or reload one of this machine's real services** (v5.6).
 ///
 /// [`install`] has refused to *write* a real unit under `FMONERO_STATE_DIR` since v4, and
@@ -932,13 +943,11 @@ fn install_with(ctx: &Context, dry_run: bool, rotate: bool) -> Result<Vec<FileAc
             ctx.timeouts.systemctl,
             Some(&cancel),
         );
-        // Both units are written DISABLED: they are started on demand (§4.2).
+    }
+    if !dry_run {
+        let cancel = CancelToken::new();
         for unit in [&ctx.settings.node.unit, &ctx.settings.wallet.unit] {
-            let _ = proc::run_with_deadline(
-                &["systemctl", "--user", "disable", unit],
-                ctx.timeouts.systemctl,
-                Some(&cancel),
-            );
+            disable_autostart(ctx, unit, &cancel)?;
         }
     }
     Ok(actions)
@@ -1217,6 +1226,10 @@ fn fixture_row(path: &Path, unit: &str) -> Result<Option<FixtureRow>, Error> {
 /// `<is-active>` column** of the named line (§2i). Without them nothing could reach
 /// `Layout::UserUnit` with a running unit in a test.
 fn fixture_set_active(path: &Path, unit: &str, active: bool) -> Result<(), Error> {
+    fixture_set_field(path, unit, 1, if active { "active" } else { "inactive" })
+}
+
+fn fixture_set_field(path: &Path, unit: &str, index: usize, value: &str) -> Result<(), Error> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| Error::io("read", "the FMONERO_SYSTEMCTL_FIXTURE file", path, &e))?;
     let mut out = String::with_capacity(text.len());
@@ -1229,8 +1242,8 @@ fn fixture_set_active(path: &Path, unit: &str, active: bool) -> Result<(), Error
             continue;
         }
         let mut f: Vec<&str> = trimmed.split_whitespace().collect();
-        if f.first() == Some(&unit) && f.len() >= 2 {
-            f[1] = if active { "active" } else { "inactive" };
+        if f.first() == Some(&unit) && f.len() > index {
+            f[index] = value;
             found = true;
             out.push_str(&f.join(" "));
         } else {

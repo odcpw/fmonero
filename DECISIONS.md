@@ -13792,3 +13792,50 @@ It isolates configuration, state, data, systemd, and RPC addresses and never ope
 constructs a payment. Installed the release with `--no-setup`; installed and built checksums match
 `3c0d32f8628c9d47045c79f7700cd5af4d89c3bb143bcb2caa8482c06ee04f75`.
 Already-running TUI processes need reopening to load the fix. No wallet service restart is needed.
+
+## 2026-10-01 — On-demand launch and full widget power-off
+
+The owner requested no login startup and a power button that closes fmonero, matching
+fbittorrent. The installed two user units were already disabled and inactive (both MainPID=0),
+wallet.autostart was false, and the menu entries launched the TUI on demand. No separate startup
+entry was found. Two actual inconsistencies remained: the widget stayed visible and performed
+full status/public-node checks while closed, and its power action stopped only wallet-rpc,
+leaving open TUI windows and the owned node. Also, setup disabled units only when file contents
+changed, so repeating setup could preserve a manually enabled login service.
+
+Added local `app status` and guarded `app stop --yes`. Shared kernel leases track TUI lifetime
+without stale PID records; a private shutdown generation asks existing windows to exit through
+the normal quit path, while later launches remain usable. Full power-off stops both owned
+services and preserves independently managed system nodes. It takes the send lock and refuses
+pending payments. The widget hides while closed and checks only local activity until launched;
+the enabled shell plugin is a passive hidden observer and starts no Monero service. Setup now
+disables enabled owned units even when their rendered files are unchanged, and reports disable
+errors. Closing a TUI window alone continues an active wallet scan, as the torrent app does.
+
+Validation:
+- The workspace suite passed 374 tests (160 binary, 211 core, 3 mock-server), including multiple
+  leases, shutdown/reopen, both-service stop, foreign-node preservation, and autostart disabling.
+  Payment-in-progress and unresolved-payment shutdown guards also passed.
+- `tests/e2e.sh`: 614 passed, zero failed, three existing skips. Its setup-rendering case initially
+  assumed this filesystem had 120 GB free and failed on the actual 59.4 GB. It now uses isolated
+  remote-node settings for rendering/refusal; the separate local-chain disk-floor case remains.
+  Owner service states and PIDs were unchanged by the suite.
+- `tests/app-lifecycle.py` passed through real pseudo-terminals: inactive before launch, two open
+  TUIs exited on app stop, a later launch survived the earlier request, and exit released activity.
+- Actual offscreen Quickshell tests passed idle/launch/power/idle, inline wallet controls, and
+  slow polling. The idle test rejects any full wallet/status read while the app is closed.
+  Widget model tests and 84 static widget checks passed.
+- The terminal paste regression passed. The real offline Monero integration passed authenticated
+  cold creation, reopening after login rotation, two node changes retaining the wallet session,
+  and closed-wallet selection. No transaction was built or sent.
+
+Installed the release with `--no-setup`, then ran the installed `setup --units --yes`: all three
+rendered files were unchanged, and both units remained disabled/inactive with MainPID=0.
+Build and installed SHA-256 match
+`a97f7d3ace1febe9301abad4f4458bda3c3201bc3164613f317c42b746268a2e`.
+The shell rescan retained the previous code, so the normal desktop-shell restart loaded the new
+widget. All 89 live smoke checks passed; its cursor reports version `qml-7dd59695`,
+appRunning=false and visible=false. No owner wallet was opened and neither service was started.
+
+Final `scripts/check.sh` passed, including formatting, warnings-denied compiler linting, all
+374 workspace tests, structural/copy checks, QML/TUI budgets, and command/documentation parity.

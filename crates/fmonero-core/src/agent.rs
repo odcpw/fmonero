@@ -292,6 +292,15 @@ TIMEOUTS AND HANGS
   --wait-timeout (default 1800; 0 means until interrupted and is refused without a TTY).
   `node log --follow` is refused in the CLI, where a pipe would hang.
 
+APPLICATION LIFETIME
+  fmonero app status --json reports {running, frontend_running, wallet_running, node_running}.
+  It inspects local TUI leases and the two owned units; it starts nothing and makes no RPC or
+  public-node request. Opening the TUI or starting an owned service makes the widget appear.
+  fmonero app stop --yes --json saves/stops both owned services and asks existing TUI windows
+  to exit. It refuses while a payment is being prepared or remains unresolved. Payload:
+  {ok, schema, stopped: true}. The bar icon disappears; opening fmonero brings it back.
+  Installation disables login startup even for unchanged, previously-enabled unit files.
+
 WALLETS WITHOUT A TERMINAL
   FMONERO_WALLET_PASSWORD=… fmonero wallet open <name>    # or --password-file <0600 file>
   fmonero wallet open <name> --password-stdin --json
@@ -365,6 +374,8 @@ const COMMANDS: &[Command] = &[
     cmd("wallet list", "", false, false, false, false, false, "green"),
     cmd("wallet open", "NAME [--password-file P | --password-stdin]", true, false, false, false, false, "red"),
     cmd("wallet close", "", true, false, true, false, false, "amber"),
+    cmd("app status", "", false, false, false, false, false, "green"),
+    cmd("app stop", "--yes", true, true, false, false, false, "amber"),
     cmd("wallet stop", "--yes", true, true, false, false, false, "amber"),
     cmd(
         "wallet create",

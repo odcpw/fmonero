@@ -521,6 +521,18 @@ pub fn human(out: &Out, label: &str, value: &serde_json::Value) {
         "node limit" => return limit_human(out, value),
         "wallet open" => return wallet_open_human(out, value),
         "wallet close" => return wallet_close_human(out, value),
+        "app stop" => {
+            out.line("fmonero is closed.");
+            return;
+        }
+        "app status" => {
+            out.line(if value["running"].as_bool() == Some(true) {
+                "fmonero is running."
+            } else {
+                "fmonero is closed."
+            });
+            return;
+        }
         "wallet stop" => {
             out.line("The wallet service is stopped.");
             return;

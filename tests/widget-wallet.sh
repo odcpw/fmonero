@@ -13,7 +13,9 @@ s = json.loads(state.read_text()) if state.exists() else {'open': False, 'active
 args = sys.argv[1:]
 assert 'synthetic value ' not in str(args)
 assert 'FMONERO_WALLET_PASSWORD' not in os.environ
-if args[0] == 'status':
+if args[:2] == ['app', 'status']:
+ print(json.dumps({'ok': True, 'running': s['active']}))
+elif args[0] == 'status':
  print(json.dumps({'ok': True, 'node': {'layout': 'remote'}, 'wallet': {'open': s['open'], 'unit_active': s['active'], 'reachable': s['active'], 'name': 'Example' if s['open'] else None}}))
 elif args[:2] == ['wallet', 'list']:
  print(json.dumps({'ok': True, 'wallets': ['Example', 'Savings']}))
@@ -28,7 +30,7 @@ elif args[:2] == ['wallet', 'open']:
 elif args[:2] == ['wallet', 'close']:
  assert s['open']; s['open'] = False
  state.write_text(json.dumps(s)); print('{"ok":true}')
-elif args[:2] == ['wallet', 'stop']:
+elif args[:2] == ['app', 'stop']:
  assert '--yes' in args and not s['open'] and s['opens'] == 2
  s['active'] = False; state.write_text(json.dumps(s)); print('{"ok":true}')
 else:
@@ -53,7 +55,7 @@ ShellRoot {
       } else if (phase === 4 && walletOpen && !busy) {
         phase = 5; closeWallet()
       } else if (phase === 5 && !walletOpen && !busy) {
-        phase = 6; stopWallet()
+        phase = 6; stopApp()
       }
     }
     onWalletsChanged: {
@@ -63,7 +65,7 @@ ShellRoot {
     }
     onLocalErrorChanged: if (phase === 1 && localError.indexOf("Incorrect password") >= 0) phase = 2
     onWalletOpened: phase = 4
-    onWalletStopped: { console.log("WALLET_PASS: list, private input, persistent error, retry, close, and power"); Qt.quit() }
+    onAppStopped: { console.log("WALLET_PASS: list, private input, persistent error, retry, close, and power"); Qt.quit() }
   }
   Timer { interval: 20000; running: true; onTriggered: { console.error("WALLET_FAIL: deadline, phase " + phase); Qt.quit() } }
 }

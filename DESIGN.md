@@ -8641,3 +8641,26 @@ Visible modal fields and screen filters receive paste with their ordinary text-e
 log searches rerun and changed node filters clear their row selection. TextInput's single-line
 sanitization maps line breaks/tabs to spaces and removes other control characters. Pasting never
 submits, builds, confirms, or relays. The payment confirmation still requires typing its word.
+
+
+### 2026-10-01 — On-demand application lifetime and full power-off
+
+The owner requested that fmonero run only when opened, and that the widget power control
+close the program as in fbittorrent. This supersedes the earlier widget power behavior that
+stopped only the wallet service and kept the icon available. Both owned units remain disabled
+at login. Setup disables previously enabled units on every successful installation, including
+when their rendered files are unchanged, without starting or stopping them.
+
+The widget is visible only while a TUI or an owned wallet/node unit is active. Its inactive
+poll is `app status --json`, which checks local kernel leases and owned systemd units without
+wallet RPC, wallet reads, or public-node checks. The enabled shell plugin remains a hidden
+local observer at login; it does not launch fmonero's TUI or Monero services.
+
+`app stop --yes` takes the payment lock and refuses unresolved payments, stops the owned
+wallet service and owned node, clears the last-open session, and advances a private shutdown
+generation only after successful service stops. Every existing TUI observes the generation
+and exits through its normal quit path. New launches capture the new generation and are not
+closed by an earlier request. Kernel-held shared leases are released on exit, crash, or reboot;
+a leftover lease file alone never makes the app active. Independently managed system nodes
+are never shutdown targets. Closing a TUI window by itself retains an active wallet scan;
+the widget's power action performs the full shutdown and hides the icon.

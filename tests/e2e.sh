@@ -586,6 +586,10 @@ expect_json '.hint' '"fmonero setup --units --yes"' "§4: and setup hints the us
 # §4.2's two gate lines, run against the REAL config dir's renderer but writing nothing.
 step "setup --units --dry-run (§4.2)"
 sandbox setup
+# Rendering and sandbox refusal must not depend on available blockchain space.
+# Remote mode skips that unrelated disk floor; the local floor has its own case below.
+fm settings set node.remote "127.0.0.1:$NODE_PORT" >/dev/null
+fm settings set node.mode remote >/dev/null
 unset FMONERO_SYSTEMCTL_FIXTURE
 # The one case that needs `wallet.dir` ABSENT: §4.2 promises a `CreateDir` action per missing
 # ancestor, and `sandbox` creates the directory for every other case.
@@ -1003,6 +1007,26 @@ expect_json '.stopped' 'true' "the stop result confirms completion"
 fm status --json
 expect_json '.wallet.unit_active' 'false' "wallet service stopped"
 expect_json '.units.node.active' 'true' "the local node was left running"
+
+step "on-demand application lifetime"
+sandbox appcontrols
+fm app status --json
+expect_rc 0 "application activity can be checked without a daemon"
+expect_keys "app status" "ok schema running frontend_running wallet_running node_running"
+expect_json '.running' 'false' "fmonero is absent at login"
+fm app stop --json
+expect_rc 3 "application shutdown requires --yes"
+fm app stop --dry-run --yes --json
+expect_rc 2 "unsupported shutdown dry-run is refused before mutation"
+systemctl_fixture user_unit
+fm app status --json
+expect_json '.running' 'true' "owned services keep the application active"
+fm app stop --yes --json
+expect_rc 0 "full application shutdown"
+expect_keys "app stop" "ok schema stopped"
+fm app status --json
+expect_json '.running' 'false' "both owned services stopped"
+expect_json '.wallet_running or .node_running' 'false' "no background service remains"
 
 # ---- the money rows, in all three outcomes (§5c) -----------------------------
 step "the money path against the mock (§2a, §5c)"

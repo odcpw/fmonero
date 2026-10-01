@@ -13,8 +13,9 @@ Panel {
   moduleName: "oliver.monero"
   ipcTarget: "oliver.monero"
   manageIpc: false
+  visible: svc.appRunning
 
-  readonly property string panelVersion: "qml-63e18992"
+  readonly property string panelVersion: "qml-7dd59695"
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent
@@ -84,8 +85,7 @@ Panel {
   }
   function powerAction() {
     if (svc.busy) return
-    if (svc.walletUp || svc.walletReachable) svc.stopWallet()
-    else showWalletPicker()
+    svc.stopApp()
   }
   function activateHeader(index) {
     if (index === 0) showWalletPicker()
@@ -298,7 +298,7 @@ Panel {
     settings: root.settings
     onWalletOpened: root.dismissPicker()
     onWalletOpenFailed: Qt.callLater(function() { if (root.opened && root.selectedWallet !== "") unlockField.forceActiveFocus() })
-    onWalletStopped: root.close()
+    onAppStopped: root.close()
   }
 
   IpcHandler {
@@ -316,6 +316,7 @@ Panel {
                               section: root.focusSection, index: root.selectedIndex,
                               active: root.cursorActive, opened: root.opened,
                               sections: root.navSections, alive: svc.alive,
+                              appRunning: svc.appRunning, visible: root.visible,
                               binaryMissing: svc.binaryMissing, nodeUp: svc.nodeUp,
                               synced: svc.synced, walletOpen: svc.walletOpen,
                               remote: svc.remote,
@@ -416,7 +417,7 @@ Panel {
                 HeaderAction { idx: 0; iconText: "󰖄"; tooltipText: "Open wallet (w)"; enabled: !svc.busy; onClicked: root.showWalletPicker() }
                 HeaderAction { idx: 1; iconText: "󰆍"; tooltipText: "More in the TUI (t)"; onClicked: { svc.openTui(); root.close() } }
                 HeaderAction { idx: 2; iconText: "󰑐"; tooltipText: "Refresh (r)"; enabled: !svc.busy; onClicked: root.activateHeader(2) }
-                HeaderAction { idx: 3; iconText: "󰐥"; tooltipText: svc.walletUp || svc.walletReachable ? "Save and stop wallet service (q)" : "Open a wallet (q)"; enabled: !svc.busy; onClicked: root.powerAction() }
+                HeaderAction { idx: 3; iconText: "󰐥"; tooltipText: "Save and close fmonero (q)"; enabled: !svc.busy; onClicked: root.powerAction() }
               }
             }
           }

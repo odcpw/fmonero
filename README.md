@@ -441,6 +441,13 @@ out of this codebase.
 
 ## The widget
 
+fmonero starts on demand. Both services are disabled at login; opening the TUI or starting a
+wallet brings its widget into view. The widget's power button saves and closes fmonero, stops
+its wallet service and owned local node, and closes its TUI windows. The icon then disappears,
+just as it does in fbittorrent. Launch fmonero again from the menu or terminal to reopen it.
+Closing only a TUI window leaves an active wallet scan running; use Power for a full shutdown.
+`fmonero app status --json` checks local activity and `fmonero app stop --yes` closes the app.
+
 `plugin/oliver.monero` is a Quickshell bar widget for Omarchy 4. It draws the Monero mark in
 the bar, coloured by node and wallet state, crossed out when your node is not answering, ringed
 with a percentage while something is catching up, and badged when something is wrong.

@@ -10,7 +10,7 @@
   "entryPoints": { "barWidget": "Panel.qml" },
   "barWidget": {
     "displayName": "Monero",
-    "description": "Open and close wallets, watch syncing and balances, stop the wallet service, and reach advanced controls in the TUI.",
+    "description": "Open and close wallets, watch syncing and balances, close fmonero, and reach advanced controls in the TUI.",
     "category": "Finance",
     "allowMultiple": false,
     "defaultSection": "right",

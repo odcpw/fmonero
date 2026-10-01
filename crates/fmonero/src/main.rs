@@ -97,6 +97,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Whether fmonero is open, or close it and its background services
+    App {
+        #[command(subcommand)]
+        cmd: AppCmd,
+    },
     /// How things are: the node, the wallet, the background services. Starts nothing
     #[command(
         after_help = "Three questions to the wallet and the node with no wallet open, five
@@ -143,6 +148,14 @@ returns at once. This run is not made fresher by it; the next one is."
     },
     /// Which version this is, how far it has been proved, and what it has been seen to do
     Version,
+}
+
+#[derive(Subcommand)]
+enum AppCmd {
+    /// Check local application activity; starts nothing and contacts no public node
+    Status,
+    /// Save and stop fmonero's services and close its open TUI windows
+    Stop,
 }
 
 #[derive(Subcommand)]
@@ -885,6 +898,10 @@ fn node_gate<'a>(ctx: &Context, n: Option<&'a NodeClient>) -> send::NodeGate<'a>
 fn command_path(cmd: &Cmd) -> String {
     match cmd {
         Cmd::Status { .. } => "status".into(),
+        Cmd::App { cmd } => match cmd {
+            AppCmd::Status => "app status".into(),
+            AppCmd::Stop => "app stop".into(),
+        },
         Cmd::Node { cmd } => format!(
             "node {}",
             match cmd {
@@ -1130,6 +1147,23 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
     let default_account = |given: Option<u32>| given.unwrap_or(ctx.settings.wallet.account);
 
     match cmd {
+        Cmd::App {
+            cmd: AppCmd::Status,
+        } => {
+            let activity = fmonero_core::app::status(&ctx)?;
+            out.emit(
+                "app status",
+                ok(serde_json::to_value(activity)
+                    .map_err(|_| Error::failure("Could not describe the application session."))?),
+            );
+            Ok(0)
+        }
+        Cmd::App { cmd: AppCmd::Stop } => {
+            require_yes(yes, "fmonero app stop", &[])?;
+            fmonero_core::app::stop(&ctx, &cancel)?;
+            out.emit("app stop", ok(serde_json::json!({"stopped": true})));
+            Ok(0)
+        }
         Cmd::Status { check_node } => {
             // §5, v5.6: the identical document either way. The flag decides whether a
             // detached check of the configured public node is started on the way out — the one
@@ -2605,6 +2639,7 @@ mod tests {
     /// [`every_needs_yes_hint_parses_under_clap`] runs every hint through the clap tree.
     const NEEDS_YES: &[(&str, &[&str], &str)] = &[
         ("fmonero wallet stop", &[], "fmonero wallet stop --yes"),
+        ("fmonero app stop", &[], "fmonero app stop --yes"),
         ("fmonero node down", &[], "fmonero node down --yes"),
         ("fmonero node restart", &[], "fmonero node restart --yes"),
         (

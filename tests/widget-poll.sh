@@ -8,6 +8,8 @@ cp "$ROOT/plugin/oliver.monero/Service.qml" "$ROOT/plugin/oliver.monero/Model.js
 cat > "$WORK/fake-status" <<'PY'
 #!/usr/bin/env python3
 import json, pathlib, sys, time
+if sys.argv[1:3] == ['app', 'status']:
+    print('{"ok":true,"running":true}'); sys.exit(0)
 assert '--check-node' in sys.argv, 'closed panels must keep the node fresh'
 count = pathlib.Path(__file__).with_name('count')
 n = int(count.read_text()) + 1 if count.exists() else 1

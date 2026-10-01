@@ -205,7 +205,10 @@ fires "secret logging" "$SECRET" 'console.log(secret)'
 present "wallet opens through a private input pipe" Service.qml '"--password-stdin"'
 present "input is masked" Panel.qml 'password: true'
 present "secret buffer is cleared after writing" Service.qml 'secret = ""'
-present "power uses the guarded app command" Service.qml '["wallet", "stop", "--yes", "--json"]'
+present "power uses the guarded app command" Service.qml '["app", "stop", "--yes", "--json"]'
+
+present "widget appears only while fmonero runs" Panel.qml 'visible: svc.appRunning'
+present "idle checks do not request wallet or node data" Service.qml '"app", "status", "--json"'
 
 # --- 7. no arithmetic on money in QML (DESIGN.md §2a.5, the QML half) ---------
 # Status JSON carries every amount as a pre-rendered `*_xmr` string, so the widget never needs a

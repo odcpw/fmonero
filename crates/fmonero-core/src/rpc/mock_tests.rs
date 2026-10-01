@@ -2225,6 +2225,20 @@ fn wallet_controls_refuse_pending_payments_and_stop_preserves_the_node() {
     )
     .unwrap();
     let cancel = CancelToken::new();
+    let session = crate::app::Session::enter(&world.ctx).unwrap();
+    assert_eq!(
+        crate::app::stop(&world.ctx, &cancel).unwrap_err().reason(),
+        Some("pending_send")
+    );
+    assert!(!session.stop_requested(&world.ctx).unwrap());
+    {
+        let lock = crate::send::take_send_lock(&world.ctx).unwrap();
+        assert_eq!(
+            crate::app::stop(&world.ctx, &cancel).unwrap_err().reason(),
+            Some("send_in_progress")
+        );
+        drop(lock);
+    }
     assert_eq!(
         crate::wallet_session::stop(&world.ctx, &cancel)
             .unwrap_err()

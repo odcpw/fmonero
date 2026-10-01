@@ -17,6 +17,7 @@
 pub mod address;
 pub mod agent;
 pub mod amount;
+pub mod app;
 pub mod context;
 pub mod error;
 pub mod fsinfo;
