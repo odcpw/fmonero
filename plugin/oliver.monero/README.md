@@ -82,7 +82,7 @@ one.
 | `refreshIntervalSec` | 3 (1-60) | poll interval while the panel is open |
 | `idleRefreshIntervalSec` | 8 (2-600) | poll interval while it is closed |
 | `showBalance` | `on` | `off` keeps the balance, the pending amount and the destination off the bar |
-| `tuiCommand` | `omarchy-launch-or-focus-tui --app-id=fmonero fmonero tui` | how the footer opens the TUI |
+| `tuiCommand` | `omarchy-launch-or-focus-tui --app-id=org.odcpw.fmonero fmonero tui` | how the footer opens the TUI |
 
 The two intervals differ because the two situations differ: 3 s while you are watching a sync
 percentage tick, 8 s while the widget only has to pick an icon state. Each poll is a process

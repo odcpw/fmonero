@@ -13839,3 +13839,41 @@ appRunning=false and visible=false. No owner wallet was opened and neither servi
 
 Final `scripts/check.sh` passed, including formatting, warnings-denied compiler linting, all
 374 workspace tests, structural/copy checks, QML/TUI budgets, and command/documentation parity.
+
+
+## 2026-10-13 — fmonero naming and menu launch repair
+
+The owner reported that the Monero menu entry did not open the app and asked for
+the fmonero name. Reproducing its exact command exited zero without opening any
+fmonero window. Hyprland showed an existing `com.mitchellh.ghostty` window with a
+title matching the helper's `\bfmonero\b` pattern, but no class matching it.
+The helper matches both classes and titles, so it focused that unrelated window.
+Bare fmonero rendered successfully on a real PTY.
+
+Changed all default menu/widget launch ids to `org.odcpw.fmonero` and
+`org.odcpw.fmonerodoctor`, renamed the default menu and plugin display labels to
+fmonero, and added a desktop application entry named fmonero. Setup migrates old
+commands while keeping custom labels/comments. Install/uninstall manage the new
+desktop entry. The source changes are installed locally; no commit or push was made.
+
+Validation and installation:
+- Seven setup tests passed, including old-action migration, custom-label preservation,
+  and second-run idempotence. The existing legacy-menu fixture was corrected to use
+  valid JSONC without a trailing comma before the closing brace.
+- `cargo clippy -p fmonero --all-targets -- -D warnings` and formatting passed.
+- The release build passed. The installed binary and release file have SHA-256
+  `b093f012e3ed4c0e53e91a93a906763d4eb033715383c4c6418b99abfdeec448`.
+- Static widget smoke: 84 passed. Live widget smoke after shell restart: 89 passed,
+  with the new `qml-d6a1f389` loaded and the widget visible while the app runs.
+- Desktop-file validation and shell-script syntax checks passed.
+- Real installed-menu dry-run changed nothing; actual setup wrote the migration;
+  every unrelated menu line stayed unchanged; a second setup reported unchanged.
+- The exact migrated menu action and `gtk-launch fmonero` both succeeded. Hyprland
+  reported one mapped, visible `org.odcpw.fmonero` window; `app status` reported
+  `frontend_running: true`. Repeated launching focused it without creating another.
+- The installed desktop entry matches the repository asset. Installation doctor:
+  seven passes, zero failures, one payment-cache check skipped.
+
+The remote build helper refused this checkout's topology and fell back locally;
+no worker configuration was changed. This repair issued no wallet creation,
+opening, sending, or sweeping command. The open application was left for the owner.

@@ -66,7 +66,10 @@ scripts/install.sh --yes              # build, install to ~/.local/bin, wire up 
 ```
 
 That is `cargo build --release -p fmonero`, an atomic install of `~/.local/bin/fmonero`, and
-`fmonero setup --all --yes`. It has been run for real, twice in a row, and the second run
+an application launcher entry named **fmonero**, followed by `fmonero setup --all --yes`.
+Launch it by searching for **fmonero** in the app launcher, choosing **fmonero → Open** in the
+Omarchy menu, or typing `fmonero` in a terminal.
+It has been run for real, twice in a row, and the second run
 reported **all seven** of its actions `unchanged` while leaving every artefact byte-identical to
 the first run's — so it is safe to re-run after a `git pull`. `omarchy plugin enable` and
 `omarchy bar put` are skipped when `~/.config/omarchy/shell.json` already carries the widget,

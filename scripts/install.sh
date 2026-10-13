@@ -136,6 +136,7 @@ if [ "$DO_SETUP" -eq 1 ] && ! command -v omarchy >/dev/null 2>&1; then
 fi
 
 DEST="$PREFIX/$BIN"
+DESKTOP_FILE="${XDG_DATA_HOME:-$HOME/.local/share}/applications/fmonero.desktop"
 if [ -e "$DEST" ] && [ ! -f "$DEST" ]; then
   err "$DEST exists and is not a regular file; refusing to replace it"
   exit "$E_FAIL"
@@ -245,6 +246,17 @@ if [ "$DRY_RUN" -eq 0 ]; then
 fi
 
 # --------------------------------------------------------------------- setup --
+
+if [ "$DO_SETUP" -eq 1 ]; then
+  if [ "$DRY_RUN" -eq 1 ]; then
+    plan "install -Dm0644 $REPO/crates/fmonero/assets/fmonero.desktop $DESKTOP_FILE"
+  elif [ -f "$DESKTOP_FILE" ] && cmp -s -- "$REPO/crates/fmonero/assets/fmonero.desktop" "$DESKTOP_FILE"; then
+    skip "$DESKTOP_FILE is already current"
+  else
+    install -Dm0644 -- "$REPO/crates/fmonero/assets/fmonero.desktop" "$DESKTOP_FILE"
+    ok "installed the fmonero application launcher entry"
+  fi
+fi
 
 SETUP_RC=0
 if [ "$DO_SETUP" -eq 0 ]; then

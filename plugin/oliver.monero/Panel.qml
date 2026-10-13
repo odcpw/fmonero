@@ -15,7 +15,7 @@ Panel {
   manageIpc: false
   visible: svc.appRunning
 
-  readonly property string panelVersion: "qml-7dd59695"
+  readonly property string panelVersion: "qml-d6a1f389"
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent

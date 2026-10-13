@@ -8664,3 +8664,14 @@ closed by an earlier request. Kernel-held shared leases are released on exit, cr
 a leftover lease file alone never makes the app active. Independently managed system nodes
 are never shutdown targets. Closing a TUI window by itself retains an active wallet scan;
 the widget's power action performs the full shutdown and hides the icon.
+
+
+### Desktop launch correction (2026-10-13)
+
+The app is presented as **fmonero** in the Omarchy menu and application launcher.
+Window app ids are `org.odcpw.fmonero` and `org.odcpw.fmonerodoctor`: Omarchy's
+launch-or-focus helper also matches window titles, so the old `fmonero` id could
+focus an unrelated terminal titled with the repository name and start nothing.
+The existing `monero.*` menu route ids remain stable. Setup upgrades the known old
+app ids and default Monero label textually, preserving custom labels and unrelated
+menu content. The installer also installs `fmonero.desktop`, removed by uninstall.

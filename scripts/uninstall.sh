@@ -19,6 +19,7 @@ BIN="fmonero"
 PLUGIN_ID="oliver.monero"
 PLUGIN_LINK="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/$PLUGIN_ID"
 MENU_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/extensions/omarchy-menu.jsonc"
+DESKTOP_FILE="${XDG_DATA_HOME:-$HOME/.local/share}/applications/fmonero.desktop"
 SYSTEMD_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 NODE_UNIT="fmonero-monerod.service"
 WALLET_UNIT="fmonero-wallet-rpc.service"
@@ -258,6 +259,12 @@ if [ -f "$DEST" ]; then
   run rm -f -- "$DEST"
 else
   skip "no binary at $DEST"
+fi
+
+if [ -f "$DESKTOP_FILE" ]; then
+  run rm -f -- "$DESKTOP_FILE"
+else
+  skip "no application launcher entry at $DESKTOP_FILE"
 fi
 
 # ------------------------------------------------------------ 6. menu lines --

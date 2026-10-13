@@ -453,7 +453,8 @@ fn repo_plugin_dir(ctx: &Context) -> Result<std::path::PathBuf, Error> {
 
 fn menu_step(ctx: &Context, args: &SetupArgs) -> Result<Vec<FileAction>, Error> {
     let path = ctx.paths.omarchy_menu();
-    let current = std::fs::read_to_string(&path).unwrap_or_else(|_| "{\n}\n".to_string());
+    let before = std::fs::read_to_string(&path).unwrap_or_else(|_| "{\n}\n".to_string());
+    let current = migrate_menu_entries(&before);
     // Strip comments into a scratch copy only, and parse THAT to learn which ids exist. A
     // serde round trip would delete every comment in a file the owner maintains by hand
     // (§4.2), so the merge is textual and the parse is read-only.
@@ -462,7 +463,7 @@ fn menu_step(ctx: &Context, args: &SetupArgs) -> Result<Vec<FileAction>, Error> 
         .into_iter()
         .filter(|(id, _)| !present.contains(&(*id).to_string()))
         .collect();
-    if missing.is_empty() {
+    if missing.is_empty() && current == before {
         return Ok(vec![FileAction {
             what: "Omarchy menu entries".into(),
             path,
@@ -470,13 +471,17 @@ fn menu_step(ctx: &Context, args: &SetupArgs) -> Result<Vec<FileAction>, Error> 
             diff: None,
         }]);
     }
-    let merged = insert_before_last_brace(&current, &missing)?;
+    let merged = if missing.is_empty() {
+        current
+    } else {
+        insert_before_last_brace(&current, &missing)?
+    };
     if args.dry_run {
         return Ok(vec![FileAction {
             what: format!("{} Omarchy menu entries", missing.len()),
             path,
             status: FileStatus::Planned,
-            diff: Some(units::redact_login(&diff_lines(&current, &merged))),
+            diff: Some(units::redact_login(&diff_lines(&before, &merged))),
         }]);
     }
     // A verbatim backup first, named by the UTC basic timestamp (§4.2).
@@ -516,6 +521,40 @@ fn menu_step(ctx: &Context, args: &SetupArgs) -> Result<Vec<FileAction>, Error> 
         status: FileStatus::Written,
         diff: None,
     }])
+}
+
+/// Upgrade our old launch commands without rewriting comments or custom menu labels.
+/// The generic app id also matched terminal titles containing the repository name.
+fn migrate_menu_entries(text: &str) -> String {
+    if serde_json::from_str::<serde_json::Value>(&strip_comments(text)).is_err() {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        let id = line
+            .trim_start()
+            .strip_prefix('"')
+            .and_then(|s| s.split('"').next());
+        let migrated = match id {
+            Some("monero") => line
+                .replace("\"label\":\"Monero\"", "\"label\":\"fmonero\"")
+                .replace(
+                    "\"aliases\":[\"monero\"",
+                    "\"aliases\":[\"fmonero\",\"monero\"",
+                ),
+            Some(
+                "monero.open" | "monero.send" | "monero.wallet" | "monero.node" | "monero.doctor",
+            ) => line
+                .replace("--app-id=fmonero ", "--app-id=org.odcpw.fmonero ")
+                .replace(
+                    "--app-id=fmonerodoctor ",
+                    "--app-id=org.odcpw.fmonerodoctor ",
+                ),
+            _ => line.to_string(),
+        };
+        out.push_str(&migrated);
+    }
+    out
 }
 
 /// `(id, the single line to insert)` for every entry of `assets/menu.jsonc`.
@@ -677,8 +716,8 @@ mod tests {
         // §1.5: only constant literals reach the shell-string entry points, and the app-ids
         // must not be prefixes of one another.
         let text = MENU_TEMPLATE;
-        assert!(text.contains("--app-id=fmonero "));
-        assert!(text.contains("--app-id=fmonerodoctor "));
+        assert!(text.contains("--app-id=org.odcpw.fmonero "));
+        assert!(text.contains("--app-id=org.odcpw.fmonerodoctor "));
     }
 
     #[test]
@@ -842,18 +881,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// **FINDING E, recorded as a test rather than closed as a defect** (DECISIONS: the fix-up
-    /// round). §4.2's merge leaves an existing id byte-for-byte alone, deliberately, so a
-    /// *label* change — `Node` → `Nodes` — reaches a machine that already has the entry only if
-    /// the line is removed first. This pins that behaviour, on the line the owner actually has,
-    /// so the choice is a property of the code and not an accident of it.
+    /// Keep an existing label while upgrading the old launch command, and remain idempotent.
     #[test]
     fn an_existing_entry_keeps_its_own_label_even_when_the_asset_renames_it() {
         let (ctx, dir) = menu_sandbox("label-kept", 0o600);
         let menu = ctx.paths.omarchy_menu();
         // The exact line the previous fmonero version wrote, `Node` and all.
         let old = "  \"monero.node\": {\"icon\":\"\u{f048b}\",\"label\":\"Node\",\"action\":\"omarchy-launch-or-focus-tui --app-id=fmonero fmonero tui --node\"},";
-        std::fs::write(&menu, format!("{{\n{old}\n}}\n")).expect("menu");
+        std::fs::write(&menu, format!("{{\n{}\n}}\n", old.trim_end_matches(','))).expect("menu");
         let args = SetupArgs {
             menu: true,
             yes: true,
@@ -861,9 +896,10 @@ mod tests {
         };
         menu_step(&ctx, &args).expect("the merge");
         let after = std::fs::read_to_string(&menu).expect("read back");
-        assert!(
-            after.contains(old),
-            "the existing line must be byte-for-byte unchanged:\n{after}"
+        assert!(after.contains(&old.replace("--app-id=fmonero ", "--app-id=org.odcpw.fmonero ")));
+        assert_eq!(
+            menu_step(&ctx, &args).expect("second merge")[0].status,
+            FileStatus::Unchanged
         );
         assert!(
             !after.contains("\"label\":\"Nodes\""),

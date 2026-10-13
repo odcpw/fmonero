@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=fmonero
+GenericName=Monero wallet
+Comment=Monero node and wallet front end
+Exec=omarchy-launch-or-focus-tui --app-id=org.odcpw.fmonero fmonero tui
+TryExec=fmonero
+Icon=utilities-terminal
+Terminal=false
+Categories=Office;Finance;
+Keywords=fmonero;Monero;XMR;wallet;
+StartupWMClass=org.odcpw.fmonero

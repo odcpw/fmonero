@@ -58,7 +58,7 @@ Item {
   readonly property int idleRefreshMs: 1000 * intSetting("idleRefreshIntervalSec", 8, 2, 600)
   readonly property bool showBalance: String(setting("showBalance", "on")) === "on"
   readonly property string tuiCommand:
-    String(setting("tuiCommand", "omarchy-launch-or-focus-tui --app-id=fmonero fmonero tui"))
+    String(setting("tuiCommand", "omarchy-launch-or-focus-tui --app-id=org.odcpw.fmonero fmonero tui"))
 
   function setting(name, fallback) {
     var v = settings ? settings[name] : undefined
@@ -139,11 +139,11 @@ Item {
   }
   function openTui() {
     var argv = Model.safeArgv(root.tuiCommand)
-    if (argv.length === 0) argv = ["omarchy-launch-or-focus-tui", "--app-id=fmonero", "fmonero", "tui"]
+    if (argv.length === 0) argv = ["omarchy-launch-or-focus-tui", "--app-id=org.odcpw.fmonero", "fmonero", "tui"]
     Quickshell.execDetached(argv)
   }
   function openSendScreen() {
-    Quickshell.execDetached(["omarchy-launch-or-focus-tui", "--app-id=fmonero", "fmonero", "tui", "--send"])
+    Quickshell.execDetached(["omarchy-launch-or-focus-tui", "--app-id=org.odcpw.fmonero", "fmonero", "tui", "--send"])
   }
   function listWallets() {
     if (walletListProc.running || binaryMissing) return
@@ -170,10 +170,10 @@ Item {
   }
 
   function openNodeScreen() {
-    Quickshell.execDetached(["omarchy-launch-or-focus-tui", "--app-id=fmonero", "fmonero", "tui", "--node"])
+    Quickshell.execDetached(["omarchy-launch-or-focus-tui", "--app-id=org.odcpw.fmonero", "fmonero", "tui", "--node"])
   }
   function openDoctor() {
-    Quickshell.execDetached(["omarchy-launch-or-focus-tui", "--app-id=fmonerodoctor", "fmonero", "doctor"])
+    Quickshell.execDetached(["omarchy-launch-or-focus-tui", "--app-id=org.odcpw.fmonerodoctor", "fmonero", "doctor"])
   }
 
   function applyStatus(text, exitCode, stderrText) {
