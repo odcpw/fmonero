@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "oliver.monero",
   "name": "fmonero",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "Oliver",
   "license": "MIT",
   "description": "Monero node and wallet state in the Omarchy bar, via fmonero.",
@@ -19,14 +19,14 @@
       "refreshIntervalSec": 3,
       "idleRefreshIntervalSec": 8,
       "showBalance": "on",
-      "tuiCommand": "omarchy-launch-or-focus-tui --app-id=org.odcpw.fmonero fmonero tui"
+      "tuiCommand": "fmonero launch wallet"
     },
     "schema": [
       { "key": "binary", "type": "string", "label": "fmonero binary", "defaultValue": "fmonero" },
       { "key": "refreshIntervalSec", "type": "integer", "label": "Refresh while open (seconds)", "min": 1, "max": 60, "step": 1, "defaultValue": 3 },
       { "key": "idleRefreshIntervalSec", "type": "integer", "label": "Refresh while closed (seconds)", "min": 2, "max": 600, "step": 1, "defaultValue": 8 },
       { "key": "showBalance", "type": "string", "label": "Show amounts on the bar and in the panel (on/off)", "defaultValue": "on" },
-      { "key": "tuiCommand", "type": "string", "label": "TUI launch command", "defaultValue": "omarchy-launch-or-focus-tui --app-id=org.odcpw.fmonero fmonero tui" }
+      { "key": "tuiCommand", "type": "string", "label": "TUI launch command", "defaultValue": "fmonero launch wallet" }
     ]
   }
 }

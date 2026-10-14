@@ -22,7 +22,7 @@ use ftui::{Event, Frame, GraphemePool, KeyCode, KeyEvent, Model, Modifiers};
 
 use fmonero_core::{state, CancelToken, Context, PendingKind, PendingSend, PendingTx, Piconero};
 
-use super::send::{Stage, CONFIRM_WORD, NO_SWEEP};
+use super::send::{Stage, CONFIRM_WORD};
 use super::{send, subs, text_input, Modal, Msg, Screen, Tui, KEYS};
 
 /// The mock's own credential, and the one written to the login file (§2c). There is **no
@@ -131,6 +131,22 @@ impl World {
         }
     }
 
+    fn open_fixture_wallet(&self) {
+        self.ctx
+            .settings
+            .save(&self.ctx)
+            .expect("save isolated mock endpoints");
+        let w = fmonero_core::WalletClient::from_ctx(&self.ctx).unwrap();
+        fmonero_core::wallet_session::open_secret(
+            &self.ctx,
+            &w,
+            "main",
+            fmonero_core::SecretString::empty(),
+            &CancelToken::new(),
+        )
+        .expect("explicit mock wallet open through normal session API");
+    }
+
     fn count(&self, method: &str) -> usize {
         std::fs::read_to_string(&self.wallet_log)
             .unwrap_or_default()
@@ -227,6 +243,25 @@ fn screen_text(m: &Tui, w: u16, h: u16) -> String {
     render(m, w, h).join("\n")
 }
 
+fn modal_text(m: &Tui, width: u16, height: u16) -> String {
+    let rows = render(m, width, height);
+    let area = m
+        .hits
+        .modal_area()
+        .expect("rendered modal has a hit region");
+    rows.into_iter()
+        .skip(area.y as usize)
+        .take(area.height as usize)
+        .map(|row| {
+            row.chars()
+                .skip(area.x as usize)
+                .take(area.width as usize)
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// The screen's text with every line break and every run of spaces collapsed to one space, so a
 /// sentence that **wrapped** — which is what v5.6.2 does instead of eliding — can be asserted
 /// whole. A frame's rows are 120 cells wide and padded; `contains` on the raw text can only ever
@@ -271,7 +306,7 @@ fn run_action(sim: &mut ProgramSimulator<Tui>) {
 
 #[test]
 fn every_screen_renders_at_every_tier_with_both_daemons_absent() {
-    for screen in [Screen::Node, Screen::Wallet, Screen::Send, Screen::Log] {
+    for screen in Screen::ALL {
         let s = sim(offline_model(screen));
         for (w, h) in [(120u16, 40u16), (80, 24), (50, 16)] {
             let text = sim_text(&s, w, h);
@@ -307,7 +342,10 @@ fn a_zero_area_frame_renders_nothing_and_does_not_panic() {
 fn the_narrow_tier_collapses_the_tab_strip() {
     let m = offline_model(Screen::Wallet);
     let text = screen_text(&m, 50, 16);
-    assert!(text.contains("1·2·3·4"), "collapsed tabs missing:\n{text}");
+    assert!(
+        flowed(&text).contains("1 2 3 4 5 6"),
+        "collapsed tabs missing:\n{text}"
+    );
     assert!(text.contains("Wallet"), "{text}");
 }
 
@@ -362,7 +400,7 @@ fn the_offline_wallet_screen_offers_the_open_key() {
     // v5.6.1, V12: `Open wallet…      choose one of the 0 in /home/…` became a sentence, and the
     // balance pane that rendered `— XMR   unlocked — XMR` above this panel is gone with it.
     assert!(!text.contains("unlocked — XMR"), "{text}");
-    assert!(text.contains("[c] Create a wallet"), "{text}");
+    assert!(text.contains("(C)reate a wallet"), "{text}");
     assert!(text.contains("wallet service:"), "{text}");
     // **Only the chips that can act** (round 4 iteration 3). With no wallets on this machine `o`
     // has nothing to open and its label said so — `(none on this machine yet. Press c to create
@@ -370,11 +408,11 @@ fn the_offline_wallet_screen_offers_the_open_key() {
     // reader not to press them, on the screen whose whole content is controls. `Create a wallet`
     // is the one thing to do here, and both keys are still in the `?` overlay.
     assert!(
-        !text.contains("[o] Open a wallet"),
+        !text.contains("(O)pen a wallet"),
         "with no wallets there is nothing for o to open:\n{text}"
     );
     assert!(
-        !text.contains("[W] Start the wallet service"),
+        !text.contains("(W) Start the wallet service"),
         "opening a wallet starts the service, so this chip has nothing to offer:\n{text}"
     );
 }
@@ -408,7 +446,9 @@ fn every_screen_consumes_the_navigation_keys_its_keymap_row_promises() {
     for (from, want) in [
         (Screen::Node, Screen::Wallet),
         (Screen::Wallet, Screen::Send),
-        (Screen::Log, Screen::Node),
+        (Screen::Log, Screen::Receive),
+        (Screen::Receive, Screen::Tools),
+        (Screen::Tools, Screen::Node),
     ] {
         let mut m = offline_model(from);
         let _ = m.update(Msg::Raw(key(KeyCode::Tab)));
@@ -511,7 +551,7 @@ fn quitting_while_an_action_runs_takes_two_presses() {
 #[test]
 fn every_screen_renders_against_the_mock() {
     let w = World::new("render");
-    for screen in [Screen::Node, Screen::Wallet, Screen::Send, Screen::Log] {
+    for screen in Screen::ALL {
         let text = sim_text(&sim(model(&w.ctx, screen)), 120, 40);
         assert!(!text.trim().is_empty(), "{screen:?} rendered blank");
         assert!(text.contains('●'), "{screen:?} lost its badge:\n{text}");
@@ -521,8 +561,18 @@ fn every_screen_renders_against_the_mock() {
             Screen::Node => assert!(text.contains("3 541 122"), "{text}"),
             // The wallet fixture is open, so a balance and a subaddress table are there.
             Screen::Wallet => assert!(text.contains("XMR"), "{text}"),
-            Screen::Send => assert!(text.contains("cheapest"), "{text}"),
+            Screen::Send => {
+                assert!(text.contains("Fee level"), "{text}");
+                assert!(text.contains("normal"), "{text}");
+                assert!(text.contains("Fee ceiling"), "{text}");
+            }
             Screen::Log => assert!(text.contains("synced"), "{text}"),
+            Screen::Receive => assert!(text.contains("Addresses"), "{text}"),
+            Screen::Tools => {
+                for group in ["Wallet", "Care", "Offline", "Proofs"] {
+                    assert!(text.contains(group), "{text}");
+                }
+            }
         }
     }
 }
@@ -571,24 +621,27 @@ fn a_syncing_node_shows_the_gauge_and_no_block_age() {
 }
 
 #[test]
-fn the_send_screen_refuses_all_inline_and_never_reaches_the_daemon() {
-    let w = World::new("sweep-refusal");
+fn the_send_screen_prepares_all_but_never_relays_without_review() {
+    let w = World::new("sweep-review");
     let mut sim = ProgramSimulator::new(model(&w.ctx, Screen::Send));
     sim.init();
     type_str(&mut sim, DEST);
-    // v5.5: fields move with `↑↓`. `Tab` switches screens now, on every screen and in every
-    // focus state (§7a.1, and §5b.4 row 10 records the binding this takes away).
     sim.inject_event(key(KeyCode::Down));
     type_str(&mut sim, "all");
     sim.inject_event(key(KeyCode::Enter));
+    run_action(&mut sim);
+    assert!(matches!(&sim.model().send.stage, Stage::Built(plan) if plan.is_sweep));
+    assert_eq!(w.count("sweep_all"), 1);
+    assert_eq!(w.count("relay_tx"), 0);
+    type_str(&mut sim, CONFIRM_WORD);
+    sim.inject_event(key(KeyCode::Enter));
     assert!(
-        matches!(sim.model().send.stage, Stage::Form),
-        "typing `all` must not start a build"
+        sim.model().action.is_none(),
+        "unrendered review cannot be submitted"
     );
-    assert_eq!(sim.model().note, NO_SWEEP);
-    assert_eq!(w.count("transfer"), 0, "nothing may be built");
-    let text = sim_text(&sim, 110, 30);
-    assert!(text.contains("Sweep is not in the TUI yet"), "{text}");
+    assert_eq!(w.count("relay_tx"), 0);
+    sim.inject_event(key(KeyCode::Escape));
+    assert!(matches!(sim.model().send.stage, Stage::Form));
 }
 
 /// §7a's send machine: a **refused** start must leave the screen recoverable.
@@ -655,6 +708,7 @@ fn an_armed_breaker_does_not_refuse_the_relay_of_a_built_plan() {
         "the model must actually see an armed breaker, or this test proves nothing"
     );
 
+    let _ = sim_text(&sim, 120, 40);
     type_str(&mut sim, CONFIRM_WORD);
     sim.inject_event(key(KeyCode::Enter));
     assert!(
@@ -681,7 +735,7 @@ fn the_send_screen_builds_once_and_relays_that_exact_transaction() {
     // focus state (§7a.1, and §5b.4 row 10 records the binding this takes away).
     sim.inject_event(key(KeyCode::Down));
     sim.inject_event(paste("0.1"));
-    assert_eq!(w.count("transfer"), 0, "the form must send nothing");
+    assert_eq!(w.count("transfer_split"), 0, "the form must send nothing");
 
     // 2. Enter → `validate_address` in a Cmd::task, then 3. Building.
     sim.inject_event(key(KeyCode::Enter));
@@ -700,13 +754,13 @@ fn the_send_screen_builds_once_and_relays_that_exact_transaction() {
     let Stage::Built(plan) = &sim.model().send.stage else {
         panic!("the build did not produce a plan: {}", sim.model().note);
     };
-    assert_eq!(
-        plan.txs.len(),
-        1,
-        "one transaction only — sweep is CLI-only"
-    );
+    assert_eq!(plan.txs.len(), 1, "this fixture prepares one transaction");
     assert_eq!(plan.txs[0].txid, BUILT_TXID);
-    assert_eq!(w.count("transfer"), 1, "exactly one transfer");
+    assert_eq!(
+        w.count("transfer_split"),
+        1,
+        "exactly one split preparation"
+    );
     assert_eq!(
         w.count("relay_tx"),
         0,
@@ -719,17 +773,21 @@ fn the_send_screen_builds_once_and_relays_that_exact_transaction() {
         "the modal must show the built fee {fee}"
     );
     assert!(
-        shown.contains("Type \"send\""),
+        shown.contains("Type send"),
         "the modal must demand the word: {shown}"
     );
 
     // §7a's resize table: the confirm modal is never abbreviated, so the narrow tier still
     // shows the recipient, the built fee and the word it wants.
-    let narrow = sim_text(&sim, 50, 16);
-    for needle in ["Amount", "Fee", "Total", "Type \"send\""] {
+    let mut narrow = String::new();
+    for _ in 0..24 {
+        narrow.push_str(&sim_text(&sim, 50, 16));
+        sim.inject_event(key(KeyCode::Down));
+    }
+    for needle in ["Amount", "Fee", "Total", "Type send"] {
         assert!(
             narrow.contains(needle),
-            "the narrow confirm modal lost {needle}:\n{narrow}"
+            "the scrollable narrow review lost {needle}:\n{narrow}"
         );
     }
 
@@ -761,21 +819,22 @@ fn the_send_screen_builds_once_and_relays_that_exact_transaction() {
     }
     sim.inject_event(key(KeyCode::Backspace));
     sim.inject_event(key(KeyCode::Backspace));
+    let _ = sim_text(&sim, 120, 40);
     type_str(&mut sim, CONFIRM_WORD);
     sim.inject_event(key(KeyCode::Enter));
 
     // 5. Relaying → the SAME plan (§2a.3).
     run_action(&mut sim);
-    assert_eq!(w.count("transfer"), 1, "the plan must NOT be rebuilt");
+    assert_eq!(w.count("transfer_split"), 1, "the plan must NOT be rebuilt");
     assert_eq!(w.count("relay_tx"), 1, "exactly one relay_tx");
     let relayed = w.body("relay_tx")["hex"]
         .as_str()
         .unwrap_or_default()
         .to_string();
-    let built = std::fs::read_to_string(fixtures().join("wallet/transfer-do-not-relay.json"))
+    let built = std::fs::read_to_string(fixtures().join("wallet/transfer_split-do-not-relay.json"))
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .and_then(|v| v["tx_metadata"].as_str().map(str::to_string))
+        .and_then(|v| v["tx_metadata_list"][0].as_str().map(str::to_string))
         .expect("the fixture's tx_metadata");
     assert_eq!(
         relayed, built,
@@ -962,7 +1021,7 @@ fn an_unresolved_pending_record_banners_every_screen() {
         }],
     };
     state::set_pending_send(&w.ctx, &record).expect("the record");
-    for screen in [Screen::Node, Screen::Wallet, Screen::Send, Screen::Log] {
+    for screen in Screen::ALL {
         let s = sim(model(&w.ctx, screen));
         assert_eq!(s.model().wallet_badge(), "payment may be out", "{screen:?}");
         assert_ne!(
@@ -998,7 +1057,10 @@ fn an_unresolved_pending_record_banners_every_screen() {
             // control beside it is half of what §7a.2 asks for.
             if screen == Screen::Wallet {
                 assert!(
-                    flowed_frame.contains("[P] Clear that record"),
+                    flowed_frame.contains("(P) Clear that record")
+                        && find(s.model(), cw, ch, |t| t
+                            == Target::Button(Button::ClearPending))
+                        .is_some(),
                     "the chip is missing at {cw}x{ch}:\n{text}"
                 );
             }
@@ -1030,7 +1092,7 @@ fn the_confirm_modal_owns_the_keys_even_on_another_screen() {
     run_action(&mut sim);
     assert!(matches!(sim.model().send.stage, Stage::Built(_)));
     let shown = sim_text(&sim, 110, 34);
-    assert!(shown.contains("Type \"send\""), "{shown}");
+    assert!(shown.contains("Type send"), "{shown}");
     // `2` would switch screens on the Wallet screen; here the modal eats it.
     sim.inject_event(key(KeyCode::Char('2')));
     assert_eq!(sim.model().send.typed, "2", "the modal must own the key");
@@ -1115,7 +1177,7 @@ fn the_node_screen_in_remote_mode_shows_the_address_and_no_gauge() {
         text.contains("Not checked yet."),
         "nothing has checked this address, and the pane says so:\n{text}"
     );
-    assert!(text.contains("[p] Check this node"), "{text}");
+    assert!(text.contains("(p) Check this node"), "{text}");
     assert!(
         text.contains("Public nodes"),
         "the picker replaces the peers table in remote mode (§7a.3):\n{text}"
@@ -1175,63 +1237,40 @@ fn find(m: &Tui, w: u16, h: u16, want: impl Fn(Target) -> bool) -> Option<(u16, 
 /// §7a.1's matrix, and it is a matrix because the defect was reachable three ways: `Tab` was
 /// dispatched per screen while the filter branch and `send.rs`'s `Tab | Down` each ate it first.
 #[test]
-fn tab_switches_screens_from_every_screen_and_every_focus_state() {
-    /// One cell of the matrix: what to do before pressing `Tab`.
-    type Arrange = fn(&mut ProgramSimulator<Tui>);
-    let cases: Vec<(&str, Arrange)> = vec![
-        ("nothing focused", |_s| {}),
-        ("the Wallet filter open with text in it", |s| {
-            s.inject_event(key(KeyCode::Char('2')));
-            s.inject_event(key(KeyCode::Char('/')));
-            type_str(s, "abc");
-        }),
-        ("the Log search open", |s| {
-            s.inject_event(key(KeyCode::Char('4')));
-            s.inject_event(key(KeyCode::Char('/')));
-            type_str(s, "sync");
-        }),
-        ("a Send field focused with an address typed", |s| {
-            s.inject_event(key(KeyCode::Char('3')));
-            type_str(s, DEST);
-        }),
-        ("the picker's filter open", |s| {
-            s.inject_event(key(KeyCode::Char('1')));
-            s.inject_event(key(KeyCode::Char('/')));
-            type_str(s, "example");
-        }),
-        ("a confirm modal open", |s| {
-            s.inject_event(key(KeyCode::Char('1')));
-            s.inject_event(key(KeyCode::Char('u')));
-        }),
-        ("the ? overlay up", |s| {
-            s.inject_event(key(KeyCode::Char('?')));
-        }),
-        ("an add-node modal open", |s| {
-            s.inject_event(key(KeyCode::Char('1')));
-            s.inject_event(key(KeyCode::Char('a')));
-        }),
-    ];
-    for (what, arrange) in cases {
-        for from in [Screen::Node, Screen::Wallet, Screen::Send, Screen::Log] {
-            let mut s = sim(offline_model(from));
-            arrange(&mut s);
-            let before = s.model().screen;
-            s.inject_event(key(KeyCode::Tab));
-            assert_eq!(
-                s.model().screen,
-                Screen::from_index(before.index() + 1),
-                "Tab must advance one screen from {before:?} with {what}"
-            );
+fn tab_switches_screens_only_when_no_editor_owns_focus() {
+    for from in Screen::ALL {
+        let mut m = offline_model(from);
+        m.send.editing = false;
+        let _ = m.on_key(KeyEvent::new(KeyCode::Tab));
+        assert_eq!(m.screen, Screen::from_index(from.index() + 1));
+    }
+    for screen in [Screen::Node, Screen::Wallet, Screen::Log] {
+        let mut m = offline_model(screen);
+        let _ = m.on_key(KeyEvent::new(KeyCode::Char('/')));
+        for ch in "q123456r?".chars() {
+            let _ = m.on_key(KeyEvent::new(KeyCode::Char(ch)));
         }
+        let _ = m.on_key(KeyEvent::new(KeyCode::Tab));
+        assert_eq!(m.screen, screen, "focused filter owns mnemonics and Tab");
+        let text = match screen {
+            Screen::Node => m.picker.filter.value(),
+            Screen::Log => m.logs.search.value(),
+            _ => m.wallet.filter.value(),
+        };
+        assert_eq!(text, "q123456r?");
     }
 }
 
 #[test]
-fn shift_tab_goes_back_from_every_screen() {
-    for from in [Screen::Node, Screen::Wallet, Screen::Send, Screen::Log] {
-        let mut s = sim(offline_model(from));
-        s.inject_event(key(KeyCode::BackTab));
-        assert_eq!(s.model().screen, Screen::from_index(from.index() + 3));
+fn shift_tab_goes_back_from_every_unfocused_screen() {
+    for from in Screen::ALL {
+        let mut m = offline_model(from);
+        m.send.editing = false;
+        let _ = m.on_key(KeyEvent::new(KeyCode::BackTab));
+        assert_eq!(
+            m.screen,
+            Screen::from_index(from.index() + Screen::ALL.len() - 1)
+        );
     }
 }
 
@@ -1245,16 +1284,13 @@ fn the_create_wallet_modal_consumes_tab_and_says_so() {
     let before = s.model().screen;
     s.inject_event(key(KeyCode::Tab));
     assert_eq!(s.model().screen, before, "the create modal holds Tab");
-    assert_eq!(s.model().note, "Press Esc first to discard this.");
+    assert!(matches!(&s.model().modal, Some(Modal::CreateWallet(form)) if form.field == 1));
     // And it is documented IN the modal — on its own line under the controls, which is a
     // rendering assertion and not a status-bar one: a one-row footer clipped that line away, so
     // the rule was true only in DESIGN.md.
     let text = sim_text(&s, 110, 34);
     // M23: `first` no longer dangles — what Tab normally does is change screens.
-    assert!(
-        flowed(&text).contains("Tab cannot change screens while this is open."),
-        "{text}"
-    );
+    assert!(flowed(&text).contains("Tab moves fields"), "{text}");
 }
 
 #[test]
@@ -1284,15 +1320,16 @@ fn tab_out_of_a_filter_keeps_what_was_typed() {
     s.inject_event(key(KeyCode::Char('/')));
     type_str(&mut s, "abc");
     s.inject_event(key(KeyCode::Tab));
-    assert_eq!(s.model().screen, Screen::Send);
-    assert!(!s.model().wallet.filter_open, "the field lost focus");
+    assert_eq!(s.model().screen, Screen::Wallet);
+    assert!(s.model().wallet.filter_open, "Tab stays within the editor");
     assert_eq!(
         s.model().wallet.filter.value(),
         "abc",
         "Tab commits the filter — Esc is what discards"
     );
-    s.inject_event(key(KeyCode::BackTab));
-    assert_eq!(s.model().screen, Screen::Wallet);
+    s.inject_event(key(KeyCode::Enter));
+    s.inject_event(key(KeyCode::Tab));
+    assert_eq!(s.model().screen, Screen::Send);
     assert_eq!(s.model().wallet.filter.value(), "abc");
 }
 
@@ -1406,26 +1443,44 @@ fn a_backdrop_click_does_not_discard_a_built_transaction() {
 /// Revision 6: every control the keymap reaches with `←→` renders its two arrows as targets.
 /// Without this a mouse-only user could not change the fee priority or the sending account.
 #[test]
-fn the_priority_chips_and_the_account_arrows_are_clickable() {
-    let w = World::new("send-chips");
-    let mut s = sim(model(&w.ctx, Screen::Send));
-    let at = find(s.model(), 120, 40, |t| t == Target::Priority(4)).expect("a priority chip");
-    s.inject_event(click(at.0, at.1));
-    assert_eq!(
-        s.model().send.priority,
-        4,
-        "a click SELECTS that priority rather than cycling"
-    );
-    let arrow = find(s.model(), 120, 40, |t| {
-        matches!(
-            t,
-            Target::Arrow {
-                which: super::hit::Selector::Account,
-                delta: 1
+fn the_priority_and_account_selectors_have_mouse_keyboard_parity() {
+    let w = World::new("send-selectors");
+    for (width, height) in [(40, 10), (80, 24), (120, 40)] {
+        let mut mouse = sim(model(&w.ctx, Screen::Send));
+        let mut keyboard = sim(model(&w.ctx, Screen::Send));
+        for (field, selector) in [
+            (send::Field::Priority, super::hit::Selector::Priority),
+            (send::Field::Account, super::hit::Selector::Account),
+        ] {
+            mouse.model_mut().send.field = field;
+            keyboard.model_mut().send.field = field;
+            for delta in [1, 1, -1] {
+                let at = find(mouse.model(), width, height, |t| {
+                    t == Target::Arrow {
+                        which: selector,
+                        delta,
+                    }
+                })
+                .expect("visible selector arrow");
+                mouse.inject_event(click(at.0, at.1));
+                keyboard.inject_event(key(if delta > 0 {
+                    KeyCode::Right
+                } else {
+                    KeyCode::Left
+                }));
+                assert_eq!(
+                    mouse.model().send.priority,
+                    keyboard.model().send.priority,
+                    "priority at {width}x{height}"
+                );
+                assert_eq!(
+                    mouse.model().send.account,
+                    keyboard.model().send.account,
+                    "account at {width}x{height}"
+                );
             }
-        )
-    });
-    assert!(arrow.is_some(), "the account selector's ▸ must be a target");
+        }
+    }
 }
 
 /// §7a.2's rule that if a screen tells the user to press a key, that text is the button — and it
@@ -1438,7 +1493,7 @@ fn every_wallet_empty_state_chip_is_a_hit_target_and_acts() {
     s.model_mut().wallets = vec!["main".to_string()];
     for (b, check) in [
         (Button::OpenWallet, "Open a wallet"),
-        (Button::CreateWallet, "Create a wallet"),
+        (Button::CreateWallet, "Create encrypted wallet"),
     ] {
         let at = find(s.model(), 120, 40, |t| t == Target::Button(b))
             .unwrap_or_else(|| panic!("{b:?} must be a hit target"));
@@ -1528,7 +1583,13 @@ fn nothing_on_the_wallet_screen_is_drawn_outside_a_frame() {
                 continue;
             };
             assert!(
-                "╭╮╰╯│─├┤┌┐└┘".contains(first) || t.starts_with('['),
+                "╭╮╰╯│─├┤┌┐└┘".contains(first) || {
+                    let x = line.chars().position(|c| !c.is_whitespace()).unwrap() as u16;
+                    matches!(
+                        s.model().hits.at(x, y as u16, None),
+                        Some(Target::Button(_))
+                    )
+                },
                 "{cols}x{rows}: row {y} is drawn outside every frame: {line:?}\n{text}"
             );
         }
@@ -1543,11 +1604,11 @@ fn the_wallet_empty_state_keeps_every_chip_it_draws_at_every_tier() {
     s.model_mut().wallets = vec!["main".to_string()];
     for (w, h) in [(120u16, 40u16), (70, 24), (56, 22)] {
         let text = sim_text(&s, w, h);
-        for want in ["[o] Open a wallet", "[c] Create a wallet"] {
+        for want in ["(O)pen a wallet", "(C)reate a wallet"] {
             assert!(text.contains(want), "{want} missing at {w}x{h}:\n{text}");
         }
         assert!(
-            !text.contains("[W] Start the wallet service"),
+            !text.contains("(W) Start the wallet service"),
             "a chip whose own label says not to press it is not drawn at {w}x{h}:\n{text}"
         );
     }
@@ -1714,7 +1775,7 @@ fn the_use_your_own_node_confirm_states_what_the_switch_does() {
             // restart of it.
             "will use your own node when it next starts",
             "Your own node is not running yet",
-            "y to confirm",
+            "(Enter) Confirm",
         ] {
             assert!(
                 text.contains(want),
@@ -1789,7 +1850,7 @@ fn a_cut_line_always_says_it_was_cut() {
         let text = sim_text(&s, cols, rows);
         let top = text
             .lines()
-            .position(|l| l.contains("Keys · any key closes"))
+            .position(|l| l.contains("Keys · ↑↓ scroll · Esc closes"))
             .unwrap_or_else(|| panic!("the overlay is open at {cols}x{rows}:\n{text}"));
         // The overlay's own rows and its own COLUMNS. The screen behind it is still drawn to the
         // left and right of them, and the status bar below it carries a toast that IS elided on
@@ -1850,7 +1911,7 @@ fn the_add_node_modal_validates_as_you_type_and_shows_the_key_that_commits() {
         let text = sim_text(&s, cols, rows);
         assert!(text.contains("Add a node"), "{cols}x{rows}:\n{text}");
         assert!(
-            text.contains("Enter adds it"),
+            text.contains("(Enter) Add"),
             "{cols}x{rows}: the key that commits is still off the bottom:\n{text}"
         );
         assert!(
@@ -1941,7 +2002,7 @@ fn the_picker_with_no_cache_offers_the_fetch_chip_and_prints_no_broken_footer() 
     let s = sim(model(&w.ctx, Screen::Node));
     let text = sim_text(&s, 120, 44);
     assert!(text.contains("No list of public nodes yet."), "{text}");
-    assert!(text.contains("[f] Get the list"), "{text}");
+    assert!(text.contains("(f) Get the list"), "{text}");
     assert!(text.contains("tells monero.fail your IP address"), "{text}");
     assert!(
         !text.contains("list  old") && !text.contains("0 nodes ·"),
@@ -2041,35 +2102,32 @@ fn the_create_modal_refuses_a_slash_a_mismatch_and_an_empty_password() {
 /// §7a.5, and the assertion is by **word count against the rendered buffer**, because "we never
 /// print the seed" has to be a test and not a habit.
 #[test]
-fn the_seed_backup_modal_names_the_command_and_contains_no_seed() {
-    let w = World::new("seed-modal");
-    let mut s = sim(model(&w.ctx, Screen::Wallet));
-    s.send(Msg::ActionDone(Box::new(Ok(subs::Outcome::Created {
+fn new_wallet_backup_guidance_has_an_actual_recovery_action_and_no_secret_display() {
+    let w = World::new("backup-guidance");
+    let mut m = model(&w.ctx, Screen::Wallet);
+    let _ = m.update(Msg::ActionDone(Box::new(Ok(subs::Outcome::Created {
         name: "fresh".into(),
-        hint: fmonero_core::wallet_session::seed_backup_hint(&w.ctx, "fresh"),
     }))));
-    let text = sim_text(&s, 110, 34);
-    assert!(text.contains("monero-wallet-cli"), "{text}");
-    assert!(text.contains("--offline"), "{text}");
-    // Revision 11: the close step, because `create_wallet` leaves the wallet OPEN in the wallet
-    // service. **v5.6 states it without naming a command** (§2o.1): the modal says the wallet
-    // must be closed, and `x` is the key that does it.
-    assert!(text.contains("With the wallet closed"), "{text}");
-    assert!(!text.contains("fmonero wallet close"), "{text}");
-    assert!(text.contains("never shows your seed"), "{text}");
-    // No line of the modal is 25 words long, which is what a seed would be. The **status bar**
-    // is excluded by row, not by threshold: it is a strip of short labelled fields — two badges,
-    // a grouped block number (W7), two peer counts, a balance and a toast — and raising the
-    // word limit until that row passes is raising it past a seed.
-    let rows = render(s.model(), 110, 34);
-    let last = rows.len().saturating_sub(1);
-    for (i, line) in rows.iter().enumerate() {
-        if i == last {
-            continue;
-        }
-        let words = line.split_whitespace().count();
-        assert!(words < 20, "a 25-word line would be a seed: {line}");
+    let text = flowed(&modal_text(&m, 120, 40));
+    assert!(text.contains("encrypted recovery wallet"), "{text}");
+    assert!(
+        text.contains("Labels, contacts, notes and history metadata are not included"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Recovery words and private keys never appear on screen"),
+        "{text}"
+    );
+    for (width, height) in [(40, 10), (80, 24), (120, 40)] {
+        assert!(find(&m, width, height, |t| t
+            == Target::Button(Button::Tool(
+                super::advanced::Tool::RecoveryBackup
+            )))
+        .is_some());
+        assert!(find(&m, width, height, |t| t == Target::ModalButton(1)).is_some());
     }
+    let _ = m.on_key(KeyEvent::new(KeyCode::Escape));
+    assert!(m.modal.is_none());
 }
 
 // ======================================================================================
@@ -2101,11 +2159,18 @@ fn a_click_on_a_tab_label_lands_on_that_tab_and_never_on_its_neighbour() {
     for (w, h) in [(150u16, 40u16), (100, 30), (90, 30), (56, 24)] {
         // Below 60 columns or 20 rows `tab_strip` draws its own `1·2·3·4` (§7a resize); above,
         // it delegates to `Tabs`, which is the tier the defect was in.
-        let narrow = w < 60 || h < 20;
-        let titles: [&str; 4] = if narrow {
-            ["1", "2", "3", "4"]
+        let narrow = w < 76;
+        let titles: [&str; 6] = if narrow {
+            ["1", "2", "3", "4", "5", "6"]
         } else {
-            ["1 Node", "2 Wallet", "3 Send", "4 Log"]
+            [
+                "1 Node",
+                "2 Wallet",
+                "3 Send",
+                "4 Logs",
+                "5 Receive",
+                "6 Tools",
+            ]
         };
         for (i, title) in titles.iter().enumerate() {
             // Start two screens away, so that neither the tab under test nor the neighbour a
@@ -2132,7 +2197,7 @@ fn a_click_on_a_tab_label_lands_on_that_tab_and_never_on_its_neighbour() {
             // draws, plus the literal's own leading space).
             let next = titles[i + 1];
             let nat = cell_col(&strip, next).expect("the next title");
-            let first = if narrow { nat } else { nat - 2 };
+            let first = if narrow { nat } else { nat - 1 };
             let mut s2 = sim(offline_model(Screen::from_index(i + 3)));
             let _ = render(s2.model(), w, h);
             s2.inject_event(click(first, 0));
@@ -2204,37 +2269,16 @@ fn the_picker_never_elides_the_configured_address_at_any_width() {
 /// modal" — was false the moment a field had focus, which on the money screen means a digit
 /// lands in the amount.
 #[test]
-fn the_keys_table_promises_always_only_for_the_keys_the_dispatcher_resolves_first() {
-    let always: Vec<&(&str, &str)> = KEYS
+fn the_keys_table_describes_scoped_field_navigation() {
+    let navigation = KEYS
         .iter()
-        .filter(|(_, what)| what.contains("Always"))
-        .collect();
-    assert_eq!(
-        always.len(),
-        1,
-        "exactly one row may claim `always`, and it is §7a.1's: {always:?}"
-    );
-    assert_eq!(
-        always[0].0, "Tab  ⇧Tab  Ctrl+C",
-        "`always` may name only the keys resolved above every screen, focus state and modal"
-    );
-    let numbers = KEYS
-        .iter()
-        .find(|(k, _)| k.contains("1 2 3 4"))
-        .expect("a row for the direct route");
-    assert!(
-        numbers.1.contains("no field has focus"),
-        "the `1 2 3 4` row has to carry its condition: {numbers:?}"
-    );
-    // Rendered, because the overlay is the thing a user reads.
+        .find(|(keys, _)| keys.contains("1–6"))
+        .expect("six screen aliases");
+    assert!(navigation.1.contains("Fields and dialogs keep Tab"));
     let mut m = offline_model(Screen::Node);
     m.show_help = true;
     let text = screen_text(&m, 110, 44);
-    assert!(
-        !text.contains("even inside a field"),
-        "the overlay still renders the sentence that is false:\n{text}"
-    );
-    assert!(text.contains("when no field has focus"), "{text}");
+    assert!(!text.contains("always, even inside a field"));
 
     // The behaviour, on the money screen with real digits — the capture that found it.
     let mut s = sim(offline_model(Screen::Send));
@@ -2260,9 +2304,14 @@ fn the_keys_table_promises_always_only_for_the_keys_the_dispatcher_resolves_firs
     s.inject_event(key(KeyCode::Escape));
     s.inject_event(key(KeyCode::Char('2')));
     assert_eq!(s.model().screen, Screen::Wallet);
-    // And the `always` row is true from inside a focused field, which is the half that was.
+    // Tab belongs to the editor; Escape explicitly returns navigation to the screen.
     let mut s2 = sim(offline_model(Screen::Send));
     type_str(&mut s2, "9");
+    s2.inject_event(key(KeyCode::Tab));
+    assert_eq!(s2.model().screen, Screen::Send);
+    assert_eq!(s2.model().send.field, send::Field::Amount);
+    assert_eq!(s2.model().send.to.value(), "9");
+    s2.inject_event(key(KeyCode::Escape));
     s2.inject_event(key(KeyCode::Tab));
     assert_eq!(s2.model().screen, Screen::Log);
     let mut s3 = sim(offline_model(Screen::Send));
@@ -2298,7 +2347,7 @@ fn the_wallet_badge_never_says_down_for_a_daemon_the_tui_is_itself_working() {
             true,
             Some(subs::Action::WalletCreate {
                 name: "fresh".into(),
-                password: "x".into(),
+                password: fmonero_core::SecretString::new("x".into()).unwrap(),
                 language: "English".into(),
             }),
             "working",
@@ -2505,11 +2554,10 @@ fn a_settings_change_from_outside_is_noticed_on_the_next_poll() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Case 3 — **the failure path.** An unreadable `config.toml` mid-session leaves the previous
-/// values on screen and raises **one** toast: a TUI that exited on an unreadable settings file
-/// would be worse than one showing a stale address it tells you about (§7a.7 part 1).
+/// A config read failure preserves the last valid settings internally but masks public data
+/// and invalidates review permission until a fresh valid policy is available. Warn once.
 #[test]
-fn an_unreadable_settings_file_keeps_the_old_values_and_says_so_once() {
+fn an_unreadable_settings_file_keeps_values_but_masks_data_and_warns_once() {
     let (dir, ctx) = stale_node_ctx("unreadable");
     write_remote(&ctx, NODE_A);
     seed_cache(&ctx, &[(NODE_A, false)]);
@@ -2524,7 +2572,12 @@ fn an_unreadable_settings_file_keeps_the_old_values_and_says_so_once() {
         NODE_A,
         "the old Context must survive an unreadable file"
     );
-    assert!(text.contains(NODE_A), "{text}");
+    assert!(
+        !text.contains(NODE_A),
+        "failed policy must hide node data: {text}"
+    );
+    assert!(text.contains("Privacy on"), "{text}");
+    assert!(!s.model().config_valid);
     assert!(
         s.model().note.contains("Could not read your settings"),
         "{}",
@@ -2580,10 +2633,11 @@ fn a_sandboxed_log_screen_never_opens_the_machines_own_chain_folder() {
     );
     let mut s = sim(model(&ctx, Screen::Log));
     s.send(Msg::Tick);
+    s.inject_event(key(KeyCode::Char('I')));
     let text = sim_text(&s, 150, 40);
     assert!(
-        text.contains("bitmonero.log"),
-        "the Log screen names the file it opened:\n{text}"
+        text.contains("monero-wallet-rpc.log"),
+        "the source details name the selected file:\n{text}"
     );
     assert!(
         !text.contains(&home_chain.display().to_string()),
@@ -2625,7 +2679,7 @@ fn the_start_and_stop_confirms_state_what_they_do() {
                 "keeps its copy of the blockchain in",
                 "120 GB",
                 "the first sync takes hours",
-                "y to confirm",
+                "(Enter) Confirm",
             ],
         ),
         (
@@ -2636,7 +2690,7 @@ fn the_start_and_stop_confirms_state_what_they_do() {
                 "nothing is lost",
                 "cannot see new payments",
                 "press u to start it again",
-                "y to confirm",
+                "(Enter) Confirm",
             ],
         ),
     ] {
@@ -2864,7 +2918,7 @@ fn the_wallet_service_chip_says_which_way_the_key_goes() {
     assert!(s.model().wallet_daemon_chip().is_none());
     let text = sim_text(&s, 120, 32);
     assert!(
-        !text.contains("[W] Start the wallet service") && !text.contains("[W] Stop the wallet"),
+        !text.contains("(W) Start the wallet service") && !text.contains("(W) Stop the wallet"),
         "the chip cannot act here, so it is not drawn:\n{text}"
     );
     // The service up with nothing open — §7a.5's stop state, reached by moving the one field the
@@ -2877,8 +2931,8 @@ fn the_wallet_service_chip_says_which_way_the_key_goes() {
     assert!(s.model().wallet_daemon_key_stops());
     let text = sim_text(&s, 120, 32);
     assert!(
-        text.contains("[W] Stop the wallet service")
-            && !text.contains("[W] Start the wallet service"),
+        text.contains("(W) Stop the wallet service")
+            && !text.contains("(W) Start the wallet service"),
         "with the service up and nothing open the chip stops it:\n{text}"
     );
 }
@@ -3032,7 +3086,7 @@ fn the_privacy_notice_shows_its_keys_at_both_sizes() {
         );
         for needle in [
             "Getting the list tells monero.fail your IP address.",
-            "Enter continues · Esc cancels",
+            "(Enter) Confirm (Esc) Cancel",
         ] {
             assert!(
                 flowed(&text.replace('│', " ")).contains(needle),
@@ -3079,7 +3133,7 @@ fn a_pending_record_can_be_resolved_from_the_wallet_screen() {
     // The chip names the key, at the owner's size.
     let text = sim_text(&s, 120, 32);
     assert!(
-        text.contains("[P] Clear that record"),
+        text.contains("(P) Clear that record"),
         "the chip is missing:\n{text}"
     );
     // `P` asks first, and the confirm states the risk in plain words rather than asking for a `y`
@@ -3094,7 +3148,7 @@ fn a_pending_record_can_be_resolved_from_the_wallet_screen() {
         "will not let you send again",
         "stops you paying twice",
         "look at your payments first",
-        "y to confirm · Esc cancels",
+        "(Enter) Confirm (Esc) Cancel",
     ] {
         assert!(
             flat.contains(needle),
@@ -3156,13 +3210,13 @@ fn tab_inside_the_send_confirm_says_which_key_comes_first() {
     for (cw, ch) in [(120u16, 32u16), (150, 40)] {
         let text = sim_text(&s, cw, ch);
         assert!(
-            flowed(&text.replace('│', " ")).contains("Esc first, then Tab."),
+            flowed(&text.replace('│', " ")).contains("(Esc) Cancel"),
             "{cw}x{ch}: the modal said nothing about Tab:\n{text}"
         );
         // The confirm word's own line is still on screen: the notice is a row the modal grew, not a
         // row it took (§7a: the safety surface is never abbreviated).
         assert!(
-            flowed(&text.replace('│', " ")).contains("and press Enter to send"),
+            flowed(&text.replace('│', " ")).contains("Type send to confirm"),
             "{cw}x{ch}: the confirm prompt was pushed off:\n{text}"
         );
     }
@@ -3181,6 +3235,7 @@ fn tab_inside_the_send_confirm_says_which_key_comes_first() {
 #[test]
 fn the_payments_ledger_carries_the_year_at_the_owners_widths() {
     let w = World::with_wallet("s9-year", &[]);
+    w.open_fixture_wallet();
     let mut s = sim(model(&w.ctx, Screen::Wallet));
     let rows = s.model().wallet.rows.clone();
     let first = rows.first().expect("the fixture has payments").clone();
@@ -3208,7 +3263,8 @@ fn the_payments_ledger_carries_the_year_at_the_owners_widths() {
         "the payment detail has no year:\n{detail}"
     );
     s.inject_event(key(KeyCode::Escape));
-    s.inject_event(key(KeyCode::Char('n')));
+    s.inject_event(key(KeyCode::Char('e')));
+    run_action(&mut s);
     let note = sim_text(&s, 120, 32);
     assert!(
         note.contains(&stamp),
@@ -3223,57 +3279,30 @@ fn the_payments_ledger_carries_the_year_at_the_owners_widths() {
 /// table cell and wrong for the one string a reader may need to type. The title keeps the path when
 /// it fits whole and the pane's own first row carries it, hard-chunked, when it does not.
 #[test]
-fn the_log_screen_names_its_file_whole_at_every_width() {
-    let dir = std::env::temp_dir().join(format!(
-        "fmonero-tui-logpath-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
+fn log_source_info_keeps_long_paths_complete_and_switching_is_explicit() {
+    let mut m = offline_model(Screen::Log);
+    let path = m.ctx.paths.run_dir.join(format!(
+        "{}/monero-wallet-rpc.log",
+        "long-path-segment".repeat(5)
     ));
-    let _ = std::fs::remove_dir_all(&dir);
-    let mut ctx = test_context(&dir).expect("test context");
-    ctx.settings.node.url = "http://127.0.0.1:1".into();
-    ctx.settings.wallet.url = "http://127.0.0.1:2".into();
-    // A path no title can hold: 168 characters, the shape a scratch workspace produces.
-    let long = dir.join(format!(
-        "{}/bitmonero.log",
-        "a-very-long-workspace-segment".repeat(4)
-    ));
-    std::fs::create_dir_all(long.parent().expect("a parent")).expect("dirs");
-    std::fs::write(&long, b"2026-09-16 14:02:11 INFO synced\n").expect("a log");
-    ctx.settings.node.log_file = long.clone();
-    let path = long.display().to_string();
-    assert!(path.chars().count() > 150, "{}", path.chars().count());
-    let s = sim(model(&ctx, Screen::Log));
-    for (w, h) in [(120u16, 32u16), (150, 40)] {
-        let text = sim_text(&s, w, h);
-        // Whole, in order, with the wrapping and the pane's chrome taken out.
-        let flat: String = text
+    m.ctx.paths.run_dir = path.parent().unwrap().to_path_buf();
+    assert_eq!(m.logs.source, fmonero_core::log_sources::LogSource::Wallet);
+    let _ = m.on_log_key(KeyEvent::new(KeyCode::Char('I')));
+    for (width, height) in [(80, 24), (120, 40)] {
+        let text = modal_text(&m, width, height);
+        let flat = text
             .chars()
-            .filter(|c| !c.is_whitespace() && *c != '│' && *c != '╭' && *c != '╮' && *c != '─')
-            .collect();
-        assert!(
-            flat.contains(&path),
-            "{w}x{h} lost part of the log path:\n{text}"
-        );
-        // And nothing in the frame is elided: `fit`'s ellipsis is what this replaced.
-        assert!(
-            !text.contains('…'),
-            "{w}x{h} still elides something:\n{text}"
-        );
-        // A short path goes back in the title, which is where one fact belongs when it fits.
-        assert!(text.contains("Log  follow"), "{text}");
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>();
+        assert!(flat.contains(&path.display().to_string()), "{text}");
     }
-    let mut short = ctx.clone();
-    short.settings.node.log_file = dir.join("bitmonero.log");
-    std::fs::write(&short.settings.node.log_file, b"x\n").expect("a log");
-    let s = sim(model(&short, Screen::Log));
-    let text = sim_text(&s, 150, 40);
-    let title = text.lines().nth(1).unwrap_or_default().to_string();
+    let _ = m.on_modal_key(KeyEvent::new(KeyCode::Escape));
+    let _ = m.on_log_key(KeyEvent::new(KeyCode::Char('S')));
+    assert_eq!(m.logs.source, fmonero_core::log_sources::LogSource::Node);
     assert!(
-        title.contains(&short.settings.node.log_file.display().to_string()),
-        "a path that fits belongs in the title: {title}"
+        m.logs.empty,
+        "a new source must not show the old source's lines"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// **M13 and M14: the empty wallet panel says there are none, and every fact on it names a step.**
@@ -3297,8 +3326,8 @@ fn the_empty_wallet_panel_says_there_are_none_and_every_row_names_a_step() {
             "{w}x{h} says nowhere that the folder is empty:\n{text}"
         );
         // And `[o]` is still not drawn, because it still cannot help.
-        assert!(!text.contains("[o] Open a wallet"), "{w}x{h}:\n{text}");
-        assert!(text.contains("[c] Create a wallet"), "{w}x{h}:\n{text}");
+        assert!(!text.contains("(O)pen a wallet"), "{w}x{h}:\n{text}");
+        assert!(text.contains("(C)reate a wallet"), "{w}x{h}:\n{text}");
         // M14: both status rows.
         assert!(
             flat.contains("Opening or creating a wallet starts it"),
@@ -3316,7 +3345,7 @@ fn the_empty_wallet_panel_says_there_are_none_and_every_row_names_a_step() {
         !text.contains("There are no wallets"),
         "the sentence must not survive a wallet appearing:\n{text}"
     );
-    assert!(text.contains("[o] Open a wallet"), "{text}");
+    assert!(text.contains("(O)pen a wallet"), "{text}");
 }
 
 #[test]
@@ -3367,7 +3396,7 @@ fn tui_wallet_open_uses_the_refresh_budget_for_followup_reads() {
         &world.ctx,
         subs::Action::WalletOpen {
             name: "main".into(),
-            password: String::new(),
+            password: fmonero_core::SecretString::empty(),
         },
         &announce,
         &CancelToken::new(),
@@ -3505,13 +3534,14 @@ fn paste_reaches_visible_modal_and_filter_inputs_without_leaking_to_send() {
     m.modal = Some(Modal::OpenWallet {
         names: vec![],
         sel: 0,
-        pass: text_input(&m.theme),
+        pass: super::editor::SecretInput::new(),
         asking: false,
     });
     let _ = m.update(Msg::Raw(paste("sample")));
     if let Some(Modal::OpenWallet { pass, asking, .. }) = &mut m.modal {
         assert!(pass.value().is_empty());
         *asking = true;
+        pass.set_focused(true);
     }
     let _ = m.update(Msg::Raw(paste("sample")));
     let Some(Modal::OpenWallet { pass, .. }) = &m.modal else {
@@ -3529,4 +3559,1416 @@ fn paste_reaches_visible_modal_and_filter_inputs_without_leaking_to_send() {
     assert_eq!(m.picker.filter.value(), "example");
     assert!(m.send.to.value().is_empty());
     assert!(m.action.is_none());
+}
+
+#[test]
+fn privacy_hides_public_sensitive_data_and_errors_on_every_screen() {
+    for screen in Screen::ALL {
+        let mut m = offline_model(screen);
+        m.ctx.settings.tui.privacy = true;
+        m.note = "private-marker-address-amount-error".into();
+        m.status_err = Some(m.note.clone());
+        m.wallet.err = Some(m.note.clone());
+        m.wallets = vec![m.note.clone()];
+        m.logs.viewer.borrow_mut().push(m.note.clone());
+        m.send.to.set_value(&m.note);
+        m.send.amount.set_value(&m.note);
+        m.send.note.set_value(&m.note);
+        for (width, height) in [(40, 10), (60, 20), (120, 40)] {
+            let text = screen_text(&m, width, height);
+            assert!(
+                !text.contains("private-marker"),
+                "{screen:?} {width}x{height}: {text}"
+            );
+            assert!(text.contains("Privacy"));
+        }
+    }
+}
+
+#[test]
+fn restore_form_owns_mnemonics_and_secrets_at_every_supported_size() {
+    let mut m = offline_model(Screen::Tools);
+    let _ = m.open_restore();
+    let _ = m.on_key(KeyEvent::new(KeyCode::Tab));
+    for ch in "q123456r?secret".chars() {
+        let _ = m.on_key(KeyEvent::new(KeyCode::Char(ch)));
+    }
+    assert_eq!(m.screen, Screen::Tools);
+    for (width, height) in [(40, 10), (60, 20), (120, 40)] {
+        let text = screen_text(&m, width, height);
+        assert!(!text.contains("secret"), "{text}");
+        assert!(find(&m, width, height, |t| t == Target::Field(1)).is_some());
+        assert!(find(&m, width, height, |t| t == Target::ModalButton(1)).is_some());
+    }
+    let _ = m.on_key(KeyEvent::new(KeyCode::Escape));
+    assert!(m.modal.is_none());
+    assert!(m.action.is_none());
+}
+
+#[test]
+fn six_screen_tabs_have_exact_click_regions_after_resize() {
+    for (width, height) in [(40, 10), (60, 20), (120, 40)] {
+        let m = offline_model(Screen::Wallet);
+        for index in 0..6 {
+            assert!(
+                find(&m, width, height, |t| t == Target::Tab(index)).is_some(),
+                "missing tab {index} at {width}x{height}"
+            );
+        }
+    }
+}
+
+#[test]
+fn stale_worker_completion_cannot_replace_current_action() {
+    let mut m = offline_model(Screen::Node);
+    let _ = m.start(subs::Action::NodeUp);
+    let id = m.action.as_ref().unwrap().id;
+    let _ = m.update(Msg::ActionFinished(
+        id + 1,
+        Box::new(Ok(subs::Outcome::Note("stale-result".into()))),
+    ));
+    assert_eq!(m.action.as_ref().unwrap().id, id);
+    assert!(!m.note.contains("stale-result"));
+    let _ = m.cancel_action();
+    assert!(m.action.as_ref().unwrap().cancelling);
+    assert!(
+        m.action.is_some(),
+        "wait for outcome, do not enable a concurrent action"
+    );
+}
+
+#[test]
+fn privacy_setting_does_not_change_when_review_reveal_is_requested() {
+    let w = World::new("private-review");
+    let mut sim = ProgramSimulator::new(model(&w.ctx, Screen::Send));
+    sim.init();
+    sim.inject_event(paste(DEST));
+    sim.inject_event(key(KeyCode::Down));
+    sim.inject_event(paste("0.1"));
+    sim.inject_event(key(KeyCode::Enter));
+    run_action(&mut sim);
+    assert!(matches!(sim.model().send.stage, Stage::Built(_)));
+    sim.model_mut().ctx.settings.tui.privacy = true;
+    let hidden = sim_text(&sim, 120, 40);
+    assert!(!hidden.contains(&DEST[..30]));
+    sim.inject_event(key(KeyCode::Char('V')));
+    assert!(sim.model().ctx.settings.tui.privacy);
+    assert!(sim.model().send.review_revealed);
+    let revealed = sim_text(&sim, 120, 40);
+    assert!(revealed.contains(&DEST[..30]));
+    assert!(revealed.contains(&DEST[DEST.len() - 16..]));
+    sim.inject_event(key(KeyCode::Escape));
+    assert!(!sim.model().send.review_revealed);
+    assert!(sim.model().ctx.settings.tui.privacy);
+    assert_eq!(w.count("relay_tx"), 0);
+}
+
+#[test]
+fn every_tools_action_remains_mouse_reachable_in_short_terminals() {
+    for (width, height) in [(40, 10), (60, 16), (120, 40)] {
+        let mut m = offline_model(Screen::Tools);
+        for group in 0..4 {
+            let _ = m.click_button(Button::ToolGroup(group));
+            let items = super::workflows::tool_items(group);
+            for (index, (action, _, _)) in items.iter().enumerate() {
+                m.tools_selected = index;
+                assert!(
+                    find(&m, width, height, |target| target
+                        == Target::Button(*action))
+                    .is_some(),
+                    "Tools action {action:?} unreachable at {width}x{height}"
+                );
+                assert!(find(&m, width, height, |target| target
+                    == Target::Button(Button::ToolsDown))
+                .is_some());
+            }
+        }
+    }
+}
+
+#[test]
+fn every_protected_tool_field_stays_masked_with_cancel_visible_after_resize() {
+    use super::workflows::{Form, Value};
+    let tools = [
+        super::advanced::Tool::ChangePassword,
+        super::advanced::Tool::CreateViewOnly,
+        super::advanced::Tool::RecoveryBackup,
+        super::advanced::Tool::CreateHardware,
+        super::advanced::Tool::SignUnsigned,
+        super::advanced::Tool::SubmitSigned,
+    ];
+    for tool in tools {
+        for privacy in [false, true] {
+            let mut m = offline_model(Screen::Tools);
+            m.ctx.settings.tui.privacy = privacy;
+            let mut form = Form::tool(&m, tool, None);
+            let secret_positions = form
+                .fields
+                .iter()
+                .enumerate()
+                .filter_map(|(i, f)| matches!(f.value, Value::Secret(_)).then_some(i))
+                .collect::<Vec<_>>();
+            for index in secret_positions {
+                form.focus(index);
+                form.event(&paste("NEVER_RENDER_PLAINTEXT_8372"));
+            }
+            m.modal = Some(Modal::Workflow(form));
+            for (width, height) in [(40, 10), (60, 16), (120, 40)] {
+                let text = screen_text(&m, width, height);
+                assert!(!text.contains("NEVER_RENDER"), "{tool:?}: {text}");
+                assert!(
+                    find(&m, width, height, |target| target == Target::ModalButton(1)).is_some()
+                );
+            }
+            let _ = m.on_key(KeyEvent::new(KeyCode::Escape));
+            assert!(m.modal.is_none());
+            assert!(
+                m.action.is_none(),
+                "cancelling a form must not contact a backend"
+            );
+        }
+    }
+}
+
+#[test]
+fn native_submit_form_only_starts_review_and_moves_its_password() {
+    use super::{
+        advanced::Tool,
+        workflows::{Form, Value},
+    };
+    let mut m = offline_model(Screen::Tools);
+    let identity = fmonero_core::wallet_ops::WalletIdentity {
+        name: "isolated-test".into(),
+        network: fmonero_core::NetType::Mainnet,
+        primary_address: DEST.into(),
+    };
+    let mut form = Form::tool(&m, Tool::SubmitSigned, Some(identity.clone()));
+    for (i, value) in [
+        (0, "/tmp/explicit-signed-artifact"),
+        (1, "protected-test-password"),
+        (2, "0.000000000001"),
+    ] {
+        form.focus(i);
+        match &mut form.fields[i].value {
+            Value::Public(input) => input.set_value(value),
+            Value::Secret(input) => {
+                input.handle_event(&paste(value));
+            }
+        }
+    }
+    form.focus(2);
+    m.modal = Some(Modal::Workflow(form));
+    let _ = m.on_key(KeyEvent::new(KeyCode::Enter));
+    assert!(m.action.is_none(), "first Enter reviews the form");
+    let _ = m.on_key(KeyEvent::new(KeyCode::Char('q')));
+    let _ = m.on_key(KeyEvent::new(KeyCode::Enter));
+    let slot = m
+        .action
+        .as_ref()
+        .expect("review startup is armed")
+        .slot
+        .clone();
+    let action = slot.lock().unwrap().take().unwrap();
+    assert!(!format!("{action:?}").contains("protected-test-password"));
+    let subs::Action::Native(job) = action else {
+        panic!("the form must only begin review, never submit");
+    };
+    let super::native::Job::Begin {
+        wallet,
+        password,
+        source,
+        destination,
+        max_fee,
+        signed,
+    } = *job
+    else {
+        panic!("the form must only begin review, never submit");
+    };
+    assert_eq!(wallet, identity);
+    assert_eq!(password.expose_secret(), "protected-test-password");
+    assert_eq!(source, PathBuf::from("/tmp/explicit-signed-artifact"));
+    assert!(destination.is_none());
+    assert!(signed);
+    assert_eq!(max_fee, Some(Piconero(1)));
+    assert!(!m.ctx.settings.tui.privacy);
+}
+
+#[test]
+fn too_small_terminal_cannot_submit_an_invisible_form() {
+    let mut m = offline_model(Screen::Tools);
+    let _ = m.open_restore();
+    let _ = screen_text(&m, 30, 8);
+    let _ = m.on_key(KeyEvent::new(KeyCode::Enter));
+    assert!(m.action.is_none());
+    let Some(Modal::Workflow(form)) = &m.modal else {
+        panic!("form stays open");
+    };
+    assert_eq!(form.focus, 0, "invisible controls cannot advance");
+    let _ = m.on_key(KeyEvent::new(KeyCode::Escape));
+    assert!(m.modal.is_none(), "Escape remains available at tiny sizes");
+}
+
+#[test]
+fn wheel_over_a_modal_button_never_activates_it() {
+    let m = offline_model(Screen::Tools);
+    let area = ftui::layout::Rect::new(3, 3, 20, 10);
+    m.hits.modal(area);
+    m.hits
+        .button(Button::NativeReveal, ftui::layout::Rect::new(5, 5, 10, 1));
+    assert_eq!(
+        m.hits.at(5, 5, None),
+        Some(Target::Button(Button::NativeReveal))
+    );
+    assert_eq!(m.hits.at(5, 5, Some(false)), None);
+}
+
+#[test]
+fn privacy_blocks_copy_before_starting_any_clipboard_process() {
+    let mut m = offline_model(Screen::Wallet);
+    m.ctx.settings.tui.privacy = true;
+    m.copy("sensitive-public-identifier");
+    assert!(m.note.contains("Privacy hides this value"));
+    assert!(!m.note.contains("sensitive-public-identifier"));
+}
+
+#[test]
+fn log_snapshots_are_sanitized_before_display_and_search() {
+    let mut m = offline_model(Screen::Log);
+    let lines = vec![
+        "ordinary log text".into(),
+        "password: must-not-render".into(),
+        "\x1b]52;c;CLIPBOARD_PAYLOAD\x07safe visible text".into(),
+        "\x1b]8;;https://private-target.invalid\x1b\\public label\x1b]8;;\x1b\\".into(),
+    ];
+    let _ = m.update(Msg::LogLines(Box::new(Ok((
+        lines,
+        PathBuf::from("/tmp/public-test-log"),
+    )))));
+    let text = screen_text(&m, 120, 40);
+    for forbidden in [
+        "must-not-render",
+        "CLIPBOARD_PAYLOAD",
+        "private-target.invalid",
+    ] {
+        assert!(!text.contains(forbidden), "{text}");
+    }
+    assert!(text.contains("ordinary log text"));
+    assert!(text.contains("public label"));
+    m.ctx.settings.tui.privacy = true;
+    let hidden = screen_text(&m, 120, 40);
+    assert!(!hidden.contains("ordinary log text"));
+    assert!(hidden.contains("Source"));
+}
+
+#[test]
+fn receive_details_never_infer_spending_authority_from_unlocked_outputs() {
+    use fmonero_core::{
+        receive::{Observation, ReceiveStage, ReceivingAddress},
+        rpc::wallet::{AddressSet, SubaddressRow},
+        wallet_ops::WalletIdentity,
+    };
+    let mut m = offline_model(Screen::Receive);
+    m.wallet.addresses = Some(AddressSet {
+        primary: DEST.into(),
+        addresses: vec![SubaddressRow {
+            address: DEST.into(),
+            ..Default::default()
+        }],
+    });
+    m.receiving.observed = Some(Observation {
+        address: ReceivingAddress {
+            wallet: WalletIdentity {
+                name: "test-view-only".into(),
+                network: fmonero_core::NetType::Mainnet,
+                primary_address: DEST.into(),
+            },
+            account_index: 0,
+            address_index: 0,
+            address: DEST.into(),
+            label: String::new(),
+        },
+        stage: ReceiveStage::Spendable,
+        received: Piconero(1),
+        confirmed: Piconero(1),
+        spendable: Piconero(1),
+        receipts: vec![],
+        wallet_height: Some(10),
+        pool_unavailable: true,
+        spend_authority: None,
+        spent_status_known: false,
+    });
+    let _ = m.receipt_details();
+    let text = flowed(&modal_text(&m, 120, 40));
+    assert!(text.contains("0.000000000001 XMR"), "{text}");
+    assert!(text.contains("Spent status is unknown"), "{text}");
+    assert!(
+        text.contains("view-only wallet needs matching key images"),
+        "{text}"
+    );
+    assert!(text.contains("no spend authority is implied"), "{text}");
+    assert!(text.contains("Pool visibility is unavailable"), "{text}");
+    m.ctx.settings.tui.privacy = true;
+    let hidden = screen_text(&m, 120, 40);
+    assert!(!hidden.contains(DEST));
+    assert!(!hidden.contains("0.000000000001"));
+}
+
+#[test]
+fn result_dialog_stops_at_last_row_and_can_scroll_back_immediately() {
+    let mut m = offline_model(Screen::Tools);
+    m.modal = Some(Modal::Result(super::advanced::ResultView::complete(
+        "Public test result",
+        (0..40).map(|i| format!("Detail row {i}")).collect(),
+    )));
+    for _ in 0..100 {
+        let _ = screen_text(&m, 40, 10);
+        let _ = m.click_button(Button::ResultDown);
+    }
+    let Some(Modal::Result(result)) = &m.modal else {
+        panic!("result stays open");
+    };
+    assert_eq!(result.scroll, result.max_scroll.get());
+    let last = result.scroll;
+    let _ = m.click_button(Button::ResultUp);
+    let Some(Modal::Result(result)) = &m.modal else {
+        panic!("result stays open");
+    };
+    assert_eq!(result.scroll, last - 1);
+    let _ = m.on_key(KeyEvent::new(KeyCode::Escape));
+    assert!(m.modal.is_none());
+}
+
+#[test]
+fn empty_wallet_chooser_has_clickable_create_restore_and_close_at_each_size() {
+    for (width, height) in [(40, 10), (60, 16), (120, 40)] {
+        for privacy in [false, true] {
+            let mut m = offline_model(Screen::Wallet);
+            m.ctx.settings.tui.privacy = privacy;
+            m.wallets.clear();
+            let _ = m.open_wallet_modal();
+            assert!(find(&m, width, height, |t| t
+                == Target::Button(Button::CreateWallet))
+            .is_some());
+            assert!(find(&m, width, height, |t| t == Target::Button(Button::Restore)).is_some());
+            assert!(find(&m, width, height, |t| t == Target::ModalButton(1)).is_some());
+            let _ = m.on_key(KeyEvent::new(KeyCode::Char('r')));
+            assert!(matches!(m.modal, Some(Modal::Workflow(_))));
+            assert!(m.action.is_none());
+        }
+    }
+}
+
+#[test]
+fn tools_group_arrows_move_in_their_advertised_direction() {
+    let mut m = offline_model(Screen::Tools);
+    let _ = m.on_key(KeyEvent::new(KeyCode::Left));
+    assert_eq!(m.tools_group, 3);
+    let _ = m.on_key(KeyEvent::new(KeyCode::Right));
+    assert_eq!(m.tools_group, 0);
+}
+
+#[test]
+fn recipient_editor_keeps_contact_label_keys_without_opening_a_picker() {
+    let mut m = offline_model(Screen::Send);
+    for c in "@rentRNVq123".chars() {
+        let _ = m.on_key(KeyEvent::new(KeyCode::Char(c)));
+    }
+    assert_eq!(m.send.to.value(), "@rentRNVq123");
+    assert!(m.send.picker.is_none());
+    assert_eq!(m.screen, Screen::Send);
+    assert!(m.action.is_none());
+}
+
+#[test]
+fn annotation_workers_use_reviewed_identity_and_refuse_changed_labels() {
+    let w = World::new("annotation-identity");
+    w.open_fixture_wallet();
+    let client = fmonero_core::WalletClient::from_ctx(&w.ctx).unwrap();
+    let row = client.get_address(0).unwrap().addresses[0].clone();
+    let reply = super::annotations::Job::LabelForm { account: 0, row }
+        .execute(&w.ctx)
+        .unwrap();
+    let subs::Outcome::AnnotationForm { what, .. } = reply else {
+        panic!("expected editable annotation");
+    };
+    let result = super::annotations::Job::Save {
+        what,
+        value: "New receiving label".into(),
+    }
+    .execute(&w.ctx)
+    .unwrap();
+    assert!(matches!(result, subs::Outcome::Note(_)));
+    assert_eq!(w.count("label_address"), 1);
+    let params = w.body("label_address");
+    assert_eq!(params["label"], "New receiving label");
+    let mut stale = client.get_address(0).unwrap().addresses[0].clone();
+    stale.label.push_str(" unexpected external edit");
+    assert!(super::annotations::Job::LabelForm {
+        account: 0,
+        row: stale
+    }
+    .execute(&w.ctx)
+    .is_err());
+    assert_eq!(w.count("label_address"), 1, "stale form cannot mutate");
+}
+
+#[test]
+fn payment_note_worker_preserves_the_observed_note_and_refuses_stale_review() {
+    let w = World::new("note-identity");
+    w.open_fixture_wallet();
+    let client = fmonero_core::WalletClient::from_ctx(&w.ctx).unwrap();
+    let row = client.get_transfer_by_txid(BUILT_TXID, 0).unwrap().unwrap();
+    let reply = super::annotations::Job::NoteForm(row.clone())
+        .execute(&w.ctx)
+        .unwrap();
+    let subs::Outcome::AnnotationForm { what, value, .. } = reply else {
+        panic!("expected note form");
+    };
+    assert_eq!(value, row.note);
+    let _ = super::annotations::Job::Save {
+        what,
+        value: "Reviewed note".into(),
+    }
+    .execute(&w.ctx)
+    .unwrap();
+    assert_eq!(w.count("set_tx_notes"), 1);
+    assert_eq!(w.body("set_tx_notes")["notes"][0], "Reviewed note");
+    let mut stale = row;
+    stale.note.push_str(" stale");
+    assert!(super::annotations::Job::NoteForm(stale)
+        .execute(&w.ctx)
+        .is_err());
+    assert_eq!(w.count("set_tx_notes"), 1);
+}
+
+#[test]
+fn external_privacy_changes_revoke_confirmation_without_dropping_the_plan() {
+    let world = World::new("external-private-review");
+    world.ctx.settings.save(&world.ctx).unwrap();
+    let mut s = sim(model(&world.ctx, Screen::Send));
+    s.inject_event(paste(DEST));
+    s.inject_event(key(KeyCode::Down));
+    s.inject_event(paste("0.1"));
+    s.inject_event(key(KeyCode::Enter));
+    run_action(&mut s);
+    let _ = sim_text(&s, 120, 40);
+    type_str(&mut s, "send");
+    assert_eq!(s.model().send.typed, "send");
+    assert!(s.model().send.review_visible.get());
+    fmonero_core::settings::set_privacy(&world.ctx, true).unwrap();
+    let before_poll = sim_text(&s, 120, 40);
+    assert!(
+        !before_poll.contains(&DEST[..30]),
+        "metadata change masks before the next Poll"
+    );
+    assert!(!s.model().send.review_visible.get());
+    assert!(s.model_mut().maybe_reload_settings());
+    assert!(
+        s.model().send.confirming(),
+        "keep the immutable plan and its lock"
+    );
+    assert!(s.model().send.typed.is_empty());
+    assert!(!s.model().send.review_visible.get());
+    assert!(!s.model().send.review_revealed);
+    let hidden = sim_text(&s, 120, 40);
+    assert!(!hidden.contains(&DEST[..30]));
+    s.inject_event(key(KeyCode::Char('V')));
+    assert!(s.model().send.review_revealed);
+    let _ = sim_text(&s, 120, 40);
+    type_str(&mut s, "send");
+    assert_eq!(s.model().send.typed, "send");
+    fmonero_core::settings::set_privacy(&world.ctx, false).unwrap();
+    assert!(s.model_mut().maybe_reload_settings());
+    assert!(
+        !s.model().privacy(),
+        "only the explicit external setting turns privacy off"
+    );
+    assert!(s.model().send.typed.is_empty());
+    assert!(!s.model().send.review_revealed);
+    assert!(s.model().send.confirming());
+    fmonero_core::settings::set_privacy(&world.ctx, true).unwrap();
+    let before_poll = sim_text(&s, 120, 40);
+    assert!(
+        !before_poll.contains(&DEST[..30]),
+        "metadata change masks before the next Poll"
+    );
+    assert!(!s.model().send.review_visible.get());
+    assert!(s.model_mut().maybe_reload_settings());
+    s.inject_event(key(KeyCode::Char('V')));
+    assert!(s.model().send.review_revealed);
+    std::fs::write(world.ctx.paths.config_file(), "invalid = = =").unwrap();
+    assert!(!s.model_mut().maybe_reload_settings());
+    s.inject_event(key(KeyCode::Char('V')));
+    assert!(
+        !s.model().send.review_revealed,
+        "cannot reveal with unknown policy"
+    );
+    s.inject_event(key(KeyCode::Escape));
+    assert!(!s.model().send.confirming());
+    assert_eq!(world.count("relay_tx"), 0);
+}
+
+#[test]
+fn payment_detail_controls_scroll_full_identifiers_and_block_background_clicks() {
+    let mut m = offline_model(Screen::Wallet);
+    m.wallet.rows = vec![fmonero_core::Transfer {
+        txid: "1234567890abcdef".repeat(4),
+        note: "Full note with Unicode 界".repeat(8),
+        destinations: vec![fmonero_core::history::Destination {
+            address: DEST.into(),
+            amount: Piconero(1),
+        }],
+        ..Default::default()
+    }];
+    m.wallet.list.borrow_mut().selected = Some(0);
+    m.wallet.detail = true;
+    let mut read = String::new();
+    for _ in 0..60 {
+        read.push_str(&screen_text(&m, 40, 10));
+        assert!(find(&m, 40, 10, |t| t == Target::Button(Button::DetailDown)).is_some());
+        assert!(find(&m, 40, 10, |t| t == Target::Button(Button::DetailClose)).is_some());
+        assert!(!matches!(m.hits.at(1, 0, None), Some(Target::Tab(_))));
+        let _ = m.click_button(Button::DetailDown);
+    }
+    assert!(read.contains("1234567890abcdef"));
+    assert!(read.contains(&DEST[DEST.len() - 16..]));
+    let _ = m.click_button(Button::DetailClose);
+    assert!(!m.wallet.detail);
+}
+
+#[test]
+fn short_help_keeps_every_binding_reachable_with_clickable_navigation() {
+    for (width, height) in [(40, 10), (70, 18), (120, 40)] {
+        let mut m = offline_model(Screen::Wallet);
+        let _ = m.on_key(KeyEvent::new(KeyCode::Char('?')));
+        let mut all_rows = String::new();
+        for _ in 0..200 {
+            all_rows.push_str(&modal_text(&m, width, height));
+            all_rows.push('\n');
+            let at = find(&m, width, height, |t| t == Target::Button(Button::HelpDown))
+                .expect("help More button");
+            let _ = m.update(Msg::Raw(click(at.0, at.1)));
+            assert!(m.show_help);
+            assert_eq!(m.screen, Screen::Wallet);
+        }
+        let whole = all_rows
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>();
+        for (key, _) in KEYS {
+            let expected = key
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect::<String>();
+            assert!(
+                whole.contains(&expected),
+                "{width}x{height} lost binding {key}"
+            );
+        }
+        assert_eq!(m.help_scroll, m.help_max.get());
+        let back = find(&m, width, height, |t| t == Target::Button(Button::HelpUp)).unwrap();
+        let _ = m.update(Msg::Raw(click(back.0, back.1)));
+        assert_eq!(m.help_scroll, m.help_max.get().saturating_sub(1));
+        let close = find(&m, width, height, |t| t == Target::Button(Button::Help)).unwrap();
+        let _ = m.update(Msg::Raw(click(close.0, close.1)));
+        assert!(!m.show_help);
+    }
+}
+
+#[test]
+fn wallet_mnemonics_and_clicks_open_the_same_workflows_without_shift() {
+    for (key, button) in [
+        ('o', Button::OpenWallet),
+        ('c', Button::CreateWallet),
+        ('r', Button::Restore),
+    ] {
+        let mut keyboard = offline_model(Screen::Wallet);
+        let mut mouse = offline_model(Screen::Wallet);
+        keyboard.wallets = vec!["example".into()];
+        mouse.wallets = keyboard.wallets.clone();
+        let _ = keyboard.on_key(KeyEvent::new(KeyCode::Char(key)));
+        let at = find(&mouse, 80, 24, |t| t == Target::Button(button)).expect("mnemonic control");
+        let _ = mouse.update(Msg::Raw(click(at.0, at.1)));
+        assert_eq!(
+            std::mem::discriminant(keyboard.modal.as_ref().unwrap()),
+            std::mem::discriminant(mouse.modal.as_ref().unwrap())
+        );
+    }
+    let mut closed = offline_model(Screen::Wallet);
+    let _ = closed.on_key(KeyEvent::new(KeyCode::Char('n')));
+    assert!(
+        matches!(closed.modal, Some(Modal::OpenWallet { .. })),
+        "New address on a closed wallet explains its prerequisite"
+    );
+}
+
+#[test]
+fn public_unicode_wrapping_preserves_tokens_and_terminal_width() {
+    use unicode_width::UnicodeWidthStr;
+    let text = "界界🙂café界end";
+    for width in [3, 5, 9, 36] {
+        let rows = super::screens::wrapped(text, width);
+        assert_eq!(rows.concat(), text);
+        assert!(rows.iter().all(|line| line.width() <= width));
+        let words = super::screens::wrap_words(text, width);
+        assert_eq!(words.concat(), text);
+        assert!(words.iter().all(|line| line.width() <= width));
+    }
+}
+
+#[test]
+fn connection_confirmations_keep_scroll_and_cancel_clickable_at_small_sizes() {
+    for (width, height) in [(40, 10), (70, 18), (120, 40)] {
+        for privacy in [false, true] {
+            for what in [
+                super::Confirm::NodeUp,
+                super::Confirm::NodeDown,
+                super::Confirm::NodeLocal,
+                super::Confirm::ClearPending,
+            ] {
+                let mut m = offline_model(Screen::Node);
+                m.ctx.settings.tui.privacy = privacy;
+                m.modal = Some(Modal::Confirm { what });
+                let _ = modal_text(&m, width, height);
+                assert!(find(&m, width, height, |t| t == Target::ModalButton(0)).is_some());
+                let more = find(&m, width, height, |t| {
+                    t == Target::Button(Button::DialogDown)
+                })
+                .expect("read more");
+                let _ = m.update(Msg::Raw(click(more.0, more.1)));
+                assert!(m.modal.is_some());
+                assert!(m.action.is_none(), "scroll never starts an operation");
+                let cancel = find(&m, width, height, |t| t == Target::ModalButton(1))
+                    .expect("visible Cancel");
+                let _ = m.update(Msg::Raw(click(cancel.0, cancel.1)));
+                assert!(m.modal.is_none());
+                assert!(m.action.is_none());
+            }
+        }
+    }
+}
+
+#[test]
+fn short_qr_dialog_keeps_the_full_address_and_close_action() {
+    let mut m = offline_model(Screen::Receive);
+    m.modal = Some(Modal::Qr {
+        address: DEST.into(),
+    });
+    let text = modal_text(&m, 40, 10);
+    let compact = text
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>();
+    assert!(compact.contains(DEST), "{text}");
+    let close = find(&m, 40, 10, |t| t == Target::ModalButton(0)).unwrap();
+    let _ = m.update(Msg::Raw(click(close.0, close.1)));
+    assert!(m.modal.is_none());
+}
+
+#[test]
+fn public_verification_forms_never_request_private_wallet_identity_or_password() {
+    use super::advanced::Tool;
+    for tool in [
+        Tool::VerifyMessage,
+        Tool::VerifyTxProof,
+        Tool::VerifySpendProof,
+        Tool::VerifyReserveProof,
+    ] {
+        let mut m = offline_model(Screen::Tools);
+        let _ = m.open_tool(tool);
+        assert!(
+            m.action.is_none(),
+            "opening a public form never contacts a service"
+        );
+        let Some(Modal::Workflow(form)) = &mut m.modal else {
+            panic!("public form opens directly");
+        };
+        assert!(form.identity.is_none());
+        assert!(form
+            .fields
+            .iter()
+            .all(|f| matches!(f.value, super::workflows::Value::Public(_))));
+        form.review = true;
+        let mut text = String::new();
+        for _ in 0..50 {
+            text.push_str(&modal_text(&m, 80, 24));
+            text.push('\n');
+            let _ = m.on_modal_key(KeyEvent::new(KeyCode::Down));
+        }
+        let compact = text
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>();
+        assert!(compact.contains("Nowalletselectionorpassword"));
+        assert!(m.action.is_none());
+    }
+}
+
+#[test]
+fn public_verification_dispatch_never_opens_or_identifies_a_wallet() {
+    let w = World::new("public-verify-dispatch");
+    // The fixture backend has no successful proof response. Exercise the production job
+    // through its real check request and preserve that backend error instead of faking proof.
+    let result = super::advanced::Job::VerifyMessage {
+        address: DEST.into(),
+        data: "public test message".into(),
+        signature: "public test signature".into(),
+    }
+    .execute(&w.ctx, &CancelToken::new());
+    assert!(result.is_err());
+    assert_eq!(w.count("verify"), 1);
+    assert_eq!(w.count("open_wallet"), 0);
+    assert_eq!(w.count("get_address"), 0);
+    assert_eq!(w.count("get_accounts"), 0);
+}
+
+fn native_pending_record() -> fmonero_core::native_tx::PendingSubmission {
+    fmonero_core::native_tx::PendingSubmission {
+        wallet: fmonero_core::wallet_ops::WalletIdentity {
+            name: "main".into(),
+            network: fmonero_core::NetType::Mainnet,
+            primary_address: DEST.into(),
+        },
+        artifact_sha256: "c".repeat(64),
+        transactions: 3,
+        unknown_txids: 2,
+        proven_txids: vec![BUILT_TXID.into()],
+        attempted_at: 1234,
+    }
+}
+fn write_native_pending(
+    ctx: &Context,
+    record: &fmonero_core::native_tx::PendingSubmission,
+) -> Vec<u8> {
+    ctx.paths.ensure_dirs().unwrap();
+    let bytes = serde_json::to_vec(record).unwrap();
+    fmonero_core::write_private(&ctx.paths.state_dir.join("native-pending.json"), &bytes).unwrap();
+    bytes
+}
+fn assert_native_guard_unchanged(w: &World, bytes: &[u8]) {
+    assert_eq!(
+        std::fs::read(w.ctx.paths.state_dir.join("native-pending.json")).unwrap(),
+        bytes
+    );
+    assert!(fmonero_core::send::refuse_if_send_in_flight(&w.ctx).is_err());
+    for method in [
+        "transfer",
+        "transfer_split",
+        "sweep_all",
+        "relay_tx",
+        "submit_transfer",
+    ] {
+        assert_eq!(
+            w.count(method),
+            0,
+            "inspection must not prepare or broadcast"
+        );
+    }
+}
+
+#[test]
+fn native_pending_inspection_reopens_only_the_recorded_wallet_and_keeps_all_uncertainty() {
+    let w = World::new("native-inspect");
+    w.open_fixture_wallet();
+    let ctx = w.ctx.clone().with_wallet_probe_at_refresh();
+    let client = fmonero_core::WalletClient::from_ctx(&ctx).unwrap();
+    client.close_wallet().unwrap();
+    state::clear_last_open(&ctx).unwrap();
+    let expected = native_pending_record();
+    let bytes = write_native_pending(&ctx, &expected);
+    let before = w.count("open_wallet");
+    assert!(fmonero_core::wallet_session::open_secret(
+        &ctx,
+        &client,
+        "main",
+        fmonero_core::SecretString::empty(),
+        &CancelToken::new()
+    )
+    .is_err());
+    assert_eq!(
+        w.count("open_wallet"),
+        before,
+        "normal open must remain guarded"
+    );
+    let returned = fmonero_core::native_tx::reopen_pending_for_inspection(
+        &ctx,
+        &client,
+        &expected,
+        fmonero_core::SecretString::empty(),
+        &CancelToken::new(),
+    )
+    .unwrap();
+    assert!(returned.wallet_reopened, "{:?}", returned.warning);
+    assert_eq!(w.count("open_wallet"), before + 1);
+    assert_eq!(
+        fmonero_core::wallet_ops::identity(&ctx, &client).unwrap(),
+        expected.wallet
+    );
+    assert_eq!(
+        fmonero_core::native_tx::pending(&ctx).unwrap(),
+        Some(expected)
+    );
+    assert_native_guard_unchanged(&w, &bytes);
+}
+
+#[test]
+fn native_pending_inspection_refuses_stale_identity_network_and_cancel_before_rpc() {
+    let w = World::new("native-inspect-stale");
+    let ctx = w.ctx.clone().with_wallet_probe_at_refresh();
+    let client = fmonero_core::WalletClient::from_ctx(&ctx).unwrap();
+    let expected = native_pending_record();
+    let bytes = write_native_pending(&ctx, &expected);
+    for changed in 0..3 {
+        let mut stale = expected.clone();
+        match changed {
+            0 => stale.wallet.name = "another-wallet".into(),
+            1 => stale.artifact_sha256 = "d".repeat(64),
+            _ => stale.attempted_at += 1,
+        }
+        assert!(fmonero_core::native_tx::reopen_pending_for_inspection(
+            &ctx,
+            &client,
+            &stale,
+            fmonero_core::SecretString::empty(),
+            &CancelToken::new()
+        )
+        .is_err());
+    }
+    let mut changed_ctx = ctx.clone();
+    changed_ctx.settings.node.network = fmonero_core::settings::Network::Stagenet;
+    assert!(fmonero_core::native_tx::reopen_pending_for_inspection(
+        &changed_ctx,
+        &client,
+        &expected,
+        fmonero_core::SecretString::empty(),
+        &CancelToken::new()
+    )
+    .is_err());
+    let cancelled = CancelToken::new();
+    cancelled.cancel();
+    assert!(fmonero_core::native_tx::reopen_pending_for_inspection(
+        &ctx,
+        &client,
+        &expected,
+        fmonero_core::SecretString::empty(),
+        &cancelled
+    )
+    .is_err());
+    assert_eq!(w.count("get_version"), 0);
+    assert_eq!(w.count("open_wallet"), 0);
+    assert_eq!(w.count("get_address"), 0);
+    assert_native_guard_unchanged(&w, &bytes);
+}
+
+#[test]
+fn native_pending_inspection_rejects_wrong_engine_identity_without_recording_a_session() {
+    let w = World::new("native-inspect-mismatch");
+    let ctx = w.ctx.clone().with_wallet_probe_at_refresh();
+    let client = fmonero_core::WalletClient::from_ctx(&ctx).unwrap();
+    let mut expected = native_pending_record();
+    expected.wallet.primary_address = "888tNkZrPN6JsEgekjMnABU4TBzc2Dt29EPAvkRxbANsAnjyPbb3iQ1YBRk1UXcdRsiKc9dhwMVgN5S9cQUiyoogDavup3H".into();
+    let bytes = write_native_pending(&ctx, &expected);
+    let returned = fmonero_core::native_tx::reopen_pending_for_inspection(
+        &ctx,
+        &client,
+        &expected,
+        fmonero_core::SecretString::empty(),
+        &CancelToken::new(),
+    )
+    .unwrap();
+    assert!(!returned.wallet_reopened);
+    assert!(returned.warning.is_some());
+    assert_eq!(w.count("open_wallet"), 1);
+    assert_eq!(w.count("close_wallet"), 1);
+    assert_eq!(w.count("set_daemon"), 0);
+    assert!(state::last_open(&ctx).unwrap().is_none());
+    assert_native_guard_unchanged(&w, &bytes);
+}
+
+#[test]
+fn native_pending_inspection_retains_record_when_password_open_fails() {
+    let w = World::with_wallet(
+        "native-inspect-open-failed",
+        &["--fail", "open_wallet=-1:Failed to load wallet"],
+    );
+    let ctx = w.ctx.clone().with_wallet_probe_at_refresh();
+    let client = fmonero_core::WalletClient::from_ctx(&ctx).unwrap();
+    let expected = native_pending_record();
+    let bytes = write_native_pending(&ctx, &expected);
+    let returned = fmonero_core::native_tx::reopen_pending_for_inspection(
+        &ctx,
+        &client,
+        &expected,
+        fmonero_core::SecretString::new("synthetic-wrong-password".into()).unwrap(),
+        &CancelToken::new(),
+    )
+    .unwrap();
+    assert!(!returned.wallet_reopened);
+    assert!(returned.warning.is_some());
+    assert!(!format!("{returned:?}").contains("synthetic-wrong-password"));
+    assert_eq!(w.count("open_wallet"), 1);
+    assert_eq!(w.count("get_address"), 0);
+    assert!(state::last_open(&ctx).unwrap().is_none());
+    assert_native_guard_unchanged(&w, &bytes);
+}
+
+#[test]
+fn native_pending_inspection_does_not_bypass_a_separate_ordinary_pending_record() {
+    let w = World::new("native-inspect-ordinary-pending");
+    let client = fmonero_core::WalletClient::from_ctx(&w.ctx).unwrap();
+    let expected = native_pending_record();
+    let bytes = write_native_pending(&w.ctx, &expected);
+    let ordinary = PendingSend {
+        kind: PendingKind::Send,
+        account_index: 0,
+        dest: DEST.into(),
+        built_at: 1234,
+        txs: vec![PendingTx {
+            txid: "b".repeat(64),
+            amount: Piconero(1),
+            fee: Piconero(1),
+            relayed: false,
+            relayed_at: None,
+        }],
+    };
+    state::set_pending_send(&w.ctx, &ordinary).unwrap();
+    assert!(fmonero_core::native_tx::reopen_pending_for_inspection(
+        &w.ctx,
+        &client,
+        &expected,
+        fmonero_core::SecretString::empty(),
+        &CancelToken::new()
+    )
+    .is_err());
+    assert_eq!(w.count("get_version"), 0);
+    assert_eq!(w.count("open_wallet"), 0);
+    assert_eq!(
+        state::pending_send(&w.ctx).unwrap().unwrap().txs[0].txid,
+        ordinary.txs[0].txid
+    );
+    assert_native_guard_unchanged(&w, &bytes);
+}
+
+#[test]
+fn native_pending_inspection_form_is_local_masked_and_requires_explicit_review() {
+    use super::advanced::Tool;
+    for (width, height) in [(40, 10), (70, 18), (120, 40)] {
+        for mouse in [false, true] {
+            let w = World::new("native-inspect-form");
+            let expected = native_pending_record();
+            let bytes = write_native_pending(&w.ctx, &expected);
+            let mut m = model(&w.ctx, Screen::Tools);
+            let _ = m.click_button(Button::Tool(Tool::ReopenNativePending));
+            assert!(m.action.is_none());
+            let Some(Modal::Workflow(form)) = &mut m.modal else {
+                panic!("inspection form");
+            };
+            assert_eq!(form.identity, Some(expected.wallet.clone()));
+            assert_eq!(form.native_pending, Some(expected.clone()));
+            assert_eq!(form.fields.len(), 1, "identity cannot be edited");
+            assert!(matches!(
+                form.fields[0].value,
+                super::workflows::Value::Secret(_)
+            ));
+            form.event(&paste("synthetic-protected-input"));
+            assert!(!modal_text(&m, width, height).contains("synthetic-protected-input"));
+            for stage in 0..2 {
+                if mouse {
+                    let at = find(&m, width, height, |t| t == Target::ModalButton(0))
+                        .expect("review and confirmation stay clickable");
+                    let _ = m.update(Msg::Raw(click(at.0, at.1)));
+                } else {
+                    let _ = m.on_key(KeyEvent::new(KeyCode::Enter));
+                }
+                if stage == 0 {
+                    assert!(m.action.is_none(), "first activation only reviews");
+                    assert!(find(&m, width, height, |t| t == Target::ModalButton(1)).is_some());
+                }
+            }
+            let slot = m.action.as_ref().expect("explicit operation").slot.clone();
+            let action = slot.lock().unwrap().take().unwrap();
+            assert!(!format!("{action:?}").contains("synthetic-protected-input"));
+            let subs::Action::Native(job) = action else {
+                panic!("inspection only");
+            };
+            let super::native::Job::InspectPending {
+                expected: selected,
+                password,
+            } = *job
+            else {
+                panic!("inspection only");
+            };
+            assert_eq!(selected, expected);
+            assert_eq!(password.expose_secret(), "synthetic-protected-input");
+            assert_eq!(w.count("get_version"), 0, "UI has not executed the worker");
+            assert_eq!(w.count("open_wallet"), 0);
+            assert_native_guard_unchanged(&w, &bytes);
+        }
+    }
+}
+
+mod wallet_prerequisite_tests {
+    use super::*;
+    use crate::tui::{workflows::Kind, LaunchIntent, Prompt};
+
+    // Default exercises the ordinary in-app New address action, not a launch flag.
+    const ROUTES: [LaunchIntent; 3] = [
+        LaunchIntent::NewAddress,
+        LaunchIntent::Requests,
+        LaunchIntent::Default,
+    ];
+    const SIZES: [(u16, u16); 3] = [(40, 10), (80, 24), (120, 40)];
+
+    fn closed_status(world: &World) -> fmonero_core::Status {
+        let mut status = fmonero_core::status::status(&world.ctx).unwrap();
+        status.wallet.open = false;
+        status.wallet.busy = false;
+        status.wallet.name = None;
+        status
+    }
+
+    fn enter(world: &World, closed: &fmonero_core::Status, route: LaunchIntent) -> Tui {
+        let mut m = model(&world.ctx, route.screen());
+        m.launch_intent = route;
+        // These model tests deliver completed reads explicitly; returned read tasks are not run.
+        let _ = m.update(Msg::Status(Box::new(Ok(closed.clone()))));
+        let _ = render(&m, 80, 24);
+        if route == LaunchIntent::Default {
+            let _ = m.update(Msg::Raw(key(KeyCode::Char('n'))));
+        }
+        assert!(matches!(m.modal, Some(Modal::OpenWallet { .. })));
+        assert_eq!(
+            m.launch_intent,
+            if route == LaunchIntent::Requests {
+                LaunchIntent::Requests
+            } else {
+                LaunchIntent::NewAddress
+            }
+        );
+        assert!(m.action.is_none());
+        m
+    }
+
+    fn activate(m: &mut Tui, code: KeyCode, target: Target, mouse: bool, size: (u16, u16)) {
+        let event = if mouse {
+            let at = find(m, size.0, size.1, |t| t == target)
+                .expect("the rendered prerequisite control must be reachable");
+            click(at.0, at.1)
+        } else {
+            let _ = render(m, size.0, size.1);
+            key(code)
+        };
+        let _ = m.update(Msg::Raw(event));
+    }
+
+    fn cancel(m: &mut Tui, mouse: bool, size: (u16, u16)) {
+        activate(m, KeyCode::Escape, Target::ModalButton(1), mouse, size);
+    }
+
+    fn stays_dismissed(m: &mut Tui, status: &fmonero_core::Status) {
+        assert_eq!(m.launch_intent, LaunchIntent::Default);
+        assert!(m.modal.is_none());
+        assert!(m.action.is_none());
+        for navigate in [false, true] {
+            if navigate {
+                let _ = m.update(Msg::Raw(key(KeyCode::Char('6'))));
+                assert_eq!(m.screen, Screen::Tools);
+            }
+            let screen = m.screen;
+            for _ in 0..3 {
+                let _ = m.update(Msg::Status(Box::new(Ok(status.clone()))));
+                assert!(
+                    m.modal.is_none(),
+                    "a later status must not reopen the picker"
+                );
+                assert!(m.action.is_none(), "a cancelled intent must not arm work");
+                assert_eq!(m.screen, screen, "polls must not steal navigation");
+            }
+        }
+        // A late completed address read must not revive Requests either.
+        let _ = m.update(Msg::WalletData(
+            m.read_epoch,
+            Box::new(Ok((Default::default(), Default::default()))),
+        ));
+        assert!(m.modal.is_none());
+        assert!(m.action.is_none());
+    }
+
+    fn no_mutations(world: &World) {
+        for method in [
+            "open_wallet",
+            "create_wallet",
+            "restore_deterministic_wallet",
+            "create_address",
+            "transfer_split",
+            "relay_tx",
+        ] {
+            assert_eq!(world.count(method), 0, "cancel must not execute {method}");
+        }
+    }
+
+    #[test]
+    fn wallet_prerequisite_picker_and_password_cancel_survive_polls_and_navigation() {
+        let world = World::new("prerequisite-picker-cancel");
+        let closed = closed_status(&world);
+        for route in ROUTES {
+            for asking in [false, true] {
+                for mouse in [false, true] {
+                    for size in SIZES {
+                        for privacy in [false, true] {
+                            let mut m = enter(&world, &closed, route);
+                            m.ctx.settings.tui.privacy = privacy;
+                            if asking {
+                                activate(
+                                    &mut m,
+                                    KeyCode::Enter,
+                                    Target::ModalButton(0),
+                                    mouse,
+                                    size,
+                                );
+                                let _ = m.update(Msg::Raw(paste("synthetic-protected-input")));
+                                assert!(matches!(&m.modal, Some(Modal::OpenWallet {
+                                    asking: true, pass, ..
+                                }) if !pass.value().is_empty()));
+                            }
+                            cancel(&mut m, mouse, size);
+                            stays_dismissed(&mut m, &closed);
+                        }
+                    }
+                }
+            }
+        }
+        no_mutations(&world);
+    }
+
+    #[test]
+    fn wallet_prerequisite_empty_picker_cancel_and_close_consume_intent() {
+        let world = World::new("prerequisite-empty-close");
+        std::fs::remove_file(world.ctx.settings.wallet.dir.join("main.keys")).unwrap();
+        let closed = closed_status(&world);
+        for route in ROUTES {
+            for close in [false, true] {
+                for mouse in [false, true] {
+                    for size in SIZES {
+                        let mut m = enter(&world, &closed, route);
+                        assert!(
+                            matches!(&m.modal, Some(Modal::OpenWallet { names, .. }) if names.is_empty())
+                        );
+                        if close {
+                            activate(&mut m, KeyCode::Enter, Target::ModalButton(0), mouse, size);
+                        } else {
+                            cancel(&mut m, mouse, size);
+                        }
+                        stays_dismissed(&mut m, &closed);
+                    }
+                }
+            }
+        }
+        no_mutations(&world);
+    }
+
+    #[test]
+    fn wallet_prerequisite_create_restore_cancel_consumes_intent() {
+        let world = World::new("prerequisite-create-restore-cancel");
+        std::fs::remove_file(world.ctx.settings.wallet.dir.join("main.keys")).unwrap();
+        let closed = closed_status(&world);
+        for route in ROUTES {
+            for (code, button) in [('c', Button::CreateWallet), ('r', Button::Restore)] {
+                for mouse in [false, true] {
+                    for size in SIZES {
+                        for privacy in [false, true] {
+                            let mut m = enter(&world, &closed, route);
+                            m.ctx.settings.tui.privacy = privacy;
+                            let intent = m.launch_intent;
+                            activate(
+                                &mut m,
+                                KeyCode::Char(code),
+                                Target::Button(button),
+                                mouse,
+                                size,
+                            );
+                            assert!(
+                                matches!(&m.modal, Some(Modal::CreateWallet(_)))
+                                    || matches!(&m.modal, Some(Modal::Workflow(form)) if form.kind == Kind::Restore)
+                            );
+                            assert_eq!(
+                                m.launch_intent, intent,
+                                "advancing must preserve continuation"
+                            );
+                            // Cancel after editing a protected field, not just an empty form.
+                            let _ = m.update(Msg::Raw(key(KeyCode::Tab)));
+                            let _ = m.update(Msg::Raw(paste("synthetic-protected-input")));
+                            cancel(&mut m, mouse, size);
+                            stays_dismissed(&mut m, &closed);
+                        }
+                    }
+                }
+            }
+        }
+        no_mutations(&world);
+    }
+
+    #[test]
+    fn wallet_prerequisite_open_resumes_the_intended_form_once() {
+        let world = World::new("prerequisite-open-continues");
+        world.ctx.settings.save(&world.ctx).unwrap();
+        let closed = closed_status(&world);
+        for route in ROUTES {
+            for mouse in [false, true] {
+                let mut m = enter(&world, &closed, route);
+                let before = world.count("open_wallet");
+                activate(
+                    &mut m,
+                    KeyCode::Enter,
+                    Target::ModalButton(0),
+                    mouse,
+                    (80, 24),
+                );
+                let intent = m.launch_intent;
+                activate(
+                    &mut m,
+                    KeyCode::Enter,
+                    Target::ModalButton(0),
+                    mouse,
+                    (80, 24),
+                );
+                assert_eq!(
+                    m.launch_intent, intent,
+                    "submitting Open must preserve continuation"
+                );
+                let action_id = m.action.as_ref().expect("Open is armed").id;
+                for _ in 0..3 {
+                    let _ = m.update(Msg::Status(Box::new(Ok(closed.clone()))));
+                    assert!(
+                        m.modal.is_none(),
+                        "polls must not reopen the prerequisite during Open"
+                    );
+                    assert_eq!(m.action.as_ref().unwrap().id, action_id);
+                    assert_eq!(m.launch_intent, intent);
+                }
+                let mut s = ProgramSimulator::new(m);
+                run_action(&mut s); // The real UI worker and authenticated mock open sequence.
+                if route != LaunchIntent::Requests {
+                    run_action(&mut s); // Read identity for the new-address form; no mutation.
+                    assert!(matches!(
+                        s.model().modal,
+                        Some(Modal::Prompt {
+                            what: Prompt::NewAddress { .. },
+                            ..
+                        })
+                    ));
+                } else {
+                    assert!(matches!(&s.model().modal, Some(Modal::Workflow(form))
+                        if form.kind == Kind::CreateRequest));
+                }
+                assert_eq!(world.count("open_wallet"), before + 1);
+                let opened = s.model().status.clone().unwrap();
+                assert!(opened.wallet.open);
+                cancel(s.model_mut(), mouse, (80, 24));
+                stays_dismissed(s.model_mut(), &opened);
+                assert_eq!(world.count("open_wallet"), before + 1);
+                assert_eq!(world.count("create_address"), 0);
+                assert_eq!(world.count("transfer_split"), 0);
+                assert_eq!(world.count("relay_tx"), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn wallet_prerequisite_create_restore_results_resume_after_dismissal_once() {
+        use fmonero_core::rpc::wallet::{AddressSet, SubaddressRow};
+
+        let world = World::new("prerequisite-result-continues");
+        world.ctx.settings.save(&world.ctx).unwrap();
+        std::fs::remove_file(world.ctx.settings.wallet.dir.join("main.keys")).unwrap();
+        let closed = closed_status(&world);
+        let mut opened = closed.clone();
+        opened.wallet.open = true;
+        opened.wallet.name = Some("created".into());
+        opened.wallet.primary_address = Some(DEST.into());
+        for route in ROUTES {
+            for restore in [false, true] {
+                let mut m = enter(&world, &closed, route);
+                let _ = m.update(Msg::Raw(key(KeyCode::Char(if restore {
+                    'r'
+                } else {
+                    'c'
+                }))));
+                let intent = m.launch_intent;
+                // Model scheduling evidence only: these replies do not qualify wallet creation.
+                let outcome = if restore {
+                    subs::Outcome::Restored(fmonero_core::restore::Restored {
+                        name: "created".into(),
+                        restore_height: 0,
+                        address: Some(DEST.into()),
+                        network: Some(fmonero_core::NetType::Mainnet),
+                        state: fmonero_core::restore::RestoreState::Ready,
+                        warning: None,
+                        unit_started: false,
+                    })
+                } else {
+                    subs::Outcome::Created {
+                        name: "created".into(),
+                    }
+                };
+                let _ = m.update(Msg::ActionDone(Box::new(Ok(outcome))));
+                let _ = m.update(Msg::Status(Box::new(Ok(opened.clone()))));
+                let _ = m.update(Msg::WalletData(
+                    m.read_epoch,
+                    Box::new(Ok((
+                        Default::default(),
+                        AddressSet {
+                            primary: DEST.into(),
+                            addresses: vec![SubaddressRow {
+                                address: DEST.into(),
+                                ..Default::default()
+                            }],
+                        },
+                    ))),
+                ));
+                assert_eq!(m.launch_intent, intent);
+                assert!(m.action.is_none());
+                assert!(
+                    matches!(m.modal, Some(Modal::SeedBackup { .. } | Modal::Result(_))),
+                    "completion information stays open until dismissed"
+                );
+                let _ = m.update(Msg::Raw(key(KeyCode::Escape)));
+                assert_eq!(
+                    m.launch_intent, intent,
+                    "closing a completed result is not cancellation"
+                );
+                let _ = m.update(Msg::Status(Box::new(Ok(opened.clone()))));
+                if route == LaunchIntent::Requests {
+                    assert!(
+                        matches!(&m.modal, Some(Modal::Workflow(form)) if form.kind == Kind::CreateRequest)
+                    );
+                } else {
+                    assert!(
+                        m.action.is_some(),
+                        "resume preparation of the new-address form"
+                    );
+                    let _ = m.update(Msg::ActionDone(Box::new(Ok(
+                        subs::Outcome::NewAddressForm {
+                            wallet: fmonero_core::wallet_ops::WalletIdentity {
+                                name: "created".into(),
+                                network: fmonero_core::NetType::Mainnet,
+                                primary_address: DEST.into(),
+                            },
+                            account: 0,
+                        },
+                    ))));
+                    assert!(matches!(
+                        m.modal,
+                        Some(Modal::Prompt {
+                            what: Prompt::NewAddress { .. },
+                            ..
+                        })
+                    ));
+                }
+                cancel(&mut m, false, (80, 24));
+                stays_dismissed(&mut m, &opened);
+            }
+        }
+        no_mutations(&world);
+    }
 }

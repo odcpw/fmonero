@@ -6,9 +6,11 @@
 //!   └──── edit ──────────┘   Esc ──────┘           └── Esc: discard ─────────────┘          └─▶ Form
 //! ```
 //!
-//! **One transaction only — sweep is CLI-only in v0.1** (§0): `all` in the Amount field is
-//! refused inline. The screen never calls `build_transfer` or `relay_tx`: it hands
+//! Both exact-amount and send-all requests use core preparation and immutable review.
 //! `send::build` and `send::relay` one `SendRequest` and the plan they returned (§2a.3).
+
+use std::cell::{Cell, RefCell};
+use std::collections::BTreeSet;
 
 use ftui::layout::{Constraint, Flex, Rect};
 use ftui::text::wrap::WrapMode;
@@ -30,15 +32,6 @@ use super::{next_fee_level, prev_fee_level, Tui};
 /// Typing this word is the TUI's `--yes` (§7a): the modal needs the word, not just Enter.
 pub(super) const CONFIRM_WORD: &str = "send";
 
-/// What the Amount field says when someone types `all`.
-///
-/// **One of the four places a shell command may appear in the TUI** (§2o.1, `docs/COPY.md` §2),
-/// and the only one whose cause is a scope decision rather than an impossibility: §0 keeps
-/// sweep out of the TUI in v0.1 and this screen prepares exactly one payment. When sweep enters
-/// the TUI this line goes.
-pub(super) const NO_SWEEP: &str = "Sweep is not in the TUI yet. To send everything, in a \
-                                   terminal: fmonero wallet sweep <address> --dry-run";
-
 /// The Tab cycle. `Priority` is a field rather than a bare shortcut so that `p` can cycle it
 /// without being swallowed by an address — base58 contains `p`, and `Ctrl+P` cycles it from
 /// anywhere (both are in the §7a keymap table).
@@ -49,6 +42,7 @@ pub(super) enum Field {
     Note,
     Priority,
     Account,
+    FeeLimit,
 }
 
 pub(super) enum Stage {
@@ -70,6 +64,7 @@ pub(super) enum SendCmd {
     None,
     /// Run `validate_address` for this address, then build.
     Validate,
+    Sweep(fmonero_core::send::SweepRequest),
     /// Start `Action::Relay` with the plan the modal is showing.
     Relay,
     /// Load the address book for the `@` picker.
@@ -84,6 +79,7 @@ pub(super) struct SendScreen {
     pub to: TextInput,
     pub amount: TextInput,
     pub note: TextInput,
+    pub fee_limit: TextInput,
     pub field: Field,
     /// 0–4, defaulting to `settings.wallet.priority`. `0` is an **alias of the lowest
     /// tier**, not a "wallet default" (§1b.4), and the chip row says so.
@@ -94,6 +90,12 @@ pub(super) struct SendScreen {
     pub stage: Stage,
     /// The confirm modal's typed word.
     pub typed: String,
+    pub review_revealed: bool,
+    pub review_offset: usize,
+    pub review_max: Cell<usize>,
+    pub review_visible: Cell<bool>,
+    review_width: Cell<u16>,
+    review_seen: RefCell<BTreeSet<usize>>,
     /// The `@` picker: the address book and the selected row.
     pub picker: Option<(Vec<BookEntry>, usize)>,
     /// The form has the keys. `Esc` leaves it so that `1 2 3 4`, `q` and `?` work; `Enter`
@@ -110,33 +112,24 @@ pub(super) struct SendScreen {
     pub tab_note: bool,
 }
 
-/// The three fields, in Tab order, with the hint each draws while it is empty.
-const FIELDS: [(Field, &str, &str); 3] = [
-    (
-        Field::To,
-        "To",
-        "an address, or @name from your address book",
-    ),
-    // The piconero form stays accepted and stays in `--help`; as the empty field's example it
-    // taught a reader that amounts look like that (§2o rule 9).
-    // **X22: an empty-field hint that cannot be read as a typed value.** `0.5 XMR` is exactly what
-    // a real amount looks like, in the one field where reading the hint as the value costs money;
-    // `To` and `Note` both read unmistakably as hints beside it.
-    (Field::Amount, "Amount", "how much, in XMR"),
-    (Field::Note, "Note", "optional, kept with this wallet"),
-];
-
 impl SendScreen {
     pub fn new(th: &Theme, priority: u32, account: u32) -> SendScreen {
         SendScreen {
             to: field_input(th),
             amount: field_input(th),
             note: field_input(th),
+            fee_limit: field_input(th),
             field: Field::To,
             priority,
             account,
             stage: Stage::Form,
             typed: String::new(),
+            review_revealed: false,
+            review_offset: 0,
+            review_max: Cell::new(0),
+            review_visible: Cell::new(false),
+            review_width: Cell::new(0),
+            review_seen: RefCell::new(BTreeSet::new()),
             picker: None,
             editing: false,
             tab_note: false,
@@ -144,7 +137,12 @@ impl SendScreen {
     }
 
     pub fn restyle(&mut self, th: &Theme) {
-        for input in [&mut self.to, &mut self.amount, &mut self.note] {
+        for input in [
+            &mut self.to,
+            &mut self.amount,
+            &mut self.note,
+            &mut self.fee_limit,
+        ] {
             let mut fresh = field_input(th).with_value(input.value().to_string());
             fresh.set_focused(input.focused());
             *input = fresh;
@@ -163,7 +161,16 @@ impl SendScreen {
         matches!(self.stage, Stage::Built(_))
     }
 
+    pub fn reset_review(&mut self) {
+        self.review_revealed = false;
+        self.review_offset = 0;
+        self.review_visible.set(false);
+        self.review_seen.borrow_mut().clear();
+        self.review_width.set(0);
+    }
+
     pub fn back_to_form(&mut self) {
+        self.reset_review();
         self.stage = Stage::Form;
         self.typed.clear();
         // Round 5, S12: the notice belongs to one confirm, and leaving it takes it away.
@@ -174,6 +181,7 @@ impl SendScreen {
         self.to.clear();
         self.amount.clear();
         self.note.clear();
+        self.fee_limit.clear();
         self.field = Field::To;
         self.back_to_form();
     }
@@ -183,9 +191,6 @@ impl SendScreen {
     pub fn validation(&self) -> (String, bool) {
         let to = self.to.value().trim();
         let amount = self.amount.value().trim();
-        if amount.eq_ignore_ascii_case("all") {
-            return (NO_SWEEP.to_string(), false);
-        }
         if to.is_empty() && amount.is_empty() {
             // **Not `Enter who to pay …`** (round 4 iteration 3): this row is about filling the
             // form, and opening it with the name of the key that submits it was one of five
@@ -213,6 +218,12 @@ impl SendScreen {
         // that was actually supplied and wrong for a form field nobody has reached.
         if amount.is_empty() {
             return (format!("{dest} · now type how much, in XMR."), false);
+        }
+        if amount.eq_ignore_ascii_case("all") {
+            return (
+                "Send all unlocked funds from this account, less the exact reviewed fee.".into(),
+                true,
+            );
         }
         match Piconero::parse(amount) {
             Ok(p) if p.0 == 0 => ("0 XMR is not an amount.".into(), false),
@@ -245,10 +256,31 @@ impl SendScreen {
             account_index: self.account,
             priority: self.priority,
             note: (!note.is_empty()).then(|| note.to_string()),
-            max_fee,
+            max_fee: max_fee.or(self.max_fee()?),
         })
     }
 
+    fn max_fee(&self) -> Result<Option<Piconero>, String> {
+        let text = self.fee_limit.value().trim();
+        if text.is_empty() {
+            Ok(None)
+        } else {
+            Piconero::parse(text).map(Some).map_err(|e| e.to_string())
+        }
+    }
+    fn sweep_request(&self) -> Result<fmonero_core::send::SweepRequest, String> {
+        let (why, valid) = self.validation();
+        if !valid {
+            return Err(why);
+        }
+        Ok(fmonero_core::send::SweepRequest {
+            dest: self.to.value().trim().into(),
+            account_index: self.account,
+            priority: self.priority,
+            below: None,
+            max_fee: self.max_fee()?,
+        })
+    }
     /// Focus the form field a click landed on (§7a.2), by its index in [`FIELDS`] order.
     pub fn focus_index(&mut self, index: usize) {
         let field = match index {
@@ -256,7 +288,8 @@ impl SendScreen {
             1 => Field::Amount,
             2 => Field::Note,
             3 => Field::Priority,
-            _ => Field::Account,
+            4 => Field::Account,
+            _ => Field::FeeLimit,
         };
         self.editing = true;
         self.focus(field);
@@ -272,7 +305,10 @@ impl SendScreen {
         if self.editing
             && matches!(self.stage, Stage::Form)
             && self.picker.is_none()
-            && matches!(self.field, Field::To | Field::Amount | Field::Note)
+            && matches!(
+                self.field,
+                Field::To | Field::Amount | Field::Note | Field::FeeLimit
+            )
         {
             self.focused_input_mut().handle_event(event);
         }
@@ -295,7 +331,7 @@ impl SendScreen {
             KeyCode::Escape => {
                 self.editing = false;
                 self.blur();
-                SendCmd::Info("You left the form. 1-4 change screens, Enter goes back.".into())
+                SendCmd::Info("You left the form. 1-6 change screens, Enter goes back.".into())
             }
             KeyCode::Char('p') if ctrl => {
                 self.priority = next_fee_level(self.priority);
@@ -307,19 +343,30 @@ impl SendScreen {
                     Field::Amount => Field::Note,
                     Field::Note => Field::Priority,
                     Field::Priority => Field::Account,
-                    Field::Account => Field::To,
+                    Field::Account => Field::FeeLimit,
+                    Field::FeeLimit => Field::To,
                 });
                 SendCmd::None
             }
             KeyCode::BackTab | KeyCode::Up => {
                 self.focus(match self.field {
-                    Field::To => Field::Account,
+                    Field::To => Field::FeeLimit,
                     Field::Amount => Field::To,
                     Field::Note => Field::Amount,
                     Field::Priority => Field::Note,
                     Field::Account => Field::Priority,
+                    Field::FeeLimit => Field::Account,
                 });
                 SendCmd::None
+            }
+            KeyCode::Enter if self.amount.value().trim().eq_ignore_ascii_case("all") => {
+                match self.sweep_request() {
+                    Ok(request) => {
+                        self.stage = Stage::Building;
+                        SendCmd::Sweep(request)
+                    }
+                    Err(why) => SendCmd::Note(why),
+                }
             }
             KeyCode::Enter => match self.request(None) {
                 Ok(_) => {
@@ -356,17 +403,10 @@ impl SendScreen {
                 }
                 SendCmd::None
             }
-            code => {
-                // `@` is typed AND opens the picker: a label is a legal recipient, so the
-                // character stays if the picker is dismissed, and picking replaces the field
-                // with a literal address (§4).
-                let at = code == KeyCode::Char('@') && self.field == Field::To;
+            KeyCode::Char('b') if ctrl => SendCmd::Book,
+            _ => {
                 self.focused_input_mut().handle_event(&Event::Key(k));
-                if at {
-                    SendCmd::Book
-                } else {
-                    SendCmd::None
-                }
+                SendCmd::None
             }
         }
     }
@@ -396,6 +436,10 @@ impl SendScreen {
     /// The confirm modal is the whole safety surface: it needs the word, not just Enter.
     fn on_confirm_key(&mut self, k: KeyEvent) -> SendCmd {
         match k.code {
+            KeyCode::PageDown | KeyCode::Down => { self.review_offset = self.review_offset.saturating_add(1).min(self.review_max.get()); SendCmd::None }
+            KeyCode::PageUp | KeyCode::Up => { self.review_offset = self.review_offset.saturating_sub(1); SendCmd::None }
+            KeyCode::Tab | KeyCode::BackTab => SendCmd::None,
+            KeyCode::Enter if !self.review_visible.get() => SendCmd::Note("Read the complete payment review before confirming. Scroll with ↑↓ or enlarge the window.".into()),
             KeyCode::Escape => {
                 // Discarding drops the `Plan`, which releases the §2a.11 `send.lock` and
                 // leaves nothing to clean up: `do_not_relay` never committed the tx.
@@ -407,7 +451,7 @@ impl SendScreen {
                 SendCmd::None
             }
             KeyCode::Char(c) => {
-                self.typed.push(c);
+                if self.typed.len() < 16 && !c.is_control() { self.typed.push(c); }
                 SendCmd::None
             }
             // A plan whose `amount + fee` overflows `u64` has no total to confirm, and the modal
@@ -433,12 +477,14 @@ impl SendScreen {
         self.to.set_focused(false);
         self.amount.set_focused(false);
         self.note.set_focused(false);
+        self.fee_limit.set_focused(false);
     }
 
     pub fn focus(&mut self, f: Field) {
         self.to.set_focused(f == Field::To);
         self.amount.set_focused(f == Field::Amount);
         self.note.set_focused(f == Field::Note);
+        self.fee_limit.set_focused(f == Field::FeeLimit);
         self.field = f;
     }
 
@@ -446,6 +492,7 @@ impl SendScreen {
         match self.field {
             Field::Amount => &mut self.amount,
             Field::Note => &mut self.note,
+            Field::FeeLimit => &mut self.fee_limit,
             _ => &mut self.to,
         }
     }
@@ -453,6 +500,7 @@ impl SendScreen {
 
 fn field_input(th: &Theme) -> TextInput {
     TextInput::new()
+        .with_max_length(16 * 1024)
         .with_style(th.text())
         .with_cursor_style(Style::new().bg(th.accent).fg(th.selection))
 }
@@ -460,221 +508,130 @@ fn field_input(th: &Theme) -> TextInput {
 // ---------------------------------------------------------------- render
 
 pub(super) fn view(m: &Tui, area: Rect, frame: &mut ftui::Frame, tier: Tier) {
-    let th = &m.theme;
     let s = &m.send;
-    if area.height < 4 {
-        return;
-    }
-    // Wide: form on the left, a live preview on the right. Everything else: form only.
-    let (form_area, preview) = if tier == Tier::Wide {
+    let th = &m.theme;
+    let (body, preview) = if tier == Tier::Wide && !m.privacy() {
         let cols = Flex::horizontal()
-            .constraints([Constraint::Percentage(58.0), Constraint::Fill])
+            .constraints([Constraint::Percentage(60.0), Constraint::Fill])
             .split(area);
         (cols[0], Some(cols[1]))
     } else {
         (area, None)
     };
-
-    let block = panel(th, " Send ", true);
-    let inner = block.inner(form_area);
-    block.render(form_area, frame);
+    let panel = panel(th, " Send · prepare, review, then confirm ", s.editing);
+    let inner = panel.inner(body);
+    panel.render(body, frame);
     if inner.height < 3 {
         return;
     }
-    let rows = Flex::vertical()
-        .constraints([
-            Constraint::Fixed(2),
-            Constraint::Fixed(2),
-            Constraint::Fixed(2),
-            Constraint::Fixed(2),
-            Constraint::Fill,
-        ])
-        .split(inner);
-    for (i, (field, label, hint)) in FIELDS.into_iter().enumerate() {
-        let row = rows[i];
-        let input = match field {
-            Field::Amount => &s.amount,
-            Field::Note => &s.note,
-            _ => &s.to,
-        };
-        Paragraph::new(Text::from_line(Line::from_spans([Span::styled(
-            format!("{label:<7}"),
-            if s.field == field {
+    let focus: usize = match s.field {
+        Field::To => 0,
+        Field::Amount => 1,
+        Field::Note => 2,
+        Field::Priority => 3,
+        Field::Account => 4,
+        Field::FeeLimit => 5,
+    };
+    let room = inner.height.saturating_sub(3).max(1) as usize;
+    let offset = focus.saturating_sub(room.saturating_sub(1));
+    for (slot, index) in (offset..6).take(room).enumerate() {
+        let row = Rect::new(inner.x, inner.y + slot as u16, inner.width, 1);
+        let label = [
+            "Recipient",
+            "Amount / all",
+            "Note",
+            "Fee level",
+            "Account",
+            "Fee ceiling",
+        ][index];
+        let label_w = 14.min(row.width);
+        Paragraph::new(format!("{}{label}", if focus == index { ">" } else { " " }))
+            .style(if focus == index {
                 th.accented()
             } else {
                 th.dimmed()
-            },
-        )])))
-        .wrap(WrapMode::None)
-        .render(row, frame);
-        let box_ = Rect::new(row.x + 8, row.y, row.width.saturating_sub(8).max(1), 1);
-        super::screens::hinted_input(th, input, hint, box_, frame);
-        // **M17: a field whose visible value is not its value says so.** A 95-character address in
-        // a 57-cell box shows its last 57 characters and the first 33 are off-screen with nothing
-        // marking it — on the field that decides who gets the money. The row already owns two lines,
-        // so the second one carries the fact. The Preview beside it still shows the address whole,
-        // and this line is what a narrower terminal gets instead.
-        let typed = input.value().width();
-        if row.height > 1 && typed > box_.width as usize {
-            Paragraph::new(Text::from_line(Line::styled(
-                format!("        {typed} characters typed. The box is showing the end of them."),
-                th.dimmed(),
-            )))
-            .wrap(WrapMode::None)
-            .render(Rect::new(row.x, row.y + 1, row.width, 1), frame);
-        }
-        // §7a.2: a click focuses the field. The whole row is the target, label included, because
-        // a user clicking "Amount" means the amount.
-        m.hits.field(i, Rect::new(row.x, row.y, row.width, 1));
-        let _ = box_;
-    }
-    // The priority chips carry the node's own `fees[]` for each level — no local multiplier
-    // table (§1b.4); `0` is drawn as an alias of the lowest chip.
-    let fees = m
-        .status
-        .as_ref()
-        .and_then(|st| st.node.fee.fees_pico.clone())
-        .unwrap_or_default();
-    let mut chips = vec![Span::styled(
-        "Fee".to_string(),
-        if s.field == Field::Priority {
-            th.accented()
+            })
+            .render(Rect::new(row.x, row.y, label_w, 1), frame);
+        let field = Rect::new(row.x + label_w, row.y, row.width.saturating_sub(label_w), 1);
+        if index == 3 || index == 4 {
+            let value = if index == 3 {
+                super::fee_level_name(s.priority).to_string()
+            } else {
+                s.account.to_string()
+            };
+            Paragraph::new(format!("◂ {value} ▸"))
+                .style(th.text())
+                .render(field, frame);
+            let which = if index == 3 {
+                super::hit::Selector::Priority
+            } else {
+                super::hit::Selector::Account
+            };
+            m.hits.arrow(which, -1, Rect::new(field.x, field.y, 1, 1));
+            m.hits.arrow(
+                which,
+                1,
+                Rect::new(field.x + value.width() as u16 + 3, field.y, 1, 1),
+            );
+            m.hits.field(index, Rect::new(row.x, row.y, label_w, 1));
+            m.hits.field(
+                index,
+                Rect::new(field.x + 1, field.y, value.width() as u16 + 2, 1),
+            );
         } else {
-            th.dimmed()
-        },
-    )];
-    // Each chip is **individually** clickable, and a click **selects that priority** rather than
-    // cycling (§7a.2, revision 6) — which is also more discoverable than four presses of `p`.
-    // Without this a mouse-only user could not change the fee on the money screen.
-    // **Four chips, by name** (§2o): the old row was `Priority 0=1  1 20000p  2 80000p …` — an
-    // alias notation and four per-byte piconero figures, none of which a person chooses between.
-    // The node's own `fees[]` still decides what each level costs (§1b.4); it is simply not the
-    // label. `0` is monerod's alias of the cheapest level, so it highlights that chip, and each
-    // chip stays **individually** clickable (§7a.2, revision 6) — without that a mouse-only user
-    // could not change the fee on the money screen.
-    let selected = s.priority.max(1);
-    let mut x = rows[3].x + "Fee".width() as u16;
-    for (i, name) in super::FEE_LEVELS.iter().enumerate() {
-        let level = i as u32 + 1;
-        let _ = fees.get(i);
-        let label = format!(" {name} ");
-        let w = label.width() as u16;
-        if x + w <= rows[3].right() {
-            m.hits.priority(level, Rect::new(x, rows[3].y, w, 1));
+            let input = match index {
+                0 => &s.to,
+                1 => &s.amount,
+                2 => &s.note,
+                _ => &s.fee_limit,
+            };
+            if m.privacy() {
+                let mut masked =
+                    field_input(th).with_value("•".repeat(input.value().chars().count()));
+                masked.set_focused(input.focused());
+                masked.render(field, frame);
+            } else {
+                super::screens::hinted_input(
+                    th,
+                    input,
+                    if index == 5 { "optional XMR cap" } else { "" },
+                    field,
+                    frame,
+                );
+            }
+            m.hits.field(index, row);
         }
-        x += w;
-        chips.push(Span::styled(
-            label,
-            if level == selected {
-                th.selected()
-            } else {
-                th.dimmed()
-            },
-        ));
     }
-    chips.push(Span::styled(" p · Ctrl+P".to_string(), th.dimmed()));
-    // The Account field lives on its OWN line. On one line with five fee chips the row ran past
-    // the form's width at every tier, and what fell off the end was the focus highlight, the
-    // value and the `←→` affordance for the field that decides which balance is spent.
-    // `◂ n ▸` with **both arrows as hit rects** (§7a.2, revision 6): the account decides which
-    // balance is spent, and a mouse-only user could not change it while it was `←→` only.
-    let account = Line::from_spans([
-        Span::styled(
-            format!("Account ◂ {} ▸ ", s.account),
-            if s.field == Field::Account {
-                th.selected()
-            } else {
-                th.dimmed()
-            },
-        ),
-        Span::styled("←→ changes it".to_string(), th.dimmed()),
-    ]);
-    if rows[3].height > 1 {
-        let y = rows[3].y + 1;
-        let lead = "Account ".width() as u16;
-        m.hits.arrow(
-            super::hit::Selector::Account,
-            -1,
-            Rect::new(rows[3].x + lead, y, 1, 1),
-        );
-        let value_w = format!("{}", s.account).width() as u16;
-        m.hits.arrow(
-            super::hit::Selector::Account,
-            1,
-            Rect::new(rows[3].x + lead + 2 + value_w + 1, y, 1, 1),
-        );
-    }
-    Paragraph::new(Text::from_lines([Line::from_spans(chips), account]))
-        .wrap(WrapMode::None)
-        .render(rows[3], frame);
-
-    let (text, ok) = s.validation();
-    let (status, style) = match &s.stage {
-        Stage::Validating => ("checking the address…".to_string(), th.warn()),
-        Stage::Building => (
-            "Checking the fee. Nothing has been sent yet. Esc cancels.".to_string(),
-            th.warn(),
-        ),
-        Stage::Relaying => ("Sending. This cannot be stopped.".to_string(), th.warn()),
-        // **No id at all now** (round 4, S10; X9 had shortened it, W8 had printed all 64
-        // characters). An elided id is not a value: it cannot be pasted, filtered on or read
-        // out. What the reader wants after a send is where the payment is, and it is one row
-        // below on the screen this line sits at the bottom of.
-        Stage::Sent => (
-            "Sent. The payment is at the top of your payments.".to_string(),
-            th.ok(),
-        ),
-        _ => (text, if ok { th.ok() } else { th.err() }),
+    let status = match s.stage {
+        Stage::Validating => "Checking recipient…".into(),
+        Stage::Building => "Preparing exact fee; nothing sent. Esc cancels.".into(),
+        Stage::Relaying => "Submission in progress; wait for its result.".into(),
+        _ if m.privacy() => "Values hidden · final review needs deliberate local reveal.".into(),
+        _ => s.validation().0,
     };
-    // **The status line wraps too** (round 4's own read of the captures). It was rendered
-    // `WrapMode::None` on one row, so `mainnet address · 0.0100 XMR · Enter works out the fee.
-    // Nothing is sent yet.` was cut after `Nothing is` — on the money screen's own status line,
-    // with the reassurance that matters the half that fell off. Its continuations take the same
-    // hanging indent the footer below it does.
-    let w = rows[4].width as usize;
-    let text_w = w.saturating_sub(2).max(8);
-    let mut lines: Vec<Line> = Vec::new();
-    for (i, part) in super::screens::wrap_words(&status, text_w)
-        .into_iter()
-        .enumerate()
-    {
-        lines.push(Line::styled(
-            if i == 0 { part } else { format!("  {part}") },
-            style,
-        ));
-    }
-    // Wrap the key line with a hanging indent at narrow widths.
-    let footer = format!(
-        "account {} · ↑↓ fields · ⇥ screens · @ address book · {}",
-        s.account,
-        if s.editing {
-            "Esc leaves the form"
-        } else {
-            "Enter returns to the form"
-        }
+    Paragraph::new(status).style(th.dimmed()).render(
+        Rect::new(inner.x, inner.bottom().saturating_sub(3), inner.width, 1),
+        frame,
     );
-    for (i, part) in super::screens::wrap_words(&footer, text_w)
-        .into_iter()
-        .enumerate()
-    {
-        lines.push(Line::styled(
-            if i == 0 { part } else { format!("  {part}") },
-            th.dimmed(),
-        ));
+    super::screens::chip_row(
+        m,
+        Rect::new(inner.x, inner.bottom().saturating_sub(2), inner.width, 2),
+        &[
+            (super::hit::Button::PreparePayment, "Enter", "Review"),
+            (super::hit::Button::ParseRequest, "U", "Open URI"),
+            (super::hit::Button::SendAll, "A", "Send all"),
+            (super::hit::Button::SendBook, "B", "Contacts"),
+        ],
+        frame,
+    );
+    if let Some(area) = preview {
+        view_preview(m, area, frame);
     }
-    Paragraph::new(Text::from_lines(lines))
-        .wrap(WrapMode::None)
-        .render(rows[4], frame);
-
-    if let Some(preview) = preview {
-        view_preview(m, preview, frame);
-    }
-    if let Some((entries, sel)) = &s.picker {
-        view_picker(m, entries, *sel, frame);
+    if let Some((entries, selected)) = &s.picker {
+        view_picker(m, entries, *selected, frame);
     }
 }
 
-/// The wide tier's live preview: what the request currently is, before anything is sent.
 fn view_preview(m: &Tui, area: Rect, frame: &mut ftui::Frame) {
     let th = &m.theme;
     let block = panel(th, " Preview ", false);
@@ -771,122 +728,99 @@ fn view_preview(m: &Tui, area: Rect, frame: &mut ftui::Frame) {
 
 fn view_picker(m: &Tui, entries: &[BookEntry], sel: usize, frame: &mut ftui::Frame) {
     let rows: Vec<String> = if entries.is_empty() {
-        // §2o.1: `wallet book add` is CLI-only, so the empty state states the fact and names
-        // no command (docs/COPY.md §2).
-        vec!["Your address book is empty.".into()]
+        vec!["No contacts yet. Add one in Tools → Wallet → Accounts and contacts.".into()]
     } else {
         entries
             .iter()
-            .map(|e| format!("{} {}", fit(&e.description, 18), short_addr(&e.address)))
+            .enumerate()
+            .map(|(i, e)| {
+                if m.privacy() {
+                    format!("Contact {} · details hidden", i + 1)
+                } else {
+                    format!("{} {}", fit(&e.description, 18), short_addr(&e.address))
+                }
+            })
             .collect()
     };
     let sel = if entries.is_empty() { usize::MAX } else { sel };
     super::screens::list_modal(m, " Address book · Enter picks ", &rows, sel, None, frame);
 }
 
-/// The confirm modal — the whole safety surface, and therefore never abbreviated: it renders
-/// in full at every tier (§7a's resize table).
-/// What `Tab` says inside the send confirm (round 5, S12). One literal, because `switch_screen`
-/// decides when it is shown and this file draws it.
-pub(super) const TAB_FIRST_ESC: &str = "Esc first, then Tab.";
-
+/// Render the complete payment review with scrolling when it exceeds the terminal height.
+/// The review owns its hit targets and records which rows have been shown before confirmation.
 pub(super) fn view_confirm(m: &Tui, plan: &Plan, frame: &mut ftui::Frame) {
-    let th = &m.theme;
-    // The modal is the whole safety surface and is never abbreviated (§7a's resize table), so
-    // its height is computed from the width it will actually get: the recipient wraps into
-    // more rows on a narrow terminal, and the typed-word prompt must still be on screen.
-    let w = 78.min(frame.bounds().width);
-    let addr_rows = wrapped(&plan.dest, w.saturating_sub(4) as usize).len() as u16;
-    // The body is `addr_rows + 8` lines — "To", the wrapped address, Amount/Fee/Total, Account,
-    // a blank, the typed-word prompt and the echo row — and `overlay`'s interior is `h - 4`
-    // (a border row and a padding row at each end). `addr_rows + 11` was one short, and the row
-    // that lost was the echo: the user typed the confirmation word into a modal that showed no
-    // character of it, on the one screen that moves money (§7a: never abbreviated).
     let Some(inner) = super::screens::overlay(
         m,
         frame,
-        w,
-        addr_rows + 12 + u16::from(m.send.tab_note),
-        " Confirm · this sends money ",
+        82,
+        frame.bounds().height.saturating_sub(2),
+        " Review payment · sends money ",
     ) else {
         return;
     };
-    let bg = th.selection;
-    let dim = th.dimmed().bg(bg);
-    let text = th.text().bg(bg);
-    // §5's shape rule, on the screen §7a calls "the whole safety surface": unknown is `—`, never
-    // a zero. `Piconero::checked_add` fails only when `amount + fee` exceeds `u64::MAX`, and
-    // `Total 0.0000 XMR` beside a real Amount and a real Fee is not a sum of what is being spent.
-    // The confirm word is refused in that state (`SendScreen::on_key`).
-    // **All three figures at one precision** (round 4 iteration 3): `Amount 0.0100 XMR`,
-    // `Fee 0.00003072 XMR`, `Total 0.01003072 XMR` — three different decimal counts in one modal,
-    // on the three numbers the reader is being asked to add up. Eight decimals for all three, which
-    // is what `Piconero::FEE_DECIMALS` is, and the sum is then checkable by eye down the column.
-    let xmr = |p: Piconero| p.to_xmr_min(Piconero::FEE_DECIMALS);
-    let (total, total_pico) = match plan.total() {
-        Ok(t) => (xmr(t), t.0.to_string()),
-        Err(_) => ("—".to_string(), "—".to_string()),
-    };
-    let mut lines = vec![Line::styled("To".to_string(), dim)];
-    // Wrapped, never elided (§7a).
-    lines.extend(
-        wrapped(&plan.dest, inner.width as usize)
-            .into_iter()
-            .map(|l| Line::styled(l, th.accented().bg(bg))),
-    );
-    for (label, xmr, pico) in [
-        (
-            "Amount ",
-            xmr(plan.total_amount),
-            plan.total_amount.0.to_string(),
-        ),
-        ("Fee    ", xmr(plan.total_fee), plan.total_fee.0.to_string()),
-        ("Total  ", total, total_pico),
+    m.hits.modal(inner);
+    let total = plan
+        .total()
+        .map(|p| p.to_xmr_min(12))
+        .unwrap_or_else(|_| "Invalid total".into());
+    let text = format!("Recipient\n{}\nAmount  {} XMR\nFee     {} XMR\nTotal   {} XMR\nAccount {} · Fee level {}\nThe exact prepared transaction will be submitted once.",
+        plan.dest, plan.total_amount.to_xmr_min(12), plan.total_fee.to_xmr_min(12), total, plan.account_index, super::fee_level_name(plan.priority));
+    let rows: Vec<String> = text
+        .lines()
+        .flat_map(|l| wrapped(l, inner.width.max(1) as usize))
+        .collect();
+    if m.send.review_width.replace(inner.width) != inner.width {
+        m.send.review_seen.borrow_mut().clear();
+    }
+    let room = inner.height.saturating_sub(4) as usize;
+    m.send
+        .review_max
+        .set(rows.len().saturating_sub(room.max(1)));
+    let offset = m
+        .send
+        .review_offset
+        .min(rows.len().saturating_sub(room.max(1)));
+    for (slot, (index, row)) in rows.iter().enumerate().skip(offset).take(room).enumerate() {
+        Paragraph::new(row.as_str()).style(m.theme.text()).render(
+            Rect::new(inner.x, inner.y + slot as u16, inner.width, 1),
+            frame,
+        );
+        m.send.review_seen.borrow_mut().insert(index);
+    }
+    let complete =
+        room > 0 && m.send.review_seen.borrow().len() == rows.len() && plan.total().is_ok();
+    m.send.review_visible.set(complete);
+    let y = inner.bottom().saturating_sub(4);
+    for (button, label, x) in [
+        (super::hit::Button::ReviewUp, "↑ Previous", inner.x),
+        (super::hit::Button::ReviewDown, "↓ More", inner.x + 14),
     ] {
-        lines.push(Line::from_spans([
-            Span::styled(label.to_string(), dim),
-            Span::styled(format!("{xmr} XMR  "), text),
-            Span::styled(format!("({pico} piconero)"), dim),
-        ]));
+        let area = Rect::new(x, y, 12.min(inner.right().saturating_sub(x)), 1);
+        Paragraph::new(label)
+            .style(m.theme.key())
+            .render(area, frame);
+        m.hits.button(button, area);
     }
-    lines.push(Line::from_spans([
-        Span::styled("Account".to_string(), dim),
-        Span::styled(
-            // The transaction's weight is an internal number and stays in `--json` (§2o).
-            format!(
-                " {}  Fee level {}",
-                plan.account_index,
-                super::fee_level_name(plan.priority)
-            ),
-            text,
-        ),
-    ]));
-    lines.push(Line::styled(String::new(), dim));
-    lines.push(Line::styled(
-        if plan.total().is_err() {
-            "That total is too large to add up, so it cannot be confirmed · Esc discards"
-                .to_string()
-        } else {
-            format!("Type \"{CONFIRM_WORD}\" and press Enter to send · Esc discards")
-        },
-        th.warn().bg(bg),
-    ));
-    lines.push(Line::from_spans([
-        Span::styled("> ".to_string(), th.accented().bg(bg)),
-        Span::styled(m.send.typed.clone(), text),
-        Span::styled("_".to_string(), dim),
-    ]));
-    // **Round 5, S12: the one line `Tab` gets to say here.** Closing this modal is not allowed with
-    // a built transaction in it — that is the whole point of the stage — so `Tab` cannot switch
-    // screens, and the honest answer is the order of the two keys. It appears only after `Tab` is
-    // pressed, because a modal that explains a key nobody pressed is one more line to read on the
-    // screen that moves money.
-    if m.send.tab_note {
-        lines.push(Line::styled(TAB_FIRST_ESC.to_string(), th.err().bg(bg)));
-    }
-    Paragraph::new(Text::from_lines(lines))
-        .wrap(WrapMode::None)
-        .render(inner, frame);
+    let prompt = if complete {
+        "Type send to confirm"
+    } else {
+        "Read all rows to enable confirmation"
+    };
+    Paragraph::new(prompt).style(m.theme.warn()).render(
+        Rect::new(inner.x, inner.bottom().saturating_sub(3), inner.width, 1),
+        frame,
+    );
+    Paragraph::new(format!("> {}", m.send.typed))
+        .style(m.theme.text())
+        .render(
+            Rect::new(inner.x, inner.bottom().saturating_sub(2), inner.width, 1),
+            frame,
+        );
+    m.hits.button(
+        super::hit::Button::ReviewFocus,
+        Rect::new(inner.x, inner.bottom().saturating_sub(2), inner.width, 1),
+    );
+    super::screens::modal_actions(m, inner, "Send", frame);
 }
 
 #[cfg(test)]
@@ -900,15 +834,19 @@ mod tests {
     }
 
     #[test]
-    fn all_is_refused_inline_and_names_the_sweep_command() {
+    fn all_builds_a_typed_sweep_request_with_the_fee_ceiling() {
         let mut s = screen();
         s.to.set_value(DEST);
         s.amount.set_value("all");
-        let (text, ok) = s.validation();
-        assert!(!ok);
-        assert_eq!(text, NO_SWEEP);
-        assert!(text.contains("fmonero wallet sweep"));
-        assert!(s.request(None).is_err());
+        s.fee_limit.set_value("0.001");
+        assert!(s.validation().1);
+        let SendCmd::Sweep(request) = s.on_key(key(KeyCode::Enter), 1) else {
+            panic!("expected sweep preparation");
+        };
+        assert_eq!(request.dest, DEST);
+        assert_eq!(request.max_fee, Some(Piconero(1_000_000_000)));
+        assert!(request.below.is_none());
+        assert!(matches!(s.stage, Stage::Building));
     }
 
     #[test]
@@ -953,6 +891,7 @@ mod tests {
             SendCmd::Note(_)
         ));
         s.typed = CONFIRM_WORD.into();
+        s.review_visible.set(true);
         assert!(matches!(
             s.on_confirm_key(key(KeyCode::Enter)),
             SendCmd::Relay

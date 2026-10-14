@@ -14,26 +14,46 @@
 //! else is a signature-only module whose bodies return `Error::unimplemented` or empty data
 //! — §2h's one sanctioned handover, listed in §8.
 
+pub mod accounts;
 pub mod address;
 pub mod agent;
 pub mod amount;
 pub mod app;
+pub mod artifacts;
+pub mod capabilities;
+pub mod cold;
 pub mod context;
 pub mod error;
 pub mod fsinfo;
+pub mod hardware;
 pub mod history;
+pub mod history_export;
 pub mod log;
+pub mod log_sources;
+pub mod maintenance;
+mod native_process;
+pub mod native_tx;
 pub mod nodes;
+pub mod notifications;
 pub mod paths;
+pub mod payment_uri;
 pub mod proc;
+pub mod proofs;
+pub mod receive;
+pub mod recovery;
+pub mod restore;
 pub mod rpc;
+pub mod secrets;
 pub mod send;
 pub mod session;
 pub mod settings;
 pub mod state;
 pub mod status;
+pub mod transport;
 pub mod units;
 pub mod wallet_dir;
+pub mod wallet_ops;
+pub mod watch;
 
 pub use address::{AddrForm, AddrKind, Address, NetType, PREFIXES};
 pub use amount::Piconero;
@@ -44,6 +64,7 @@ pub use nodes::{ListOpts, NodeList, Probe, ProbeTarget, PublicNode};
 pub use paths::Paths;
 pub use proc::{CancelToken, Output};
 pub use rpc::{Login, NodeClient, NodeMutators, WalletClient};
+pub use secrets::SecretString;
 pub use send::{BuiltTx, SendRequest, SweepRequest, TransferRequest};
 // `wallet_session::open` and `node_session::up` are spelled without `session::` in §5b.
 pub use session::{node_mode, node_session, wallet_session};

@@ -42,7 +42,10 @@ const RESTRICTED_LEGACY: &str =
 
 /// Wire method -> default fixture basename. One entry: §8 names the transfer fixture
 /// `transfer-do-not-relay.json` while the wire method is `transfer`. `--scenario` still wins.
-const FIXTURE_ALIAS: &[(&str, &str)] = &[("transfer", "transfer-do-not-relay")];
+const FIXTURE_ALIAS: &[(&str, &str)] = &[
+    ("transfer", "transfer-do-not-relay"),
+    ("transfer_split", "transfer_split-do-not-relay"),
+];
 
 /// epee's Digest realm, verbatim (`auth_realm`, contrib/epee/src/http_auth.cpp:97).
 const REALM: &str = "monero-rpc";
@@ -517,8 +520,8 @@ fn fixture(r: &Routes, method: &str, params: &Value) -> Option<Value> {
     if method == "relay_tx" {
         return relay_tx(r, params);
     }
-    if method == "transfer" {
-        return transfer(r, params);
+    if method == "transfer" || method == "transfer_split" {
+        return transfer(r, method, params);
     }
     load(
         r,
@@ -574,8 +577,8 @@ fn validate_address(r: &Routes, params: &Value) -> Option<Value> {
 /// cannot exercise the one comparison `send::build` now makes, and every capture taken against it
 /// shows a figure nobody typed. The fee, the weight, the txid and the metadata stay the fixture's:
 /// those a mock genuinely cannot compute.
-fn transfer(r: &Routes, params: &Value) -> Option<Value> {
-    let mut v = load(r, FIXTURE_ALIAS.iter().find(|(m, _)| *m == "transfer")?.1)?;
+fn transfer(r: &Routes, method: &str, params: &Value) -> Option<Value> {
+    let mut v = load(r, FIXTURE_ALIAS.iter().find(|(m, _)| *m == method)?.1)?;
     let amounts: Vec<u64> = params
         .get("destinations")
         .and_then(Value::as_array)
@@ -586,8 +589,15 @@ fn transfer(r: &Routes, params: &Value) -> Option<Value> {
         })
         .unwrap_or_default();
     if !amounts.is_empty() {
-        v["amount"] = json!(amounts.iter().sum::<u64>());
-        v["amounts_by_dest"] = json!({ "amounts": amounts });
+        let total = amounts
+            .iter()
+            .try_fold(0_u64, |sum, amount| sum.checked_add(*amount))?;
+        if method == "transfer_split" {
+            v["amount_list"] = json!([total]);
+        } else {
+            v["amount"] = json!(total);
+            v["amounts_by_dest"] = json!({ "amounts": amounts });
+        }
     }
     Some(v)
 }
@@ -609,6 +619,16 @@ fn relay_tx(r: &Routes, params: &Value) -> Option<Value> {
     if let Some(v) = raw(r, "transfer-do-not-relay") {
         if v["tx_metadata"].as_str() == Some(hex) {
             return Some(json!({"tx_hash": v["tx_hash"]}));
+        }
+    }
+    if let Some(v) = raw(r, "transfer_split-do-not-relay") {
+        let metadata = v["tx_metadata_list"].as_array()?;
+        let hashes = v["tx_hash_list"].as_array()?;
+        if let Some(index) = metadata
+            .iter()
+            .position(|value| value.as_str() == Some(hex))
+        {
+            return hashes.get(index).map(|hash| json!({"tx_hash": hash}));
         }
     }
     if let Some(v) = raw(r, "sweep_all") {

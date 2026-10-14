@@ -143,6 +143,7 @@ pub fn probe_reason_words(reason: Option<&str>) -> &'static str {
         Some("http") => "a web error",
         Some("bad_json") => "bad answer",
         Some("cancelled") => "stopped",
+        Some("transport_policy") => "Cannot apply the selected connection policy",
         Some(_) | None => "no answer",
     }
 }
@@ -158,6 +159,7 @@ pub const PROBE_REASONS: &[&str] = &[
     "http",
     "bad_json",
     "cancelled",
+    "transport_policy",
 ];
 
 /// `reason` is an `Option<&'static str>` in the frozen signature (§5b) and a JSON string in the
@@ -337,9 +339,28 @@ impl ProbeTarget {
         let normalised = Settings::parse_remote_address(s)?;
         Ok(split_scheme(&normalised))
     }
-    /// The one place a probe URL is built (§2n.3 argv shape 2).
-    fn json_rpc_url(&self) -> String {
-        format!("{}://{}/json_rpc", self.scheme, self.address)
+    /// The same validated policy and URL for foreground and detached probes.
+    fn probe_policy(
+        &self,
+        node: &crate::settings::NodeSettings,
+    ) -> Result<(String, crate::transport::DaemonConnection), Error> {
+        let endpoint = format!("{}://{}", self.scheme, self.address);
+        let connection = crate::transport::DaemonConnection::for_address(node, &endpoint, false)?;
+        // curl's pinnedpubkey checks a public key, whereas Monero checks the
+        // certificate hash. Never contact a node under an unenforced pin.
+        if connection.fingerprint.is_some() {
+            return Err(Error::safety("This connection check cannot verify the selected certificate fingerprint. The wallet connection still enforces it."));
+        }
+        let target = split_scheme(connection.address());
+        let scheme = if connection.ssl == crate::SslSupport::Enabled {
+            "https"
+        } else {
+            &target.scheme
+        };
+        Ok((
+            format!("{scheme}://{}/json_rpc", target.address),
+            connection,
+        ))
     }
 }
 
@@ -649,10 +670,27 @@ fn require_curl() -> Result<(), Error> {
     )
 }
 
+fn proxy_argv(ctx: &Context) -> Result<Vec<String>, Error> {
+    match ctx.settings.node.proxy.as_deref() {
+        None => Ok(Vec::new()),
+        Some(proxy) => Ok(vec![
+            "--socks5-hostname".into(),
+            crate::transport::validate_proxy(proxy)?,
+            "--noproxy".into(),
+            String::new(),
+        ]),
+    }
+}
+fn append_proxy(ctx: &Context, argv: &mut Vec<String>) -> Result<(), Error> {
+    argv.extend(proxy_argv(ctx)?);
+    Ok(())
+}
+
 /// argv shape 1 (§2n.3), built here and nowhere else.
 fn fetch_argv<'a>(url: &'a str, max_time: &'a str, proto: &'a str) -> Vec<&'a str> {
     vec![
         "curl",
+        "-q",
         "-sS",
         "--fail",
         "--proto",
@@ -673,6 +711,7 @@ fn fetch_argv<'a>(url: &'a str, max_time: &'a str, proto: &'a str) -> Vec<&'a st
 fn probe_argv<'a>(url: &'a str, max_time: &'a str) -> Vec<&'a str> {
     vec![
         "curl",
+        "-q",
         "-sS",
         "-m",
         max_time,
@@ -691,7 +730,7 @@ fn probe_argv<'a>(url: &'a str, max_time: &'a str) -> Vec<&'a str> {
 
 /// GET one monero.fail document. The only computed arguments are the deadline and the URL,
 /// and the URL's host is this module's own constant (or the test seam's, §2n.7).
-fn fetch_doc(name: &str, cancel: &CancelToken) -> Result<Vec<u8>, Error> {
+fn fetch_doc(ctx: &Context, name: &str, cancel: &CancelToken) -> Result<Vec<u8>, Error> {
     let url = format!("{}/{name}", source_base());
     let max_time = FETCH_MAX_TIME_SEC.to_string();
     let proto = if seam_in_force() {
@@ -699,7 +738,12 @@ fn fetch_doc(name: &str, cancel: &CancelToken) -> Result<Vec<u8>, Error> {
     } else {
         "=https"
     };
-    let argv = fetch_argv(&url, &max_time, proto);
+    let mut owned: Vec<String> = fetch_argv(&url, &max_time, proto)
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    append_proxy(ctx, &mut owned)?;
+    let argv: Vec<&str> = owned.iter().map(String::as_str).collect();
     let out = proc::run_with_deadline(
         &argv,
         Duration::from_secs(FETCH_MAX_TIME_SEC + DEADLINE_SLACK_SEC),
@@ -741,13 +785,13 @@ fn fetch_doc(name: &str, cancel: &CancelToken) -> Result<Vec<u8>, Error> {
 /// Fetch and parse both documents and merge them into candidates (§2n.1). Separated from
 /// [`list`] because it is the half the fixtures test and the half with no cache semantics.
 pub fn fetch(ctx: &Context, cancel: &CancelToken) -> Result<NodeList, Error> {
-    let _ = ctx;
+    proxy_argv(ctx)?;
     require_curl()?;
-    let nodes_doc = fetch_doc("nodes.json", cancel)?;
+    let nodes_doc = fetch_doc(ctx, "nodes.json", cancel)?;
     let parsed = parse_nodes_json(&nodes_doc)?;
     // health.json is the optional half: a failure there costs the health columns, not the
     // list, because a candidate with no entry is already a rendered outcome (§2n.1).
-    let health = match fetch_doc("health.json", cancel) {
+    let health = match fetch_doc(ctx, "health.json", cancel) {
         Ok(bytes) => parse_health_json(&bytes).unwrap_or_default(),
         Err(e) if e.is_interrupted() => return Err(e),
         Err(_) => HealthMap::new(),
@@ -758,7 +802,6 @@ pub fn fetch(ctx: &Context, cancel: &CancelToken) -> Result<NodeList, Error> {
 /// One probe (§2n.4). Also the configured-node probe, called by the TUI and by nothing else
 /// automatic — `status`, the widget and the doctor never call it (§2e).
 pub fn probe_one(ctx: &Context, target: &ProbeTarget, cancel: &CancelToken) -> Probe {
-    let _ = ctx;
     if cancel.is_cancelled() {
         return Probe::failed("cancelled", None);
     }
@@ -769,9 +812,22 @@ pub fn probe_one(ctx: &Context, target: &ProbeTarget, cancel: &CancelToken) -> P
     if require_curl().is_err() {
         return Probe::failed("refused", None);
     }
-    let url = target.json_rpc_url();
+    let (url, connection) = match target.probe_policy(&ctx.settings.node) {
+        Ok(value) => value,
+        Err(_) => return Probe::failed("transport_policy", None),
+    };
     let max_time = PROBE_MAX_TIME_SEC.to_string();
-    let argv = probe_argv(&url, &max_time);
+    let mut owned: Vec<String> = probe_argv(&url, &max_time)
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    if append_proxy(ctx, &mut owned).is_err() {
+        return Probe::failed("transport_policy", None);
+    }
+    if let Some(ca) = &connection.ca_file {
+        owned.extend(["--cacert".into(), ca.to_string_lossy().into_owned()]);
+    }
+    let argv: Vec<&str> = owned.iter().map(String::as_str).collect();
     let out = match proc::run_with_deadline(
         &argv,
         Duration::from_secs(PROBE_MAX_TIME_SEC + DEADLINE_SLACK_SEC),
@@ -1114,9 +1170,17 @@ pub fn spawn_check(ctx: &Context, address: &str) -> Result<bool, Error> {
         return Ok(false);
     }
     let target = ProbeTarget::parse(address)?;
-    let url = target.json_rpc_url();
+    let (url, connection) = target.probe_policy(&ctx.settings.node)?;
     let max_time = PROBE_MAX_TIME_SEC.to_string();
-    let argv = probe_argv(&url, &max_time);
+    let mut owned: Vec<String> = probe_argv(&url, &max_time)
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    append_proxy(ctx, &mut owned)?;
+    if let Some(ca) = &connection.ca_file {
+        owned.extend(["--cacert".into(), ca.to_string_lossy().into_owned()]);
+    }
+    let argv: Vec<&str> = owned.iter().map(String::as_str).collect();
     // The order matters: record first, spawn second. A spawn whose record was lost would be
     // spawned again by the next poll three seconds later, which is the stampede the record
     // exists to prevent.
@@ -1189,6 +1253,7 @@ mod tests {
             argv,
             vec![
                 "curl",
+                "-q",
                 "-sS",
                 "--fail",
                 "--proto",
@@ -1211,13 +1276,16 @@ mod tests {
             scheme: "http".into(),
             address: "xmr-node.cakewallet.com:18081".into(),
         };
-        let url = target.json_rpc_url();
+        let (url, _) = target
+            .probe_policy(&crate::settings::NodeSettings::default())
+            .unwrap();
         assert_eq!(url, "http://xmr-node.cakewallet.com:18081/json_rpc");
         let argv = probe_argv(&url, "5");
         assert_eq!(
             argv,
             vec![
                 "curl",
+                "-q",
                 "-sS",
                 "-m",
                 "5",
@@ -1268,10 +1336,39 @@ mod tests {
         );
         let target = ProbeTarget::from_node(&parsed.nodes[0]);
         assert_eq!(
-            target.json_rpc_url(),
+            target
+                .probe_policy(&crate::settings::NodeSettings::default())
+                .unwrap()
+                .0,
             "http://good.example:18081/json_rpc",
             "the probe URL is reconstructed from the validated address"
         );
+    }
+
+    #[test]
+    fn actual_probe_policy_requires_https_and_refuses_unenforceable_pins() {
+        let mut policy = crate::settings::NodeSettings::default();
+        let plain = ProbeTarget::parse("http://node.example:18089").unwrap();
+        assert_eq!(
+            plain.probe_policy(&policy).unwrap().0,
+            "http://node.example:18089/json_rpc"
+        );
+        policy.tls = crate::transport::TlsPolicy::Required;
+        assert_eq!(
+            plain.probe_policy(&policy).unwrap().0,
+            "https://node.example:18089/json_rpc"
+        );
+        policy.tls = crate::transport::TlsPolicy::Disabled;
+        let https = ProbeTarget::parse("https://node.example:18089").unwrap();
+        assert!(https.probe_policy(&policy).is_err());
+        policy.tls = crate::transport::TlsPolicy::Auto;
+        policy.fingerprint = Some("ab".repeat(32));
+        assert!(plain.probe_policy(&policy).is_err());
+        policy.fingerprint = None;
+        policy.proxy = Some("127.0.0.1:9050".into());
+        let (url, connection) = plain.probe_policy(&policy).unwrap();
+        assert_eq!(url, "https://node.example:18089/json_rpc");
+        assert_eq!(connection.proxy(), Some("127.0.0.1:9050"));
     }
 
     #[test]

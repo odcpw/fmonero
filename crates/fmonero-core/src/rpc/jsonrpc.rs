@@ -96,7 +96,11 @@ impl Transport {
     /// test's `WalletClient::new(url, auth, Duration::from_secs(2))` wants.
     pub fn new(url: &str, auth: Option<Login>, timeout: Duration, who: Daemon) -> Transport {
         Transport {
-            agent: crate::rpc::agent(timeout),
+            agent: if matches!(who, Daemon::Wallet) {
+                crate::rpc::wallet_agent(timeout)
+            } else {
+                crate::rpc::agent(timeout)
+            },
             base: url.trim_end_matches('/').to_string(),
             auth,
             wallet_login_file: None,
@@ -133,7 +137,11 @@ impl Transport {
             .max()
             .unwrap_or(probe);
         Transport {
-            agent: crate::rpc::agent(longest),
+            agent: if matches!(who, Daemon::Wallet) {
+                crate::rpc::wallet_agent(longest)
+            } else {
+                crate::rpc::agent(longest)
+            },
             base: url.trim_end_matches('/').to_string(),
             auth,
             wallet_login_file: None,
@@ -196,7 +204,13 @@ impl Transport {
     }
 
     /// One POST, with at most one 401 retry. Returns the response body.
-    fn post(&self, path: &str, body: &[u8], d: Deadline) -> Result<Vec<u8>, RpcError> {
+    fn post(
+        &self,
+        path: &str,
+        body: &[u8],
+        d: Deadline,
+        sensitive: bool,
+    ) -> Result<crate::secrets::PrivateBuffer, RpcError> {
         let mut live = match self.live.lock() {
             Ok(l) => l,
             // A poisoned mutex means another thread panicked mid-request; the session is
@@ -270,10 +284,14 @@ impl Transport {
                 return Err(RpcError::Transport(format!(
                     "HTTP {} from {path}: {}",
                     answer.status,
-                    String::from_utf8_lossy(&answer.body)
-                        .chars()
-                        .take(200)
-                        .collect::<String>()
+                    if sensitive {
+                        "protected response omitted".to_owned()
+                    } else {
+                        String::from_utf8_lossy(answer.body.as_slice())
+                            .chars()
+                            .take(200)
+                            .collect::<String>()
+                    }
                 )));
             }
             live.authenticated = Some(sent_auth);
@@ -319,8 +337,8 @@ impl Transport {
             "jsonrpc": "2.0", "id": "0", "method": method, "params": params,
         }))
         .map_err(|e| RpcError::Transport(e.to_string()))?;
-        let bytes = self.post("/json_rpc", &body, d)?;
-        let envelope: Value = serde_json::from_slice(&bytes)
+        let bytes = self.post("/json_rpc", &body, d, false)?;
+        let envelope: Value = serde_json::from_slice(bytes.as_slice())
             .map_err(|e| RpcError::Transport(format!("{method}: unparsable answer: {e}")))?;
         if let Some(err) = envelope.get("error").filter(|e| !e.is_null()) {
             return Err(RpcError::Rpc {
@@ -344,11 +362,68 @@ impl Transport {
     /// `rpc_response_base`, so `status` is inspected the same way (§1b.3).
     pub fn legacy(&self, name: &str, params: Value, d: Deadline) -> Result<Value, RpcError> {
         let body = serde_json::to_vec(&params).map_err(|e| RpcError::Transport(e.to_string()))?;
-        let bytes = self.post(&format!("/{name}"), &body, d)?;
-        let result: Value = serde_json::from_slice(&bytes)
+        let bytes = self.post(&format!("/{name}"), &body, d, false)?;
+        let result: Value = serde_json::from_slice(bytes.as_slice())
             .map_err(|e| RpcError::Transport(format!("{name}: unparsable answer: {e}")))?;
         check_status(&result)?;
         Ok(result)
+    }
+
+    /// Private typed path for secret-bearing operations. No serde_json::Value
+    /// copies, echoed response/error text, or ordinary request/response buffers.
+    pub(crate) fn sensitive<P: serde::Serialize, R: DeserializeOwned>(
+        &self,
+        method: &'static str,
+        params: &P,
+        d: Deadline,
+    ) -> Result<R, RpcError> {
+        #[derive(serde::Serialize)]
+        struct Request<'a, P> {
+            jsonrpc: &'static str,
+            id: &'static str,
+            method: &'static str,
+            params: &'a P,
+        }
+        #[derive(serde::Deserialize)]
+        struct Refusal {
+            code: i32,
+        } // Ignore the peer's potentially secret-bearing message.
+        #[derive(serde::Deserialize)]
+        struct Envelope<R> {
+            result: Option<R>,
+            error: Option<Refusal>,
+        }
+        let mut body = crate::secrets::PrivateBuffer::new(crate::rpc::MAX_RPC_BYTES);
+        serde_json::to_writer(
+            &mut body,
+            &Request {
+                jsonrpc: "2.0",
+                id: "0",
+                method,
+                params,
+            },
+        )
+        .map_err(|_| RpcError::Transport("could not encode bounded protected request".into()))?;
+        let bytes = self
+            .post("/json_rpc", body.as_slice(), d, true)
+            .map_err(|e| match e {
+                RpcError::Transport(ref message) if message == "wallet_peer_unverified" => e,
+                RpcError::Transport(_) => {
+                    RpcError::Transport("protected wallet request failed".into())
+                }
+                other => other,
+            })?;
+        let envelope: Envelope<R> = serde_json::from_slice(bytes.as_slice())
+            .map_err(|_| RpcError::Transport("invalid protected wallet response".into()))?;
+        if let Some(error) = envelope.error {
+            return Err(RpcError::Rpc {
+                code: error.code,
+                message: "The protected wallet operation was refused.".into(),
+            });
+        }
+        envelope
+            .result
+            .ok_or_else(|| RpcError::Transport("protected wallet response has no result".into()))
     }
 }
 
@@ -434,6 +509,14 @@ pub fn node_error(what: &str, e: RpcError) -> Error {
 /// Map a **wallet** [`RpcError`] through the §1b.4 code table.
 pub fn wallet_error(what: &str, e: RpcError) -> Error {
     match e {
+        RpcError::Transport(message) if message=="wallet_peer_unverified" => Error::safety("The wallet connection is not proven to belong to your user. No private request was sent.")
+            .with_reason("wallet_peer_unverified").with_hint("fmonero doctor --only wallet"),
+        // Monero's on_open_wallet overwrites its mapped opening failure with -1,
+        // including an invalid password. Other methods use -1 for unrelated
+        // backend failures. Protected requests have already discarded peer text.
+        RpcError::Rpc { code: -1, message } if what == "open_wallet" => {
+            Error::wallet_locked(message).with_reason("bad_password")
+        }
         RpcError::Rpc { code, message } => Error::from_wallet_rpc(code, &message),
         RpcError::NotRegistered(path) => Error::upstream("The wallet service cannot answer that.")
             .with_reason("rpc_error")
@@ -511,6 +594,126 @@ fn shared_error(side: Side, what: &str, e: RpcError) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn protected_peer(
+        body: String,
+        status: &str,
+    ) -> (Transport, std::thread::JoinHandle<serde_json::Value>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let status = status.to_owned();
+        let worker = std::thread::spawn(move || {
+            let until = std::time::Instant::now() + Duration::from_secs(4);
+            let (mut stream, _) = loop {
+                match listener.accept() {
+                    Ok(s) => break s,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            std::time::Instant::now() < until,
+                            "protected client did not connect"
+                        );
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(e) => panic!("test accept: {e}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            let (start, length) = loop {
+                let n = stream.read(&mut chunk).unwrap();
+                assert!(n > 0);
+                request.extend_from_slice(&chunk[..n]);
+                assert!(request.len() < 65536);
+                if let Some(end) = request.windows(4).position(|s| s == b"\r\n\r\n") {
+                    let header = std::str::from_utf8(&request[..end])
+                        .unwrap()
+                        .to_ascii_lowercase();
+                    let length: usize = header
+                        .lines()
+                        .find_map(|s| s.strip_prefix("content-length:"))
+                        .unwrap()
+                        .trim()
+                        .parse()
+                        .unwrap();
+                    break (end + 4, length);
+                }
+            };
+            while request.len() < start + length {
+                let n = stream.read(&mut chunk).unwrap();
+                assert!(n > 0);
+                request.extend_from_slice(&chunk[..n]);
+                assert!(request.len() < 65536);
+            }
+            write!(stream,"HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+            serde_json::from_slice(&request[start..start + length]).unwrap()
+        });
+        (
+            Transport::new(
+                &format!("http://{address}"),
+                None,
+                Duration::from_secs(2),
+                Daemon::Wallet,
+            ),
+            worker,
+        )
+    }
+
+    #[test]
+    fn protected_rpc_preserves_params_but_never_surfaces_echoed_secrets() {
+        #[derive(serde::Serialize)]
+        struct Params<'a> {
+            seed: crate::secrets::SecretRef<'a>,
+            restore_height: u64,
+        }
+        #[derive(serde::Deserialize)]
+        struct Reply {
+            address: String,
+        }
+        let secret = crate::rpc::random_hex(24).unwrap();
+        let params = Params {
+            seed: crate::secrets::SecretRef(&secret),
+            restore_height: 123,
+        };
+        let body =
+            serde_json::json!({"result":{"address":"public identity","seed":secret,"info":secret}})
+                .to_string();
+        let (transport, peer) = protected_peer(body, "200 OK");
+        let reply: Reply = transport
+            .sensitive("restore_deterministic_wallet", &params, Deadline::Open)
+            .unwrap();
+        assert_eq!(reply.address, "public identity");
+        let wire = peer.join().unwrap();
+        assert_eq!(wire["method"], "restore_deterministic_wallet");
+        assert_eq!(wire["params"]["seed"], secret);
+        assert_eq!(wire["params"]["restore_height"], 123);
+        for (body, status) in [
+            (
+                serde_json::json!({"error":{"code":-1,"message":secret}}).to_string(),
+                "200 OK",
+            ),
+            (
+                serde_json::json!({"result":{"address":{"echo":secret}}}).to_string(),
+                "200 OK",
+            ),
+            (secret.clone(), "500 Internal Server Error"),
+        ] {
+            let (transport, peer) = protected_peer(body, status);
+            let error = transport
+                .sensitive::<_, Reply>("restore_deterministic_wallet", &params, Deadline::Open)
+                .err()
+                .unwrap();
+            assert!(!format!("{error:?}").contains(&secret));
+            assert_eq!(peer.join().unwrap()["params"]["seed"], secret);
+        }
+    }
 
     /// §1b.3's central rule, as a test on the one function that enforces it: a
     /// `CHECK_CORE_READY()`-gated call answers `"BUSY"` with an all-zero body, and that
@@ -726,7 +929,7 @@ mod tests {
             (-48, 4),
             (-50, 1),
             (-51, 9),
-            (-1, 9),
+            (-1, 5),
             (0, 5),
             (-999, 5),
         ] {
@@ -748,5 +951,51 @@ mod tests {
             },
         );
         assert!(e.to_string().contains("cannot reach the node"), "{e}");
+    }
+
+    #[test]
+    fn wallet_unknown_error_is_password_related_only_at_the_open_boundary() {
+        // Classification depends on the method, not on peer-supplied words that
+        // happen to mention a password (and protected replies discard those words).
+        for method in [
+            "refresh",
+            "store",
+            "transfer_split",
+            "export_key_images",
+            "describe_transfer",
+            "create_wallet",
+            "restore_deterministic_wallet",
+            "generate_from_keys",
+            "change_wallet_password",
+        ] {
+            let e = wallet_error(
+                method,
+                RpcError::Rpc {
+                    code: -1,
+                    message: "Failed to open wallet : invalid password".into(),
+                },
+            );
+            assert_eq!(e.exit_code(), 5, "{method}");
+            assert_eq!(e.reason(), Some("rpc_error"), "{method}");
+        }
+        let open = wallet_error(
+            "open_wallet",
+            RpcError::Rpc {
+                code: -1,
+                message: "The protected wallet operation was refused.".into(),
+            },
+        );
+        assert_eq!(open.exit_code(), 9);
+        assert_eq!(open.reason(), Some("bad_password"));
+        // An explicit INVALID_PASSWORD is authoritative, unlike generic -1.
+        let password_change = wallet_error(
+            "change_wallet_password",
+            RpcError::Rpc {
+                code: -22,
+                message: "The protected wallet operation was refused.".into(),
+            },
+        );
+        assert_eq!(password_change.exit_code(), 9);
+        assert_eq!(password_change.reason(), Some("bad_password"));
     }
 }

@@ -37,6 +37,7 @@ Item {
   readonly property int  walletSyncPct: Model.walletSyncPct(status)
 
   property string actionStatus: ""     // transient label, cleared 2.2 s after an action exits
+  property bool actionFailed: false
   property string localError: ""       // stderr (or the JSON error) of the last failed action
   property int _desired: -1            // optimism bridge: -1 follow, 0 want down, 1 want up
   readonly property bool busy: actionProc.running || walletOpenProc.running
@@ -44,6 +45,16 @@ Item {
   property string walletListError: ""
   readonly property bool listingWallets: walletListProc.running
   property int _statusEpoch: 0
+  property bool _privacyKnown: false
+  property bool _privacyValue: true
+  readonly property bool privacy: !_privacyKnown || _privacyValue
+  property bool notificationsEnabled: false
+  property int _policyEpoch: 0
+  readonly property string configPath: {
+    var direct = Quickshell.env("FMONERO_CONFIG_DIR")
+    if (direct) return direct + "/config.toml"
+    return (Quickshell.env("XDG_CONFIG_HOME") || Quickshell.env("HOME") + "/.config") + "/fmonero/config.toml"
+  }
   signal walletOpened()
   signal walletOpenFailed()
   signal appStopped()
@@ -56,9 +67,9 @@ Item {
   readonly property string bin: String(setting("binary", "fmonero"))
   readonly property int refreshMs: 1000 * intSetting("refreshIntervalSec", 3, 1, 60)
   readonly property int idleRefreshMs: 1000 * intSetting("idleRefreshIntervalSec", 8, 2, 600)
-  readonly property bool showBalance: String(setting("showBalance", "on")) === "on"
+  readonly property bool showBalance: !privacy && String(setting("showBalance", "on")) === "on"
   readonly property string tuiCommand:
-    String(setting("tuiCommand", "omarchy-launch-or-focus-tui --app-id=org.odcpw.fmonero fmonero tui"))
+    String(setting("tuiCommand", "fmonero launch wallet"))
 
   function setting(name, fallback) {
     var v = settings ? settings[name] : undefined
@@ -94,6 +105,7 @@ Item {
   function runAction(args, label) {
     if (binaryMissing || busy) return
     actionStatus = String(label || "")
+    actionFailed = false
     actionStatusTimer.stop()
     localError = ""
     _statusEpoch++
@@ -122,28 +134,68 @@ Item {
   }
 
   function flash(text) {
+    actionFailed = false
     actionStatus = String(text)
     actionStatusTimer.restart()
   }
   function copyAddress() {
+    if (privacy) { flash("Reveal details in fmonero before copying."); return }
     var a = wallet && wallet.primary_address ? String(wallet.primary_address) : ""
     if (a === "") return
-    Quickshell.execDetached(["wl-copy", "--", a])
-    flash("Copied " + Model.shortAddr(a))
+    copyText(a)
   }
   function copyText(text) {
+    if (privacy) { flash("Reveal details in fmonero before copying."); return }
     var t = String(text || "")
-    if (t === "") return
-    Quickshell.execDetached(["wl-copy", "--", t])
-    flash("Copied: " + t)
+    if (t === "" || t.length > 8192 || copyProc.running) return
+    copyProc.payload = t
+    copyProc.stdinEnabled = true
+    copyProc.running = true
   }
   function openTui() {
     var argv = Model.safeArgv(root.tuiCommand)
-    if (argv.length === 0) argv = ["omarchy-launch-or-focus-tui", "--app-id=org.odcpw.fmonero", "fmonero", "tui"]
+    var oldDefault = "omarchy-launch-or-focus-tui --app-id=org.odcpw.fmonero fmonero tui"
+    var firstDefault = "omarchy-launch-or-focus-tui --app-id=fmonero fmonero tui"
+    if (argv.length === 0 || root.tuiCommand === oldDefault || root.tuiCommand === firstDefault) argv = [bin, "launch", "wallet"]
     Quickshell.execDetached(argv)
   }
   function openSendScreen() {
-    Quickshell.execDetached(["omarchy-launch-or-focus-tui", "--app-id=org.odcpw.fmonero", "fmonero", "tui", "--send"])
+    openPage("send")
+  }
+  function openPage(page) {
+    if (["node", "send", "logs", "receive", "requests", "new-address", "restore", "tools"].indexOf(page) < 0) return
+    Quickshell.execDetached([bin, "launch", page])
+  }
+  function togglePrivacy() {
+    if (busy) return
+    var next = !privacy
+    // Mask immediately; a stale or failed reply must never reveal details.
+    _privacyKnown = false
+    _privacyValue = true
+    _policyEpoch++
+    runAction(["settings", "set", "tui.privacy", next ? "true" : "false", "--json"], "Changing privacy…")
+  }
+  function invalidatePresentation() {
+    _privacyKnown = false
+    _privacyValue = true
+    notificationsEnabled = false
+    _policyEpoch++
+    _statusEpoch++
+    readPresentation()
+  }
+  function readPresentation() {
+    if (presentationProc.running || binaryMissing || busy) return
+    presentationProc.epoch = _policyEpoch
+    presentationProc.command = [bin, "app", "presentation", "--json"]
+    presentationProc.running = true
+  }
+  function toggleNotifications() {
+    runAction(["wallet", "notifications", notificationsEnabled ? "disable" : "enable", "--json"], "Changing incoming alerts…")
+  }
+  function pollNotifications() {
+    if (!notificationsEnabled || !appRunning || !walletOpen || busy || notificationProc.running) return
+    notificationProc.command = [bin, "wallet", "notifications", "poll", "--json", "--timeout", "2"]
+    notificationProc.running = true
   }
   function listWallets() {
     if (walletListProc.running || binaryMissing) return
@@ -155,7 +207,7 @@ Item {
     if (busy || binaryMissing || wallets.indexOf(name) < 0) return false
     localError = ""
     actionStatusTimer.stop()
-    actionStatus = "Opening " + name + "…"
+    actionStatus = "Opening wallet…"
     _statusEpoch++
     walletOpenProc.secret = secret
     walletOpenProc.command = [bin, "wallet", "open", name, "--password-stdin", "--json"]
@@ -170,7 +222,7 @@ Item {
   }
 
   function openNodeScreen() {
-    Quickshell.execDetached(["omarchy-launch-or-focus-tui", "--app-id=org.odcpw.fmonero", "fmonero", "tui", "--node"])
+    openPage("node")
   }
   function openDoctor() {
     Quickshell.execDetached(["omarchy-launch-or-focus-tui", "--app-id=org.odcpw.fmonerodoctor", "fmonero", "doctor"])
@@ -220,6 +272,7 @@ Item {
       var doc = Model.parseJson(String(appOut.text || ""))
       if (code !== 0 || !doc || doc.ok !== true) { root.pollError = "Could not check whether fmonero is running."; return }
       root.appRunning = doc.running === true
+      if (!root._privacyKnown) root.readPresentation()
       if (root.appRunning) root.pollStatus()
       else root.status = { ok: false }
     }
@@ -236,6 +289,7 @@ Item {
       pollWatchdog.stop()
       if (epoch !== root._statusEpoch) { delayedRefresh.restart(); return }
       root.applyStatus(String(statusOut.text || ""), exitCode, String(statusErr.text || ""))
+      root.pollNotifications()
     }
   }
 
@@ -255,8 +309,10 @@ Item {
           ? msg
           : "That did not work."
         root.localError = act !== "" ? said + " " + act : said
+        root.actionFailed = true
         root.actionStatus = root.localError
       } else {
+        root.actionFailed = false
         root.localError = ""
         root.actionStatus = ""
         if (actionProc.command[1] === "app" && actionProc.command[2] === "stop") {
@@ -297,6 +353,66 @@ Item {
       else { root.localError = root.actionError(String(walletOpenOut.text || "")); root.walletOpenFailed() }
       delayedRefresh.restart()
     }
+  }
+
+  Process {
+    id: notificationProc
+    stdout: StdioCollector { id: notificationOut; waitForEnd: true }
+    stderr: StdioCollector { waitForEnd: true }
+    onExited: function(code) {
+      if (code !== 0) root.localError = "Incoming alerts could not be checked or accepted by the desktop. Open fmonero to review."
+    }
+  }
+
+  FileView {
+    path: root.configPath
+    preload: false
+    printErrors: false
+    watchChanges: true
+    onFileChanged: {
+      root.invalidatePresentation()
+      // Reattach to the new inode after fmonero's atomic config replacement.
+      watchChanges = false
+      watchChanges = true
+    }
+  }
+  Process {
+    id: presentationProc
+    property int epoch: 0
+    stdout: StdioCollector { id: presentationOut; waitForEnd: true }
+    stderr: StdioCollector { waitForEnd: true }
+    onExited: function(code) {
+      if (epoch !== root._policyEpoch) { Qt.callLater(root.readPresentation); return }
+      var doc = Model.parseJson(String(presentationOut.text || ""))
+      if (code !== 0 || !doc || doc.ok !== true || typeof doc.privacy !== "boolean") return
+      root._privacyValue = doc.privacy
+      root._privacyKnown = true
+      root.notificationsEnabled = doc.notifications === true
+    }
+  }
+
+  Process {
+    id: copyProc
+    property string payload: ""
+    command: ["wl-copy", "--"]
+    stdout: StdioCollector { waitForEnd: true }
+    stderr: StdioCollector { waitForEnd: true }
+    onStarted: {
+      write(payload)
+      payload = ""
+      stdinEnabled = false
+    }
+    onExited: function(code) {
+      payload = ""
+      if (code === 0) root.flash("Copied")
+      else root.localError = "The clipboard could not accept the text."
+    }
+  }
+
+  Timer {
+    interval: 15000
+    running: notificationProc.running
+    onTriggered: notificationProc.running = false
   }
 
   Timer {

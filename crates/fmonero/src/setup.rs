@@ -535,6 +535,7 @@ fn migrate_menu_entries(text: &str) -> String {
             .trim_start()
             .strip_prefix('"')
             .and_then(|s| s.split('"').next());
+        // copy-exempt-begin: literal menu command migration, not product prose.
         let migrated = match id {
             Some("monero") => line
                 .replace("\"label\":\"Monero\"", "\"label\":\"fmonero\"")
@@ -551,6 +552,31 @@ fn migrate_menu_entries(text: &str) -> String {
                     "--app-id=org.odcpw.fmonerodoctor ",
                 ),
             _ => line.to_string(),
+        };
+        // copy-exempt-end
+        let migrated = if matches!(
+            id,
+            Some("monero.open" | "monero.send" | "monero.wallet" | "monero.node")
+        ) {
+            migrated
+                .replace(
+                    "omarchy-launch-or-focus-tui --app-id=org.odcpw.fmonero fmonero tui --send",
+                    "fmonero launch send",
+                )
+                .replace(
+                    "omarchy-launch-or-focus-tui --app-id=org.odcpw.fmonero fmonero tui --wallet",
+                    "fmonero launch wallet",
+                )
+                .replace(
+                    "omarchy-launch-or-focus-tui --app-id=org.odcpw.fmonero fmonero tui --node",
+                    "fmonero launch node",
+                )
+                .replace(
+                    "omarchy-launch-or-focus-tui --app-id=org.odcpw.fmonero fmonero tui\"",
+                    "fmonero launch wallet\"",
+                )
+        } else {
+            migrated
         };
         out.push_str(&migrated);
     }
@@ -695,7 +721,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_six_menu_entries_come_from_the_asset() {
+    fn wallet_destinations_come_from_the_asset() {
         let entries = menu_entries();
         let ids: Vec<&str> = entries.iter().map(|(id, _)| *id).collect();
         assert_eq!(
@@ -708,6 +734,11 @@ mod tests {
                 // screen a user with no wallet has to reach, and `Node` becomes `Nodes` — the
                 // picker made "which node" the question that screen answers.
                 "monero.wallet",
+                "monero.receive",
+                "monero.new-address",
+                "monero.restore",
+                "monero.logs",
+                "monero.tools",
                 "monero.node",
                 "monero.doctor"
             ],
@@ -716,7 +747,7 @@ mod tests {
         // §1.5: only constant literals reach the shell-string entry points, and the app-ids
         // must not be prefixes of one another.
         let text = MENU_TEMPLATE;
-        assert!(text.contains("--app-id=org.odcpw.fmonero "));
+        assert!(text.contains("fmonero launch receive"));
         assert!(text.contains("--app-id=org.odcpw.fmonerodoctor "));
     }
 
@@ -743,7 +774,7 @@ mod tests {
             .into_iter()
             .filter(|(id, _)| !present.contains(&(*id).to_string()))
             .collect();
-        assert_eq!(missing.len(), 5, "one of the six is already there");
+        assert_eq!(missing.len(), 10, "one of the eleven is already there");
         let merged = insert_before_last_brace(current, &missing).unwrap();
         assert!(merged.contains("// the user's own note"));
         assert!(merged.contains("// fmonero"));
@@ -751,7 +782,7 @@ mod tests {
         // The pre-existing entry is untouched, and the result still parses.
         assert!(merged.contains("\"monero\": {\"icon\":\"x\"}"));
         let ids = existing_ids(&merged);
-        assert_eq!(ids.len(), 6, "{merged}");
+        assert_eq!(ids.len(), 11, "{merged}");
         // Running it again is a no-op.
         let again: Vec<(&str, &str)> = menu_entries()
             .into_iter()
@@ -808,7 +839,7 @@ mod tests {
     fn a_merge_into_an_empty_document_still_parses() {
         let merged = insert_before_last_brace("{\n}\n", &menu_entries()).unwrap();
         let ids = existing_ids(&merged);
-        assert_eq!(ids.len(), 6, "{merged}");
+        assert_eq!(ids.len(), 11, "{merged}");
     }
 
     /// One sandbox with a 0644 Omarchy menu file — the ordinary state of that file on any
@@ -896,7 +927,7 @@ mod tests {
         };
         menu_step(&ctx, &args).expect("the merge");
         let after = std::fs::read_to_string(&menu).expect("read back");
-        assert!(after.contains(&old.replace("--app-id=fmonero ", "--app-id=org.odcpw.fmonero ")));
+        assert!(after.contains("\"label\":\"Node\",\"action\":\"fmonero launch node\""));
         assert_eq!(
             menu_step(&ctx, &args).expect("second merge")[0].status,
             FileStatus::Unchanged
@@ -906,7 +937,7 @@ mod tests {
             "the asset's new label must NOT be merged over an existing id (§4.2):\n{after}"
         );
         // The five ids that were absent are added, so the merge did run.
-        assert_eq!(existing_ids(&after).len(), 6, "{after}");
+        assert_eq!(existing_ids(&after).len(), 11, "{after}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -1,17 +1,27 @@
-//! The FrankenTUI app: Node · Wallet · Send · Log (DESIGN.md §7a).
+//! The FrankenTUI app: Node · Wallet · Send · Logs · Receive · Tools.
 //!
 //! One model polls status every second and drives cancellable actions through ActionSub.
 //! Core owns wallet/node operations and all payment guarantees; the runtime owns the terminal.
 
+mod accounts;
+mod advanced;
+mod annotations;
+mod clipboard;
+mod editor;
 mod hit;
+mod native;
+mod privacy;
+mod receiving;
+mod requests;
 mod screens;
 mod send;
 mod subs;
 #[cfg(test)]
 mod tests;
 mod theme;
+mod workflows;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -33,19 +43,20 @@ use fmonero_core::nodes::{self, ProbeTarget};
 use fmonero_core::rpc::node::{Ban, Connection, TxpoolStats};
 use fmonero_core::rpc::wallet::{AddressSet, Balance, BookEntry};
 use fmonero_core::{
-    history, log as corelog, proc, settings as coresettings, state, status as corestatus, units,
-    wallet_dir, Context, Error, HistoryQuery, NodeClient, SendRequest, Status, Transfer,
-    TransferKind, WalletClient,
+    history, settings as coresettings, state, status as corestatus, units, wallet_dir, Context,
+    Error, HistoryQuery, NodeClient, SendRequest, Status, Transfer, TransferKind, WalletClient,
 };
 
+use editor::SecretInput;
 use send::{SendCmd, SendScreen, Stage};
 use subs::{Action, ActionErr, ActionSub, Outcome};
 use theme::Theme;
 
-/// `fmonero tui [--node] [--wallet] [--send] [--log]`.
+/// TUI screen/form launch flags. Without a flag, open Wallet.
 #[derive(Args, Clone, Debug, Default)]
+#[group(multiple = false)]
 pub struct TuiArgs {
-    /// Open on the Node screen (the default)
+    /// Open on the Node screen
     #[arg(long)]
     pub node: bool,
     /// Open on the Wallet screen
@@ -57,54 +68,110 @@ pub struct TuiArgs {
     /// Open on the Log screen
     #[arg(long)]
     pub log: bool,
+    /// Open receiving addresses and payment requests
+    #[arg(long)]
+    pub receive: bool,
+    /// Open advanced wallet tools
+    #[arg(long)]
+    pub tools: bool,
+    /// Open the protected wallet restoration form
+    #[arg(long)]
+    pub restore: bool,
+    /// Open the labeled receiving-address form
+    #[arg(long)]
+    pub new_address: bool,
+    /// Open payment requests
+    #[arg(long)]
+    pub requests: bool,
+}
+
+/// A navigation intent never authorizes a wallet mutation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LaunchIntent {
+    #[default]
+    Default,
+    Node,
+    Wallet,
+    Send,
+    Logs,
+    Receive,
+    Tools,
+    Restore,
+    NewAddress,
+    Requests,
 }
 
 impl TuiArgs {
-    fn screen(&self) -> Screen {
-        if self.wallet {
-            Screen::Wallet
+    fn intent(&self) -> LaunchIntent {
+        if self.restore {
+            LaunchIntent::Restore
+        } else if self.new_address {
+            LaunchIntent::NewAddress
+        } else if self.requests {
+            LaunchIntent::Requests
+        } else if self.receive {
+            LaunchIntent::Receive
+        } else if self.tools {
+            LaunchIntent::Tools
+        } else if self.node {
+            LaunchIntent::Node
         } else if self.send {
-            Screen::Send
+            LaunchIntent::Send
         } else if self.log {
-            Screen::Log
+            LaunchIntent::Logs
         } else {
-            Screen::Node
+            LaunchIntent::Wallet
+        }
+    }
+}
+
+impl LaunchIntent {
+    fn screen(self) -> Screen {
+        match self {
+            Self::Node => Screen::Node,
+            Self::Send => Screen::Send,
+            Self::Logs => Screen::Log,
+            Self::Receive | Self::NewAddress | Self::Requests => Screen::Receive,
+            Self::Tools | Self::Restore => Screen::Tools,
+            _ => Screen::Wallet,
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Screen {
-    #[default]
     Node,
+    #[default]
     Wallet,
     Send,
     Log,
+    Receive,
+    Tools,
 }
 
 impl Screen {
+    const ALL: [Self; 6] = [
+        Self::Node,
+        Self::Wallet,
+        Self::Send,
+        Self::Log,
+        Self::Receive,
+        Self::Tools,
+    ];
     fn index(self) -> usize {
-        match self {
-            Screen::Node => 0,
-            Screen::Wallet => 1,
-            Screen::Send => 2,
-            Screen::Log => 3,
-        }
+        Self::ALL.iter().position(|s| *s == self).unwrap_or(1)
     }
     fn from_index(i: usize) -> Screen {
-        match i % 4 {
-            0 => Screen::Node,
-            1 => Screen::Wallet,
-            2 => Screen::Send,
-            _ => Screen::Log,
-        }
+        Self::ALL[i % Self::ALL.len()]
     }
     fn name(self) -> &'static str {
         match self {
-            Screen::Node => "Node",
-            Screen::Wallet => "Wallet",
-            Screen::Send => "Send",
-            Screen::Log => "Log",
+            Self::Node => "Node",
+            Self::Wallet => "Wallet",
+            Self::Send => "Send",
+            Self::Log => "Logs",
+            Self::Receive => "Receive",
+            Self::Tools => "Tools",
         }
     }
 }
@@ -119,123 +186,64 @@ pub(super) enum Pane {
 
 /// The help overlay and the behaviour share this one table, so they cannot drift (§7a).
 pub const KEYS: &[(&str, &str)] = &[
-    // **§7a.1's rule, split in two because one row could not state it truthfully.** `Tab`, `⇧Tab`
-    // and `Ctrl+C` are resolved above every screen, focus state and modal branch. But `1 2 3 4`
-    // and `q` are printable, and §7a.1's own second bullet gives a focused field **every**
-    // printable character: with Amount focused, `2` then `4` types `0.0124` and `q` appends a `q`
-    // (DECISIONS: DEFECT C). The dispatcher below, `send.rs:94` and the Send screen's status line
-    // already said so — the overlay was the thing that lied.
     (
-        "Tab  ⇧Tab  Ctrl+C",
-        // **Round 5, S12: true about pop-ups.** This promised `Tab` always switches screens "in a
-        // pop-up", and the two pop-ups that hold work you have not finished — the send confirm and
-        // the create-wallet form — refuse it, because leaving would throw that work away. One of
-        // them said so and the other said nothing at all.
-        "screens · quit. Always in a field and while something runs. A pop-up holding unfinished \
-         work asks for Esc first. Quit twice to stop a job first.",
+        "1–6 · Tab / Shift+Tab",
+        "Node, Wallet, Send, Logs, Receive, Tools. Fields and dialogs keep Tab.",
     ),
-    (
-        "1 2 3 4  q",
-        "the same two, but only when no field has focus. Esc leaves a field.",
-    ),
-    // Three pairs merged, to buy the rows the `↑↓` row and the status line need (round 4
-    // iteration 3): each pair was two keys doing one kind of thing, on two rows.
-    ("?  r", "this help · check now"),
     (
         "Esc",
-        "close this help, else leave the field, else stop what is running",
+        "Leave a field, cancel a dialog, or request cancellation of work.",
+    ),
+    ("q · Ctrl+C", "Quit. Work in progress asks before leaving."),
+    (
+        "? · v",
+        "Help · shared privacy. Passwords and recovery secrets stay masked.",
+    ),
+    ("O · C · R", "Wallet: Open · Create · Restore."),
+    (
+        "N · L · Q",
+        "Wallet / Receive: New address · Label selected address · QR.",
     ),
     (
-        "mouse",
-        "click tabs, rows, fields and every [key] chip. The wheel scrolls. Right-click is Esc.",
+        "F · X · E",
+        "Wallet: Refresh payments · Close wallet · Edit payment note.",
     ),
-    // **How to move a selection** (round 4 iteration 3). The overlay had `Send: ↑↓` and
-    // `pop-ups: ↑↓` and nothing at all for the four tables a person actually reads — the public
-    // node list, the addresses, the payments and the peers. On a fresh Node screen nothing is
-    // selected and the first `Down` selects row one rather than moving, so the obvious
-    // `Down`+`Enter` lands on the node already in use and answers `This is the node you are
-    // using.` This row is where that is explained.
+    ("A · U", "Wallet: Accounts and contacts · Payment request."),
     (
-        "↑↓  j k",
-        "move the selection in a list or a table. Nothing is selected until you press one.",
-    ),
-    // M16: `peers ⇄ bans` was a symbol with no words in the one overlay that exists to explain
-    // the keys.
-    (
-        "u  d  b",
-        "Node: start · stop your node · swap the peers table for the blocked addresses",
-    ),
-    // Round 5, S10: `S` is the in-app route out of "nobody has set this up yet", which had none.
-    // It shares a row with `L` because the `?` overlay has 27 rows at 120x32 and no more, and two
-    // keys that both set something about your own node are one kind of thing.
-    (
-        "L  S",
-        "Node: change how much your node logs (it asks first) · set your own node up",
-    ),
-    ("p  f", "Node: check the listed nodes · get a fresh list"),
-    (
-        "Enter  a  H",
-        "Node: use the selected node (it asks first) · add an address · go back to the last one",
-    ),
-    ("l", "Node: use your own node instead (it asks first)"),
-    (
-        "o  c  x",
-        "Wallet: open a wallet · create one · close the open wallet",
+        "Tools: ←→ · ↑↓",
+        "Choose a group and action. Enter opens its protected form.",
     ),
     (
-        "W",
-        "Wallet: start the wallet service, or stop it when nothing is open",
+        "Send: Ctrl+B",
+        "Choose a saved contact while editing the recipient.",
     ),
     (
-        "a  l  n",
-        "Wallet: new address · rename the selected one · edit the note on the selected payment",
-    ),
-    // Round 5, S8: `P` is the Wallet screen's route out of an unresolved payment record, which had
-    // none at all — the Send screen refused and named nothing. Its chip is drawn only while there
-    // is a record; this row lists the keymap, not the state, so it is here always.
-    (
-        "R  Q  P",
-        "Wallet: check for payments · show the address as a QR code · clear a payment record \
-         fmonero lost track of (it asks first)",
+        "↑↓ · Enter",
+        "Select a row and open it. A second click also opens it.",
     ),
     (
-        "/  t",
-        "Wallet: filter the rows · change which kinds of payment show",
+        "Tab / Shift+Tab",
+        "Forms: next / previous field. Enter submits. Esc clears secrets and cancels.",
     ),
     (
-        "←→  Enter",
-        "Wallet: swap panes · copy an address · open a row",
+        "Send: type send",
+        "Confirm only after reading every row of the exact prepared payment.",
     ),
     (
-        "Send: ↑↓  Enter",
-        // M19's noun, here too: `check it` was the third undefined use of it on the money path.
-        // **And one wording for it** (round 4 iteration 3): the form's hint row, its validation
-        // row, the Preview's Fee row, this row and the toast said it five different ways. All five
-        // say "works out the fee" now.
-        "next/previous field · works out the fee. Tab leaves the form, Esc leaves a field, Enter \
-         goes back in.",
+        "Review: ↑↓",
+        "Scroll full payment details. Privacy reveal applies to this review only.",
     ),
     (
-        "pop-ups: ↑↓  Enter",
-        "move between a pop-up's fields · next, then confirm on the last one",
+        "Node: u · d · p · f",
+        "Start · Stop · Probe listed nodes · Fetch node list.",
     ),
     (
-        "Send: p  Ctrl+P  @",
-        "change the fee level (on its row, or from anywhere) · address book",
+        "Logs: / · f · n / N",
+        "Search · Follow · Next / previous match.",
     ),
-    ("Send: ←→", "on the Fee or Account row: change it"),
     (
-        "Send: type \"send\"",
-        "typing the word confirms. Esc discards. Once sent it cannot be taken back.",
-    ),
-    ("Log: /  f  n N", "search · follow · next/previous match"),
-    // **§2o.1's shape, and the last row of the panel** (round 4 iteration 3). This is one of the
-    // four places a shell command may appear at all, and §2o.1 says each is phrased
-    // `In a terminal: …` and is the last line of its panel. It sat mid-overlay, lower case, between
-    // two keymap rows — which is the one position that makes it read as a key you can press.
-    (
-        "sweep",
-        "sends everything you have. In a terminal: fmonero wallet sweep <address> --dry-run",
+        "Mouse",
+        "Tabs, buttons, list rows, fields and selectors use the same actions as their keys.",
     ),
 ];
 
@@ -315,6 +323,8 @@ pub(super) struct NodeUi {
 pub(super) struct WalletUi {
     pub balance: Option<Balance>,
     pub addresses: Option<AddressSet>,
+    select_address: Option<u32>,
+    new_address_identity: Option<(fmonero_core::wallet_ops::WalletIdentity, u32, u64)>,
     pub err: Option<String>,
     inflight: bool,
     pub table: RefCell<TableState>,
@@ -330,6 +340,8 @@ pub(super) struct WalletUi {
     pub filter_open: bool,
     pub kind: Option<TransferKind>,
     pub detail: bool,
+    pub detail_scroll: usize,
+    pub detail_max: std::cell::Cell<usize>,
 }
 
 /// The public-node picker's own state (§7a.4, v5.5).
@@ -354,6 +366,9 @@ pub(super) struct PickerUi {
 }
 
 pub(super) struct LogUi {
+    pub source: fmonero_core::log_sources::LogSource,
+    pub cursor: Option<fmonero_core::log_sources::LogCursor>,
+    pub notice: Option<String>,
     pub viewer: RefCell<LogViewer>,
     pub state: RefCell<LogViewerState>,
     pub path: PathBuf,
@@ -376,7 +391,13 @@ pub(super) enum NodeView {
     Bans,
 }
 
-pub(super) enum Modal {
+enum Modal {
+    Native(Box<native::Review>),
+    Result(advanced::ResultView),
+    Accounts(accounts::Panel),
+    AccountEditor(accounts::Editor),
+    Workflow(workflows::Form),
+    PaymentRequest(requests::Review),
     /// The renderer owns confirmation layout and hit targets.
     Confirm {
         what: Confirm,
@@ -385,7 +406,7 @@ pub(super) enum Modal {
         names: Vec<String>,
         sel: usize,
         /// Masked (§2b.4): the buffer is overwritten with zeroes when the modal closes.
-        pass: TextInput,
+        pass: SecretInput,
         asking: bool,
     },
     Prompt {
@@ -411,7 +432,7 @@ pub(super) enum Modal {
         /// The open wallet whose connection will change, named when there is one.
         wallet_open: Option<String>,
     },
-    /// Validated by Settings::parse_remote_address; trust changes remain CLI-only.
+    /// Validated by Settings::parse_remote_address; Tools → Care edits transport and trust.
     AddNode {
         input: TextInput,
     },
@@ -424,11 +445,11 @@ pub(super) enum Modal {
 }
 
 /// Boxed to keep Modal small; three text inputs and a language selector (§7a.5).
-pub(super) struct CreateForm {
+struct CreateForm {
     pub name: TextInput,
     /// Masked (§2b.4): both buffers are overwritten with zeroes when the modal closes.
-    pub pass: TextInput,
-    pub again: TextInput,
+    pass: SecretInput,
+    again: SecretInput,
     /// An index into `settings::SEED_LANGUAGES`, rendered `◂ English ▸`.
     pub lang: usize,
     /// 0 name · 1 password · 2 password again · 3 language.
@@ -467,8 +488,19 @@ pub(super) enum Confirm {
 }
 
 pub(super) enum Prompt {
-    Label { index: u32 },
-    Note { txid: String },
+    NewAddress {
+        wallet: fmonero_core::wallet_ops::WalletIdentity,
+        account: u32,
+    },
+    Label {
+        address: fmonero_core::receive::ReceivingAddress,
+    },
+    Note {
+        wallet: fmonero_core::wallet_ops::WalletIdentity,
+        txid: String,
+        account: u32,
+        expected: String,
+    },
 }
 
 struct ActionSlot {
@@ -484,13 +516,15 @@ struct ActionSlot {
     /// This action is the node starting (W9), for the same reason and recorded the same way: the
     /// hero says `Starting your node…` while it runs, instead of advising the key that is running.
     starting_node: bool,
+    cancel: fmonero_core::CancelToken,
+    cancelling: bool,
 }
 
 /// The rows `history::query` returned, plus the WALLET height and local clock it derived —
 /// the two `Option`s §1b.4 forbids a caller from supplying.
 type HistoryRead = (Vec<Transfer>, Option<u64>, Option<i64>);
 
-pub enum Msg {
+enum Msg {
     Raw(Event),
     /// 1 s: re-read `status` (dropped when one is already in flight, §2d).
     Poll,
@@ -501,13 +535,20 @@ pub enum Msg {
     Extras(Box<Result<NodeExtras, String>>),
     WalletData(u64, Box<Result<(Balance, AddressSet), String>>),
     History(u64, u64, u64, Box<Result<HistoryRead, String>>),
+    Notifications(Result<(), String>),
+    Received(u64, Box<Result<fmonero_core::receive::Observation, String>>),
     LogLines(Box<Result<(Vec<String>, PathBuf), String>>),
+    LogSnapshot(
+        fmonero_core::log_sources::LogSource,
+        Box<Result<fmonero_core::log_sources::LogSnapshot, String>>,
+    ),
     Book(Vec<BookEntry>),
     /// `validate_address` + the nettype check, before the Send screen builds (§7a step 2).
     Validated(Box<Result<SendRequest, String>>),
     /// A short RPC: new subaddress, label, note, log level, or a clipboard copy.
     Task(&'static str, Box<Result<String, ActionErr>>),
     ActionDone(Box<Result<Outcome, ActionErr>>),
+    ActionFinished(SubId, Box<Result<Outcome, ActionErr>>),
 }
 
 impl From<Event> for Msg {
@@ -523,7 +564,7 @@ fn settings_stamp(path: &std::path::Path) -> Option<(SystemTime, u64, u64)> {
     Some((m.modified().ok()?, m.ino(), m.len()))
 }
 
-pub struct Tui {
+struct Tui {
     ctx: Context,
     session: Option<fmonero_core::app::Session>,
     exit: Arc<AtomicI32>,
@@ -536,8 +577,15 @@ pub struct Tui {
     history_seq: u64,
     status_revision: u64,
     screen: Screen,
+    launch_intent: LaunchIntent,
     tabs: RefCell<TabsState>,
     show_help: bool,
+    help_scroll: usize,
+    help_max: Cell<usize>,
+    dialog_scroll: Cell<usize>,
+    dialog_max: Cell<usize>,
+    tools_group: usize,
+    tools_selected: usize,
     tick: usize,
     status: Option<Status>,
     status_err: Option<String>,
@@ -547,8 +595,12 @@ pub struct Tui {
     picker: PickerUi,
     wallet: WalletUi,
     logs: LogUi,
+    receiving: receiving::ReceiveUi,
     send: SendScreen,
     modal: Option<Modal>,
+    modal_back: Option<Box<Modal>>,
+    notifications_inflight: bool,
+    notifications_at: Instant,
     /// `send::relay`'s announce sink (§5b): core is silent, so the line naming the recipient,
     /// amount, fee, total, priority and account lands in the Log pane.
     announce: Arc<Mutex<Vec<String>>>,
@@ -560,6 +612,7 @@ pub struct Tui {
     note_at: Instant,
     /// v5.5, §7a.2: the rects `view()` laid out, as `update()` needs them.
     hits: hit::Map,
+    render_size: std::cell::Cell<ftui::layout::Rect>,
     /// The wallets in `wallet.dir`, re-read on entry to the Wallet screen so the empty state
     /// can say `0 wallets` — a real count, so a user can see why `o` will not help before
     /// pressing it (§7a.5).
@@ -579,12 +632,18 @@ pub struct Tui {
 /// Run the TUI. `Ok(0)` on a clean quit, the §4a code of the session's last failed action
 /// otherwise, `Ok(130)` on Ctrl+C — the TUI never invents an exit code (§7a).
 pub fn run(args: TuiArgs, ctx: Context) -> anyhow::Result<i32> {
+    let intent = args.intent();
+    run_with_intent(args, ctx, intent)
+}
+
+pub fn run_with_intent(_args: TuiArgs, ctx: Context, intent: LaunchIntent) -> anyhow::Result<i32> {
     let exit = Arc::new(AtomicI32::new(0));
     // Mouse capture is configurable; terminal selection modifiers remain terminal-specific.
     let mouse = ctx.settings.tui.mouse;
     let session = fmonero_core::app::Session::enter(&ctx)?;
-    let mut app = Tui::new(args.screen(), ctx, exit.clone());
+    let mut app = Tui::new(intent.screen(), ctx, exit.clone());
     app.session = Some(session);
+    app.launch_intent = intent;
     let builder = App::fullscreen(app);
     let builder = if mouse {
         builder.with_mouse()
@@ -625,7 +684,11 @@ impl Tui {
                 filter: text_input(&theme),
                 ..WalletUi::default()
             },
+            receiving: receiving::ReceiveUi::default(),
             logs: LogUi {
+                source: fmonero_core::log_sources::LogSource::Wallet,
+                cursor: None,
+                notice: None,
                 viewer: RefCell::new(LogViewer::new(LOG_LINES).wrap_mode(LogWrapMode::NoWrap)),
                 state: RefCell::new(LogViewerState::default()),
                 path: ctx.settings.node.log_file.clone(),
@@ -645,12 +708,22 @@ impl Tui {
             }),
             theme,
             screen,
+            launch_intent: LaunchIntent::Default,
             show_help: false,
+            help_scroll: 0,
+            help_max: Cell::new(0),
+            dialog_scroll: Cell::new(0),
+            dialog_max: Cell::new(0),
+            tools_group: 0,
+            tools_selected: 0,
             tick: 0,
             status: None,
             status_err: None,
             poll_inflight: false,
             modal: None,
+            modal_back: None,
+            notifications_inflight: false,
+            notifications_at: Instant::now(),
             announce: Arc::new(Mutex::new(Vec::new())),
             action: None,
             sub_seq: 0,
@@ -659,6 +732,7 @@ impl Tui {
             note_err: false,
             note_at: Instant::now(),
             hits: hit::Map::default(),
+            render_size: std::cell::Cell::new(ftui::layout::Rect::new(0, 0, 80, 24)),
             wallets: Vec::new(),
             wallets_err: None,
         }
@@ -672,6 +746,7 @@ impl Tui {
 
     fn invalidate_wallet_reads(&mut self) {
         self.read_epoch += 1;
+        self.receiving = receiving::ReceiveUi::default();
         self.poll_inflight = false;
         self.wallet.inflight = false;
         self.wallet.balance = None;
@@ -1068,12 +1143,26 @@ impl Tui {
     }
 
     fn load_log(&self) -> Cmd<Msg> {
-        let path = self.logs.path.clone();
+        let ctx = self.ctx.clone();
+        let source = self.logs.source;
+        let query = fmonero_core::log_sources::LogQuery {
+            source,
+            lines: LOG_LINES,
+            search: None,
+            previous: self.logs.cursor.clone(),
+        };
         Cmd::task(move || {
-            let read = corelog::tail(&path, LOG_LINES, None)
-                .map(|t| (t.lines, t.path))
-                .map_err(|e| e.to_string());
-            Msg::LogLines(Box::new(read))
+            Msg::LogSnapshot(
+                source,
+                Box::new(
+                    fmonero_core::log_sources::read(
+                        &ctx,
+                        &query,
+                        &fmonero_core::CancelToken::new(),
+                    )
+                    .map_err(|e| e.to_string()),
+                ),
+            )
         })
     }
 
@@ -1135,7 +1224,7 @@ impl Tui {
     /// Put an action in flight without a subscription behind it, so a test can read the frame the
     /// user sees while one runs (W9). The same `start` the keys call.
     #[cfg(test)]
-    pub(super) fn start_for_test(&mut self, action: Action) {
+    fn start_for_test(&mut self, action: Action) {
         let _ = self.start(action);
     }
 
@@ -1147,7 +1236,8 @@ impl Tui {
     /// only `ActionDone` can leave, with the built `Plan` (and its §2a.11 lock) dropped and
     /// nothing on screen saying a transaction had existed. Those two callers put it back.
     fn try_start(&mut self, action: Action) -> Result<Cmd<Msg>, Box<Action>> {
-        if !self.config_valid && !matches!(action, Action::Relay(_)) {
+        let held_native = matches!(&action, Action::Native(job) if job.held());
+        if !self.config_valid && !matches!(action, Action::Relay(_)) && !held_native {
             self.note("Fix your settings before starting another action.", true);
             return Err(Box::new(action));
         }
@@ -1163,6 +1253,7 @@ impl Tui {
             // a status poll that is up to a poll-interval stale, so it could only ever refuse
             // the relay of a transaction that already exists.
             Action::Relay(_) => None,
+            Action::Native(ref job) if job.held() => None,
             _ => Some("wallet_stalled"),
         };
         if let Some(text) = daemon.and_then(|id| self.breaker_note(id)) {
@@ -1178,6 +1269,8 @@ impl Tui {
             cancellable: action.cancellable(),
             wallet_busy: action.wallet_busy(),
             starting_node: matches!(action, Action::NodeUp),
+            cancel: fmonero_core::CancelToken::new(),
+            cancelling: false,
             started: Instant::now(),
             slot: Arc::new(Mutex::new(Some(action))),
         });
@@ -1187,21 +1280,20 @@ impl Tui {
     /// `Esc`, or `q` twice: drop the subscription, which raises the `StopSignal`, which trips
     /// the `CancelToken`. A relay is never cancelled (§7a).
     fn cancel_action(&mut self) -> Cmd<Msg> {
-        match self.action.take() {
-            // W16: `Nothing is running.` on a screen whose subject is a node and a wallet
-            // service reads as a claim about those two. `Esc` cancels an action of fmonero's own,
-            // so that is what it says it found none of.
-            None => self.note("Nothing to cancel.", false),
-            Some(a) if !a.cancellable => {
-                let label = a.label.clone();
-                self.action = Some(a);
-                self.note(
-                    format!("{label} cannot be stopped. The payment has already gone out."),
-                    true,
-                );
+        let (message, error) = match self.action.as_mut() {
+            None => ("Nothing to cancel.".to_string(), false),
+            Some(a) if !a.cancellable => (
+                "Submission is awaiting its result. It cannot safely be cancelled or retried."
+                    .into(),
+                true,
+            ),
+            Some(a) => {
+                a.cancel.cancel();
+                a.cancelling = true;
+                ("Cancellation requested. Waiting for the backend outcome before another action.".into(), false)
             }
-            Some(a) => self.note(format!("{} stopped.", a.label), true),
-        }
+        };
+        self.note(message, error);
         Cmd::none()
     }
 
@@ -1374,19 +1466,21 @@ impl Tui {
     ///
     /// `paths`, the `systemctl` seam and every global flag are kept: they came from argv and the
     /// environment, not from the file. A reload that fails leaves the old `Context` and says so
-    /// in a toast — a TUI that exited on an unreadable settings file would be worse than one
-    /// showing a stale address it tells you about.
+    /// in a toast. Public-sensitive values stay masked and confirmation is revoked until
+    /// the next valid settings read.
     fn reload_ctx(&mut self) -> Result<(), Error> {
         let settings = match coresettings::Settings::load(&self.ctx.paths) {
             Ok(settings) => settings,
             Err(e) => {
                 self.config_valid = false;
+                self.revoke_review_authorization();
                 self.invalidate_wallet_reads();
                 return Err(e);
             }
         };
         let timeouts = coresettings::Timeouts::from_settings(&settings.timeouts);
         if self.ctx.settings != settings {
+            self.revoke_review_authorization();
             self.invalidate_wallet_reads();
         }
         self.config_valid = true;
@@ -1473,7 +1567,11 @@ impl Tui {
         }
         self.show_help = false;
         if self.modal.is_some() {
-            self.close_modal();
+            return self.on_modal_key(KeyEvent::new(if forward {
+                KeyCode::Tab
+            } else {
+                KeyCode::BackTab
+            }));
         }
         let mut commit = None;
         if self.wallet.filter_open || self.logs.search_open {
@@ -1486,7 +1584,7 @@ impl Tui {
                 commit = Some(self.apply_search());
             }
         }
-        let delta = if forward { 1 } else { 3 };
+        let delta = if forward { 1 } else { Screen::ALL.len() - 1 };
         let moved = self.set_screen(Screen::from_index(self.screen.index() + delta));
         match commit {
             Some(c) => Cmd::batch(vec![c, moved]),
@@ -1516,7 +1614,10 @@ impl Tui {
                     probe
                 }
             }
-            Screen::Wallet => {
+            Screen::Wallet | Screen::Receive => {
+                if s == Screen::Receive {
+                    self.wallet.pane = Pane::Subaddresses;
+                }
                 // A real count, so the empty state can say `0 wallets` and a user can see why `o`
                 // will not help before pressing it (§7a.5) — and S1's reason when there is none.
                 self.reload_wallets();
@@ -1533,18 +1634,30 @@ impl Tui {
 
     /// The clipboard is `wl-copy`, as argv (§2f) — never a shell string.
     fn copy(&mut self, text: &str) {
-        if proc::which("wl-copy").is_none() {
-            self.note("Cannot copy: wl-copy is not installed.", true);
+        if self.privacy() {
+            self.note(
+                "Privacy hides this value. Turn privacy off explicitly before copying.",
+                true,
+            );
             return;
         }
-        match proc::run_with_deadline(&["wl-copy", "--", text], Duration::from_secs(2), None) {
-            Ok(o) if o.success() => self.note("Copied.", false),
-            Ok(o) => self.note(format!("Could not copy: {}", o.stderr_tail()), true),
-            Err(e) => self.note(e.to_string(), true),
+        match clipboard::copy(text) {
+            Ok(()) => self.note("Copied.", false),
+            Err(why) => self.note(why, true),
         }
     }
 
     fn quit(&mut self, code: i32) -> Cmd<Msg> {
+        if matches!(self.modal, Some(Modal::Native(_)))
+            && !self
+                .quit_armed
+                .is_some_and(|(at, _)| at.elapsed() < Duration::from_secs(2))
+        {
+            self.quit_armed = Some((Instant::now(), code));
+            self.note("Native review is held. Esc declines and reopens the wallet; quit again leaves it closed for explicit recovery.", true);
+            return Cmd::none();
+        }
+
         if let Some(a) = &self.action {
             let armed = self
                 .quit_armed
@@ -1554,7 +1667,7 @@ impl Tui {
                 let extra = if a.cancellable {
                     "Esc cancels it, or press quit again to cancel and quit"
                 } else {
-                    "The payment has already gone out. Press quit again to leave it running."
+                    "Submission is in progress. Leaving cannot cancel it; its result may be uncertain."
                 };
                 self.note(format!("Something is running. {extra}"), true);
                 return Cmd::none();
@@ -1569,22 +1682,34 @@ impl Tui {
 
     // A paste is text, never a sequence of shortcuts or an implicit Enter.
     fn on_paste(&mut self, event: &Event) -> Cmd<Msg> {
+        if screens::tier_of(self.render_size.get()) == screens::Tier::Tiny {
+            return Cmd::none();
+        }
         if let Some(modal) = self.modal.as_mut() {
-            let input = match modal {
-                Modal::Prompt { input, .. } | Modal::AddNode { input } => Some(input),
+            match modal {
+                Modal::Workflow(form) => form.event(event),
+                Modal::AccountEditor(editor) => editor.event(event),
+                Modal::Prompt { input, .. } | Modal::AddNode { input } => {
+                    input.handle_event(event);
+                }
                 Modal::OpenWallet {
                     pass, asking: true, ..
-                } => Some(pass),
+                } => {
+                    pass.handle_event(event);
+                }
                 Modal::CreateWallet(form) => match form.field {
-                    0 => Some(&mut form.name),
-                    1 => Some(&mut form.pass),
-                    2 => Some(&mut form.again),
-                    _ => None,
+                    0 => {
+                        form.name.handle_event(event);
+                    }
+                    1 => {
+                        form.pass.handle_event(event);
+                    }
+                    2 => {
+                        form.again.handle_event(event);
+                    }
+                    _ => {}
                 },
-                _ => None,
-            };
-            if let Some(input) = input {
-                input.handle_event(event);
+                _ => {}
             }
         } else if !self.show_help && !self.send.confirming() {
             match self.screen {
@@ -1614,15 +1739,27 @@ impl Tui {
         if ctrl_c {
             return self.quit(130);
         }
-        // Tab switches screens before dispatching to an editor (§7a.1).
-        if matches!(k.code, KeyCode::Tab | KeyCode::BackTab) {
-            return self.switch_screen(k.code == KeyCode::Tab);
+        if screens::tier_of(self.render_size.get()) == screens::Tier::Tiny
+            && k.code != KeyCode::Escape
+        {
+            return Cmd::none();
         }
         if self.modal.is_some() {
             return self.on_modal_key(k);
         }
+        self.dialog_scroll.set(0);
         if self.show_help {
-            self.show_help = false;
+            match k.code {
+                KeyCode::Down | KeyCode::PageDown => {
+                    self.help_scroll = self.help_scroll.saturating_add(1).min(self.help_max.get());
+                }
+                KeyCode::Up | KeyCode::PageUp => {
+                    self.help_scroll = self.help_scroll.saturating_sub(1)
+                }
+                KeyCode::Home => self.help_scroll = 0,
+                KeyCode::End => self.help_scroll = self.help_max.get(),
+                _ => self.show_help = false,
+            }
             return Cmd::none();
         }
         // Confirmations retain keyboard ownership even after a screen change.
@@ -1635,9 +1772,22 @@ impl Tui {
                     self.wallet.detail = false;
                     return Cmd::none();
                 }
-                KeyCode::Char('n') => return self.prompt_note(),
+                KeyCode::Char('n') | KeyCode::Char('N') => {
+                    return self.click_button(hit::Button::PaymentNote)
+                }
+                KeyCode::Down | KeyCode::PageDown => {
+                    self.wallet.detail_scroll = self
+                        .wallet
+                        .detail_scroll
+                        .saturating_add(1)
+                        .min(self.wallet.detail_max.get())
+                }
+                KeyCode::Up | KeyCode::PageUp => {
+                    self.wallet.detail_scroll = self.wallet.detail_scroll.saturating_sub(1)
+                }
                 _ => {}
             }
+            return Cmd::none();
         }
         if self.wallet.filter_open || self.logs.search_open {
             let done = matches!(
@@ -1663,9 +1813,17 @@ impl Tui {
             return Cmd::none();
         }
 
+        if self.screen == Screen::Node && self.picker.filter_open {
+            return self.on_node_key(k);
+        }
+        if matches!(k.code, KeyCode::Tab | KeyCode::BackTab) {
+            return self.switch_screen(k.code == KeyCode::Tab);
+        }
         match k.code {
             KeyCode::Char('q') => return self.quit(self.exit.load(Ordering::SeqCst)),
+            KeyCode::Char('v') | KeyCode::Char('V') => return self.toggle_privacy(),
             KeyCode::Char('?') => {
+                self.help_scroll = 0;
                 self.show_help = true;
                 return Cmd::none();
             }
@@ -1674,18 +1832,25 @@ impl Tui {
             KeyCode::Char('2') => return self.set_screen(Screen::Wallet),
             KeyCode::Char('3') => return self.set_screen(Screen::Send),
             KeyCode::Char('4') => return self.set_screen(Screen::Log),
-            KeyCode::Char('r') => {
+            KeyCode::Char('5') => return self.set_screen(Screen::Receive),
+            KeyCode::Char('6') => return self.set_screen(Screen::Tools),
+            KeyCode::Char('r')
+                if !matches!(
+                    self.screen,
+                    Screen::Tools | Screen::Wallet | Screen::Receive
+                ) =>
+            {
                 let mut cmds = vec![self.poll()];
                 match self.screen {
                     Screen::Node => cmds.push(self.load_extras()),
-                    Screen::Wallet => {
+                    Screen::Wallet | Screen::Receive => {
                         self.wallet.err = None;
                         self.wallet.rows_err = None;
                         cmds.push(self.load_wallet());
                         cmds.push(self.load_history());
                     }
                     Screen::Log => cmds.push(self.load_log()),
-                    Screen::Send => {}
+                    Screen::Send | Screen::Tools => {}
                 }
                 return Cmd::batch(cmds);
             }
@@ -1693,12 +1858,17 @@ impl Tui {
         }
         match self.screen {
             Screen::Node => self.on_node_key(k),
-            Screen::Wallet => self.on_wallet_key(k),
+            Screen::Wallet | Screen::Receive => self.on_wallet_key(k),
+            Screen::Tools => self.on_tools_key(k),
             Screen::Log => self.on_log_key(k),
             Screen::Send => {
                 // The form is unfocused: Enter returns to it. `Tab` never reaches here (§7a.1).
-                if k.code == KeyCode::Enter {
-                    self.send.resume();
+                match k.code {
+                    KeyCode::Enter => self.send.resume(),
+                    KeyCode::Char('U') => return self.click_button(hit::Button::ParseRequest),
+                    KeyCode::Char('B') => return self.click_button(hit::Button::SendBook),
+                    KeyCode::Char('A') => return self.click_button(hit::Button::SendAll),
+                    _ => {}
                 }
                 Cmd::none()
             }
@@ -1747,13 +1917,25 @@ impl Tui {
             }
             hit::Target::Row { pane, row } => self.click_row(pane, row),
             hit::Target::Field(i) => self.click_field(i),
-            hit::Target::Priority(level) => {
-                self.send.priority = level;
-                Cmd::none()
-            }
             hit::Target::Arrow { which, delta } => self.click_arrow(which, delta),
             hit::Target::Button(b) => self.click_button(b),
-            hit::Target::ModalButton(_) => {
+            hit::Target::ModalButton(index) => {
+                if index == 1 {
+                    return if self.send.confirming() {
+                        self.on_send_key(KeyEvent::new(KeyCode::Escape))
+                    } else {
+                        self.on_modal_key(KeyEvent::new(KeyCode::Escape))
+                    };
+                }
+                if self.send.confirming() {
+                    return self.on_send_key(KeyEvent::new(KeyCode::Enter));
+                }
+                if let Some(Modal::Workflow(form)) = self.modal.as_mut() {
+                    form.focus(form.fields.len() - 1);
+                }
+                if let Some(Modal::CreateWallet(form)) = self.modal.as_mut() {
+                    form.field = 3;
+                }
                 // Every modal fmonero draws has one primary button, and it does what `Enter`
                 // does — the key path and the click path are the same code (§7a.2).
                 self.on_modal_key(KeyEvent::new(KeyCode::Enter))
@@ -1777,8 +1959,10 @@ impl Tui {
             return Cmd::none();
         }
         if self.modal.is_some() {
-            self.close_modal();
-            return Cmd::none();
+            return self.on_modal_key(KeyEvent::new(KeyCode::Escape));
+        }
+        if self.wallet.detail {
+            return self.on_key(KeyEvent::new(KeyCode::Escape));
         }
         if self.wallet.filter_open || self.logs.search_open || self.send.editing {
             // **M22: Esc on the log search clears it.** It left the text in the field, so the next
@@ -1844,7 +2028,16 @@ impl Tui {
                     v.scroll_down(rows);
                 }
             }
-            hit::HitPane::ModalList => {}
+            hit::HitPane::ModalList => {
+                let code = if up { KeyCode::Up } else { KeyCode::Down };
+                for _ in 0..rows {
+                    if self.modal.is_some() {
+                        let _ = self.on_modal_key(KeyEvent::new(code));
+                    } else if self.send.picker.is_some() {
+                        let _ = self.on_send_key(KeyEvent::new(code));
+                    }
+                }
+            }
         }
     }
 
@@ -1881,6 +2074,7 @@ impl Tui {
                 self.wallet.pane = Pane::History;
                 if already {
                     self.wallet.detail = self.selected_transfer().is_some();
+                    self.wallet.detail_scroll = 0;
                 }
                 Cmd::none()
             }
@@ -1888,7 +2082,41 @@ impl Tui {
                 self.node.table.borrow_mut().select(Some(row));
                 Cmd::none()
             }
-            hit::HitPane::Log | hit::HitPane::ModalList => Cmd::none(),
+            hit::HitPane::ModalList => {
+                if let Some(Modal::Accounts(panel)) = &mut self.modal {
+                    if row < panel.count() {
+                        let same = panel.selected == row;
+                        panel.selected = row;
+                        if same {
+                            return self.on_modal_key(KeyEvent::new(KeyCode::Enter));
+                        }
+                    }
+                    return Cmd::none();
+                }
+                if let Some(Modal::OpenWallet {
+                    names,
+                    sel,
+                    asking,
+                    pass,
+                }) = &mut self.modal
+                {
+                    if row < names.len() {
+                        let same = *sel == row;
+                        *sel = row;
+                        if same {
+                            *asking = true;
+                            pass.set_focused(true);
+                        }
+                    }
+                } else if let Some((entries, sel)) = &mut self.send.picker {
+                    if row < entries.len() {
+                        *sel = row;
+                        return self.on_send_key(KeyEvent::new(KeyCode::Enter));
+                    }
+                }
+                Cmd::none()
+            }
+            hit::HitPane::Log => Cmd::none(),
         }
     }
 
@@ -1896,6 +2124,13 @@ impl Tui {
     /// is that modal's nth control.
     fn click_field(&mut self, index: usize) -> Cmd<Msg> {
         match &mut self.modal {
+            Some(Modal::Workflow(form)) => form.focus(index),
+            Some(Modal::AccountEditor(editor)) => editor.focus(index),
+            Some(Modal::OpenWallet { pass, asking, .. }) => {
+                *asking = true;
+                pass.set_focused(true);
+            }
+            Some(Modal::Prompt { input, .. }) => input.set_focused(true),
             Some(Modal::CreateWallet(form)) => {
                 form.field = index.min(3);
                 form.name.set_focused(index == 0);
@@ -1914,6 +2149,13 @@ impl Tui {
 
     fn click_arrow(&mut self, which: hit::Selector, delta: i32) -> Cmd<Msg> {
         match which {
+            hit::Selector::Priority => {
+                self.send.priority = if delta < 0 {
+                    prev_fee_level(self.send.priority)
+                } else {
+                    next_fee_level(self.send.priority)
+                };
+            }
             hit::Selector::Language => {
                 if let Some(Modal::CreateWallet(form)) = &mut self.modal {
                     let n = coresettings::SEED_LANGUAGES.len();
@@ -1944,8 +2186,101 @@ impl Tui {
     /// A rendered chip does exactly what its key does — **one** code path, which is what makes
     /// "two affordances, one label" true rather than a promise the two halves make separately.
     fn click_button(&mut self, b: hit::Button) -> Cmd<Msg> {
+        if self.modal.is_none() {
+            self.dialog_scroll.set(0);
+        }
         match b {
+            hit::Button::DialogUp => self.on_modal_key(KeyEvent::new(KeyCode::Up)),
+            hit::Button::DialogDown => self.on_modal_key(KeyEvent::new(KeyCode::Down)),
+            hit::Button::Search => {
+                match self.screen {
+                    Screen::Node => {
+                        self.picker.filter_open = true;
+                        self.picker.filter.set_focused(true);
+                    }
+                    Screen::Wallet | Screen::Receive => {
+                        self.wallet.pane = Pane::History;
+                        self.wallet.filter_open = true;
+                        self.wallet.filter.set_focused(true);
+                    }
+                    Screen::Log => {
+                        self.logs.search_open = true;
+                        self.logs.search.set_focused(true);
+                    }
+                    _ => {}
+                }
+                Cmd::none()
+            }
+            hit::Button::SetupUnits => self.setup_units(),
+            hit::Button::DetailUp => self.on_key(KeyEvent::new(KeyCode::Up)),
+            hit::Button::DetailDown => self.on_key(KeyEvent::new(KeyCode::Down)),
+            hit::Button::DetailClose => self.on_key(KeyEvent::new(KeyCode::Escape)),
+            hit::Button::NativeReveal => self.on_modal_key(KeyEvent::new(KeyCode::Char('V'))),
+            hit::Button::NativeFocus | hit::Button::ReviewFocus => Cmd::none(),
+            hit::Button::TrackReceipts => self.track_receipts(),
+            hit::Button::ReceiptDetails => self.receipt_details(),
+            hit::Button::LogInfo => self.on_log_key(KeyEvent::new(KeyCode::Char('I'))),
+            hit::Button::LogSource => self.on_log_key(KeyEvent::new(KeyCode::Char('s'))),
+            hit::Button::LogFollow => self.on_log_key(KeyEvent::new(KeyCode::Char('f'))),
+            hit::Button::LogSearch => self.on_log_key(KeyEvent::new(KeyCode::Char('/'))),
+            hit::Button::LogNext => self.on_log_key(KeyEvent::new(KeyCode::Char('n'))),
+            hit::Button::LogPrevious => self.on_log_key(KeyEvent::new(KeyCode::Char('N'))),
+            hit::Button::ToolsUp => self.on_tools_key(KeyEvent::new(KeyCode::Up)),
+            hit::Button::ToolsDown => self.on_tools_key(KeyEvent::new(KeyCode::Down)),
+            hit::Button::Tool(tool) => self.open_tool(tool),
+            hit::Button::ToolGroup(group) => {
+                self.tools_group = group;
+                self.tools_selected = 0;
+                Cmd::none()
+            }
+            hit::Button::ResultUp => self.on_modal_key(KeyEvent::new(KeyCode::Up)),
+            hit::Button::ResultDown => self.on_modal_key(KeyEvent::new(KeyCode::Down)),
+            hit::Button::ResultCopy => self.on_modal_key(KeyEvent::new(KeyCode::Char('C'))),
+            hit::Button::Notifications => self.toggle_notifications(),
+            hit::Button::Accounts => self.start(Action::Accounts(accounts::Job::Read)),
+            hit::Button::AccountSwitch => self.on_modal_key(KeyEvent::new(KeyCode::Char('B'))),
+            hit::Button::AccountInfo => self.on_modal_key(KeyEvent::new(KeyCode::Char('I'))),
+            hit::Button::AccountNew => self.on_modal_key(KeyEvent::new(KeyCode::Char('N'))),
+            hit::Button::AccountEdit => self.on_modal_key(KeyEvent::new(KeyCode::Char('E'))),
+            hit::Button::AccountDelete => self.on_modal_key(KeyEvent::new(KeyCode::Char('D'))),
+            hit::Button::CreateRequest => self.open_request(false),
+            hit::Button::ParseRequest => self.open_request(true),
+            hit::Button::RequestUp => self.on_modal_key(KeyEvent::new(KeyCode::Up)),
+            hit::Button::RequestDown => self.on_modal_key(KeyEvent::new(KeyCode::Down)),
+            hit::Button::RequestQr => self.on_modal_key(KeyEvent::new(KeyCode::Char('Q'))),
+            hit::Button::NewAddress => self.new_address_modal(),
+            hit::Button::LabelAddress => self.prompt_label(),
+            hit::Button::PaymentNote => {
+                self.wallet.detail = false;
+                self.prompt_note()
+            }
+            hit::Button::CopyAddress => {
+                if let Some(address) = self.selected_address() {
+                    self.copy(&address);
+                }
+                Cmd::none()
+            }
+            hit::Button::Privacy => self.toggle_privacy(),
+            hit::Button::SendAll => {
+                self.send.amount.set_value("all");
+                self.send.resume();
+                Cmd::none()
+            }
+            hit::Button::SendBook => self.load_book(),
+            hit::Button::PreparePayment => self.on_send_key(KeyEvent::new(KeyCode::Enter)),
+            hit::Button::RevealPayment => {
+                if self.policy_current() && matches!(self.send.stage, Stage::Built(_)) {
+                    self.send.review_revealed = true;
+                }
+                Cmd::none()
+            }
+            hit::Button::ReviewUp => self.on_send_key(KeyEvent::new(KeyCode::PageUp)),
+            hit::Button::ReviewDown => self.on_send_key(KeyEvent::new(KeyCode::PageDown)),
+            hit::Button::Restore => self.open_restore(),
+            hit::Button::HelpUp => self.on_key(KeyEvent::new(KeyCode::Up)),
+            hit::Button::HelpDown => self.on_key(KeyEvent::new(KeyCode::Down)),
             hit::Button::Help => {
+                self.help_scroll = 0;
                 self.show_help = !self.show_help;
                 Cmd::none()
             }
@@ -2074,42 +2409,57 @@ impl Tui {
 
     fn on_wallet_key(&mut self, k: KeyEvent) -> Cmd<Msg> {
         match k.code {
+            KeyCode::Char('T') | KeyCode::Char('t') if self.screen == Screen::Receive => {
+                return self.track_receipts()
+            }
+            KeyCode::Char('I') | KeyCode::Char('i') if self.screen == Screen::Receive => {
+                return self.receipt_details()
+            }
             // `←→` swaps the Wallet's panes. `Tab` never reaches here: §7a.1 resolves it in
             // `on_key`'s first arm, on every screen and in every focus state.
-            KeyCode::Left | KeyCode::Right => {
+            KeyCode::Left | KeyCode::Right if self.screen == Screen::Wallet => {
                 self.wallet.pane = match self.wallet.pane {
                     Pane::Subaddresses => Pane::History,
                     Pane::History => Pane::Subaddresses,
                 };
             }
-            KeyCode::Char('o') => return self.open_wallet_modal(),
+            KeyCode::Char('o') | KeyCode::Char('O') => {
+                return self.click_button(hit::Button::OpenWallet)
+            }
             // **`c` is create and `x` closes** (§7a.5). The old binding was the collision that
             // made the one key that looks like "create" do nothing visible on a machine with no
             // wallets — half of the owner's complaint (4).
-            KeyCode::Char('c') => return self.create_wallet_modal(),
-            KeyCode::Char('x') => return self.close_wallet(),
-            KeyCode::Char('W') => return self.toggle_wallet_daemon(),
-            KeyCode::Char('a') => {
-                let account = self.account_index();
-                return self.task("make a new address", move |ctx| {
-                    let w = WalletClient::from_ctx(ctx)?;
-                    let a = w.create_address(account, "")?;
-                    // M21: a sentence, like every other toast — `Wallet closed.`, `Nothing to
-                    // cancel.`, `No payment selected.` This one read `new address 3`.
-                    Ok(format!(
-                        "Address #{} is ready. Press Q to show it as a QR code.",
-                        a.address_index
-                    ))
-                });
+            KeyCode::Char('c') | KeyCode::Char('C') => {
+                return self.click_button(hit::Button::CreateWallet)
             }
-            KeyCode::Char('l') => return self.prompt_label(),
-            KeyCode::Char('n') => return self.prompt_note(),
-            KeyCode::Char('R') => {
-                return self.start(Action::WalletRefresh { start_height: 0 });
+            KeyCode::Char('x') | KeyCode::Char('X') => {
+                return self.click_button(hit::Button::CloseWallet)
+            }
+            KeyCode::Char('f') | KeyCode::Char('F') => {
+                return self.click_button(hit::Button::RefreshWallet)
+            }
+            KeyCode::Char('a') | KeyCode::Char('A') => {
+                return self.click_button(hit::Button::Accounts)
+            }
+            KeyCode::Char('u') | KeyCode::Char('U') => {
+                return self.click_button(hit::Button::CreateRequest)
+            }
+            KeyCode::Char('w') | KeyCode::Char('W') => return self.toggle_wallet_daemon(),
+            KeyCode::Char('n') | KeyCode::Char('N') => {
+                return self.click_button(hit::Button::NewAddress)
+            }
+            KeyCode::Char('l') | KeyCode::Char('L') => {
+                return self.click_button(hit::Button::LabelAddress)
+            }
+            KeyCode::Char('e') | KeyCode::Char('E') => {
+                return self.click_button(hit::Button::PaymentNote)
+            }
+            KeyCode::Char('r') | KeyCode::Char('R') => {
+                return self.click_button(hit::Button::Restore)
             }
             // Round 5, S8. Drawn as a chip only while there is a record; the key answers either
             // way, because a key that silently does nothing is the dead end §7a.5 exists to remove.
-            KeyCode::Char('P') => return self.confirm_clear_pending(),
+            KeyCode::Char('p') | KeyCode::Char('P') => return self.confirm_clear_pending(),
             KeyCode::Char('Q') => match self.selected_address() {
                 Some(address) => self.modal = Some(Modal::Qr { address }),
                 None => self.note("No address to show yet.", true),
@@ -2126,7 +2476,10 @@ impl Tui {
                         self.copy(&a);
                     }
                 }
-                Pane::History => self.wallet.detail = self.selected_transfer().is_some(),
+                Pane::History => {
+                    self.wallet.detail = self.selected_transfer().is_some();
+                    self.wallet.detail_scroll = 0;
+                }
             },
             KeyCode::Down | KeyCode::Char('j') => self.move_list(1),
             KeyCode::Up | KeyCode::Char('k') => self.move_list(-1),
@@ -2139,11 +2492,52 @@ impl Tui {
 
     fn on_log_key(&mut self, k: KeyEvent) -> Cmd<Msg> {
         match k.code {
+            KeyCode::Char('i') | KeyCode::Char('I') => {
+                use fmonero_core::log_sources::LogSource;
+                let location = match self.logs.source {
+                    LogSource::Wallet => self
+                        .ctx
+                        .paths
+                        .run_dir
+                        .join("monero-wallet-rpc.log")
+                        .display()
+                        .to_string(),
+                    LogSource::Node => self.ctx.settings.node.log_file.display().to_string(),
+                    LogSource::WalletService => {
+                        format!("User journal: {}", self.ctx.settings.wallet.unit)
+                    }
+                    LogSource::NodeService => {
+                        format!("User journal: {}", self.ctx.settings.node.unit)
+                    }
+                    LogSource::Application => "Local application error state".into(),
+                };
+                let mut result = advanced::ResultView::complete("Log source details", vec![self.logs.source.label().into(), location, "Bounded recent snapshot. Secret-bearing lines and terminal control payloads are removed before display and search.".into()]);
+                if let Some(notice) = &self.logs.notice {
+                    result.lines.push(notice.clone());
+                }
+                self.modal = Some(Modal::Result(result));
+                return Cmd::none();
+            }
+            KeyCode::Char('s') | KeyCode::Char('S') => {
+                use fmonero_core::log_sources::LogSource;
+                self.logs.source = match self.logs.source {
+                    LogSource::Wallet => LogSource::Node,
+                    LogSource::Node => LogSource::WalletService,
+                    LogSource::WalletService => LogSource::NodeService,
+                    LogSource::NodeService => LogSource::Application,
+                    LogSource::Application => LogSource::Wallet,
+                };
+                self.logs.cursor = None;
+                self.logs.notice = Some("Reading selected log source…".into());
+                self.logs.viewer.borrow_mut().clear();
+                self.logs.empty = true;
+                return self.load_log();
+            }
             KeyCode::Char('/') => {
                 self.logs.search_open = true;
                 self.logs.search.set_focused(true);
             }
-            KeyCode::Char('f') => {
+            KeyCode::Char('f') | KeyCode::Char('F') => {
                 self.logs.follow = !self.logs.follow;
                 self.logs
                     .viewer
@@ -2180,6 +2574,17 @@ impl Tui {
     }
 
     fn on_send_key(&mut self, k: KeyEvent) -> Cmd<Msg> {
+        if self.send.confirming() && !self.policy_current() && k.code != KeyCode::Escape {
+            return Cmd::none();
+        }
+        if self.send.confirming() && self.privacy() && !self.send.review_revealed {
+            if matches!(k.code, KeyCode::Char('v') | KeyCode::Char('V')) {
+                self.send.review_revealed = true;
+            }
+            if k.code != KeyCode::Escape {
+                return Cmd::none();
+            }
+        }
         // How many accounts the wallet has, so the selector cannot name a missing one (§5).
         let accounts = self
             .status
@@ -2187,6 +2592,13 @@ impl Tui {
             .and_then(|s| s.wallet.accounts)
             .unwrap_or(1);
         match self.send.on_key(k, accounts) {
+            SendCmd::Sweep(request) => match self.try_start(Action::BuildSweep(request)) {
+                Ok(cmd) => cmd,
+                Err(_) => {
+                    self.send.back_to_form();
+                    Cmd::none()
+                }
+            },
             SendCmd::None => Cmd::none(),
             SendCmd::Note(text) => {
                 self.note(text, true);
@@ -2235,8 +2647,45 @@ impl Tui {
         let Some(modal) = self.modal.take() else {
             return Cmd::none();
         };
+        if matches!(
+            &modal,
+            Modal::Confirm { .. } | Modal::UseNode { .. } | Modal::Notice { .. }
+        ) {
+            match k.code {
+                KeyCode::Down | KeyCode::PageDown => self.dialog_scroll.set(
+                    self.dialog_scroll
+                        .get()
+                        .saturating_add(1)
+                        .min(self.dialog_max.get()),
+                ),
+                KeyCode::Up | KeyCode::PageUp => self
+                    .dialog_scroll
+                    .set(self.dialog_scroll.get().saturating_sub(1)),
+                _ => {}
+            }
+            if matches!(
+                k.code,
+                KeyCode::Down | KeyCode::PageDown | KeyCode::Up | KeyCode::PageUp
+            ) {
+                self.modal = Some(modal);
+                return Cmd::none();
+            }
+        }
         match modal {
-            Modal::Qr { .. } => Cmd::none(),
+            Modal::Native(review) => self.native_key(review, k),
+            Modal::Result(result) => self.result_key(result, k),
+            Modal::Accounts(panel) => self.accounts_key(panel, k),
+            Modal::AccountEditor(editor) => self.account_editor_key(editor, k),
+            Modal::Workflow(form) => self.on_workflow_key(form, k),
+            Modal::PaymentRequest(review) => self.on_request_key(review, k),
+            Modal::Qr { address } => {
+                if matches!(k.code, KeyCode::Escape | KeyCode::Enter) {
+                    self.modal = self.modal_back.take().map(|m| *m);
+                } else {
+                    self.modal = Some(Modal::Qr { address });
+                }
+                Cmd::none()
+            }
             Modal::Confirm { what, .. } => match k.code {
                 KeyCode::Char('y') | KeyCode::Enter => match what {
                     Confirm::NodeUp => self.start(Action::NodeUp),
@@ -2281,19 +2730,17 @@ impl Tui {
                 KeyCode::Enter => {
                     let text = input.value().to_string();
                     match what {
-                        Prompt::Label { index } => {
-                            let account = self.account_index();
-                            self.task("rename it", move |ctx| {
-                                let w = WalletClient::from_ctx(ctx)?;
-                                w.label_address(account, index, &text)?;
-                                Ok("Name saved.".into())
-                            })
-                        }
-                        Prompt::Note { txid } => self.task("save that note", move |ctx| {
-                            let w = WalletClient::from_ctx(ctx)?;
-                            w.set_tx_notes(&[txid], &[text])?;
-                            Ok("Note saved.".into())
+                        Prompt::NewAddress { wallet, account } => self.start(Action::NewAddress {
+                            wallet,
+                            account,
+                            label: text,
                         }),
+                        what @ (Prompt::Label { .. } | Prompt::Note { .. }) => {
+                            self.start(Action::Annotation(annotations::Job::Save {
+                                what,
+                                value: text,
+                            }))
+                        }
                     }
                 }
                 _ => {
@@ -2317,21 +2764,37 @@ impl Tui {
                     match k.code {
                         KeyCode::Escape => {
                             zero(&mut pass);
+                            self.cancel_wallet_prerequisite();
                             return Cmd::none();
                         }
                         KeyCode::Enter => {
                             let name = names.get(sel).cloned().unwrap_or_default();
-                            let password = pass.value().to_string();
-                            zero(&mut pass);
+                            let password = pass.take();
                             return self.start(Action::WalletOpen { name, password });
                         }
                         _ => {
                             pass.handle_event(&Event::Key(k));
+                            if let Some(message) = pass.error() {
+                                self.note(message, true);
+                            }
                         }
                     }
                 } else {
                     match k.code {
-                        KeyCode::Escape => return Cmd::none(),
+                        KeyCode::Enter if names.is_empty() => {
+                            self.cancel_wallet_prerequisite();
+                            return Cmd::none();
+                        }
+                        KeyCode::Char('c') | KeyCode::Char('C') if names.is_empty() => {
+                            return self.create_wallet_modal()
+                        }
+                        KeyCode::Char('r') | KeyCode::Char('R') if names.is_empty() => {
+                            return self.open_restore()
+                        }
+                        KeyCode::Escape => {
+                            self.cancel_wallet_prerequisite();
+                            return Cmd::none();
+                        }
                         KeyCode::Down | KeyCode::Char('j') => {
                             sel = (sel + 1).min(names.len().saturating_sub(1));
                         }
@@ -2353,6 +2816,9 @@ impl Tui {
             }
             // ---- v5.5 --------------------------------------------------------------
             Modal::SeedBackup { lines } => match k.code {
+                KeyCode::Char('b') | KeyCode::Char('B') => {
+                    self.open_tool(advanced::Tool::RecoveryBackup)
+                }
                 KeyCode::Enter | KeyCode::Escape => Cmd::none(),
                 _ => {
                     self.modal = Some(Modal::SeedBackup { lines });
@@ -2366,7 +2832,7 @@ impl Tui {
                     mut again,
                     mut lang,
                     mut field,
-                    err,
+                    mut err,
                 } = *form;
                 // §7a.1, revision 1: `Up`/`Down` move, `Enter` advances from every control but
                 // the last where it submits, `Esc` unfocuses and then discards. This modal
@@ -2374,8 +2840,8 @@ impl Tui {
                 // complaint (4) asked for would be unreachable from a keyboard.
                 const LAST: usize = 3;
                 let refocus = |name: &mut TextInput,
-                               pass: &mut TextInput,
-                               again: &mut TextInput,
+                               pass: &mut SecretInput,
+                               again: &mut SecretInput,
                                field: usize| {
                     name.set_focused(field == 0);
                     pass.set_focused(field == 1);
@@ -2385,17 +2851,17 @@ impl Tui {
                     KeyCode::Escape => {
                         zero(&mut pass);
                         zero(&mut again);
+                        self.cancel_wallet_prerequisite();
                         return Cmd::none();
                     }
-                    KeyCode::Down => field = (field + 1).min(LAST),
-                    KeyCode::Up => field = field.saturating_sub(1),
+                    KeyCode::Down | KeyCode::Tab => field = (field + 1) % (LAST + 1),
+                    KeyCode::Up | KeyCode::BackTab => field = (field + LAST) % (LAST + 1),
                     KeyCode::Enter if field < LAST => field += 1,
                     KeyCode::Enter => {
                         let want = name.value().trim().to_string();
-                        let p1 = pass.value().to_string();
-                        let p2 = again.value().to_string();
+
                         let language = coresettings::SEED_LANGUAGES[lang].1.to_string();
-                        match self.create_wallet_refusal(&want, &p1, &p2) {
+                        match self.create_wallet_refusal(&want, pass.value(), again.value()) {
                             Some(why) => {
                                 // Refused inline; nothing is sent, and the typed password stays
                                 // so the user can fix the other field.
@@ -2411,10 +2877,10 @@ impl Tui {
                             }
                             None => {
                                 zero(&mut again);
-                                zero(&mut pass);
+                                let password = pass.take();
                                 return self.start(Action::WalletCreate {
                                     name: want,
-                                    password: p1,
+                                    password,
                                     language,
                                 });
                             }
@@ -2435,6 +2901,9 @@ impl Tui {
                             _ => false,
                         };
                     }
+                }
+                if let Some(message) = pass.error().or(again.error()) {
+                    err = Some(message.into());
                 }
                 refocus(&mut name, &mut pass, &mut again, field);
                 self.modal = Some(Modal::CreateWallet(Box::new(CreateForm {
@@ -2520,20 +2989,6 @@ impl Tui {
         }
     }
 
-    /// Close whatever modal is open, zeroing every password buffer it held (§2b.4). Used by
-    /// §7a.1's `Tab` (which closes every modal but the two that hold something undroppable) and
-    /// by a backdrop click (§7a.2).
-    fn close_modal(&mut self) {
-        match self.modal.take() {
-            Some(Modal::OpenWallet { mut pass, .. }) => zero(&mut pass),
-            Some(Modal::CreateWallet(mut form)) => {
-                zero(&mut form.pass);
-                zero(&mut form.again);
-            }
-            _ => {}
-        }
-    }
-
     /// Every local refusal §7a.5 names, in the order a user meets them, so nothing is sent for
     /// a mistake fmonero can see: a `/` in the name (§1b.5), a wallet that already exists, a
     /// mismatched pair, and an empty password — for which there is deliberately **no** TUI
@@ -2561,8 +3016,7 @@ impl Tui {
         }
         if p1.is_empty() {
             return Some(
-                "an empty password would leave the wallet unencrypted — run: \
-                 fmonero wallet create <name> --allow-empty-password --yes"
+                "An empty password would leave the wallet unencrypted. Choose a nonempty password."
                     .into(),
             );
         }
@@ -2746,14 +3200,22 @@ impl Tui {
         Cmd::none()
     }
 
+    /// Cancelling a prerequisite also cancels the deferred receiving action. Merely
+    /// advancing from the picker to Open/Create/Restore must preserve that action.
+    fn cancel_wallet_prerequisite(&mut self) {
+        if matches!(
+            self.launch_intent,
+            LaunchIntent::NewAddress | LaunchIntent::Requests
+        ) {
+            self.launch_intent = LaunchIntent::Default;
+        }
+    }
+
     fn open_wallet_modal(&mut self) -> Cmd<Msg> {
         // S1: the modal lists what is there, and says why it cannot when it cannot.
         self.reload_wallets();
         let names = self.wallets.clone();
-        let mut pass = TextInput::new()
-            .with_mask('•')
-            .with_style(self.theme.text())
-            .with_cursor_style(Style::new().bg(self.theme.accent).fg(self.theme.selection));
+        let mut pass = SecretInput::new();
         pass.set_focused(false);
         self.modal = Some(Modal::OpenWallet {
             names,
@@ -2768,13 +3230,22 @@ impl Tui {
     /// against `c` for "create" was a collision the old keymap resolved the wrong way — closing a
     /// wallet is rare, reversible and reachable from a screen showing an open wallet, while
     /// creating one is the thing a new user needs and the thing `c` universally suggests.
+    fn new_address_modal(&mut self) -> Cmd<Msg> {
+        if !self.status.as_ref().is_some_and(|s| s.wallet.open) {
+            self.launch_intent = LaunchIntent::NewAddress;
+            return self.open_wallet_modal();
+        }
+        self.show_new_address_prompt()
+    }
+
+    fn show_new_address_prompt(&mut self) -> Cmd<Msg> {
+        self.launch_intent = LaunchIntent::Default;
+        self.start(Action::NewAddressForm {
+            account: self.account_index(),
+        })
+    }
+
     fn create_wallet_modal(&mut self) -> Cmd<Msg> {
-        let masked = |th: &Theme| {
-            TextInput::new()
-                .with_mask('•')
-                .with_style(th.text())
-                .with_cursor_style(Style::new().bg(th.accent).fg(th.selection))
-        };
         let mut name = text_input(&self.theme);
         name.set_focused(true);
         // `English` is the default, and it is index 1 of `SEED_LANGUAGES` (upstream's order).
@@ -2784,8 +3255,8 @@ impl Tui {
             .unwrap_or(0);
         self.modal = Some(Modal::CreateWallet(Box::new(CreateForm {
             name,
-            pass: masked(&self.theme),
-            again: masked(&self.theme),
+            pass: SecretInput::new(),
+            again: SecretInput::new(),
             lang,
             field: 0,
             err: None,
@@ -2894,51 +3365,18 @@ impl Tui {
             self.note("No address selected.", true);
             return Cmd::none();
         };
-        self.modal = Some(Modal::Prompt {
-            what: Prompt::Label {
-                index: row.address_index,
-            },
-            // **Capitalised**, like `Address`, `Amount`, `Password` and every other label in the
-            // program (round 4 iteration 3): three modals and the payment detail were the only
-            // lower-case ones.
-            field: "Name ".to_string(),
-            title: format!(" Name address #{} ", row.address_index),
-            input: text_input(&self.theme)
-                .with_value(row.label.clone())
-                .with_focused(true),
-        });
-        Cmd::none()
+        self.start(Action::Annotation(annotations::Job::LabelForm {
+            account: self.account_index(),
+            row: row.clone(),
+        }))
     }
 
     fn prompt_note(&mut self) -> Cmd<Msg> {
-        let Some(t) = self.selected_transfer() else {
+        let Some(row) = self.selected_transfer().cloned() else {
             self.note("No payment selected.", true);
             return Cmd::none();
         };
-        let txid = t.txid.clone();
-        let value = t.note.clone();
-        // **M5: the modal names the payment the note belongs to.** It said only `Note for this
-        // payment`, over a list the modal itself covers — so a reader who had moved the selection
-        // could not tell which row he was about to annotate.
-        //
-        // **And it names it the way the table does** (round 4 iteration 3): `Note for the sending
-        // of 0.1000 XMR on 09-16 14:01` invented a phrase — "the sending of" — that nobody says.
-        // The three facts are the three columns of the row it belongs to, separated the way every
-        // other dense row in the program separates fields.
-        let which = format!(
-            " Note for {} XMR · {} · {} ",
-            t.amount.to_xmr_money(),
-            t.kind.words(),
-            screens::moment(t.timestamp)
-        );
-        self.modal = Some(Modal::Prompt {
-            what: Prompt::Note { txid },
-            field: "Note ".to_string(),
-            // X8, and `docs/COPY.md` §3.5 specified it a round ago: §2o.2 says `payment`.
-            title: which,
-            input: text_input(&self.theme).with_value(value).with_focused(true),
-        });
-        Cmd::none()
+        self.start(Action::Annotation(annotations::Job::NoteForm(row)))
     }
 
     // ------------------------------------------------------------ list movement
@@ -2962,7 +3400,7 @@ impl Tui {
 
     fn move_table(&mut self, delta: isize) {
         let total = match self.screen {
-            Screen::Wallet => self
+            Screen::Wallet | Screen::Receive => self
                 .wallet
                 .addresses
                 .as_ref()
@@ -2977,7 +3415,7 @@ impl Tui {
             return;
         }
         let cell = match self.screen {
-            Screen::Wallet => &self.wallet.table,
+            Screen::Wallet | Screen::Receive => &self.wallet.table,
             _ => &self.node.table,
         };
         let mut st = cell.borrow_mut();
@@ -3038,7 +3476,9 @@ impl Tui {
         let mut log = self.logs.viewer.borrow_mut();
         for line in lines {
             self.logs.empty = false;
-            log.push(format!("fmonero: {line}"));
+            log.push(fmonero_core::log_sources::sanitize(&format!(
+                "fmonero: {line}"
+            )));
         }
     }
 }
@@ -3047,6 +3487,7 @@ impl Tui {
 /// `screens::hinted_input` rather than handed to ftui's own empty-field text (§2h).
 fn text_input(th: &Theme) -> TextInput {
     TextInput::new()
+        .with_max_length(16 * 1024)
         .with_style(th.text())
         .with_cursor_style(Style::new().bg(th.accent).fg(th.selection))
 }
@@ -3058,9 +3499,7 @@ fn restyle(old: &TextInput, th: &Theme) -> TextInput {
 }
 
 /// §2b.4: the password buffer is overwritten with zeroes when the modal closes.
-fn zero(input: &mut TextInput) {
-    let n = input.value().chars().count();
-    input.set_value("\0".repeat(n));
+fn zero(input: &mut SecretInput) {
     input.clear();
 }
 
@@ -3074,12 +3513,15 @@ impl Model for Tui {
         self.reload_picker();
         self.reload_wallets();
         match self.screen {
-            Screen::Wallet => {
+            Screen::Wallet | Screen::Receive => {
                 cmds.push(self.load_wallet());
                 cmds.push(self.load_history());
             }
             Screen::Node => cmds.push(self.load_extras()),
             _ => {}
+        }
+        if self.launch_intent == LaunchIntent::Restore {
+            cmds.push(self.open_restore());
         }
         // Wallet startup on launch is opt-in; status polling never starts it.
         if self.ctx.settings.wallet.autostart && self.action.is_none() {
@@ -3108,16 +3550,28 @@ impl Model for Tui {
                 ctx: self.ctx.clone(),
                 slot: a.slot.clone(),
                 announce: self.announce.clone(),
+                cancel: self.action.as_ref().unwrap().cancel.clone(),
             }));
         }
         v
     }
 
     fn update(&mut self, msg: Msg) -> Cmd<Msg> {
+        // Reload before keys and worker completions too. Rendering independently masks a
+        // metadata mismatch, so a policy change cannot expose a stale revealed frame.
+        if !matches!(&msg, Msg::Poll) {
+            self.maybe_reload_settings();
+        }
         match msg {
             Msg::Raw(Event::Key(k)) => self.on_key(k),
             Msg::Raw(Event::Mouse(ev)) => self.on_mouse(ev),
-            Msg::Raw(event @ Event::Paste(_)) => self.on_paste(&event),
+            Msg::Raw(mut event @ Event::Paste(_)) => {
+                let cmd = self.on_paste(&event);
+                if let Event::Paste(paste) = &mut event {
+                    zeroize::Zeroize::zeroize(&mut paste.text);
+                }
+                cmd
+            }
             Msg::Raw(_) => Cmd::none(),
             Msg::Poll => {
                 if self
@@ -3134,6 +3588,29 @@ impl Model for Tui {
                     return Cmd::none();
                 }
                 let mut cmds = vec![self.poll()];
+                if self.ctx.settings.tui.notifications
+                    && !self.notifications_inflight
+                    && self.notifications_at.elapsed() >= Duration::from_secs(15)
+                    && self.action.is_none()
+                    && self.status.as_ref().is_some_and(|s| s.wallet.open)
+                {
+                    self.notifications_inflight = true;
+                    self.notifications_at = Instant::now();
+                    let ctx = self.ctx.clone();
+                    cmds.push(Cmd::task(move || {
+                        Msg::Notifications(
+                            crate::notification::poll(&ctx, &fmonero_core::CancelToken::new())
+                                .map(|_| ())
+                                .map_err(|e| e.to_string()),
+                        )
+                    }));
+                }
+                if self.receiving.following
+                    && self.screen == Screen::Receive
+                    && self.modal.is_none()
+                {
+                    cmds.push(self.load_receipts());
+                }
                 if self.logs.follow && self.screen == Screen::Log {
                     cmds.push(self.load_log());
                 }
@@ -3182,6 +3659,28 @@ impl Model for Tui {
                         self.wallet.now = Some(fmonero_core::now_unix());
                         self.status_err = None;
                         self.status = Some(s);
+                        if self.launch_intent == LaunchIntent::Requests
+                            && self.modal.is_none()
+                            && self.action.is_none()
+                        {
+                            if !opened {
+                                self.open_wallet_modal();
+                            } else if self.wallet.addresses.is_some() {
+                                // Create/Restore may finish loading the wallet while their
+                                // result dialog is still open. Resume after it is dismissed.
+                                self.open_request(false);
+                            }
+                        }
+                        if self.launch_intent == LaunchIntent::NewAddress
+                            && self.modal.is_none()
+                            && self.action.is_none()
+                        {
+                            if opened {
+                                self.show_new_address_prompt();
+                            } else {
+                                self.open_wallet_modal();
+                            }
+                        }
                         // Load once when a wallet appears, and **not** again every second
                         // after a failure: a 1 Hz retry of four RPCs against a wallet that is
                         // answering errors is the pile-up §2d exists to prevent. `r` retries,
@@ -3217,7 +3716,20 @@ impl Model for Tui {
                     Ok((b, a)) => {
                         self.wallet.err = None;
                         self.wallet.balance = Some(b);
+                        if let Some(index) = self.wallet.select_address.take() {
+                            self.wallet.table.borrow_mut().select(
+                                a.addresses
+                                    .iter()
+                                    .position(|row| row.address_index == index),
+                            );
+                        }
                         self.wallet.addresses = Some(a);
+                        if self.launch_intent == LaunchIntent::Requests
+                            && self.modal.is_none()
+                            && self.action.is_none()
+                        {
+                            return self.open_request(false);
+                        }
                     }
                     Err(e) => self.wallet.err = Some(e),
                 }
@@ -3243,6 +3755,68 @@ impl Model for Tui {
                 }
                 Cmd::none()
             }
+            Msg::Notifications(result) => {
+                self.notifications_inflight = false;
+                if let Err(error) = result {
+                    self.note(error, true);
+                }
+                Cmd::none()
+            }
+            Msg::Received(epoch, r) => {
+                if epoch != self.read_epoch {
+                    return Cmd::none();
+                }
+                self.receiving.inflight = false;
+                match *r {
+                    Ok(observed) => {
+                        if self.selected_address().as_deref()
+                            == Some(observed.address.address.as_str())
+                        {
+                            self.receiving.observed = Some(observed);
+                            self.receiving.error = None;
+                            if self.receiving.show_details {
+                                self.receiving.show_details = false;
+                                return self.receipt_details();
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        self.receiving.error = Some(error);
+                        self.receiving.following = false;
+                    }
+                }
+                Cmd::none()
+            }
+            Msg::LogSnapshot(source, r) => {
+                if source != self.logs.source {
+                    return Cmd::none();
+                }
+                match *r {
+                    Ok(snapshot) => {
+                        self.logs.cursor = snapshot.cursor;
+                        self.logs.notice = snapshot.unavailable.or_else(|| {
+                            if snapshot.rotated {
+                                Some("Log rotated; showing the current file.".into())
+                            } else if snapshot.truncated {
+                                Some(
+                                    "Older lines omitted; showing a bounded recent snapshot."
+                                        .into(),
+                                )
+                            } else {
+                                None
+                            }
+                        });
+                        self.update(Msg::LogLines(Box::new(Ok((
+                            snapshot.lines,
+                            self.logs.path.clone(),
+                        )))))
+                    }
+                    Err(why) => {
+                        self.logs.notice = Some(fmonero_core::log_sources::sanitize(&why));
+                        Cmd::none()
+                    }
+                }
+            }
             Msg::LogLines(r) => {
                 let mut reloaded = false;
                 match *r {
@@ -3252,7 +3826,9 @@ impl Model for Tui {
                         {
                             let mut log = self.logs.viewer.borrow_mut();
                             log.clear();
-                            log.push_many(lines);
+                            log.push_many(
+                                lines.iter().map(|s| fmonero_core::log_sources::sanitize(s)),
+                            );
                             log.set_auto_scroll(self.logs.follow);
                         }
                         reloaded = true;
@@ -3325,18 +3901,127 @@ impl Model for Tui {
                 }
                 Cmd::none()
             }
+            Msg::ActionFinished(id, r) => {
+                if self.action.as_ref().is_none_or(|a| a.id != id) {
+                    return Cmd::none();
+                }
+                self.update(Msg::ActionDone(r))
+            }
             Msg::ActionDone(r) => {
                 self.action = None;
                 self.quit_armed = None;
                 match *r {
+                    Ok(Outcome::Native(reply)) => match reply {
+                        native::Reply::Held(review) => self.modal = Some(Modal::Native(review)),
+                        native::Reply::Result(result) => {
+                            let _ = self.reload_ctx();
+                            self.reload_wallets();
+                            self.invalidate_wallet_reads();
+                            self.note(result.title.clone(), result.failed);
+                            self.modal = Some(Modal::Result(result));
+                        }
+                    },
+                    Ok(Outcome::AnnotationForm {
+                        what,
+                        title,
+                        field,
+                        value,
+                    }) => {
+                        self.modal = Some(Modal::Prompt {
+                            what,
+                            title,
+                            field,
+                            input: text_input(&self.theme).with_value(value).with_focused(true),
+                        });
+                    }
+                    Ok(Outcome::ToolReady(tool, identity)) => {
+                        self.modal = Some(Modal::Workflow(workflows::Form::tool(
+                            self,
+                            tool,
+                            Some(identity),
+                        )));
+                    }
+                    Ok(Outcome::Advanced(result)) => {
+                        let _ = self.reload_ctx();
+                        self.reload_wallets();
+                        self.invalidate_wallet_reads();
+                        self.note(
+                            if result.failed {
+                                "Operation requires attention."
+                            } else {
+                                "Operation complete."
+                            },
+                            result.failed,
+                        );
+                        self.modal = Some(Modal::Result(result));
+                    }
+                    Ok(Outcome::Accounts(reply)) => {
+                        if let Err(error) = self.reload_ctx() {
+                            self.note(error.to_string(), true);
+                        }
+                        self.invalidate_wallet_reads();
+                        if !reply.message.is_empty() {
+                            self.note(reply.message, false);
+                        }
+                        if let Some(snapshot) = reply.snapshot {
+                            self.modal = Some(Modal::Accounts(accounts::Panel {
+                                snapshot,
+                                contacts: reply.contacts,
+                                selected: 0,
+                            }));
+                        }
+                    }
                     Ok(Outcome::Note(text)) => {
                         self.exit.store(0, Ordering::SeqCst);
                         self.note(text, false);
                     }
+                    Ok(Outcome::NewAddressForm { wallet, account }) => {
+                        self.wallet.new_address_identity =
+                            Some((wallet.clone(), account, self.read_epoch));
+                        self.modal = Some(Modal::Prompt {
+                            what: Prompt::NewAddress { wallet, account },
+                            title: " New receiving address ".into(),
+                            field: "Label (optional) ".into(),
+                            input: text_input(&self.theme).with_focused(true),
+                        });
+                    }
+                    Ok(Outcome::AddressCreated(address)) => {
+                        let same = self.wallet.new_address_identity.take().is_some_and(
+                            |(wallet, account, epoch)| {
+                                wallet == address.wallet
+                                    && account == address.account_index
+                                    && epoch == self.read_epoch
+                                    && self.ctx.settings.wallet.account == account
+                                    && self.status.as_ref().is_some_and(|s| {
+                                        s.wallet.open
+                                            && s.wallet.name.as_deref()
+                                                == Some(wallet.name.as_str())
+                                    })
+                            },
+                        );
+                        if same {
+                            self.invalidate_wallet_reads();
+                            self.wallet.select_address = Some(address.address_index);
+                            self.wallet.pane = Pane::Subaddresses;
+                            self.screen = Screen::Receive;
+                            self.tabs.borrow_mut().active = Screen::Receive.index();
+                        }
+                        self.note(
+                            format!(
+                                "Address #{} created in account {}.",
+                                address.address_index, address.account_index
+                            ),
+                            false,
+                        );
+                    }
                     Ok(Outcome::Opened(name)) => {
+                        let _ = self.reload_ctx();
                         self.invalidate_wallet_reads();
                         self.exit.store(0, Ordering::SeqCst);
                         self.note(format!("{name} is open."), false);
+                        if self.launch_intent == LaunchIntent::NewAddress {
+                            self.show_new_address_prompt();
+                        }
                     }
                     Ok(Outcome::Built(plan)) => {
                         self.exit.store(0, Ordering::SeqCst);
@@ -3345,6 +4030,7 @@ impl Model for Tui {
                         self.note("The fee is worked out. Nothing has been sent yet.", false);
                         self.send.typed.clear();
                         self.send.tab_note = false;
+                        self.send.reset_review();
                         self.send.stage = Stage::Built(plan);
                         return Cmd::none();
                     }
@@ -3362,23 +4048,25 @@ impl Model for Tui {
                         self.wallet.list.borrow_mut().selected = Some(0);
                     }
                     // ---- v5.5 -------------------------------------------------------
-                    Ok(Outcome::Created { name, hint }) => {
+                    Ok(Outcome::Restored(result)) => {
+                        let _ = self.reload_ctx();
+                        self.invalidate_wallet_reads();
+                        self.reload_wallets();
+                        let result = advanced::ResultView::restored(result);
+                        self.note(result.title.clone(), result.failed);
+                        self.modal = Some(Modal::Result(result));
+                    }
+                    Ok(Outcome::Created { name }) => {
+                        let _ = self.reload_ctx();
                         self.invalidate_wallet_reads();
                         self.exit.store(0, Ordering::SeqCst);
                         self.note(format!("{name} created and open."), false);
-                        // The seed-backup modal carries `seed_backup_hint` verbatim from core —
-                        // the same string the CLI prints. **fmonero never displays a seed**
-                        // (§2b, §0): showing one would put it into a terminal scrollback, a tmux
-                        // buffer and possibly a screen recording, for a value whose disclosure is
-                        // total and irreversible loss. The modal says so, so the omission reads
-                        // as a decision.
-                        let mut lines: Vec<String> = hint.lines().map(str::to_string).collect();
-                        lines.push(String::new());
-                        lines.push(
-                            "fmonero never shows your seed. A terminal's scrollback is not a \
-                             safe place for one."
-                                .into(),
-                        );
+                        let mut lines = vec![
+                            "Before receiving funds, create an encrypted recovery wallet.".into(),
+                            "Choose a new private destination and a recovery password. Monero generates the artifact and verifies its address and password before publication.".into(),
+                            "This recovers funds. Labels, contacts, notes and history metadata are not included.".into(),
+                            "Recovery words and private keys never appear on screen.".into(),
+                        ];
                         if self.ctx.settings.node.mode.is_remote() {
                             // §2m.3: the NODE chose where this wallet starts scanning, and this
                             // modal is the last moment before the first refresh.

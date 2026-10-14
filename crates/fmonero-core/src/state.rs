@@ -373,11 +373,9 @@ pub fn pending_send(ctx: &Context) -> Result<Option<PendingSend>, Error> {
             );
         }
     };
-    if bytes.iter().all(u8::is_ascii_whitespace) {
-        return Ok(None);
-    }
     // A record fmonero cannot parse must **block**, not vanish: it is the interlock that
-    // stops a double send, and "unparsable" is not "absent" (§2a.4).
+    // stops a double send, and "unparsable" is not "absent" (§2a.4). Empty and
+    // whitespace-only files are corrupt records too; clearing removes the file.
     serde_json::from_slice(&bytes).map(Some).map_err(|e| {
         // S6: the serde text is `detail`, not part of the sentence.
         Error::safety(format!(
@@ -391,8 +389,8 @@ pub fn pending_send(ctx: &Context) -> Result<Option<PendingSend>, Error> {
     })
 }
 
-/// Writes the WHOLE record to `paths.pending_file()` and **fsyncs**. Called exactly once
-/// per send, by `send::relay`, before the first `relay_tx` (§2a.3, §2a.4).
+/// Writes the WHOLE record and requires both the file and its renamed directory entry
+/// to be durable. Used before the first relay and for every acknowledged payment.
 pub fn set_pending_send(ctx: &Context, p: &PendingSend) -> Result<(), Error> {
     ctx.paths.ensure_dirs()?;
     let mut bytes = serde_json::to_vec_pretty(p).map_err(|e| {
@@ -403,8 +401,7 @@ pub fn set_pending_send(ctx: &Context, p: &PendingSend) -> Result<(), Error> {
     crate::write_private(&ctx.paths.pending_file(), &bytes)?;
     // `write_private` fsyncs the file; the rename itself is only durable once the directory
     // entry is, and the whole point of this record is surviving a power cut mid-relay.
-    fsync_dir(&ctx.paths.state_dir);
-    Ok(())
+    sync_payment_directory(&ctx.paths.state_dir)
 }
 
 /// Flips one entry of the list to `relayed: true` and re-fsyncs before the next `relay_tx`.
@@ -437,10 +434,7 @@ pub fn mark_relayed(ctx: &Context, txid: &str) -> Result<(), Error> {
 pub fn clear_pending_send(ctx: &Context) -> Result<(), Error> {
     let path = ctx.paths.pending_file();
     match std::fs::remove_file(&path) {
-        Ok(()) => {
-            fsync_dir(&ctx.paths.state_dir);
-            Ok(())
-        }
+        Ok(()) => sync_payment_directory(&ctx.paths.state_dir),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(Error::io(
             "clear",
@@ -467,11 +461,87 @@ fn read_doc(path: &std::path::Path) -> StateDoc {
         .unwrap_or_default()
 }
 
-/// `fsync` a directory, so a `rename(2)` into it survives a power cut. Best effort: a
-/// read-only state dir degrades to a stale cache, never to a failure (§5).
-fn fsync_dir(dir: &std::path::Path) {
-    if let Ok(f) = std::fs::File::open(dir) {
-        let _ = f.sync_all();
+/// The payment ledger must survive a power cut before another relay can start.
+/// This is deliberately separate from cache writes: a cache may be stale, but a
+/// payment whose durable uncertainty record is unconfirmed must stop here.
+fn sync_payment_directory(dir: &std::path::Path) -> Result<(), Error> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let open_error = |e| {
+        Error::io("open", "the payment record directory", dir, &e)
+            .with_hint("fmonero doctor --only storage")
+    };
+    #[cfg(test)]
+    payment_io_fault::check(dir, payment_io_fault::Stage::Open).map_err(open_error)?;
+    let directory = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(dir)
+        .map_err(open_error)?;
+    let sync_error = |e| {
+        Error::io("sync", "the payment record directory", dir, &e)
+            .with_hint("fmonero doctor --only storage")
+    };
+    #[cfg(test)]
+    payment_io_fault::check(dir, payment_io_fault::Stage::Sync).map_err(sync_error)?;
+    directory.sync_all().map_err(sync_error)
+}
+
+/// Isolated I/O faults at the actual ledger directory-open/sync boundaries. No
+/// production switch or environment variable can weaken the durability gate.
+#[cfg(test)]
+pub(crate) mod payment_io_fault {
+    use std::{
+        cell::RefCell,
+        path::{Path, PathBuf},
+    };
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) enum Stage {
+        Open,
+        Sync,
+    }
+
+    struct Fault {
+        directory: PathBuf,
+        stage: Stage,
+        skip: usize,
+    }
+    thread_local! { static FAULT: RefCell<Option<Fault>> = const { RefCell::new(None) }; }
+
+    pub(crate) struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            FAULT.with(|f| *f.borrow_mut() = None);
+        }
+    }
+
+    pub(crate) fn inject(directory: &Path, stage: Stage, skip: usize) -> Guard {
+        FAULT.with(|f| {
+            let mut f = f.borrow_mut();
+            assert!(f.is_none(), "one payment I/O fault per test thread");
+            *f = Some(Fault {
+                directory: directory.to_owned(),
+                stage,
+                skip,
+            });
+        });
+        Guard
+    }
+
+    pub(super) fn check(directory: &Path, stage: Stage) -> std::io::Result<()> {
+        FAULT.with(|f| {
+            let mut f = f.borrow_mut();
+            if let Some(fault) = f.as_mut() {
+                if fault.directory.as_path() == directory && fault.stage == stage {
+                    if fault.skip == 0 {
+                        *f = None;
+                        return Err(std::io::Error::from_raw_os_error(libc::EIO));
+                    }
+                    fault.skip -= 1;
+                }
+            }
+            Ok(())
+        })
     }
 }
 
@@ -526,6 +596,39 @@ impl Drop for FileLock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_ledger_absence_is_distinct_from_empty_or_whitespace() {
+        let dir = std::env::temp_dir().join(format!(
+            "fmonero-empty-ledger-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let ctx = Context::for_test(&dir).unwrap();
+        let path = ctx.paths.pending_file();
+        assert!(pending_send(&ctx).unwrap().is_none());
+
+        for bytes in [b"".as_slice(), b" \t\r\n".as_slice()] {
+            crate::write_private(&path, bytes).unwrap();
+            let error = pending_send(&ctx).unwrap_err();
+            assert_eq!(error.exit_code(), 3);
+            assert_eq!(error.reason(), Some("pending_send"));
+            assert_eq!(error.hint(), crate::send::PENDING_HINT);
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+
+            clear_pending_send(&ctx).unwrap();
+            assert_eq!(
+                std::fs::symlink_metadata(&path).unwrap_err().kind(),
+                std::io::ErrorKind::NotFound
+            );
+            assert!(pending_send(&ctx).unwrap().is_none());
+        }
+
+        // Other read failures must not be mistaken for an absent record either.
+        std::fs::create_dir(&path).unwrap();
+        assert!(pending_send(&ctx).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn the_state_document_round_trips_and_defaults_to_empty() {

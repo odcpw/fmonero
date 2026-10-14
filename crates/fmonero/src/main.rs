@@ -7,10 +7,18 @@
 //! touching it (§2k). That is why every payload below is built here, from the frozen §5b API,
 //! even where the body it calls is still `Error::unimplemented`.
 
+mod accounts;
+mod care;
 mod doctor;
+mod launch;
+mod logs;
+mod notification;
+mod offline;
 mod output;
 mod prompt;
+mod requests;
 mod setup;
+mod tools;
 mod tui;
 
 use std::time::Duration;
@@ -24,8 +32,8 @@ use fmonero_core::send::{self, Plan, SendRequest, SweepRequest};
 use fmonero_core::state;
 use fmonero_core::status::PendingStatus;
 use fmonero_core::{
-    address, agent, log as corelog, node_mode, node_session, nodes, settings as coresettings,
-    units, wallet_dir, wallet_session, CancelToken, Context, Error, Piconero,
+    address, agent, node_mode, node_session, nodes, settings as coresettings, units, wallet_dir,
+    wallet_session, CancelToken, Context, Error, Piconero,
 };
 
 use output::Out;
@@ -136,7 +144,12 @@ returns at once. This run is not made fresher by it; the next one is."
     Setup(setup::SetupArgs),
     /// Diagnose the installation, and optionally repair it
     Doctor(doctor::DoctorArgs),
-    /// Terminal UI: Node · Wallet · Send · Log
+    /// Open a wallet page in an Omarchy terminal
+    Launch {
+        #[arg(value_enum, default_value = "wallet")]
+        intent: launch::Intent,
+    },
+    /// Terminal UI: wallets, payments, receiving, logs and tools
     Tui(tui::TuiArgs),
     /// For agents: exit codes, settings keys and everything a script can branch on, as JSON
     Capabilities,
@@ -152,6 +165,8 @@ returns at once. This run is not made fresher by it; the next one is."
 
 #[derive(Subcommand)]
 enum AppCmd {
+    /// Read shared privacy/alert preferences without wallet or node connections
+    Presentation,
     /// Check local application activity; starts nothing and contacts no public node
     Status,
     /// Save and stop fmonero's services and close its open TUI windows
@@ -299,6 +314,32 @@ kB/s, and -1 puts one back to the node's own default."
 enum WalletCmd {
     /// The wallets in your wallet folder. Reads nothing inside them
     List,
+    /// Read bounded, sanitized wallet, node, service or application logs
+    Logs {
+        #[arg(long, value_enum, default_value = "wallet")]
+        source: logs::Source,
+        #[arg(long, default_value_t = 100)]
+        lines: usize,
+        #[arg(long)]
+        grep: Option<String>,
+    },
+    /// Restore from a recovery seed entered privately; never overwrites a wallet
+    #[command(
+        after_help = "The terminal masks the seed and new password. With --secret-stdin, provide one line each: recovery seed, new password, then seed offset only when --seed-offset is selected. Secrets are never command arguments. Height 0 scans from the beginning when the wallet's birthday is unknown."
+    )]
+    Restore {
+        name: String,
+        #[arg(long, default_value_t = 0)]
+        restore_height: u64,
+        #[arg(long)]
+        language: Option<String>,
+        /// Ask for the optional passphrase that was used to offset the seed
+        #[arg(long)]
+        seed_offset: bool,
+        /// Read protected inputs from a private pipe in the order shown below
+        #[arg(long)]
+        secret_stdin: bool,
+    },
     /// Open a wallet, starting the wallet service first if it is not running
     #[command(
         after_help = "The password comes from --password-file, then $FMONERO_WALLET_PASSWORD,
@@ -321,9 +362,9 @@ fmonero's or the wallet service's."
     Stop,
     /// Create a new wallet. Does NOT print the seed
     #[command(
-        after_help = "In a terminal the password is asked for twice and compared. An empty one
-is refused without --allow-empty-password. The seed is never printed: back it up with
-`monero-wallet-cli --wallet-file <wallet.dir>/<name> --offline`, then type `seed`."
+        after_help = "In a terminal the password is asked for twice and compared. --password-stdin reads
+one complete line from a private pipe. An empty password requires --allow-empty-password.
+Create an encrypted recovery wallet with `fmonero wallet tools care backup /absolute/new-directory --yes`."
     )]
     Create {
         /// The wallet's name inside wallet.dir (no `/`)
@@ -337,6 +378,9 @@ is refused without --allow-empty-password. The seed is never printed: back it up
         /// Read the password from this file instead of prompting
         #[arg(long, value_name = "PATH")]
         password_file: Option<std::path::PathBuf>,
+        /// Read one password line from a private input pipe
+        #[arg(long, conflicts_with = "password_file")]
+        password_stdin: bool,
     },
     /// Balance and unlocked balance
     Balance {
@@ -367,6 +411,11 @@ is refused without --allow-empty-password. The seed is never printed: back it up
         /// A name for the new address
         #[arg(long, value_name = "TEXT")]
         label: Option<String>,
+    },
+    /// Create or read a Monero payment request without sending a payment
+    Request {
+        #[command(subcommand)]
+        cmd: requests::RequestCmd,
     },
     /// Your payments, from a saved copy plus whatever is new since it was written
     #[command(
@@ -408,10 +457,10 @@ had."
     #[command(
         after_help = "Works the payment out without sending it, and prints the real fee first.
 Without --yes it prints that fee and exits 3. --dry-run beats --yes: it never sends. --max-fee
-refuses to send when the fee comes out above it. v0.1 makes exactly ONE payment at a time; when
-the wallet needs more than one, the hint names `fmonero wallet sweep`.
+refuses to send when the combined fee comes out above it. Monero may split a payment into
+several transactions; fmonero reviews their exact combined amount and fee.
 
-Nothing has ever been sent from this version: it has only ever been tried against a stand-in."
+Public-network payments with valued funds remain unqualified. See docs/QUALIFICATION.md for the software and native test scope."
     )]
     Send {
         /// A Monero address, or @label from the address book
@@ -437,7 +486,7 @@ Nothing has ever been sent from this version: it has only ever been tried agains
 several payments. They go in order, under one record that survives a crash. There is no amount
 to give and no way to pick one address: every address of the account is included.
 
-Nothing has ever been sent from this version: it has only ever been tried against a stand-in."
+Public-network payments with valued funds remain unqualified. See docs/QUALIFICATION.md for the software and native test scope."
     )]
     Sweep {
         /// A Monero address, or @label from the address book
@@ -470,6 +519,21 @@ itself, so if you find yourself typing this after every send, something is wrong
     Book {
         #[command(subcommand)]
         cmd: BookCmd,
+    },
+    /// Create, rename or select wallet accounts
+    Accounts {
+        #[command(subcommand)]
+        cmd: accounts::AccountCmd,
+    },
+    /// Opt in to private desktop notifications while the wallet is active
+    Notifications {
+        #[command(subcommand)]
+        cmd: notification::NotificationCmd,
+    },
+    /// Advanced wallet, signing and proof workflows
+    Tools {
+        #[command(subcommand)]
+        cmd: tools::ToolsCmd,
     },
     /// Scan for new blocks now
     Refresh {
@@ -513,6 +577,12 @@ enum BookCmd {
         /// A Monero address
         address: String,
         /// The description `@label` matches against, case-insensitively
+        description: String,
+    },
+    /// Edit the exact existing recipient, after explicit confirmation
+    Edit {
+        index: u64,
+        address: String,
         description: String,
     },
     /// Remove an entry by index
@@ -898,7 +968,9 @@ fn node_gate<'a>(ctx: &Context, n: Option<&'a NodeClient>) -> send::NodeGate<'a>
 fn command_path(cmd: &Cmd) -> String {
     match cmd {
         Cmd::Status { .. } => "status".into(),
+        Cmd::Launch { .. } => "launch".into(),
         Cmd::App { cmd } => match cmd {
+            AppCmd::Presentation => "app presentation".into(),
             AppCmd::Status => "app status".into(),
             AppCmd::Stop => "app stop".into(),
         },
@@ -924,6 +996,8 @@ fn command_path(cmd: &Cmd) -> String {
             "wallet {}",
             match cmd {
                 WalletCmd::List => "list",
+                WalletCmd::Logs { .. } => "logs",
+                WalletCmd::Restore { .. } => "restore",
                 WalletCmd::Open { .. } => "open",
                 WalletCmd::Close => "close",
                 WalletCmd::Stop => "stop",
@@ -931,12 +1005,16 @@ fn command_path(cmd: &Cmd) -> String {
                 WalletCmd::Balance { .. } => "balance",
                 WalletCmd::Address { .. } => "address",
                 WalletCmd::NewAddress { .. } => "new-address",
+                WalletCmd::Request { .. } => "request",
                 WalletCmd::History { .. } => "history",
                 WalletCmd::Send { .. } => "send",
                 WalletCmd::Sweep { .. } => "sweep",
                 WalletCmd::ClearPending => "clear-pending",
                 WalletCmd::Validate { .. } => "validate",
                 WalletCmd::Book { .. } => "book",
+                WalletCmd::Accounts { .. } => "accounts",
+                WalletCmd::Notifications { .. } => "notifications",
+                WalletCmd::Tools { .. } => "tools",
                 WalletCmd::Refresh { .. } => "refresh",
                 WalletCmd::Notes { .. } => "notes",
                 WalletCmd::UseNode { .. } => "use-node",
@@ -1147,6 +1225,18 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
     let default_account = |given: Option<u32>| given.unwrap_or(ctx.settings.wallet.account);
 
     match cmd {
+        Cmd::App {
+            cmd: AppCmd::Presentation,
+        } => {
+            out.emit(
+                "app presentation",
+                ok(serde_json::json!({
+                    "privacy": ctx.settings.tui.privacy,
+                    "notifications": ctx.settings.tui.notifications,
+                })),
+            );
+            Ok(0)
+        }
         Cmd::App {
             cmd: AppCmd::Status,
         } => {
@@ -1377,11 +1467,20 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                         .with_reason("unsupported_flag")
                         .with_hint("fmonero tui --log"));
                     }
-                    let tail = corelog::tail(&ctx.settings.node.log_file, lines, grep.as_deref())?;
+                    let tail = fmonero_core::log_sources::read(
+                        &ctx,
+                        &fmonero_core::log_sources::LogQuery {
+                            source: fmonero_core::log_sources::LogSource::Node,
+                            lines,
+                            search: grep,
+                            previous: None,
+                        },
+                        &cancel,
+                    )?;
                     out.emit(
                         "node log",
                         ok(serde_json::json!({
-                            "path": tail.path.display().to_string(),
+                            "path": ctx.settings.node.log_file.display().to_string(),
                             "lines": tail.lines,
                             "truncated": tail.truncated,
                         })),
@@ -1638,6 +1737,53 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
 
         // ---- wallet --------------------------------------------------------
         Cmd::Wallet { cmd } => match cmd {
+            WalletCmd::Logs {
+                source,
+                lines,
+                grep,
+            } => {
+                out.emit(
+                    "wallet logs",
+                    ok(logs::read(&ctx, source, lines, grep, &cancel)?),
+                );
+                Ok(0)
+            }
+            WalletCmd::Restore {
+                name,
+                restore_height,
+                language,
+                seed_offset,
+                secret_stdin,
+            } => {
+                check_wallet_name(&name)?;
+                require_yes(yes, "fmonero wallet restore", std::slice::from_ref(&name))?;
+                wallet_dir::require_new(&ctx, &name)?;
+                let seed = prompt::secret("Recovery seed: ", false, secret_stdin)?;
+                let password = prompt::secret("New wallet password: ", true, secret_stdin)?;
+                let seed_offset = if seed_offset {
+                    Some(prompt::secret(
+                        "Seed offset passphrase: ",
+                        false,
+                        secret_stdin,
+                    )?)
+                } else {
+                    None
+                };
+                let request = fmonero_core::restore::RestoreRequest {
+                    name,
+                    seed,
+                    password,
+                    seed_offset,
+                    restore_height,
+                    language,
+                };
+                let ctx = ctx.clone().with_wallet_probe_at_refresh();
+                let w = WalletClient::from_ctx(&ctx)?;
+                let restored = fmonero_core::restore::restore(&ctx, &w, request, &cancel)?;
+                let ready = restored.state == fmonero_core::restore::RestoreState::Ready;
+                out.emit("wallet restore", ok(serde_json::to_value(restored)?));
+                Ok(if ready { 0 } else { 7 })
+            }
             WalletCmd::List => {
                 let wallets = wallet_dir::list(&ctx)?;
                 out.emit(
@@ -1665,7 +1811,7 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                 } else {
                     prompt::wallet_password(password_file.as_deref(), false)?
                 };
-                let opened = wallet_session::open(&ctx, &w, &name, password, &cancel)?;
+                let opened = wallet_session::open_secret(&ctx, &w, &name, password, &cancel)?;
                 out.emit(
                     "wallet open",
                     ok(serde_json::json!({
@@ -1703,6 +1849,7 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                 language,
                 allow_empty_password,
                 password_file,
+                password_stdin,
             } => {
                 check_wallet_name(&name)?;
                 coresettings::validate_seed_language(&language)?;
@@ -1720,12 +1867,18 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                     own.push("--password-file".into());
                     own.push(p.display().to_string());
                 }
+                if password_stdin {
+                    own.push("--password-stdin".into());
+                }
                 require_yes(yes, "fmonero wallet create", &own)?;
                 // On a TTY the password is asked for twice and compared (§2b.2): a wallet whose
                 // password the user does not have can never be opened and its seed can never be
                 // read, and `create_wallet` takes the password verbatim with no emptiness check.
-                let password =
-                    prompt::wallet_password(password_file.as_deref(), output::stdout_is_tty())?;
+                let password = if password_stdin {
+                    prompt::wallet_password_stdin()?
+                } else {
+                    prompt::wallet_password(password_file.as_deref(), output::stdout_is_tty())?
+                };
                 if password.is_empty() && !allow_empty_password {
                     return Err(Error::usage(
                         "An empty password leaves the wallet file unprotected. Anyone who can \
@@ -1758,7 +1911,7 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                 // the success path would make the one output that protects money conditional on
                 // a step that has nothing to do with it (§2a). It goes to stderr, so the §4 data
                 // stream is untouched in both modes and the payload still carries the key.
-                let created = wallet_session::create(
+                let created = wallet_session::create_secret(
                     &ctx,
                     &w,
                     &name,
@@ -1856,8 +2009,15 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
             WalletCmd::NewAddress { account, label } => {
                 let acct = default_account(account);
                 let w = WalletClient::from_ctx(&ctx)?;
-                let created = w.create_address(acct, label.as_deref().unwrap_or(""))?;
-                let set = w.get_address(acct)?;
+                let identity = fmonero_core::wallet_ops::identity(&ctx, &w)?;
+                let created = fmonero_core::receive::new_address(
+                    &ctx,
+                    &w,
+                    &identity,
+                    acct,
+                    label.as_deref().unwrap_or(""),
+                )?;
+                let set = fmonero_core::receive::addresses(&ctx, &w, &created.wallet, acct)?;
                 out.emit(
                     "wallet new-address",
                     ok(serde_json::json!({
@@ -1871,6 +2031,15 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                         "selected": created.address,
                     })),
                 );
+                Ok(0)
+            }
+            WalletCmd::Request { cmd } => {
+                let qr = matches!(&cmd, requests::RequestCmd::Create { qr: true, .. });
+                let value = requests::run(&ctx, cmd)?;
+                if qr && output::stdout_is_tty() && !out.json {
+                    print_qr(&out, value["uri"].as_str().unwrap_or_default())?;
+                }
+                out.emit("wallet request", ok(value));
                 Ok(0)
             }
             WalletCmd::History {
@@ -2207,13 +2376,31 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                                 "integrated": a.kind == address::AddrKind::Integrated,
                                 "subaddress": a.kind == address::AddrKind::Subaddress,
                                 "nettype": a.net.as_str(),
-                                "structural_only": true,
+                                "structural_only": false,
+                                "validation_source": "offline_checksum",
                             })),
                         );
                         Ok(0)
                     }
                     Err(e) => Err(e),
                 }
+            }
+            WalletCmd::Tools { cmd } => {
+                let (value, code) = tools::run(&ctx, cmd, yes, &cancel)?;
+                out.emit("wallet tools", ok(value));
+                Ok(code)
+            }
+            WalletCmd::Notifications { cmd } => {
+                out.emit(
+                    "wallet notifications",
+                    ok(notification::run(&ctx, cmd, &cancel)?),
+                );
+                Ok(0)
+            }
+            WalletCmd::Accounts { cmd } => {
+                let value = accounts::run(&ctx, cmd)?;
+                out.emit("wallet accounts", ok(value));
+                Ok(0)
             }
             WalletCmd::Book { cmd } => {
                 let w = WalletClient::from_ctx(&ctx)?;
@@ -2237,7 +2424,14 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                         description,
                     } => {
                         address::parse(&address)?;
-                        let index = w.add_address_book(&address, &description)?;
+                        let identity = fmonero_core::wallet_ops::identity(&ctx, &w)?;
+                        let index = fmonero_core::accounts::add_contact(
+                            &ctx,
+                            &w,
+                            &identity,
+                            &address,
+                            &description,
+                        )?;
                         out.emit(
                             "wallet book add",
                             ok(serde_json::json!({
@@ -2258,7 +2452,8 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                                 ))
                                 .with_hint("fmonero wallet book list")
                             })?;
-                        w.delete_address_book(index)?;
+                        let identity = fmonero_core::wallet_ops::identity(&ctx, &w)?;
+                        fmonero_core::accounts::remove_contact(&ctx, &w, &identity, &entry)?;
                         out.emit(
                             "wallet book remove",
                             ok(serde_json::json!({
@@ -2267,6 +2462,35 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                                 "description": entry.description,
                             })),
                         );
+                        Ok(0)
+                    }
+                    BookCmd::Edit {
+                        index,
+                        address,
+                        description,
+                    } => {
+                        require_yes(
+                            yes,
+                            "fmonero wallet book edit",
+                            &[index.to_string(), address.clone(), description.clone()],
+                        )?;
+                        let entry = w
+                            .get_address_book()?
+                            .into_iter()
+                            .find(|row| row.index == index)
+                            .ok_or_else(|| {
+                                Error::not_found("That address book entry does not exist.")
+                            })?;
+                        let identity = fmonero_core::wallet_ops::identity(&ctx, &w)?;
+                        fmonero_core::accounts::edit_contact(
+                            &ctx,
+                            &w,
+                            &identity,
+                            &entry,
+                            &address,
+                            &description,
+                        )?;
+                        out.emit("wallet book edit", ok(serde_json::json!({"index": index, "address": address, "description": description})));
                         Ok(0)
                     }
                 }
@@ -2300,7 +2524,22 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                     }
                     NotesCmd::Set { txid, text } => {
                         check_txid(&txid)?;
-                        w.set_tx_notes(std::slice::from_ref(&txid), std::slice::from_ref(&text))?;
+                        let identity = fmonero_core::wallet_ops::identity(&ctx, &w)?;
+                        let account = ctx.settings.wallet.account;
+                        let prior = w.get_transfer_by_txid(&txid, account)?.ok_or_else(|| {
+                            Error::not_found(
+                                "This account has no transaction with that identifier.",
+                            )
+                        })?;
+                        fmonero_core::history::set_note(
+                            &ctx,
+                            &w,
+                            &identity,
+                            &txid,
+                            account,
+                            &prior.note,
+                            &text,
+                        )?;
                         out.emit(
                             "wallet notes set",
                             ok(serde_json::json!({"txids": [txid], "notes": [text]})),
@@ -2320,33 +2559,19 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
                 }
                 require_yes(yes, "fmonero wallet use-node", &own)?;
                 let w = WalletClient::from_ctx(&ctx)?;
-                // Omitting the two credential fields does not KEEP the wallet's daemon login,
-                // it clears it: `on_set_daemon` builds the optional login only from a non-empty
-                // username/password (`wallet_rpc_server.cpp:4754-4757`) and `wallet2::set_daemon`
-                // then assigns `m_daemon_login = std::move(daemon_login)` unconditionally
-                // (`wallet2.cpp:1393`). fmonero's own node requires `rpc-login` (§4.2), so a
-                // loopback target carries it — from the same `monerod.conf` that
-                // `wallet_session::open` reads — and a remote one still receives nothing,
-                // because a remote node is reached by monero-wallet-rpc, not by fmonero (§2c).
-                let login =
-                    if fmonero_core::rpc::require_loopback(&format!("http://{address}")).is_ok() {
-                        fmonero_core::rpc::Login::from_monerod_conf(&ctx.paths.monerod_conf())?
-                    } else {
-                        None
-                    };
-                // `ssl_support` is chosen from the ADDRESS's own shape, by the same derivation
-                // the unit and `wallet_session::open` use (§2m.3): `disabled` for a loopback
-                // literal, `autodetect` otherwise. Keying it on the mode instead would leave
-                // this command — whose address is in neither settings key — with a rule of its
-                // own.
-                let ssl = units::ssl_for_address(&address);
-                w.set_daemon(&address, trusted, login.as_ref(), ssl)?;
+                let identity = fmonero_core::wallet_ops::identity(&ctx, &w)?;
+                let connection = fmonero_core::transport::configure_once(
+                    &ctx, &w, &identity, &address, trusted,
+                )?;
+                let ssl = connection.ssl();
                 out.emit(
                     "wallet use-node",
                     ok(serde_json::json!({
                         "address": address,
                         "trusted": trusted,
                         "ssl_support": ssl,
+                        "tls_policy": ctx.settings.node.tls,
+                        "proxy": connection.proxy(),
                         "authenticated": w.authenticated(),
                         // **A one-off, and the payload says so** (§5c): `wallet_session::open`
                         // issues its own `set_daemon` after every `open_wallet` (§4.2), so the
@@ -2425,6 +2650,11 @@ fn run(cli: Cli, out: Out) -> Result<i32, Error> {
             args.yes = yes;
             args.dry_run = dry_run;
             doctor::run(args, ctx).map_err(from_anyhow)
+        }
+        Cmd::Launch { intent } => {
+            launch::run(intent, &cancel)?;
+            out.emit("launch", ok(serde_json::json!({"launched": true})));
+            Ok(0)
         }
         Cmd::Tui(args) => {
             if !output::stdout_is_tty() {
@@ -2647,6 +2877,8 @@ mod tests {
             &["zzhint"],
             "fmonero wallet create zzhint --yes",
         ),
+        ("fmonero wallet restore", &["zzrestore"], "fmonero wallet restore zzrestore --yes"),
+        ("fmonero wallet book edit", &["3", "42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm", "friend"], "fmonero wallet book edit 3 42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm friend --yes"),
         (
             "fmonero wallet clear-pending",
             &[],
@@ -2741,22 +2973,22 @@ mod tests {
     /// line in this file must be one of its rows.
     #[test]
     fn every_require_yes_call_site_is_listed_here() {
-        let src = include_str!("main.rs");
-        // A call site is a line that *starts* with the call, so this test's own mentions of
-        // the helper — this filter included — are not counted as one.
-        let sites: Vec<&str> = src
-            .lines()
-            .map(str::trim_start)
-            .filter(|l| l.starts_with("require_yes(yes, \""))
-            .collect();
+        let src = include_str!("main.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source");
+        // Fold whitespace so rustfmt's multiline calls are covered. Excluding
+        // the test module keeps these assertions out of the production count.
+        let compact: String = src.chars().filter(|c| !c.is_whitespace()).collect();
+        let sites = compact.matches("require_yes(yes,\"").count();
         assert_eq!(
-            sites.len(),
+            sites,
             NEEDS_YES.len(),
             "a require_yes call site has no row in NEEDS_YES: {sites:#?}"
         );
         for (what, _, _) in NEEDS_YES {
             assert!(
-                sites.iter().any(|l| l.contains(&format!("\"{what}\""))),
+                compact.contains(&format!("require_yes(yes,\"{}\"", what.replace(' ', ""))),
                 "no call site names {what}"
             );
         }
@@ -2809,6 +3041,27 @@ mod tests {
             .map(|(w, _, _)| w.strip_prefix("fmonero ").expect("a fmonero command"))
             .collect();
         expected.extend(["wallet send", "wallet sweep", "setup"]);
+        expected.extend([
+            "wallet tools care rescan",
+            "wallet tools care password",
+            "wallet tools care backup",
+            "wallet tools care view-only",
+            "wallet tools care hardware",
+            "wallet tools care export-outputs",
+            "wallet tools care import-outputs",
+            "wallet tools care export-key-images",
+            "wallet tools care import-key-images",
+            "wallet tools care export-history",
+            "wallet tools message sign",
+            "wallet tools proof transaction",
+            "wallet tools proof spend",
+            "wallet tools proof reserve",
+            "wallet tools offline prepare",
+            "wallet tools offline sign",
+            "wallet tools offline submit",
+            "wallet tools offline clear-pending",
+            "wallet tools offline inspect-pending",
+        ]);
         expected.sort_unstable();
         assert_eq!(declared, expected, "capabilities and the handlers disagree");
     }

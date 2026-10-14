@@ -4,7 +4,7 @@
 #   scripts/uninstall.sh --dry-run      # print the plan, change nothing
 #   scripts/uninstall.sh --yes          # do it without asking
 #   scripts/uninstall.sh --yes --menu   # also strip the fmonero lines from the Omarchy menu
-#   scripts/uninstall.sh --yes --purge  # also delete fmonero's config, state and cache
+#   scripts/uninstall.sh --yes --purge  # remove disposable data, retain stable locks
 #
 # It removes only what the installer and `fmonero setup` created. Your wallets, the
 # blockchain, Monero's own binaries and any system monerod.service are never touched,
@@ -20,7 +20,7 @@ PLUGIN_ID="oliver.monero"
 PLUGIN_LINK="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/$PLUGIN_ID"
 MENU_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/extensions/omarchy-menu.jsonc"
 DESKTOP_FILE="${XDG_DATA_HOME:-$HOME/.local/share}/applications/fmonero.desktop"
-SYSTEMD_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+SYSTEMD_DIR="${FMONERO_SYSTEMD_USER_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user}"
 NODE_UNIT="fmonero-monerod.service"
 WALLET_UNIT="fmonero-wallet-rpc.service"
 CONFIG_DIR="${FMONERO_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/fmonero}"
@@ -52,15 +52,14 @@ Options:
   --dry-run        Print every step and change nothing
   --menu           Also remove fmonero's entries from ~/.config/omarchy/extensions/omarchy-menu.jsonc
                    (verbatim backup first; restored if the result no longer parses)
-  --purge          Also delete ~/.config/fmonero, ~/.local/state/fmonero, ~/.cache/fmonero
+  --purge          Remove config/cache and disposable state; retain payment/session locks
   --prefix DIR     Where the binary was installed (default: ~/.local/bin)
   --quiet          Only warnings and errors
   --no-color       Never emit colour
   -h, --help       This text
 
 Removes, in order:
-  1. the daemons          fmonero node down --yes (so LMDB closes cleanly), then
-                          systemctl --user stop/disable for both fmonero units
+  1. the daemons          guarded fmonero app stop --yes, then disable owned units
   2. the unit files       ~/.config/systemd/user/fmonero-{monerod,wallet-rpc}.service
   3. the bar widget       omarchy plugin disable oliver.monero
   4. the plugin symlink   ~/.config/omarchy/plugins/oliver.monero  (only when it is a symlink)
@@ -122,35 +121,91 @@ run() {
     return 0
   fi
   info "$*"
-  "$@"
+  # Only this shell owns the teardown leases; desktop helpers must not inherit them.
+  "$@" 9>&- 8>&-
 }
 
 DEST="$PREFIX/$BIN"
 
-unit_active() {
-  command -v systemctl >/dev/null 2>&1 || return 1
-  [ "$(systemctl --user is-active "$1" 2>/dev/null || true)" = "active" ]
-}
-
 # ------------------------------------------------------- 0. the money record --
 
-# `pending.json` is the record that says a transaction may be in flight; while any of
-# its entries is unrelayed it is the only thing stopping the next send from spending
-# the same outputs twice (DESIGN.md §2a.4). Deleting it is not an uninstall step, so
-# --purge refuses while it exists, in a state where the binary is still installed and
-# can still answer.
-PENDING_FILE="$STATE_DIR/pending.json"
-if [ "$DO_PURGE" -eq 1 ] && [ -e "$PENDING_FILE" ]; then
-  err "$PENDING_FILE exists: a send may be in flight, and --purge would delete the record of it"
-  echo "hint: fmonero wallet history --limit 5   # confirm whether it landed, then: fmonero wallet clear-pending --yes" >&2
-  exit "$E_SAFETY"
+refuse_pending() {
+  local record
+  for record in pending.json native-pending.json; do
+    # Presence is enough: never parse away a corrupt/unreadable record or follow a
+    # dangling symlink. This applies to ordinary uninstall as well as purge.
+    if [ -e "$STATE_DIR/$record" ] || [ -L "$STATE_DIR/$record" ]; then
+      err "$record exists; inspect actual transfers before uninstalling. No automatic retry or clearing is safe."
+      exit "$E_SAFETY"
+    fi
+  done
+}
+
+guard_file() {
+  local path="$1"
+  if [ -L "$path" ] || { [ -e "$path" ] && { [ ! -f "$path" ] || [ ! -O "$path" ] || [ ! -r "$path" ] || [ ! -w "$path" ]; }; }; then
+    err "The teardown lock is not an owned regular file: $path"
+    exit "$E_SAFETY"
+  fi
+}
+
+take_money_lock() {
+  guard_file "$STATE_DIR/send.lock"
+  if [ "$DRY_RUN" -eq 1 ] && [ ! -e "$STATE_DIR/send.lock" ]; then return; fi
+  exec 9>>"$STATE_DIR/send.lock"
+  if ! flock -n 9; then
+    err "A wallet/payment operation holds send.lock. Finish it before uninstalling."
+    exit "$E_SAFETY"
+  fi
+  guard_file "$STATE_DIR/send.lock"
+  if [ "$(stat -Lc '%d:%i' /proc/$$/fd/9)" != "$(stat -Lc '%d:%i' "$STATE_DIR/send.lock")" ]; then
+    err "The payment lock changed during teardown. Nothing was removed."
+    exit "$E_SAFETY"
+  fi
+}
+
+# A test fixture must never cause a real systemctl invocation. These are the only
+# systemd queries used by teardown; unknown manager state is a refusal, not down.
+unit_value() {
+  local unit="$1" field="$2"
+  if [ -n "${FMONERO_SYSTEMCTL_FIXTURE:-}" ]; then
+    [ -f "$FMONERO_SYSTEMCTL_FIXTURE" ] && [ -r "$FMONERO_SYSTEMCTL_FIXTURE" ] || return 1
+    awk -v unit="$unit" -v field="$field" '
+      $1 == unit { print (field == "ActiveState" ? $2 : $3); found=1; exit }
+      END { if (!found) print (field == "ActiveState" ? "inactive" : "disabled") }
+    ' "$FMONERO_SYSTEMCTL_FIXTURE"
+  else
+    timeout --kill-after=2s 5s systemctl --user show --property="$field" --value "$unit" 9>&- 8>&-
+  fi
+}
+
+require_stopped() {
+  local unit value
+  for unit in "$NODE_UNIT" "$WALLET_UNIT"; do
+    value="$(unit_value "$unit" ActiveState)" || {
+      err "Cannot prove $unit is stopped. Keep the integration and try again when the user service manager is available."
+      exit "$E_SAFETY"
+    }
+    case "$value" in
+      inactive|failed) ;;
+      *) err "$unit is not confirmed stopped; teardown was refused."; exit "$E_SAFETY" ;;
+    esac
+  done
+}
+
+command -v flock >/dev/null && command -v timeout >/dev/null || {
+  err "Safe teardown requires flock and timeout."; exit "$E_FAIL";
+}
+if [ -L "$STATE_DIR" ] || { [ -e "$STATE_DIR" ] && { [ ! -d "$STATE_DIR" ] || [ ! -O "$STATE_DIR" ] || [ ! -r "$STATE_DIR" ] || [ ! -w "$STATE_DIR" ] || [ ! -x "$STATE_DIR" ]; }; }; then
+  err "The state directory is not an accessible owned directory."; exit "$E_SAFETY"
 fi
+refuse_pending
 
 if [ "$DRY_RUN" -eq 0 ] && [ "$ASSUME_YES" -eq 0 ]; then
   if [ -t 0 ] && [ -t 1 ]; then
     printf '%s\n' "This will stop and remove fmonero's two systemd user units, disable the $PLUGIN_ID widget, remove its symlink, and delete $DEST."
     if [ "$DO_MENU" -eq 1 ]; then printf '%s\n' "It will also strip fmonero's lines from $MENU_FILE (backed up first)."; fi
-    if [ "$DO_PURGE" -eq 1 ]; then printf '%s\n' "It will also delete $CONFIG_DIR, $STATE_DIR and $CACHE_DIR."; fi
+    if [ "$DO_PURGE" -eq 1 ]; then printf '%s\n' "It will also purge disposable data, retaining the payment/session state skeleton."; fi
     printf '%s\n' "Your wallets in $WALLET_HOME/wallets and the blockchain in ~/.bitmonero are not touched."
     printf '%s' "Proceed? [y/N] "
     read -r reply || reply=""
@@ -170,45 +225,88 @@ fi
 
 # --------------------------------------------------------------- 1. daemons --
 
-# The node goes down through fmonero, not through systemctl alone: `node down` sends
-# stop_daemon over RPC first so LMDB closes cleanly (DESIGN.md §4.1). It refuses with
-# exit 3 under a system_unit layout, which is exactly right — that node is not ours.
-if unit_active "$NODE_UNIT"; then
-  if [ -x "$DEST" ]; then
-    if [ "$DRY_RUN" -eq 1 ]; then
-      plan "$DEST node down --yes"
-    else
-      info "$DEST node down --yes"
-      if ! "$DEST" node down --yes; then
-        warn "node down failed (see above); stopping the unit directly"
-        run systemctl --user stop "$NODE_UNIT"
-      fi
-    fi
-  else
-    skip "no $DEST to run 'node down' with; stopping the unit directly"
-    run systemctl --user stop "$NODE_UNIT"
+# Creating only the stable guard files is necessary when an installation has no
+# state yet. No service or integration mutation occurs until exclusion succeeds.
+if [ "$DRY_RUN" -eq 0 ]; then mkdir -p -- "$STATE_DIR"; fi
+take_money_lock
+refuse_pending
+
+# Preserve arbitrary configured wallet/chain locations even if they are nested
+# beneath a normally disposable directory. Without the binary, retain all purge
+# data: an idempotent integration uninstall cannot guess the old configuration.
+check_purge_paths() {
+  local wallet_path chain_path
+  PURGE_VERIFIED=0
+  if [ "$DO_PURGE" -eq 1 ] && [ -x "$DEST" ]; then
+    command -v python3 >/dev/null || { err "Safe purge needs python3 to check configured data paths."; exit "$E_FAIL"; }
+    wallet_path="$(timeout --kill-after=2s 10s "$DEST" settings get wallet.dir --json 9>&- 8>&-)" || exit "$E_SAFETY"
+    chain_path="$(timeout --kill-after=2s 10s "$DEST" settings get node.data_dir --json 9>&- 8>&-)" || exit "$E_SAFETY"
+    if ! python3 - "$wallet_path" "$chain_path" "$WALLET_HOME" "$HOME/.bitmonero" "$STATE_DIR" "$CONFIG_DIR" "$CACHE_DIR" <<'PY'
+import json, pathlib, sys
+try:
+    protected = [pathlib.Path(json.loads(raw)["value"]).resolve() for raw in sys.argv[1:3]]
+    protected += [pathlib.Path(raw).resolve() for raw in sys.argv[3:5]]
+    state, config, cache = [pathlib.Path(raw).resolve() for raw in sys.argv[5:8]]
+    for disposable in [state, config, cache]:
+        if any(disposable == p or disposable in p.parents or p in disposable.parents for p in protected):
+            raise ValueError("purge overlaps wallet or blockchain storage")
+    if any(p == state or p in state.parents or state in p.parents for p in [config, cache]):
+        raise ValueError("purge directories overlap the retained state skeleton")
+except Exception:
+    print("Purge refused: configured data paths could not be separated safely.", file=sys.stderr)
+    sys.exit(3)
+PY
+    then exit "$E_SAFETY"; fi
+    PURGE_VERIFIED=1
+  elif [ "$DO_PURGE" -eq 1 ]; then
+    warn "The binary is absent; retaining config/state/cache because configured wallet and chain paths cannot be verified."
   fi
-else
-  skip "$NODE_UNIT is not active"
-fi
+}
+check_purge_paths
 
-# SIGTERM is the graceful path for monero-wallet-rpc: its stop() stores the open
-# wallet on the way out, so the plain unit stop is the right verb here.
-if unit_active "$WALLET_UNIT"; then
-  run systemctl --user stop "$WALLET_UNIT"
-else
-  skip "$WALLET_UNIT is not active"
-fi
-
-if command -v systemctl >/dev/null 2>&1; then
-  for unit in "$NODE_UNIT" "$WALLET_UNIT"; do
-    if [ "$(systemctl --user is-enabled "$unit" 2>/dev/null || true)" = "enabled" ]; then
-      run systemctl --user disable "$unit"
+# app stop owns the money lock itself. Release our preliminary probe before it;
+# after it exits, reacquire and recheck to close the stop-to-cleanup race.
+exec 9>&-
+if [ -x "$DEST" ]; then
+  if [ "$DRY_RUN" -eq 1 ]; then
+    plan "$DEST app stop --yes --json"
+  else
+    if timeout --kill-after=2s 60s "$DEST" app stop --yes --json; then :; else
+      stop_rc=$?
+      err "Guarded app stop failed; leaving all integration/data in place."
+      exit "$stop_rc"
     fi
-  done
-else
-  skip "systemctl is not on PATH; cannot stop or disable the units"
+  fi
 fi
+take_money_lock
+refuse_pending
+if [ "$DRY_RUN" -eq 0 ]; then
+  require_stopped
+  guard_file "$STATE_DIR/app-session.lock"
+  exec 8>>"$STATE_DIR/app-session.lock"
+  if ! flock -w 3 8; then
+    err "A frontend is still open. Close it before uninstalling; no integration was removed."
+    exit "$E_SAFETY"
+  fi
+  guard_file "$STATE_DIR/app-session.lock"
+  if [ "$(stat -Lc '%d:%i' /proc/$$/fd/8)" != "$(stat -Lc '%d:%i' "$STATE_DIR/app-session.lock")" ]; then
+    err "The application lock changed during teardown."; exit "$E_SAFETY"
+  fi
+  # A wallet may have completed a guarded operation in the released-lock window.
+  # Re-read its configured data paths under final exclusion before any removal.
+  check_purge_paths
+fi
+
+for unit in "$NODE_UNIT" "$WALLET_UNIT"; do
+  enabled="$(unit_value "$unit" UnitFileState)" || { err "Cannot inspect $unit before removal."; exit "$E_SAFETY"; }
+  if [ "$enabled" = enabled ]; then
+    if [ -n "${FMONERO_SYSTEMCTL_FIXTURE:-}" ]; then
+      skip "isolated fixture: no host unit disable for $unit"
+    else
+      run timeout --kill-after=2s 10s systemctl --user disable "$unit"
+    fi
+  fi
+done
 
 # ------------------------------------------------------------ 2. unit files --
 
@@ -221,16 +319,16 @@ for unit in "$NODE_UNIT" "$WALLET_UNIT"; do
     skip "no $SYSTEMD_DIR/$unit"
   fi
 done
-if [ "$UNITS_REMOVED" -eq 1 ] && command -v systemctl >/dev/null 2>&1; then
-  run systemctl --user daemon-reload
+if [ "$UNITS_REMOVED" -eq 1 ] && [ -z "${FMONERO_SYSTEMCTL_FIXTURE:-}" ]; then
+  run timeout --kill-after=2s 10s systemctl --user daemon-reload
 fi
 
 # ------------------------------------------------------------ 3. bar widget --
 
 if command -v omarchy >/dev/null 2>&1; then
-  plugin_state="$(omarchy plugin list 2>/dev/null | awk -v id="$PLUGIN_ID" '$1 == id { print $2 }' || true)"
+  plugin_state="$(timeout --kill-after=2s 10s omarchy plugin list 9>&- 8>&- 2>/dev/null | awk -v id="$PLUGIN_ID" '$1 == id { print $2 }' || true)"
   if [ "$plugin_state" = "enabled" ]; then
-    run omarchy plugin disable "$PLUGIN_ID"
+    run timeout --kill-after=2s 10s omarchy plugin disable "$PLUGIN_ID"
   elif [ -n "$plugin_state" ]; then
     skip "$PLUGIN_ID is already $plugin_state"
   else
@@ -385,14 +483,26 @@ fi
 # files, and a wallet file plus its password is the only copy of money that is not the
 # seed. ~/.bitmonero (the chain) is likewise never touched; it is re-syncable but it is
 # also 100+ GB, and it is not ours.
-if [ "$DO_PURGE" -eq 1 ]; then
-  for d in "$CONFIG_DIR" "$STATE_DIR" "$CACHE_DIR"; do
+if [ "$DO_PURGE" -eq 1 ] && [ "$PURGE_VERIFIED" -eq 1 ]; then
+  refuse_pending
+  for d in "$CONFIG_DIR" "$CACHE_DIR"; do
     if [ -d "$d" ]; then
       run rm -rf -- "$d"
     else
       skip "no $d"
     fi
   done
+  # Never unlink the lock inodes while this or an old frontend can still hold
+  # them, nor reset the generation that tells old frontends to stop.
+  shopt -s nullglob dotglob
+  for entry in "$STATE_DIR"/*; do
+    case "${entry##*/}" in
+      send.lock|app-session.lock|app-stop-generation.json|.lock) continue ;;
+    esac
+    run rm -rf -- "$entry"
+  done
+  shopt -u nullglob dotglob
+  skip "retained payment/session lock and generation state in $STATE_DIR"
 else
   skip "config, state and cache kept in $CONFIG_DIR, $STATE_DIR, $CACHE_DIR (pass --purge to delete them)"
 fi

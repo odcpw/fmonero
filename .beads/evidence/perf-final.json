@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "binary_sha256": "10bae2da824d142ebae950853b77c44313945fd4afc4dacc2ebe44ec6fb99f50",
+  "clock": "perf_counter",
+  "scope": "isolated warm CLI, no owner wallet or service",
+  "percentile_note": "p95 of the measured sample, not a production latency guarantee",
+  "rss_note": "wait4 child high-water RSS includes process-spawn overhead; it is not a heap/allocation profile",
+  "results": {
+    "app-status": {
+      "runs": 30,
+      "p50_ms": 2.3525599972344935,
+      "sample_p95_ms": 2.8492379933595657,
+      "max_ms": 3.114035993348807,
+      "peak_child_rss_kib": 21632,
+      "median_child_cpu_ms": 1.646,
+      "semantic_output": {
+        "frontend_running": false,
+        "node_running": false,
+        "notifications": false,
+        "ok": true,
+        "privacy": false,
+        "running": false,
+        "schema": 1,
+        "wallet_running": false
+      }
+    },
+    "closed-status": {
+      "runs": 30,
+      "p50_ms": 2.4157915031537414,
+      "sample_p95_ms": 3.6246310046408325,
+      "max_ms": 4.5591089874506,
+      "peak_child_rss_kib": 21632,
+      "median_child_cpu_ms": 2.226,
+      "semantic_output": {
+        "ok": true,
+        "node_reachable": false,
+        "wallet_reachable": false
+      }
+    },
+    "address-validation": {
+      "runs": 30,
+      "p50_ms": 3.546375490259379,
+      "sample_p95_ms": 6.0908950108569115,
+      "max_ms": 6.433319998905063,
+      "peak_child_rss_kib": 21632,
+      "median_child_cpu_ms": 2.6885,
+      "semantic_output": {
+        "valid": true,
+        "nettype": "mainnet",
+        "subaddress": false
+      }
+    }
+  }
+}

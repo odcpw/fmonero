@@ -81,6 +81,8 @@ fn frontend_running(ctx: &Context) -> Result<bool, Error> {
 
 #[derive(Serialize)]
 pub struct Status {
+    pub privacy: bool,
+    pub notifications: bool,
     pub running: bool,
     pub frontend_running: bool,
     pub wallet_running: bool,
@@ -92,6 +94,8 @@ pub fn status(ctx: &Context) -> Result<Status, Error> {
     let wallet_running = units::state(ctx, &ctx.settings.wallet.unit)?.active;
     let node_running = units::state(ctx, &ctx.settings.node.unit)?.active;
     Ok(Status {
+        privacy: ctx.settings.tui.privacy,
+        notifications: ctx.settings.tui.notifications,
         running: frontend_running || wallet_running || node_running,
         frontend_running,
         wallet_running,

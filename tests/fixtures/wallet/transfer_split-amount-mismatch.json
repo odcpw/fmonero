@@ -1,0 +1,26 @@
+{
+  "_provenance": "Protocol-only stand-in, derived from Monero v0.18.5.3 transfer_split response fields. Amount/fee/hash/metadata reused from transfer-amount-mismatch.json; encrypted transaction metadata is synthetic and never valid for a real backend. This fixture proves parsing and safety sequencing, not payment acceptance.",
+  "tx_hash_list": [
+    "a1e7b3c05d928f4617ac0e3b85d2f719c46b0a8e3f512d7409bc6ea18d35047f"
+  ],
+  "tx_key_list": [
+    ""
+  ],
+  "amount_list": [
+    200000000000
+  ],
+  "fee_list": [
+    30720000
+  ],
+  "weight_list": [
+    1531
+  ],
+  "tx_blob_list": [
+    ""
+  ],
+  "tx_metadata_list": [
+    "ef4d955e7664584ed33d0d1a0754da8b3c55cfeb651a3051a39abee0526b13772dca872bb65336df9aadaf95b884ce770d630c0f0bc309aeadbfcfd940ec13b0b4525699e0426ab42c89474296bb690227f2ced6ee6fe8a86308d1ceb503ae6eca4b509248ab44342ab852e13b3d00c1991084aae0a48b963598e6f837d440d6eff1d8aaf98b3985e0a9b012a38da8daca092f48b65624954fc42231310961f65f2f49886613810766453e74c28412570150203772db46032de0fbd613c48acf8445ff0153cf24e326491b00b9fb5b57ba2490b1d1f57b032f23aea33aa9bd2bb85a6c128ee8245d69e99a41d4fc223429e759a8246153ae5502d12bf1ec8810"
+  ],
+  "multisig_txset": "",
+  "unsigned_txset": ""
+}

@@ -1,12 +1,9 @@
 //! `monero-wallet-rpc` JSON-RPC (DESIGN.md §1b.4, §5b).
 //!
-//! **Signature-only at the Phase 1a gate** (§8), except `WalletClient::new`, which is the
-//! §2c loopback gate and needs no daemon. `WALLET_RPC_VERSION` is 1.31
-//! (`wallet_rpc_server_commands_defs.h:49-50`).
-//!
-//! Two methods are callable from **exactly one** place each, and the doc comments say so
-//! because §2a.3 rests on it: `build_transfer`/`build_sweep_all` only from `send::build`,
-//! and `relay_tx`/`store` only from `send::relay`.
+//! Typed wallet calls with protected serialization for secrets and transaction
+//! metadata. Normal payments prepare through transfer_split; send owns review,
+//! pending persistence and relay. Advanced methods are exposed through small domain
+//! modules so callers cannot bypass their identity and payment guards.
 
 use std::time::Duration;
 
@@ -154,6 +151,109 @@ pub struct WalletClient {
 }
 
 impl WalletClient {
+    /// Apply the same validated transport used by wallet startup. Credential
+    /// serialization uses the protected path and never appears in diagnostics.
+    pub fn set_connection(
+        &self,
+        connection: &crate::transport::DaemonConnection,
+        login: Option<&Login>,
+    ) -> Result<(), Error> {
+        #[derive(serde::Serialize)]
+        struct Params<'a> {
+            address: &'a str,
+            trusted: bool,
+            ssl_support: &'a str,
+            ssl_ca_file: String,
+            ssl_allowed_fingerprints: Vec<&'a str>,
+            ssl_allow_any_cert: bool,
+            proxy: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            username: Option<crate::secrets::SecretRef<'a>>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            password: Option<crate::secrets::SecretRef<'a>>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Ack {}
+        let _: Ack = self
+            .t
+            .sensitive(
+                "set_daemon",
+                &Params {
+                    address: &connection.address,
+                    trusted: connection.trusted,
+                    ssl_support: connection.ssl.as_str(),
+                    ssl_ca_file: connection
+                        .ca_file
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                    ssl_allowed_fingerprints: connection
+                        .fingerprint
+                        .as_deref()
+                        .into_iter()
+                        .collect(),
+                    ssl_allow_any_cert: false,
+                    proxy: connection.rpc_proxy(),
+                    username: login.map(|l| crate::secrets::SecretRef(&l.user)),
+                    password: login.map(|l| crate::secrets::SecretRef(&l.pass)),
+                },
+                Deadline::Refresh,
+            )
+            .map_err(|e| match e {
+                crate::rpc::RpcError::Rpc { code: -38, .. } => {
+                    Error::backend("Monero refused the configured wallet connection.")
+                        .with_reason("remote_address_rejected")
+                        .with_hint("fmonero settings list")
+                }
+                other => jsonrpc::wallet_error("set_daemon", other),
+            })?;
+        Ok(())
+    }
+    pub(crate) fn restore_protected(
+        &self,
+        request: &crate::restore::RestoreRequest,
+    ) -> Result<String, Error> {
+        use crate::secrets::SecretRef;
+        #[derive(serde::Serialize)]
+        struct Params<'a> {
+            filename: &'a str,
+            seed: SecretRef<'a>,
+            password: SecretRef<'a>,
+            seed_offset: SecretRef<'a>,
+            restore_height: u64,
+            language: &'a str,
+            autosave_current: bool,
+            enable_multisig_experimental: bool,
+        }
+        // Deliberately do not deserialize returned seed/info into an owned string.
+        #[derive(serde::Deserialize)]
+        struct Restored {
+            address: String,
+        }
+        let result: Restored = self
+            .t
+            .sensitive(
+                "restore_deterministic_wallet",
+                &Params {
+                    filename: &request.name,
+                    seed: SecretRef(request.seed.expose_secret()),
+                    password: SecretRef(request.password.expose_secret()),
+                    seed_offset: SecretRef(
+                        request
+                            .seed_offset
+                            .as_ref()
+                            .map_or("", |s| s.expose_secret()),
+                    ),
+                    restore_height: request.restore_height,
+                    language: request.language.as_deref().unwrap_or(""),
+                    autosave_current: true,
+                    enable_multisig_experimental: false,
+                },
+                Deadline::Open,
+            )
+            .map_err(|e| jsonrpc::wallet_error("restore_deterministic_wallet", e))?;
+        Ok(result.address)
+    }
     /// Rejects any non-http scheme and any non-loopback host with `Error::Usage`, through
     /// the same `rpc::require_loopback` `NodeClient::new` calls (§2c). The wallet client is
     /// the one that carries a credential and moves money, so the rule is not relaxed here.
@@ -200,7 +300,7 @@ impl WalletClient {
         })
     }
 
-    fn call<T: serde::de::DeserializeOwned>(
+    pub(crate) fn call<T: serde::de::DeserializeOwned>(
         &self,
         method: &str,
         params: serde_json::Value,
@@ -214,9 +314,25 @@ impl WalletClient {
     }
 
     /// The methods whose answer is `{}` and whose only information is "it did not fail".
-    fn ack(&self, method: &str, params: serde_json::Value, d: Deadline) -> Result<(), Error> {
+    pub(crate) fn ack(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+        d: Deadline,
+    ) -> Result<(), Error> {
         let _: serde_json::Value = self.call(method, params, d)?;
         Ok(())
+    }
+
+    pub(crate) fn protected<P: serde::Serialize, R: serde::de::DeserializeOwned>(
+        &self,
+        method: &'static str,
+        params: &P,
+        deadline: Deadline,
+    ) -> Result<R, Error> {
+        self.t
+            .sensitive(method, params, deadline)
+            .map_err(|e| jsonrpc::wallet_error(method, e))
     }
 
     /// As `NodeClient::authenticated`: what the wire did on the last completed request.
@@ -252,19 +368,31 @@ impl WalletClient {
         Ok(h.height)
     }
 
-    /// Maps **any** `-1` to `Error::WalletLocked` (exit 9): `on_open_wallet` overwrites the
-    /// mapped code, so a wrong password never arrives as `-22` (§1b.4). The caller
-    /// pre-checks that the `.keys` file exists (exit 6), which is what makes that mapping
-    /// unambiguous. Called only from `wallet_session::open`.
+    /// At this opening boundary only, `-1` maps to `Error::WalletLocked` (exit 9):
+    /// Monero overwrites the mapped opening error, including a wrong password,
+    /// with UNKNOWN_ERROR. Other operations keep the generic upstream failure.
     pub fn open_wallet(&self, name: &str, password: &str) -> Result<(), Error> {
-        self.ack(
-            "open_wallet",
-            serde_json::json!({
-                "filename": name, "password": password, "autosave_current": true
-            }),
-            // Opening a large wallet is slow: this is the one long deadline (§2d).
-            Deadline::Open,
-        )
+        #[derive(serde::Serialize)]
+        struct Params<'a> {
+            filename: &'a str,
+            password: crate::secrets::SecretRef<'a>,
+            autosave_current: bool,
+        }
+        #[derive(serde::Deserialize)]
+        struct Ack {}
+        let _: Ack = self
+            .t
+            .sensitive(
+                "open_wallet",
+                &Params {
+                    filename: name,
+                    password: crate::secrets::SecretRef(password),
+                    autosave_current: true,
+                },
+                Deadline::Open,
+            )
+            .map_err(|e| jsonrpc::wallet_error("open_wallet", e))?;
+        Ok(())
     }
 
     pub fn close_wallet(&self) -> Result<(), Error> {
@@ -278,11 +406,27 @@ impl WalletClient {
     /// `language` is **required** by the daemon and an unknown value comes back as a bare
     /// `-1`, so it is validated locally first (`settings::validate_seed_language`, §1b.4).
     pub fn create_wallet(&self, name: &str, password: &str, language: &str) -> Result<(), Error> {
-        self.ack(
-            "create_wallet",
-            serde_json::json!({"filename": name, "password": password, "language": language}),
-            Deadline::Open,
-        )
+        #[derive(serde::Serialize)]
+        struct Params<'a> {
+            filename: &'a str,
+            password: crate::secrets::SecretRef<'a>,
+            language: &'a str,
+        }
+        #[derive(serde::Deserialize)]
+        struct Ack {}
+        let _: Ack = self
+            .t
+            .sensitive(
+                "create_wallet",
+                &Params {
+                    filename: name,
+                    password: crate::secrets::SecretRef(password),
+                    language,
+                },
+                Deadline::Open,
+            )
+            .map_err(|e| jsonrpc::wallet_error("create_wallet", e))?;
+        Ok(())
     }
 
     pub fn get_balance(&self, account: u32) -> Result<Balance, Error> {
@@ -487,6 +631,69 @@ impl WalletClient {
         })
     }
 
+    /// Normal payments may span several transactions. Always prepare without relay.
+    pub(crate) fn build_transfer_split(
+        &self,
+        req: &TransferRequest,
+        cancel: &CancelToken,
+    ) -> Result<Vec<BuiltTx>, Error> {
+        if cancel.is_cancelled() {
+            return Err(Error::Interrupted);
+        }
+        #[derive(Deserialize)]
+        struct Wire {
+            tx_hash_list: Vec<String>,
+            amount_list: Vec<Piconero>,
+            fee_list: Vec<Piconero>,
+            weight_list: Vec<u64>,
+            tx_metadata_list: Vec<crate::secrets::ProtectedText>,
+        }
+        let result: Wire = self.protected("transfer_split", req, Deadline::Transfer)?;
+        let count = result.tx_hash_list.len();
+        if count == 0
+            || count > 1024
+            || result.amount_list.len() != count
+            || result.fee_list.len() != count
+            || result.weight_list.len() != count
+            || result.tx_metadata_list.len() != count
+        {
+            return Err(Error::upstream(
+                "Monero returned inconsistent split payment data. Nothing was sent.",
+            ));
+        }
+        if result
+            .tx_hash_list
+            .iter()
+            .any(|id| id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()))
+            || result.tx_metadata_list.iter().any(|s| s.0.is_empty())
+            || result
+                .tx_hash_list
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != count
+        {
+            return Err(Error::upstream(
+                "Monero returned incomplete split payment data. Nothing was sent.",
+            ));
+        }
+        Ok(result
+            .tx_hash_list
+            .into_iter()
+            .zip(result.amount_list)
+            .zip(result.fee_list)
+            .zip(result.weight_list)
+            .zip(result.tx_metadata_list)
+            .map(|((((txid, amount), fee), weight), mut metadata)| BuiltTx {
+                txid,
+                amount,
+                fee,
+                weight,
+                metadata: std::mem::take(&mut *metadata.0),
+            })
+            .collect())
+    }
+
     /// `sweep_all` returns a **list** (`split_transfer_response`, §1b.4), and its request
     /// always carries `subaddr_indices_all: true` (§2a.10). **Callable only from
     /// `send::build_sweep`** (§2a.3).
@@ -505,13 +712,9 @@ impl WalletClient {
             amount_list: Vec<Piconero>,
             fee_list: Vec<Piconero>,
             weight_list: Vec<u64>,
-            tx_metadata_list: Vec<String>,
+            tx_metadata_list: Vec<crate::secrets::ProtectedText>,
         }
-        let w: Wire = self.call(
-            "sweep_all",
-            serde_json::to_value(req).map_err(Error::from)?,
-            Deadline::Transfer,
-        )?;
+        let w: Wire = self.protected("sweep_all", req, Deadline::Transfer)?;
         // Five parallel arrays that must stay in lockstep: a shorter `tx_metadata_list`
         // would silently drop a transaction the record already promises to relay (§2a.4).
         let n = w.tx_hash_list.len();
@@ -522,7 +725,8 @@ impl WalletClient {
                     .with_hint("fmonero wallet balance"),
             );
         }
-        if w.tx_metadata_list.len() != n
+        if n > 1024
+            || w.tx_metadata_list.len() != n
             || w.amount_list.len() != n
             || w.fee_list.len() != n
             || w.weight_list.len() != n
@@ -540,13 +744,32 @@ impl WalletClient {
                 w.weight_list.len()
             )));
         }
-        Ok((0..n)
-            .map(|i| BuiltTx {
-                txid: w.tx_hash_list[i].clone(),
-                amount: w.amount_list[i],
-                fee: w.fee_list[i],
-                weight: w.weight_list[i],
-                metadata: w.tx_metadata_list[i].clone(),
+        if w.tx_hash_list
+            .iter()
+            .any(|id| id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()))
+            || w.tx_hash_list
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != n
+            || w.tx_metadata_list.iter().any(|s| s.0.is_empty())
+        {
+            return Err(Error::upstream(
+                "Monero returned incomplete sweep data. Nothing was sent.",
+            ));
+        }
+        Ok(w.tx_hash_list
+            .into_iter()
+            .zip(w.amount_list)
+            .zip(w.fee_list)
+            .zip(w.weight_list)
+            .zip(w.tx_metadata_list)
+            .map(|((((txid, amount), fee), weight), mut metadata)| BuiltTx {
+                txid,
+                amount,
+                fee,
+                weight,
+                metadata: std::mem::take(&mut *metadata.0),
             })
             .collect())
     }
@@ -560,9 +783,15 @@ impl WalletClient {
         struct Wire {
             tx_hash: String,
         }
-        let w: Wire = self.call(
+        #[derive(Serialize)]
+        struct Params<'a> {
+            hex: crate::secrets::SecretRef<'a>,
+        }
+        let w: Wire = self.protected(
             "relay_tx",
-            serde_json::json!({"hex": metadata_hex}),
+            &Params {
+                hex: crate::secrets::SecretRef(metadata_hex),
+            },
             Deadline::Relay,
         )?;
         Ok(w.tx_hash)
@@ -698,48 +927,16 @@ impl WalletClient {
         login: Option<&Login>,
         ssl: SslSupport,
     ) -> Result<(), Error> {
-        let mut params = serde_json::json!({
-            "address": address,
-            "trusted": trusted,
-            "ssl_support": ssl.as_str(),
-        });
-        // The two credential fields are **omitted** when there is none — the §2i
-        // `system_unit` layout has no `rpc-login` at all (§4.2), and remote mode never has one.
-        if let (Some(l), Some(map)) = (login, params.as_object_mut()) {
-            map.insert("username".into(), serde_json::json!(l.user));
-            map.insert("password".into(), serde_json::json!(l.pass));
-        }
-        // **`Deadline::Refresh`, not `Deadline::Probe`** — v5.3, and the defect that forced it
-        // (§4.2, §2m.3). "`set_daemon` opens no socket" (§1b.9 item 1) is true of the call and
-        // false of its latency: `wallet2::set_daemon` takes `m_daemon_rpc_mutex` as its first
-        // statement, and in remote mode the auto-refresh a freshly created or opened wallet
-        // starts holds that mutex across internet round trips. Under the 5 s
-        // `timeouts.wallet_sec` probe deadline the very first `wallet create` against a real
-        // public node exited **5 `killed_at_deadline`** for a wallet that had already been
-        // written to disk.
-        //
-        // `timeouts.refresh_sec` (120 s) rather than `timeouts.open_sec` (300 s) because the
-        // latency being waited on **is a refresh**: this design's one budget for "the wallet is
-        // fetching blocks from a daemon" is the right ceiling for waiting behind one, while
-        // `open_sec` is the budget for decrypting a wallet file — five minutes, during which a
-        // `wallet open` against a wedged daemon would look like a hang. `--timeout N` lowers it
-        // like every other deadline (§4).
-        match self.t.rpc("set_daemon", params, Deadline::Refresh) {
-            Ok(_) => Ok(()),
-            // **`-38` here does not mean "cannot reach the node"**, and mapping it through the
-            // §1b.4 table's `unreachable` would say so. `set_daemon` opens no socket: it is
-            // `m_http_client->set_server(...)` (`wallet2.cpp:1409`), a URL **parse**
-            // (`abstract_http_client.cpp:134-148`), and `-38 "Unable to set daemon"`
-            // (`wallet_rpc_server.cpp:4758-4763`) is raised when that parse failed — which is
-            // a disagreement between fmonero's §2m.2 grammar and epee's parser, not a network
-            // condition. It gets the reason §4 documents for exactly that (§2m.3); the caller
-            // decides whether it is fatal, and only `wallet_session::open` in **local** mode
-            // swallows it (§4.2).
-            Err(crate::rpc::RpcError::Rpc { code: -38, message }) => Err(Error::backend(message)
-                .with_reason("remote_address_rejected")
-                .with_hint(format!("fmonero node remote {address} --yes"))),
-            Err(e) => Err(jsonrpc::wallet_error("set_daemon", e)),
-        }
+        let node = crate::settings::NodeSettings {
+            tls: match ssl {
+                SslSupport::Enabled => crate::transport::TlsPolicy::Required,
+                SslSupport::Disabled => crate::transport::TlsPolicy::Disabled,
+                SslSupport::Autodetect => crate::transport::TlsPolicy::Auto,
+            },
+            ..Default::default()
+        };
+        let connection = crate::transport::DaemonConnection::for_address(&node, address, trusted)?;
+        self.set_connection(&connection, login)
     }
 }
 

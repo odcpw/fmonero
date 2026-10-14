@@ -1,15 +1,18 @@
-//! Shared HTTP plumbing for both daemons (DESIGN.md §2c, §5b).
-//!
-//! Phase 1a freezes the surface; Phase 1b writes `jsonrpc.rs`, fills `digest.rs` in and
-//! gives `NodeClient`/`WalletClient` their bodies. **One body is implemented here and
-//! now**: [`require_loopback`], because `Settings::set` — which Phase 1a owns and
-//! implements in full — validates `node.url` and `wallet.url` through it, and a
-//! `settings set node.url …` that exited 1 "not implemented" would make the §4 key table
-//! unusable at the 1a gate. It touches no daemon, so it is testable here in the same way
-//! `amount.rs` and `address.rs` are.
+//! Bounded loopback HTTP and Digest plumbing for the typed daemon clients.
+//! Wallet connections additionally prove the established server socket's UID
+//! before sending HTTP bytes; Digest alone authenticates only the client.
 
 pub mod digest;
 pub mod jsonrpc;
+mod owned;
+// Keep HTTP implementation types confined to this module; domain modules see
+// only typed RPC clients, never a connector or arbitrary request surface.
+mod http_support {
+    pub(super) use ureq::unversioned::transport::{
+        Buffers, ConnectionDetails, Connector, NextTimeout, Transport as HttpTransport,
+    };
+    pub(super) use ureq::Error as HttpError;
+}
 #[cfg(test)]
 mod mock_tests;
 pub mod node;
@@ -148,14 +151,36 @@ pub fn require_loopback(url: &str) -> Result<(), Error> {
 /// with no nonce.
 pub type Agent = ureq::Agent;
 
-/// The **one** place a `ureq::Agent` is constructed (§2d), with the deadline baked in.
+/// Node HTTP agent; all HTTP construction stays in this module with a deadline.
 pub fn agent(timeout: std::time::Duration) -> Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(timeout))
         .http_status_as_error(false)
+        .proxy(None)
+        .max_redirects(0)
         .max_idle_connections_per_host(1)
         .build()
         .into()
+}
+
+/// Wallet peers must belong to this user. The connector attests the actual
+/// established socket before sending even headers; pooled sockets retain that
+/// proven TCP connection. HTTP proxies/redirects cannot bypass the proof.
+fn wallet_agent(timeout: std::time::Duration) -> Agent {
+    let config = ureq::Agent::config_builder()
+        .timeout_global(Some(timeout))
+        .http_status_as_error(false)
+        .proxy(None)
+        .max_redirects(0)
+        .max_idle_connections_per_host(1)
+        .build();
+    Agent::with_parts(
+        config,
+        owned::OwnedConnector {
+            expected_uid: unsafe { libc::geteuid() },
+        },
+        ureq::unversioned::resolver::DefaultResolver::default(),
+    )
 }
 
 /// One HTTP answer, with everything the caller needs and **no `ureq` type in sight**.
@@ -164,7 +189,7 @@ pub(crate) struct HttpAnswer {
     /// Every `WWW-Authenticate` header value, in order — a 401 from epee carries **two**
     /// (§1b.7), and `digest::challenge` picks the `MD5` one.
     pub challenges: Vec<String>,
-    pub body: Vec<u8>,
+    pub body: crate::secrets::PrivateBuffer,
 }
 
 /// Send one POST and read its answer. Together with [`agent`] this is the **only** place
@@ -198,6 +223,12 @@ pub(crate) fn post_once(
         Ok(r) => r,
         // The one failure that arms a §2d breaker, and the only one that is `killed_at_deadline`.
         Err(ureq::Error::Timeout(_)) => return Err(RpcError::Killed),
+        Err(ureq::Error::Io(e))
+            if e.kind() == std::io::ErrorKind::PermissionDenied
+                && e.to_string() == "wallet_peer_unverified" =>
+        {
+            return Err(RpcError::Transport("wallet_peer_unverified".into()))
+        }
         Err(e) => return Err(RpcError::Transport(e.to_string())),
     };
     let status = resp.status().as_u16();
@@ -207,16 +238,30 @@ pub(crate) fn post_once(
         .into_iter()
         .filter_map(|v| v.to_str().ok().map(str::to_string))
         .collect();
-    let body = resp
-        .body_mut()
-        .read_to_vec()
-        .map_err(|e| RpcError::Transport(e.to_string()))?;
+    // Never let a peer allocate an unbounded response, and wipe application-owned
+    // response bytes on every exit, including HTTP errors and Digest challenges.
+    use std::io::{Read, Write};
+    let mut body = crate::secrets::PrivateBuffer::new(MAX_RPC_BYTES);
+    let mut chunk = zeroize::Zeroizing::new([0u8; 8192]);
+    let mut reader = resp.body_mut().as_reader();
+    loop {
+        let n = reader
+            .read(&mut *chunk)
+            .map_err(|_| RpcError::Transport("could not read bounded RPC response".into()))?;
+        if n == 0 {
+            break;
+        }
+        body.write_all(&chunk[..n])
+            .map_err(|_| RpcError::Transport("RPC response exceeds the byte limit".into()))?;
+    }
     Ok(HttpAnswer {
         status,
         challenges,
         body,
     })
 }
+
+pub(crate) const MAX_RPC_BYTES: usize = 16 * 1024 * 1024;
 
 /// `n` bytes from `/dev/urandom`, as lowercase hex.
 ///
@@ -247,6 +292,14 @@ pub struct Login {
     pub pass: String,
 }
 
+impl Drop for Login {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.user.zeroize();
+        self.pass.zeroize();
+    }
+}
+
 impl std::fmt::Debug for Login {
     /// Hand-written: the password never reaches a log line, a panic message or a debug dump
     /// (§2b.2).
@@ -274,6 +327,7 @@ impl Login {
                 )
             }
         };
+        let text = zeroize::Zeroizing::new(text);
         // `monero-wallet-rpc` writes exactly `<user>:<pass>` with no newline
         // (`wallet_rpc_server.cpp:351-380`); tolerate a trailing newline anyway.
         let line = text.trim_end_matches(['\n', '\r']);
@@ -305,6 +359,7 @@ impl Login {
                 )))
             }
         };
+        let text = zeroize::Zeroizing::new(text);
         Ok(Login::from_monerod_conf_text(&text))
     }
 
@@ -441,5 +496,51 @@ mod tests {
         let shown = format!("{l:?}");
         assert!(shown.contains("fmonero"));
         assert!(!shown.contains("not-a-real-password"), "{shown}");
+    }
+}
+
+#[cfg(test)]
+mod owned_peer_tests {
+    use super::*;
+    use std::{io::Read, net::TcpListener, time::Duration};
+    #[test]
+    fn mismatched_peer_uid_receives_no_http_headers_or_private_payload() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let receiver = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut bytes = [0u8; 256];
+            stream.read(&mut bytes).unwrap()
+        });
+        let config = ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(2)))
+            .http_status_as_error(false)
+            .proxy(None)
+            .max_redirects(0)
+            .build();
+        let agent = Agent::with_parts(
+            config,
+            owned::OwnedConnector {
+                expected_uid: unsafe { libc::geteuid() }.wrapping_add(1),
+            },
+            ureq::unversioned::resolver::DefaultResolver::default(),
+        );
+        let secret = zeroize::Zeroizing::new(random_hex(32).unwrap());
+        let result = post_once(
+            &agent,
+            &format!("http://{address}/json_rpc"),
+            None,
+            Duration::from_secs(2),
+            secret.as_bytes(),
+        );
+        assert!(matches!(result,Err(RpcError::Transport(ref s)) if s=="wallet_peer_unverified"));
+        assert_eq!(
+            receiver.join().unwrap(),
+            0,
+            "no HTTP byte before the socket ownership proof"
+        );
     }
 }

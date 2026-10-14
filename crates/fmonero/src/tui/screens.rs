@@ -1,4 +1,4 @@
-//! Every cell the TUI draws (DESIGN.md §7a): the chrome, the four screens, the modals, the
+//! Every cell the TUI draws (DESIGN.md §7a): the chrome, the six screens, the modals, the
 //! help overlay and the four resize tiers. `view` returns on a zero area and never leaves a
 //! screen blank — each empty, error and hang state has its own text.
 
@@ -13,7 +13,7 @@ use ftui::widgets::progress::{MiniBar, MiniBarColors};
 use ftui::widgets::sparkline::Sparkline;
 use ftui::widgets::table::{Row as TableRow, Table};
 use ftui::widgets::virtualized::{RenderItem, VirtualizedList};
-use ftui::widgets::{StatefulWidget, StatusItem, StatusLine, Tab, Tabs, Widget};
+use ftui::widgets::{StatefulWidget, StatusItem, StatusLine, Widget};
 use ftui::{Frame, Style};
 use ftui_extras::canvas::{Canvas, Mode, Painter};
 use qrcode::{Color as QrColor, QrCode};
@@ -52,6 +52,7 @@ pub(super) fn tier_of(b: Rect) -> Tier {
 
 pub(super) fn view(m: &Tui, frame: &mut Frame) {
     let b = frame.bounds();
+    m.render_size.set(b);
     // §7a.2: the hit map is the layout of **this** frame and nothing else. A screen that stops
     // drawing a chip must stop accepting clicks on it, so the map is cleared here and rebuilt by
     // the same code that draws.
@@ -60,6 +61,7 @@ pub(super) fn view(m: &Tui, frame: &mut Frame) {
         return;
     }
     let th = &m.theme;
+    m.send.review_visible.set(false);
     let tier = tier_of(b);
     if tier == Tier::Tiny {
         para(
@@ -68,6 +70,10 @@ pub(super) fn view(m: &Tui, frame: &mut Frame) {
             true,
         )
         .render(Rect::new(b.x, b.y, b.width, b.height.min(3)), frame);
+        return;
+    }
+    if m.privacy() {
+        super::privacy::view(m, frame);
         return;
     }
     // The banner carries the txid AND both commands in full (§7a), which is about 135 columns of
@@ -134,11 +140,39 @@ pub(super) fn view(m: &Tui, frame: &mut Frame) {
     match m.screen {
         Screen::Node => node_screen(m, rows[2], frame, tier),
         Screen::Wallet => wallet_screen(m, rows[2], frame, tier),
+        Screen::Receive => receive_screen(m, rows[2], frame),
         Screen::Send => super::send::view(m, rows[2], frame, tier),
         Screen::Log => log_screen(m, rows[2], frame),
+        Screen::Tools => super::workflows::tools(m, rows[2], frame),
     }
-    status_line(m, rows[4], frame);
+    let privacy_w = 15.min(rows[4].width);
+    status_line(
+        m,
+        Rect::new(
+            rows[4].x,
+            rows[4].y,
+            rows[4].width.saturating_sub(privacy_w + 1),
+            1,
+        ),
+        frame,
+    );
+    super::privacy::toggle(
+        m,
+        Rect::new(
+            rows[4].right().saturating_sub(privacy_w),
+            rows[4].y,
+            privacy_w,
+            1,
+        ),
+        frame,
+    );
     match &m.modal {
+        Some(Modal::Native(review)) => super::native::view(m, review, frame),
+        Some(Modal::Result(result)) => super::advanced::result_view(m, result, frame),
+        Some(Modal::Accounts(panel)) => super::accounts::view(m, panel, frame),
+        Some(Modal::AccountEditor(editor)) => super::accounts::editor_view(m, editor, frame),
+        Some(Modal::PaymentRequest(review)) => super::requests::view(m, review, frame),
+        Some(Modal::Workflow(form)) => super::workflows::form(m, form, frame),
         // **V4: `Use your own node` is an overlay, not a one-row `Dialog`.** §7a.4 asks it to state
         // three things and `Dialog` draws its message as a single centred row, so a `\n` in it
         // spilled past the border and the two sentences after the first were unreadable. The keys
@@ -183,6 +217,10 @@ pub(super) fn view(m: &Tui, frame: &mut Frame) {
             pass,
             asking,
         }) => {
+            if names.is_empty() {
+                empty_open_modal(m, frame);
+                return;
+            }
             let rows: Vec<String> = if let Some(err) = m.wallets_err.as_deref() {
                 // **S1: fmonero could not read the folder, and it must not say the folder is
                 // empty.** This modal said *"There are no wallets yet, in this folder:"* over a
@@ -218,7 +256,7 @@ pub(super) fn view(m: &Tui, frame: &mut Frame) {
                 " Open a wallet ",
                 &rows,
                 if names.is_empty() { usize::MAX } else { *sel },
-                asking.then_some((pass, "password ")),
+                asking.then_some((&pass.masked_input(&m.theme), "Password ")),
                 frame,
             );
         }
@@ -267,81 +305,38 @@ pub(super) fn view(m: &Tui, frame: &mut Frame) {
 
 // ---------------------------------------------------------------- chrome
 
-fn tab_strip(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
+pub(super) fn tab_strip(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
     let th = &m.theme;
-    if tier == Tier::Narrow {
-        let mut spans = Vec::new();
-        let mut x = area.x;
-        for (i, label) in ["1", "2", "3", "4"].iter().enumerate() {
-            if i > 0 {
-                spans.push(Span::styled("·", th.dimmed()));
-                x += 1;
-            }
-            let style = if i == m.screen.index() {
-                th.accented()
+    let compact = area.width < 76;
+    let mut x = area.x;
+    for (i, screen) in Screen::ALL.iter().enumerate() {
+        let label = if compact {
+            format!(" {} ", i + 1)
+        } else {
+            format!(" {} {} ", i + 1, screen.name())
+        };
+        let w = label.width() as u16;
+        let rect = Rect::new(x, area.y, w.min(area.right().saturating_sub(x)), 1);
+        para(
+            label,
+            if *screen == m.screen {
+                th.selected()
             } else {
                 th.dimmed()
-            };
-            spans.push(Span::styled((*label).to_string(), style));
-            // Even collapsed to `1·2·3·4`, each digit is a hit target: the tier where a user is
-            // most likely to be stuck is not the tier to take the way out away (§7a resize).
-            m.hits.tab(i, Rect::new(x, area.y, 1, 1));
-            x += 1;
-        }
-        spans.push(Span::styled(format!("  {}", m.screen.name()), th.title()));
-        line_at(spans, area, frame);
-        return;
-    }
-    let cols = Flex::horizontal()
-        .constraints([Constraint::Fill, Constraint::FitContent])
-        .split(area);
-    let tabs = Tabs::new([
-        Tab::new(" 1 Node "),
-        Tab::new(" 2 Wallet "),
-        Tab::new(" 3 Send "),
-        Tab::new(" 4 Log "),
-    ])
-    .style(th.dimmed())
-    .active_style(th.selected())
-    .separator("");
-    StatefulWidget::render(&tabs, cols[0], frame, &mut m.tabs.borrow_mut());
-    // The fix for "the tabs look clickable and are not" (§7a.2), from the geometry `Tabs`
-    // **draws**: `tab_label` wraps every tab in one leading and one trailing cell — `[`/`]` when
-    // active, a space each side when not (`ftui-widgets-0.7.0/src/tabs.rs:239-256`) — so a tab is
-    // `title.width() + 2` wide, with `.separator("")` costing nothing between (`:474-479`).
-    // Advancing by the bare title width put every rect 2 columns narrow and `2 × index` columns
-    // left of its label: `Send` selected `Log`, `4 Log` nothing (DECISIONS: DEFECT A). The labels
-    // total 41 columns against this tier's 60-column floor, so the overflow markers (`:445-462`)
-    // cannot fire; the `min` is the clip `draw_text_span` applies at the pane edge, and a tab with
-    // no room left registers a zero-width rect, which `Map::at` can never match.
-    let mut x = cols[0].x;
-    for (i, label) in [" 1 Node ", " 2 Wallet ", " 3 Send ", " 4 Log "]
-        .iter()
-        .enumerate()
-    {
-        let w = (label.width() as u16 + 2).min(cols[0].right().saturating_sub(x));
-        m.hits.tab(i, Rect::new(x, cols[0].y, w, 1));
+            },
+            false,
+        )
+        .render(rect, frame);
+        m.hits.tab(i, rect);
         x += w;
     }
-
-    let mut right = String::new();
-    if m.poll_inflight || m.action.is_some() {
-        right.push_str(SPINNER[m.tick % SPINNER.len()]);
-        right.push(' ');
+    if compact {
+        para(m.screen.name(), th.title(), false).render(
+            Rect::new(x, area.y, area.right().saturating_sub(x), 1),
+            frame,
+        );
     }
-    // **M16: the corner said `mainnet omarchy`** — two bare words with no label, the second of
-    // them the name of the active colour theme, which is not a fact about anybody's money. The
-    // network is worth a corner because sending real XMR from a testnet wallet is the mistake it
-    // prevents, so it keeps its place and gains the word that says what it is. The theme's name
-    // is in `fmonero settings get tui.theme` for whoever wants it.
-    if let Some(net) = m.status.as_ref().and_then(|s| s.node.nettype.clone()) {
-        right.push_str(&format!("network {net}"));
-    }
-    let w = (right.width() as u16 + 1).min(area.width);
-    para(right, th.dimmed(), false).render(
-        Rect::new(area.x + area.width.saturating_sub(w), area.y, w, 1),
-        frame,
-    );
+    let _ = tier;
 }
 
 /// The §7a banner's text, in one place so that `view` can measure what `pending_banner` draws.
@@ -827,6 +822,7 @@ fn picker_pane(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
             split[0],
             frame,
         );
+        m.hits.button(Button::Search, split[0]);
         split[1]
     } else {
         inner
@@ -848,6 +844,7 @@ fn picker_pane(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
     // advertises a route which cannot exist in the state it is drawn in, which is the same argument
     // §6.5 makes for the widget's own Start/Stop buttons.
     let mut picker_chips: Vec<(Button, &str, &str)> = vec![
+        (Button::Search, "/", "Filter"),
         (Button::Probe, "p", "Check these"),
         list_chip(m),
         use_node_chip(m),
@@ -1110,6 +1107,19 @@ fn node_hero(m: &Tui, area: Rect, frame: &mut Frame) {
                     _ => "Press u to start it.",
                 }
             };
+            if n.layout == Layout::None && !m.monero_missing() {
+                m.hits.button(
+                    Button::SetupUnits,
+                    Rect::new(
+                        inner.x,
+                        inner.y + lines.len() as u16,
+                        inner.width,
+                        wrap_words(text, inner.width as usize)
+                            .len()
+                            .min(inner.height as usize) as u16,
+                    ),
+                );
+            }
             lines.extend(
                 wrap_words(text, inner.width as usize)
                     .into_iter()
@@ -1877,7 +1887,12 @@ fn wallet_screen(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
         chips.push((Button::ClearPending, "P", "Clear that record"));
     }
     chips.extend([
-        (Button::RefreshWallet, "R", "Check for payments"),
+        (Button::RefreshWallet, "F", "Refresh payments"),
+        (Button::NewAddress, "N", "New address"),
+        (Button::Accounts, "A", "Accounts and contacts"),
+        (Button::CreateRequest, "U", "Payment request"),
+        (Button::LabelAddress, "L", "Label address"),
+        (Button::PaymentNote, "E", "Edit payment note"),
         // M16's shape: the key that changes which payments show is a chip, not a pane title.
         (Button::KindFilter, "t", "Choose which payments show"),
         (Button::Qr, "Q", "QR code"),
@@ -1887,7 +1902,7 @@ fn wallet_screen(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
     // fixed one, and at 70 columns `chip_row` wrapped the fifth chip onto a row that did not exist:
     // `[x] Close wallet` and `[P] Clear that record` were simply not drawn, with nothing to say a
     // control had been dropped. The picker's chip row has done it this way since X32.
-    let chip_h = chips_height(&chips, rest.width).min(2);
+    let chip_h = chips_height(&chips, rest.width).min(rest.height);
     let body = Flex::vertical()
         .constraints([Constraint::Fill, Constraint::Fixed(chip_h)])
         .split(rest);
@@ -1966,7 +1981,7 @@ fn wallet_empty(m: &Tui, area: Rect, frame: &mut Frame) {
         .constraints([
             Constraint::Fixed(1),
             Constraint::Fixed(1),
-            Constraint::Fixed(3),
+            Constraint::Fixed(4),
             Constraint::Fixed(1),
             Constraint::Fill,
         ])
@@ -2005,6 +2020,7 @@ fn wallet_empty(m: &Tui, area: Rect, frame: &mut Frame) {
     // running and nothing is open — this chip read `Start`, and pressing it stopped the service.
     // One predicate decides both (`Tui::wallet_daemon_key_stops`), and S9 made it know about an
     // action in flight.
+    row.push((Button::Restore, "R", "Restore wallet from recovery seed"));
     if let Some(label) = m.wallet_daemon_chip() {
         row.push((Button::WalletDaemon, "W", label));
     }
@@ -2190,6 +2206,45 @@ fn use_node_chip(m: &Tui) -> (Button, &'static str, &'static str) {
 }
 
 fn subaddress_pane(m: &Tui, area: Rect, frame: &mut Frame) {
+    if m.privacy() {
+        let Some(inner) = framed(area, &m.theme, " Addresses · private ", true, frame) else {
+            return;
+        };
+        let Some(set) = &m.wallet.addresses else {
+            para("Waiting for wallet addresses…", m.theme.dimmed(), true).render(inner, frame);
+            return;
+        };
+        let selected = m.wallet.table.borrow().selected.unwrap_or(0);
+        let room = inner.height as usize;
+        let start = selected.saturating_sub(room.saturating_sub(1));
+        for (slot, (index, _)) in set
+            .addresses
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(room)
+            .enumerate()
+        {
+            let row = Rect::new(inner.x, inner.y + slot as u16, inner.width, 1);
+            para(
+                format!(
+                    "{} Address {} · details hidden",
+                    if index == selected { ">" } else { " " },
+                    index + 1
+                ),
+                if index == selected {
+                    m.theme.selected()
+                } else {
+                    m.theme.text()
+                },
+                false,
+            )
+            .render(row, frame);
+            m.hits.pane(HitPane::Subaddresses, row, row.y, 1, index);
+        }
+        return;
+    }
+
     // **M6: the NAME column at 120 columns too.** The threshold was 62, and this pane is 50 cells
     // at the owner's width — so `l` renamed an address and the name it wrote was nowhere on the
     // screen. The column is eight cells at 48 and eleven from 62, and the balance beside it keeps
@@ -2207,7 +2262,7 @@ fn subaddress_pane(m: &Tui, area: Rect, frame: &mut Frame) {
     // title went on offering `Enter copies` while Enter was opening a payment two panes away. The
     // `▸` is the marker, and the keys travel with it.
     let title = if focused {
-        " ▸ Addresses · Enter copies · a new · l rename ".to_string()
+        " ▸ Addresses ".to_string()
     } else {
         " Addresses ".to_string()
     };
@@ -2488,6 +2543,7 @@ fn history_pane(m: &Tui, area: Rect, frame: &mut Frame, wide: bool) {
         rows[0],
         frame,
     );
+    m.hits.button(Button::Search, rows[0]);
     // Built with the row's own format string, so the header cannot drift out of alignment with
     // its values. `est.` is gone from `LOCKED`: every value in that column is an estimate, and
     // saying so once in the detail modal is enough (§2o).
@@ -2651,10 +2707,8 @@ fn detail_modal(m: &Tui, frame: &mut Frame) {
             s.to_string()
         }
     };
-    // **No id here** (round 4, S10's rule: ids live in `--json`). Sixty-four hexadecimal
-    // characters were the first row of this modal; `wallet history --json` carries every one of
-    // them, and `wallet history` prints the payment id a Monero user actually quotes.
     let mut lines = vec![
+        pair("Transaction", t.txid.clone()),
         // **A block number of zero is `not in a block yet`, not `block 0`** (round 4's own read of
         // the captures, §2j's rule that a zero may not stand in for unknown). Every `sending`,
         // `waiting` and `failed` row has height 0.
@@ -2702,7 +2756,7 @@ fn detail_modal(m: &Tui, frame: &mut Frame) {
         pair(
             "Confirms",
             format!(
-                "{} · spendable {}",
+                "{} · output unlock {}",
                 history::confirmations(t, m.wallet.wh).map_or("—".into(), |c| c.to_string()),
                 history::lock_words(t, m.wallet.wh, m.wallet.now)
             ),
@@ -2767,105 +2821,124 @@ fn detail_modal(m: &Tui, frame: &mut Frame) {
             lines.push(Line::styled(format!("  {part}"), text));
         }
     }
-    lines_at(lines, inner, false, frame);
+    m.hits.modal(inner);
+    let rows: Vec<String> = lines
+        .iter()
+        .flat_map(|line| wrapped(&line.to_plain_text(), inner.width as usize))
+        .collect();
+    let room = inner.height.saturating_sub(2) as usize;
+    m.wallet.detail_max.set(rows.len().saturating_sub(room));
+    for (i, row) in rows
+        .iter()
+        .skip(m.wallet.detail_scroll.min(m.wallet.detail_max.get()))
+        .take(room)
+        .enumerate()
+    {
+        para(row, th.text(), false).render(
+            Rect::new(inner.x, inner.y + i as u16, inner.width, 1),
+            frame,
+        );
+    }
+    chip_row(
+        m,
+        Rect::new(inner.x, inner.bottom().saturating_sub(2), inner.width, 2),
+        &[
+            (Button::DetailUp, "↑", "Previous"),
+            (Button::DetailDown, "↓", "More"),
+            (Button::PaymentNote, "N", "Note"),
+            (Button::DetailClose, "Esc", "Close"),
+        ],
+        frame,
+    );
 }
 
 // ---------------------------------------------------------------- Log
 
-fn log_screen(m: &Tui, area: Rect, frame: &mut Frame) {
-    let th = &m.theme;
-    // The MUTABLE state first, and the path elided to what is left. A `Block` title is clipped
-    // at the border width, so a long log path consumed all of it and `follow on/off` — the only
-    // persistent indicator of the mode that decides whether the pane scrolls under you — was
-    // never on screen at all.
-    let on_off = if m.logs.follow { "on" } else { "off" };
-    // **M8's other half** (round 4's own read): with a public node the title named the file your own
-    // node would write, which is a path to something that will never exist in that mode. The body
-    // says why; the title says nothing it cannot back up.
-    let path = if m.remote_mode() {
-        String::new()
-    } else {
-        m.logs.path.display().to_string()
-    };
-    // **M10: a title cannot wrap, so a path that does not fit it goes in the pane.** The title read
-    // `╭ Log  follow on  /tmp/claude-1000/…-620b5efc18d… ╮` at both sizes — the file elided
-    // mid-token, in the only place in the product it is named. `fit` is right for a table cell and
-    // wrong for the one string a reader may need to type: a `Block` title is clipped at the border
-    // width and there is nowhere for a second line of it to go. So the title keeps the path only
-    // when it fits whole, and otherwise the pane's own first row carries it, hard-chunked.
-    let room = (area.width as usize).saturating_sub(" Log  follow off    ".len());
-    let in_title = !path.is_empty() && path.width() <= room;
-    let title = if in_title {
-        format!(" Log  follow {on_off}  {path} ")
-    } else {
-        format!(" Log  follow {on_off} ")
-    };
-    let Some(inner) = framed(area, th, &title, true, frame) else {
+pub(super) fn log_screen(m: &Tui, area: Rect, frame: &mut Frame) {
+    let title = format!(
+        " {} log · {} ",
+        m.logs.source.label(),
+        if m.logs.follow { "following" } else { "paused" }
+    );
+    let Some(inner) = framed(area, &m.theme, &title, true, frame) else {
         return;
     };
-    if inner.height < 2 {
+    if inner.height < 3 {
         return;
     }
-    let path_lines: Vec<String> = if in_title || path.is_empty() {
-        Vec::new()
-    } else {
-        wrap_hanging(&format!("file  {path}"), inner.width as usize, 6)
-    };
-    let rows = Flex::vertical()
-        .constraints([
-            Constraint::Fixed(path_lines.len() as u16),
-            Constraint::Fixed(1),
-            Constraint::Fill,
-        ])
-        .split(inner);
-    if !path_lines.is_empty() {
-        lines_at(
-            path_lines
-                .into_iter()
-                .map(|l| Line::styled(l, th.dimmed()))
-                .collect(),
-            rows[0],
-            false,
+    let buttons = [
+        (Button::LogSource, "S", "Source"),
+        (Button::LogInfo, "I", "Source info"),
+        (
+            Button::LogFollow,
+            "F",
+            if m.logs.follow { "Pause" } else { "Follow" },
+        ),
+        (Button::LogSearch, "/", "Search"),
+        (Button::LogPrevious, "N", "Previous match"),
+        (Button::LogNext, "n", "Next match"),
+    ];
+    let controls = chips_height(&buttons, inner.width).min(inner.height.saturating_sub(2));
+    chip_row(
+        m,
+        Rect::new(inner.x, inner.y, inner.width, controls),
+        &buttons,
+        frame,
+    );
+    let search = Rect::new(inner.x, inner.y + controls, inner.width, 1);
+    if m.privacy() {
+        para(
+            "Log text and search hidden by privacy.",
+            m.theme.dimmed(),
+            true,
+        )
+        .render(
+            Rect::new(
+                inner.x,
+                search.y,
+                inner.width,
+                inner.bottom().saturating_sub(search.y),
+            ),
             frame,
         );
+        return;
     }
-    let rows = [rows[1], rows[2]];
     search_row(
         &m.logs.search,
         super::SEARCH_HINT,
         m.logs.search_open,
-        th,
-        rows[0],
+        &m.theme,
+        search,
         frame,
     );
-    if m.logs.empty {
-        // **M8: with a public node there is no node of your own to write one.** This screen
-        // promised a log that would never arrive, in the one mode the owner runs — and `L`, the
-        // key that changes how much a node logs, is refused in that mode with a message saying
-        // exactly that. The screen says it too, and names the way back.
-        let text = if m.remote_mode() {
-            "This is your own node's log, and you are using a public node. Press 1, then l, to \
-             use your own node."
-                .to_string()
-        } else {
-            // **The path is in the title and nowhere else** (round 4 iteration 3). This printed it
-            // again two rows under a title that already carries it — one fact, twice, in one frame
-            // — and `para(…, wrap = true)` word-wraps, so a path (which is one word) was clipped at
-            // the pane edge with no marker while the title above it elided its own copy with `…`.
-            "No log yet. Your node writes it once it runs.".to_string()
-        };
-        para(text, th.dimmed(), true).render(rows[1], frame);
-        return;
+    m.hits.button(Button::Search, search);
+    let mut body = Rect::new(
+        inner.x,
+        search.y + 1,
+        inner.width,
+        inner.bottom().saturating_sub(search.y + 1),
+    );
+    if let Some(notice) = &m.logs.notice {
+        para(notice, m.theme.warn(), true).render(Rect::new(body.x, body.y, body.width, 1), frame);
+        body.y += 1;
+        body.height = body.height.saturating_sub(1);
     }
-    StatefulWidget::render(
-        &*m.logs.viewer.borrow(),
-        rows[1],
-        frame,
-        &mut m.logs.state.borrow_mut(),
-    );
-    // The wheel scrolls the log under the cursor (§7a.2). Its rows are not click targets: a log
-    // line is not a control, and a click that selected one would do nothing a user asked for.
-    m.hits.pane(HitPane::Log, rows[1], rows[1].bottom(), 0, 0);
+    if m.logs.empty {
+        para(
+            "No recent entries in this source. Choose (S)ource to inspect another log.",
+            m.theme.dimmed(),
+            true,
+        )
+        .render(body, frame);
+    } else {
+        StatefulWidget::render(
+            &*m.logs.viewer.borrow(),
+            body,
+            frame,
+            &mut m.logs.state.borrow_mut(),
+        );
+        m.hits.pane(HitPane::Log, body, body.bottom(), 0, 0);
+    }
 }
 
 // ---------------------------------------------------------------- modals
@@ -2881,97 +2954,71 @@ pub(super) fn list_modal(
     input: Option<(&TextInput, &str)>,
     frame: &mut Frame,
 ) {
-    let th = &m.theme;
-    // The interior is `h - 4`, and this renders `rows.len() + 1` lines (the rows plus the
-    // "Enter · Esc cancels" row) with the input on a row of its own below them. Sizing for
-    // `rows.len()` put the input on top of the hint, so the label and note prompts — which pass
-    // no rows and a title with no key text — showed an editable field and no keys at all.
-    // **X16: a row wider than the modal wraps**, rather than being cut with no marker. The one that
-    // did it was the open-a-wallet empty state, whose row is a path: `No wallets in
-    // /tmp/…/data/fmonero/w` at both sizes, with the folder's own name the part that was lost.
-    const MODAL_W: u16 = 68;
-    // **Round 5, S3: the budget is `MODAL_W - 6`, and the two missing columns are this line's own.**
-    //
-    // `overlay` spends a column on its border and one on its padding at each side, so the interior
-    // is `MODAL_W - 4` = 64 — and every row below is rendered `format!(" {part} ")`, which is
-    // `part` plus two, into a `Paragraph` with `WrapMode::None`, which truncates at 64. So a line
-    // that filled the budget lost exactly its last character and a line that did not lost nothing:
-    // a 248-character path wrapped onto four lines arrived as 245 characters, with a `-`, a `0` and
-    // another `-` simply gone from the middle, and the open-a-wallet modal named a folder that does
-    // not exist. `wrap_hanging` was not the culprit — it is lossless at any width — the budget was
-    // two columns wider than the place the text goes.
-    let text_w = (MODAL_W as usize).saturating_sub(6).max(8);
-    // **Wrapped with the indent inside the budget** (round 4 iteration 3): the continuations below
-    // are drawn `"   {part} "` — three columns of prefix — while this wrapped to the full `text_w`,
-    // so each continuation was three columns too wide and the overlay clipped three characters out
-    // of the middle of a path. `wrap_hanging` gives the first line its width and every continuation
-    // `width - 3`, so nothing is lost.
-    let wrapped: Vec<Vec<String>> = rows.iter().map(|r| wrap_hanging(r, text_w, 2)).collect();
-    let drawn: usize = wrapped.iter().map(Vec::len).sum();
-    let h = drawn as u16 + 5 + u16::from(input.is_some());
-    let Some(inner) = overlay(m, frame, MODAL_W, h, title) else {
+    let width = 76.min(frame.bounds().width.saturating_sub(2));
+    let wrapped_rows = rows
+        .iter()
+        .map(|row| wrapped(row, width.saturating_sub(6).max(1) as usize))
+        .collect::<Vec<_>>();
+    let wanted =
+        wrapped_rows.iter().map(Vec::len).sum::<usize>() as u16 + 5 + u16::from(input.is_some());
+    let Some(inner) = overlay(m, frame, width, wanted, title) else {
         return;
     };
-    let bg = th.selection;
-    let mut lines: Vec<Line> = Vec::new();
-    for (i, parts) in wrapped.into_iter().enumerate() {
-        let style = if i == sel {
-            th.selected()
-        } else {
-            th.text().bg(bg)
-        };
+    m.hits.modal(inner);
+    let room = inner.height.saturating_sub(1 + u16::from(input.is_some())) as usize;
+    let mut start = sel.min(rows.len().saturating_sub(1));
+    if sel == usize::MAX {
+        start = 0;
+    }
+    let mut used = wrapped_rows.get(start).map_or(0, Vec::len);
+    while start > 0 && used + wrapped_rows[start - 1].len() <= room {
+        start -= 1;
+        used += wrapped_rows[start].len();
+    }
+    let mut y = inner.y;
+    for (index, parts) in wrapped_rows.iter().enumerate().skip(start) {
         for part in parts {
-            // `wrap_hanging` has already put the hanging indent inside the width, so a wrapped row
-            // cannot read as a second one and cannot be wider than the overlay either.
-            lines.push(Line::styled(format!(" {part} "), style));
+            if y >= inner.y + room as u16 {
+                break;
+            }
+            let rect = Rect::new(inner.x, y, inner.width, 1);
+            para(
+                format!("{} {part}", if index == sel { ">" } else { " " }),
+                if index == sel {
+                    m.theme.selected()
+                } else {
+                    m.theme.text()
+                },
+                false,
+            )
+            .render(rect, frame);
+            if sel != usize::MAX {
+                m.hits.pane(HitPane::ModalList, rect, y, 1, index);
+            }
+            y += 1;
+        }
+        if y >= inner.y + room as u16 {
+            break;
         }
     }
-    // **X35: `Enter chooses` was said of a free-text field**, on rename, note and add-node alike —
-    // and of the open-a-wallet empty state, where there is nothing to choose (X16). Four shapes,
-    // one line each, from the arguments this function already has.
-    let keys = match (rows.is_empty(), input.is_some(), sel == usize::MAX) {
-        // A prompt: one free-text field and nothing else.
-        (true, true, _) => "Enter saves · Esc cancels",
-        // Rows, and no selection is possible: the empty state.
-        (false, _, true) => "Esc closes",
-        // Rows plus a field: the wallet list with its password.
-        (false, true, false) => "Enter opens · Esc cancels",
-        (false, false, false) => "Enter chooses · Esc cancels",
-        (true, false, _) => "Esc closes",
-    };
-    // **M5: §2o rule 11 — a hint is the LAST line.** The note and rename modals rendered this row
-    // and then put the only field you can type in *underneath* it, so the instruction came before
-    // the thing it was about. The field sits above it now, and the keys close the modal as they do
-    // everywhere else.
-    let key_row = inner.bottom().saturating_sub(1);
-    let input_row = if input.is_some() {
-        key_row.saturating_sub(1)
-    } else {
-        key_row
-    };
-    lines_at(lines, inner, false, frame);
-    // One leading space, like every row above it (round 5's own read of its captures): the rows are
-    // drawn `" {part} "` and this line sat flush against the modal's border, one character out of
-    // line with the text it belongs to.
-    para(format!(" {keys}"), th.dimmed().bg(bg), false)
-        .render(Rect::new(inner.x, key_row, inner.width, 1), frame);
     if let Some((input, label)) = input {
-        let row = input_row;
-        let off = label.width() as u16;
-        if off > 0 {
-            para(label.to_string(), th.dimmed().bg(bg), false)
-                .render(Rect::new(inner.x, row, off, 1), frame);
-        }
-        input.render(
-            Rect::new(
-                inner.x + off,
-                row,
-                inner.width.saturating_sub(off).max(1),
-                1,
-            ),
-            frame,
-        );
+        let row = inner.bottom().saturating_sub(2);
+        let off = (label.width() as u16).min(inner.width.saturating_sub(8));
+        para(label, m.theme.dimmed(), false).render(Rect::new(inner.x, row, off, 1), frame);
+        let field = Rect::new(inner.x + off, row, inner.width.saturating_sub(off), 1);
+        input.render(field, frame);
+        m.hits.field(0, field);
     }
+    modal_actions(
+        m,
+        inner,
+        if sel == usize::MAX && input.is_none() {
+            "Close"
+        } else {
+            "Continue"
+        },
+        frame,
+    );
 }
 
 /// A row of `[key] Label` chips, each with a hit rect (§7a.2).
@@ -2987,10 +3034,10 @@ fn chips(m: &Tui, area: Rect, items: &[(Button, &str, &str)], frame: &mut Frame)
         if y >= area.bottom() {
             return;
         }
-        let text = format!("[{key}] {label}");
+        let text = mnemonic(key, label);
         let w = (text.width() as u16).min(area.width);
         let rect = Rect::new(area.x, y, w, 1);
-        para(text, th.selected(), false).render(rect, frame);
+        para(text, th.key(), false).render(rect, frame);
         m.hits.button(*button, rect);
     }
 }
@@ -3006,7 +3053,7 @@ fn chips_height(items: &[(Button, &str, &str)], width: u16) -> u16 {
     let mut rows = 1u16;
     let mut x = 0u16;
     for (_, key, label) in items {
-        let w = format!("[{key}] {label}").width() as u16 + 1;
+        let w = mnemonic(key, label).width() as u16 + 1;
         if x > 0 && x + w > width {
             rows += 1;
             x = 0;
@@ -3016,12 +3063,12 @@ fn chips_height(items: &[(Button, &str, &str)], width: u16) -> u16 {
     rows
 }
 
-fn chip_row(m: &Tui, area: Rect, items: &[(Button, &str, &str)], frame: &mut Frame) {
+pub(super) fn chip_row(m: &Tui, area: Rect, items: &[(Button, &str, &str)], frame: &mut Frame) {
     let th = &m.theme;
     let mut x = area.x;
     let mut y = area.y;
     for (button, key, label) in items {
-        let text = format!("[{key}] {label}");
+        let text = mnemonic(key, label);
         let w = text.width() as u16 + 1;
         if x > area.x && x + w > area.right() {
             // **X32: the next row, not silently nothing.** A chip is the only affordance its route
@@ -3033,7 +3080,7 @@ fn chip_row(m: &Tui, area: Rect, items: &[(Button, &str, &str)], frame: &mut Fra
             return;
         }
         let rect = Rect::new(x, y, w - 1, 1);
-        para(text, th.selected(), false).render(rect, frame);
+        para(text, th.key(), false).render(rect, frame);
         m.hits.button(*button, rect);
         x += w;
     }
@@ -3072,120 +3119,114 @@ fn selector(
 /// §7a.5's create-wallet modal: four controls, `Up`/`Down` between them, `Enter` advancing from
 /// every one but the last where it submits, and the field key stated **in the modal** because
 /// this is one of the exactly two that consume `Tab` (§7a.1, revision 1).
-fn create_modal(m: &Tui, form: &super::CreateForm, frame: &mut Frame) {
-    let th = &m.theme;
-    let (name, pass, again) = (&form.name, &form.pass, &form.again);
-    let (lang, field, err) = (form.lang, form.field, form.err.as_deref());
-    // **The footer is measured in WRAPPED rows** (round 4's own read of the captures, V15's
-    // lesson once more): M23's longer sentence is 76 characters in a 62-cell interior, and it was
-    // cut to `Esc closes it an` — a modal whose own explanation of the `Tab` exception did not
-    // survive the width the modal is drawn at.
-    const CREATE_W: u16 = 66;
-    let foot = "Tab cannot change screens while this is open. Esc closes it and keeps nothing.";
-    let foot_w = (CREATE_W as usize).saturating_sub(4).max(8);
-    let foot_rows = (wrap_words(foot, foot_w).len() as u16).max(1) + 1;
-    let Some(inner) = overlay(m, frame, CREATE_W, 11 + foot_rows, " Create a wallet ") else {
+pub(super) fn create_modal(m: &Tui, form: &super::CreateForm, frame: &mut Frame) {
+    let Some(inner) = overlay(m, frame, 68, 13, " Create encrypted wallet ") else {
         return;
     };
     m.hits.modal(inner);
-    let bg = th.selection;
-    // **Two rows for the footer, not one**: §7a.1 requires the `Tab` exception to be documented
-    // *in the modal*, on the line under its controls, and a one-row slot clipped that second line
-    // away — leaving the rule true only in this document, which is the drift it exists to prevent.
-    let rows = Flex::vertical()
-        .constraints([
-            Constraint::Fixed(1),
-            Constraint::Fixed(1),
-            Constraint::Fixed(1),
-            Constraint::Fixed(1),
-            Constraint::Fixed(1),
-            Constraint::Fixed(foot_rows),
-            Constraint::Fill,
-        ])
-        .split(inner);
-    // W19: `seed lang` was an abbreviation where §7a.5 says `language`, and the four labels are
-    // now one style — the Send screen's, which capitalises `To`, `Amount`, `Fee` and `Account`.
-    for (i, (label, input)) in [
-        // **X34: `Repeat` alone did not say what to repeat**, in the one field a mistake makes a
-        // wallet nobody can open — and the four labels are padded to ONE width, so the four input
-        // boxes start in one column. `Repeat the password` is five cells longer than `Password`, and
-        // left unpadded it moved its own field five cells right of the two above it.
-        // **M23: four labels, four nouns.** `Repeat the password` was a verb phrase among three
-        // nouns, and the modal's own labels are the one place the four fields are named.
-        ("Name                ", name),
-        ("Password            ", pass),
-        ("Password again      ", again),
-    ]
-    .iter()
-    .enumerate()
-    {
-        let off = label.width() as u16;
-        para((*label).to_string(), th.dimmed().bg(bg), false)
-            .render(Rect::new(rows[i].x, rows[i].y, off, 1), frame);
-        let box_ = Rect::new(
-            rows[i].x + off,
-            rows[i].y,
-            rows[i].width.saturating_sub(off).max(1),
-            1,
-        );
-        input.render(box_, frame);
-        m.hits.field(i, box_);
+    let count = inner.height.saturating_sub(2).max(1) as usize;
+    let start = form.field.saturating_sub(count.saturating_sub(1));
+    let private_name = TextInput::new()
+        .with_value("•".repeat(form.name.value().chars().count()))
+        .with_focused(form.field == 0)
+        .with_style(m.theme.text());
+    let name = if m.privacy() {
+        &private_name
+    } else {
+        &form.name
+    };
+    let pass = form.pass.masked_input(&m.theme);
+    let again = form.again.masked_input(&m.theme);
+    for (slot, index) in (start..4).take(count).enumerate() {
+        let row = Rect::new(inner.x, inner.y + slot as u16, inner.width, 1);
+        if index == 3 {
+            selector(
+                m,
+                row,
+                Selector::Language,
+                "Language ",
+                fmonero_core::settings::SEED_LANGUAGES[form.lang].1,
+                form.field == 3,
+                frame,
+            );
+            m.hits
+                .field(3, Rect::new(row.x, row.y, 9.min(row.width), 1));
+        } else {
+            let label = ["Name", "Password", "Again"][index];
+            para(
+                format!("{}{label:<9}", if form.field == index { ">" } else { " " }),
+                m.theme.dimmed(),
+                false,
+            )
+            .render(Rect::new(row.x, row.y, 10.min(row.width), 1), frame);
+            let input = [name, &pass, &again][index];
+            input.render(
+                Rect::new(row.x + 10, row.y, row.width.saturating_sub(10), 1),
+                frame,
+            );
+            m.hits.field(index, row);
+        }
     }
-    selector(
-        m,
-        rows[3],
-        Selector::Language,
-        "Seed language       ",
-        fmonero_core::settings::SEED_LANGUAGES[lang].1,
-        field == 3,
+    para(
+        if m.privacy() && form.err.is_some() {
+            "Input needs attention. Details hidden by privacy."
+        } else {
+            form.pass
+                .error()
+                .or(form.again.error())
+                .or(form.err.as_deref())
+                .unwrap_or("Tab moves fields · passwords stay masked")
+        },
+        if form.err.is_some() {
+            m.theme.err()
+        } else {
+            m.theme.dimmed()
+        },
+        false,
+    )
+    .render(
+        Rect::new(inner.x, inner.bottom().saturating_sub(2), inner.width, 1),
         frame,
     );
-    if let Some(why) = err {
-        para(why.to_string(), th.err().bg(bg), true).render(rows[4], frame);
-    }
-    // The one documented `Tab` exception, documented IN the modal (§7a.1).
-    // **X34: `Press Esc to discard first.` named no second thing** — first before what? It is Tab
-    // that is blocked, so the sentence says what Esc lets you do next. **M23: `first` was left
-    // dangling** — X34 replaced one unfinished sentence with another. What Tab normally does is
-    // change screens, so that is what the line says it cannot do here, and then what Esc is for.
-    let mut foot_lines = vec![Line::styled(
-        "↑↓ fields · Enter next, then create · Esc discards",
-        th.dimmed().bg(bg),
-    )];
-    for part in wrap_words(foot, foot_w) {
-        foot_lines.push(Line::styled(part, th.warn().bg(bg)));
-    }
-    lines_at(foot_lines, rows[5], false, frame);
-    let _ = rows[6];
+    modal_actions(m, inner, "Create", frame);
 }
 
-/// §7a.5's seed-backup modal — dismiss-only, and it renders `seed_backup_hint` verbatim from
-/// core. **fmonero never displays a seed**, in the TUI or anywhere else.
-fn seed_modal(m: &Tui, lines: &[String], frame: &mut Frame) {
-    let th = &m.theme;
-    // Sized from the **wrap of its own text**, measured with the same helper that draws it — the
-    // hand-written `lines.len() + 6` pushed the last two rows (including "fmonero never displays
-    // a seed") off the bottom as soon as the wallet path was long enough to wrap.
-    let w = 84.min(frame.bounds().width);
-    let wrapped_rows: u16 = lines
-        .iter()
-        .map(|l| wrap_words(l, w.saturating_sub(4) as usize).len().max(1) as u16)
-        .sum();
-    let h = wrapped_rows + 7;
-    let Some(inner) = overlay(m, frame, w, h, " Back up your seed ") else {
+/// A newly created wallet leads directly into Monero's encrypted recovery workflow.
+pub(super) fn seed_modal(m: &Tui, lines: &[String], frame: &mut Frame) {
+    let Some(inner) = overlay(m, frame, 84, 19, " Protect your new wallet ") else {
         return;
     };
     m.hits.modal(inner);
-    let bg = th.selection;
-    let mut out: Vec<Line> = lines
+    let public = if m.privacy() {
+        vec!["Wallet created. Recovery words stay protected. Create an encrypted recovery wallet before receiving funds.".into()]
+    } else {
+        lines.to_vec()
+    };
+    let rows: Vec<String> = public
         .iter()
-        .map(|l| Line::styled(l.clone(), th.text().bg(bg)))
+        .flat_map(|line| wrap_words(line, inner.width as usize))
         .collect();
-    out.push(Line::styled(String::new(), th.text().bg(bg)));
-    out.push(Line::styled("Enter to close", th.dimmed().bg(bg)));
-    lines_at(out, inner, true, frame);
-    let button = Rect::new(inner.x, inner.bottom().saturating_sub(1), 14, 1);
-    m.hits.modal_button(button);
+    for (i, row) in rows
+        .iter()
+        .take(inner.height.saturating_sub(2) as usize)
+        .enumerate()
+    {
+        para(row, m.theme.text(), false).render(
+            Rect::new(inner.x, inner.y + i as u16, inner.width, 1),
+            frame,
+        );
+    }
+    chip_row(
+        m,
+        Rect::new(inner.x, inner.bottom().saturating_sub(2), inner.width, 1),
+        &[(
+            Button::Tool(super::advanced::Tool::RecoveryBackup),
+            "B",
+            "Backup",
+        )],
+        frame,
+    );
+    modal_actions(m, inner, "Close", frame);
 }
 
 /// §7a.4's use-this-node confirm — the safety surface of the picker, so it is spelled out: the
@@ -3276,9 +3317,7 @@ fn use_node_modal(m: &Tui, address: &str, wallet_open: Option<&str>, frame: &mut
         "y to confirm · Esc cancels",
         th.dimmed().bg(bg),
     ));
-    lines_at(lines, inner, true, frame);
-    m.hits
-        .modal_button(Rect::new(inner.x, inner.bottom().saturating_sub(1), 12, 1));
+    dialog_body(m, lines, inner, frame);
 }
 
 /// The `u` and `d` confirms (W2) — **the two keys that start and stop a background service on
@@ -3397,9 +3436,7 @@ fn node_power_modal(m: &Tui, up: bool, frame: &mut Frame) {
                 .collect::<Vec<_>>()
         })
         .collect();
-    lines_at(lines, inner, false, frame);
-    m.hits
-        .modal_button(Rect::new(inner.x, inner.bottom().saturating_sub(1), 12, 1));
+    dialog_body(m, lines, inner, frame);
 }
 
 /// **Round 5, S8: the in-app half of `wallet clear-pending`, and the risk in plain words.**
@@ -3471,9 +3508,7 @@ fn clear_pending_modal(m: &Tui, frame: &mut Frame) {
                 .collect::<Vec<_>>()
         })
         .collect();
-    lines_at(lines, inner, false, frame);
-    m.hits
-        .modal_button(Rect::new(inner.x, inner.bottom().saturating_sub(1), 12, 1));
+    dialog_body(m, lines, inner, frame);
 }
 
 /// **X4: how much your node logs, as an overlay rather than a 58-column `Dialog`.**
@@ -3551,9 +3586,7 @@ fn log_level_modal(m: &Tui, from: Option<i8>, to: i8, frame: &mut Frame) {
                 .collect::<Vec<_>>()
         })
         .collect();
-    lines_at(lines, inner, false, frame);
-    m.hits
-        .modal_button(Rect::new(inner.x, inner.bottom().saturating_sub(1), 12, 1));
+    dialog_body(m, lines, inner, frame);
 }
 
 /// §7a.4's `l` confirm — the way back to your own node, and **the same shape as the picker's
@@ -3637,9 +3670,7 @@ fn local_node_modal(m: &Tui, frame: &mut Frame) {
                 .collect::<Vec<_>>()
         })
         .collect();
-    lines_at(lines, inner, false, frame);
-    m.hits
-        .modal_button(Rect::new(inner.x, inner.bottom().saturating_sub(1), 12, 1));
+    dialog_body(m, lines, inner, frame);
 }
 
 /// §7a.4's `a` modal: **one** field, validated by the same function the CLI validates with.
@@ -3710,7 +3741,7 @@ fn add_node_modal(m: &Tui, input: &TextInput, frame: &mut Frame) {
             // two keys away already says the same fact the right way round.
             Line::styled(meaning.to_string(), th.dimmed().bg(bg)),
             Line::styled(
-                "Enter adds it · Esc cancels".to_string(),
+                "Enter adds it after validation.".to_string(),
                 th.dimmed().bg(bg),
             ),
         ],
@@ -3718,7 +3749,7 @@ fn add_node_modal(m: &Tui, input: &TextInput, frame: &mut Frame) {
         true,
         frame,
     );
-    let _ = rows[2];
+    modal_actions(m, inner, "Add", frame);
 }
 
 /// §2n.5 rule 2's notice, shown before the first fetch **or** the first probe while the cache's
@@ -3774,9 +3805,7 @@ fn notice_modal(m: &Tui, frame: &mut Frame) {
         return;
     };
     m.hits.modal(inner);
-    lines_at(lines, inner, false, frame);
-    m.hits
-        .modal_button(Rect::new(inner.x, inner.bottom().saturating_sub(1), 16, 1));
+    dialog_body(m, lines, inner, frame);
 }
 
 /// The receive QR: the address painted onto an `ftui_extras` `Canvas` in **half-block** mode,
@@ -3821,6 +3850,14 @@ fn qr_modal(m: &Tui, address: &str, frame: &mut Frame) {
     ) else {
         return;
     };
+    m.hits.modal(inner);
+    modal_actions(m, inner, "Close", frame);
+    let inner = Rect::new(
+        inner.x,
+        inner.y,
+        inner.width,
+        inner.height.saturating_sub(1),
+    );
     para(which, th.accented().bg(th.selection), false)
         .render(Rect::new(inner.x, inner.y, inner.width, 1), frame);
     let inner = Rect::new(
@@ -3829,7 +3866,7 @@ fn qr_modal(m: &Tui, address: &str, frame: &mut Frame) {
         inner.width,
         inner.height.saturating_sub(1),
     );
-    let fits = inner.height >= qr_rows && inner.width >= side;
+    let fits = inner.height >= qr_rows + text_rows && inner.width >= side;
     if fits {
         let colors = code.to_colors();
         let area = Rect::new(inner.x, inner.y, side, qr_rows);
@@ -3869,16 +3906,16 @@ fn qr_modal(m: &Tui, address: &str, frame: &mut Frame) {
             .render(area, frame);
     } else {
         para(
-            "Window too small for a QR code. The address is below.".to_string(),
+            "Address · enlarge window for QR".to_string(),
             th.warn(),
             true,
         )
         .render(
-            Rect::new(inner.x, inner.y, inner.width, inner.height.min(2)),
+            Rect::new(inner.x, inner.y.saturating_sub(1), inner.width, 1),
             frame,
         );
     }
-    let used = if fits { qr_rows } else { 2 };
+    let used = if fits { qr_rows } else { 0 };
     let rest = Rect::new(
         inner.x,
         inner.y + used.min(inner.height),
@@ -3901,77 +3938,81 @@ fn qr_modal(m: &Tui, address: &str, frame: &mut Frame) {
     }
 }
 
-/// The plain confirm modal — node up/down and the log level. `y` activates it, as §7a asks.
-/// The `?` overlay (§7a: **it is the keymap**) — **wrapped, never elided** (W13).
-///
-/// V15 gave every cut line an `…`, which made the overlay honest and still unreadable: 11 of its
-/// 25 rows ended in one at 120 columns and 9 at 150, including the two that explain why `u`, `d`
-/// and `L` are unavailable and what `Esc` does. A key's line is the only place those facts exist,
-/// so the fix is room: the overlay is as wide as the frame allows up to 118 columns, the key
-/// column is 19, and an action that still does not fit continues on a second row indented under
-/// itself. Nothing here may end in `…`, and `tests.rs` asserts exactly that.
-fn help(m: &Tui, frame: &mut Frame) {
+/// Shared and screen-specific bindings remain readable at every supported terminal size.
+pub(super) fn help(m: &Tui, frame: &mut Frame) {
     let th = &m.theme;
-    /// The key column, measured: `Send: p  Ctrl+P  @` is the widest at 18 cells.
-    const KEY_W: usize = 19;
-    const WIDTH: u16 = 118;
-    let w = WIDTH.min(frame.bounds().width);
-    let text_w = (w as usize).saturating_sub(4).saturating_sub(KEY_W).max(8);
-    // §7a: in remote mode the keys that need the local daemon are marked from this same table,
-    // so help and behaviour cannot drift — `confirm` toasts, and `b` has no bans to show.
-    let remote = m.remote_mode();
-    let mut rows: Vec<(String, String, bool)> = Vec::new();
-    for (k, a) in KEYS {
-        let disabled = remote && matches!(*k, "u  d" | "L" | "b");
-        // The mouse row reads its own setting rather than a copy of it, so the overlay's text
-        // cannot drift from the policy actually in force (§7a.2's reason for making it a
-        // setting and not a flag).
-        let action = if disabled {
-            // **X28: two parentheticals in a row.** `L  Node: change how much your node logs (it
-            // asks first) (not while you use a public node)` — the same shape the self-read fixed
-            // for `version_supported`. The key's own parenthetical goes when this one applies: it
-            // cannot ask first if it cannot run at all.
-            let stem = match a.split_once(" (") {
-                Some((head, _)) => head,
-                None => *a,
-            };
-            format!("{stem}. Not while you use a public node.")
-        } else if *k == "mouse" && !m.ctx.settings.tui.mouse {
-            // The settings key stays: it is a name the user types, which is §2o rule 5's
-            // own carve-out. What goes is the shell command (§2o.1).
-            "off. Turn on tui.mouse in your settings".to_string()
+    let width = 118.min(frame.bounds().width);
+    let body_width = width.saturating_sub(4) as usize;
+    let columns = width >= 76;
+    let key_width = if columns { 22 } else { 0 };
+    let mut lines = Vec::new();
+    for (key, action) in KEYS {
+        let action = if *key == "Mouse" && !m.ctx.settings.tui.mouse {
+            "Mouse is off. Enable tui.mouse in settings; all actions remain keyboard accessible."
         } else {
-            (*a).to_string()
+            action
         };
-        rows.push(((*k).to_string(), action, disabled));
-    }
-    let wrapped: Vec<(String, Vec<String>, bool)> = rows
-        .into_iter()
-        .map(|(k, a, d)| {
-            let lines = wrap_words(&a, text_w);
-            (k, lines, d)
-        })
-        .collect();
-    let height: usize = wrapped.iter().map(|(_, l, _)| l.len().max(1)).sum();
-    let Some(inner) = overlay(m, frame, w, height as u16 + 4, " Keys · any key closes ") else {
-        return;
-    };
-    let mut lines: Vec<Line> = Vec::new();
-    for (k, action, disabled) in wrapped {
-        let style = if disabled {
-            th.dimmed().bg(th.selection)
+        if columns {
+            for (i, part) in wrap_words(action, body_width.saturating_sub(key_width))
+                .iter()
+                .enumerate()
+            {
+                lines.push(Line::from_spans([
+                    Span::styled(
+                        crate::output::pad(if i == 0 { key } else { "" }, key_width),
+                        th.key().bg(th.selection),
+                    ),
+                    Span::styled(part.clone(), th.text().bg(th.selection)),
+                ]));
+            }
         } else {
-            th.text().bg(th.selection)
-        };
-        for (i, part) in action.iter().enumerate() {
-            let key = if i == 0 { k.clone() } else { String::new() };
-            lines.push(Line::from_spans([
-                Span::styled(crate::output::pad(&key, KEY_W), th.key().bg(th.selection)),
-                Span::styled(part.clone(), style),
-            ]));
+            lines.extend(
+                wrap_words(key, body_width)
+                    .into_iter()
+                    .map(|s| Line::styled(s, th.key().bg(th.selection))),
+            );
+            lines.extend(
+                wrap_words(action, body_width)
+                    .into_iter()
+                    .map(|s| Line::styled(s, th.text().bg(th.selection))),
+            );
         }
     }
-    lines_at(lines, inner, false, frame);
+    let Some(inner) = overlay(
+        m,
+        frame,
+        width,
+        lines.len() as u16 + 6,
+        " Keys · ↑↓ scroll · Esc closes ",
+    ) else {
+        return;
+    };
+    m.hits.modal(inner);
+    m.hits.overlay();
+    let room = inner.height.saturating_sub(2) as usize;
+    m.help_max.set(lines.len().saturating_sub(room));
+    let start = m.help_scroll.min(m.help_max.get());
+    lines_at(
+        lines.into_iter().skip(start).take(room).collect(),
+        Rect::new(inner.x, inner.y, inner.width, room as u16),
+        false,
+        frame,
+    );
+    chip_row(
+        m,
+        Rect::new(inner.x, inner.bottom().saturating_sub(2), inner.width, 1),
+        &[
+            (Button::HelpUp, "↑", "Previous"),
+            (Button::HelpDown, "↓", "More"),
+        ],
+        frame,
+    );
+    chip_row(
+        m,
+        Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
+        &[(Button::Help, "Esc", "Close")],
+        frame,
+    );
 }
 
 // ---------------------------------------------------------------- drawing helpers
@@ -4047,6 +4088,37 @@ pub(super) fn framed(
     (inner.height > 0).then_some(inner)
 }
 
+/// Older connection confirmations share scrollable explanations and real pinned buttons.
+pub(super) fn dialog_body(m: &Tui, lines: Vec<Line<'static>>, inner: Rect, frame: &mut Frame) {
+    let lines = lines
+        .into_iter()
+        .map(|line| line.to_plain_text())
+        .filter(|line| {
+            line != "y to confirm · Esc cancels" && line != "Enter continues · Esc cancels"
+        })
+        .flat_map(|line| wrap_bullet(&line, inner.width as usize))
+        .collect::<Vec<_>>();
+    let room = inner.height.saturating_sub(2) as usize;
+    m.dialog_max.set(lines.len().saturating_sub(room));
+    let start = m.dialog_scroll.get().min(m.dialog_max.get());
+    for (row, text) in lines.iter().skip(start).take(room).enumerate() {
+        para(text, m.theme.text().bg(m.theme.selection), false).render(
+            Rect::new(inner.x, inner.y + row as u16, inner.width, 1),
+            frame,
+        );
+    }
+    chip_row(
+        m,
+        Rect::new(inner.x, inner.bottom().saturating_sub(2), inner.width, 1),
+        &[
+            (Button::DialogUp, "↑", "Previous"),
+            (Button::DialogDown, "↓", "More"),
+        ],
+        frame,
+    );
+    modal_actions(m, inner, "Confirm", frame);
+}
+
 /// A centred modal: blank its area, draw its border, return the interior.
 pub(super) fn overlay(m: &Tui, frame: &mut Frame, w: u16, h: u16, title: &str) -> Option<Rect> {
     let th = &m.theme;
@@ -4103,7 +4175,7 @@ fn table(
         .block(panel(th, title, false))
         .style(th.text())
         .highlight_style(th.selected());
-    let (state, pane) = if m.screen == Screen::Wallet {
+    let (state, pane) = if matches!(m.screen, Screen::Wallet | Screen::Receive) {
         (&m.wallet.table, HitPane::Subaddresses)
     } else {
         (&m.node.table, HitPane::NodeList)
@@ -4194,11 +4266,27 @@ pub(super) fn wrapped(s: &str, width: usize) -> Vec<String> {
     if width == 0 || s.is_empty() {
         return vec![String::new()];
     }
-    s.chars()
-        .collect::<Vec<_>>()
-        .chunks(width)
-        .map(|c| c.iter().collect())
-        .collect()
+    let mut rows = Vec::new();
+    let mut rest = s;
+    while !rest.is_empty() {
+        let (head, tail) = split_cells(rest, width);
+        rows.push(head.to_string());
+        rest = tail;
+    }
+    rows
+}
+
+/// Split at a UTF-8 boundary using terminal cells, retaining every character.
+fn split_cells(s: &str, width: usize) -> (&str, &str) {
+    let mut end = 0;
+    for (offset, ch) in s.char_indices() {
+        let next = offset + ch.len_utf8();
+        if end > 0 && s[..next].width() > width.max(1) {
+            break;
+        }
+        end = next;
+    }
+    s.split_at(end)
 }
 
 /// Word-wrap prose at a width, for the lines that carry a **runnable command**: a clipped
@@ -4256,8 +4344,8 @@ pub(super) fn wrap_hanging(s: &str, width: usize, indent: usize) -> Vec<String> 
             // One word wider than the budget: keep what fits and put the remainder back, so the
             // next line continues it instead of the frame eating it.
             if line.width() > budget {
-                let head: String = line.chars().take(budget).collect();
-                let tail: String = line.chars().skip(budget).collect();
+                let (head, tail) = split_cells(&line, budget);
+                let (head, tail) = (head.to_string(), tail.to_string());
                 line = head;
                 if !tail.is_empty() {
                     rest.push(tail);
@@ -4292,8 +4380,8 @@ pub(super) fn wrap_words(s: &str, width: usize) -> Vec<String> {
         }
         // A single word longer than the width still has to go somewhere: hard-chunk that one.
         while line.width() > width {
-            let head: String = line.chars().take(width).collect();
-            let tail: String = line.chars().skip(width).collect();
+            let (head, tail) = split_cells(&line, width);
+            let (head, tail) = (head.to_string(), tail.to_string());
             out.push(head);
             line = tail;
         }
@@ -4355,6 +4443,158 @@ pub(super) fn moment_short(unix: i64) -> String {
         Some(s) => s,
         None => format!("{:<11}", "—"),
     }
+}
+
+fn mnemonic(key: &str, label: &str) -> String {
+    if key.chars().count() == 1
+        && label
+            .get(..key.len())
+            .is_some_and(|c| c.eq_ignore_ascii_case(key))
+    {
+        format!("({}){}", key.to_uppercase(), &label[key.len()..])
+    } else {
+        format!("({key}) {label}")
+    }
+}
+
+pub(super) fn modal_actions(m: &Tui, inner: Rect, accept: &str, frame: &mut Frame) {
+    let available = inner.width.saturating_sub(14) as usize;
+    let full = format!("(Enter) {accept}");
+    let primary = if full.width() <= available {
+        full
+    } else if available >= 15 {
+        "(Enter) Confirm".into()
+    } else {
+        "(Enter) OK".into()
+    };
+    let labels = [primary, "(Esc) Cancel".to_string()];
+    let mut x = inner.x;
+    for (i, label) in labels.into_iter().enumerate() {
+        let w = (label.width() as u16).min(inner.right().saturating_sub(x));
+        let rect = Rect::new(x, inner.bottom().saturating_sub(1), w, 1);
+        para(
+            label,
+            if i == 0 {
+                m.theme.key()
+            } else {
+                m.theme.dimmed()
+            },
+            false,
+        )
+        .render(rect, frame);
+        m.hits.modal_button(rect);
+        x += w + 2;
+    }
+}
+
+pub(super) fn receive_screen(m: &Tui, area: Rect, frame: &mut Frame) {
+    if !m.status.as_ref().is_some_and(|s| s.wallet.open) {
+        wallet_empty(m, area, frame);
+        return;
+    }
+    let buttons = [
+        (Button::NewAddress, "N", "New address"),
+        (Button::CreateRequest, "U", "Payment request"),
+        (Button::LabelAddress, "L", "Label address"),
+        (Button::CopyAddress, "Enter", "Copy address"),
+        (Button::Qr, "Q", "QR code"),
+    ];
+    let h = chips_height(&buttons, area.width).min(area.height.saturating_sub(2));
+    if area.height < h + 6 {
+        let available = area.height.saturating_sub(h + 2);
+        let selected = m.wallet.table.borrow().selected.unwrap_or(0);
+        if let Some(set) = &m.wallet.addresses {
+            let start = selected.saturating_sub(available.saturating_sub(1) as usize);
+            for (slot, (index, row)) in set
+                .addresses
+                .iter()
+                .enumerate()
+                .skip(start)
+                .take(available as usize)
+                .enumerate()
+            {
+                let rect = Rect::new(area.x, area.y + slot as u16, area.width, 1);
+                let label = if m.privacy() {
+                    format!("Address {} · hidden", index + 1)
+                } else {
+                    format!(
+                        "#{} {} {}",
+                        row.address_index,
+                        row.label,
+                        short_addr(&row.address)
+                    )
+                };
+                para(
+                    label,
+                    if selected == index {
+                        m.theme.selected()
+                    } else {
+                        m.theme.text()
+                    },
+                    false,
+                )
+                .render(rect, frame);
+                m.hits.pane(HitPane::Subaddresses, rect, rect.y, 1, index);
+            }
+        }
+        super::receiving::view(
+            m,
+            Rect::new(area.x, area.y + available, area.width, 2),
+            frame,
+        );
+        chip_row(
+            m,
+            Rect::new(area.x, area.bottom().saturating_sub(h), area.width, h),
+            &buttons,
+            frame,
+        );
+        return;
+    }
+    let rows = Flex::vertical()
+        .constraints([Constraint::Fill, Constraint::Fixed(3), Constraint::Fixed(h)])
+        .split(area);
+    subaddress_pane(m, rows[0], frame);
+    super::receiving::view(m, rows[1], frame);
+    chip_row(m, rows[2], &buttons, frame);
+}
+
+/// Opening an empty wallet directory still has complete, mouse-reachable recovery routes.
+pub(super) fn empty_open_modal(m: &Tui, frame: &mut Frame) {
+    let Some(inner) = overlay(m, frame, 72, 14, " Open a wallet ") else {
+        return;
+    };
+    m.hits.modal(inner);
+    let text = if m.privacy() {
+        "No wallet names are available. Create a wallet or restore from your protected recovery words.".into()
+    } else if let Some(why) = &m.wallets_err {
+        format!("Could not read the wallet list: {why}")
+    } else {
+        format!(
+            "No wallets in {}. Create a wallet or restore from your recovery words.",
+            m.ctx.settings.wallet.dir.display()
+        )
+    };
+    let room = inner.height.saturating_sub(3) as usize;
+    for (i, row) in wrap_words(&text, inner.width as usize)
+        .iter()
+        .take(room)
+        .enumerate()
+    {
+        para(row, m.theme.text(), false).render(
+            Rect::new(inner.x, inner.y + i as u16, inner.width, 1),
+            frame,
+        );
+    }
+    chip_row(
+        m,
+        Rect::new(inner.x, inner.bottom().saturating_sub(3), inner.width, 2),
+        &[
+            (Button::CreateWallet, "C", "Create"),
+            (Button::Restore, "R", "Restore"),
+        ],
+        frame,
+    );
+    modal_actions(m, inner, "Close", frame);
 }
 
 #[cfg(test)]

@@ -1,11 +1,9 @@
 //! The ONE implementation of the `wallet open`/`close` and `node up`/`down`/`restart`
 //! sequences (DESIGN.md §5b, §4.1, §4.2, §2i).
 //!
-//! Signature-only at the Phase 1a gate (§8). Both modules exist because each sequence has
-//! **two** independently written callers — the CLI subcommand and the TUI's modal or key —
-//! and §2a.3 already settles what happens to an invariant that lives in two places: it
-//! holds in one. The two steps most easily lost are named in the doc comments below,
-//! because losing either is silent.
+//! CLI and TUI share these guarded sequences. Wallet setup applies the validated
+//! daemon transport, enables refresh, validates the selected account and records
+//! the engine's actual primary-address identity.
 
 use std::time::Duration;
 
@@ -18,15 +16,6 @@ use crate::rpc::WalletClient;
 /// `wallet open` / `wallet close` (§4.1, §4.2).
 pub mod wallet_session {
     use super::*;
-
-    // Keep the owned buffer covered on validation, service-start, and RPC failures too.
-    struct WalletPassword(String);
-    impl Drop for WalletPassword {
-        fn drop(&mut self) {
-            // SAFETY: replacing every byte with zero preserves valid UTF-8.
-            unsafe { self.0.as_mut_vec().fill(0) };
-        }
-    }
 
     /// What an open produced.
     #[derive(Clone, Debug)]
@@ -59,7 +48,17 @@ pub mod wallet_session {
         password: String,
         cancel: &CancelToken,
     ) -> Result<Opened, Error> {
-        let password = WalletPassword(password);
+        open_secret(ctx, w, name, crate::SecretString::new(password)?, cancel)
+    }
+
+    pub fn open_secret(
+        ctx: &Context,
+        w: &WalletClient,
+        name: &str,
+        password: crate::SecretString,
+        cancel: &CancelToken,
+    ) -> Result<Opened, Error> {
+        crate::wallet_dir::validate_name(name)?;
         let _lock = crate::send::take_send_lock(ctx)?;
         crate::send::refuse_if_send_in_flight(ctx)?;
         // The units are written DISABLED and started on demand (§4.2), and `ensure_running`
@@ -71,7 +70,13 @@ pub mod wallet_session {
             ctx.timeouts.unit_probe,
             cancel,
         )?;
-        let opened = w.open_wallet(name, &password.0);
+        if cancel.is_cancelled() {
+            return Err(Error::Interrupted);
+        }
+        // A timed-out wallet switch has unknown engine identity. Never leave a
+        // previous name paired with the newly opened wallet's primary address.
+        crate::state::clear_last_open(ctx)?;
+        let opened = w.open_wallet(name, password.expose_secret());
         drop(password);
         let opened = opened.and_then(|()| install_daemon_and_record(ctx, w, name));
         opened.map(|net| Opened {
@@ -138,7 +143,27 @@ pub mod wallet_session {
         announce: &dyn Fn(&str),
         cancel: &CancelToken,
     ) -> Result<Created, Error> {
-        let password = WalletPassword(password);
+        create_secret(
+            ctx,
+            w,
+            name,
+            crate::SecretString::new(password)?,
+            language,
+            announce,
+            cancel,
+        )
+    }
+
+    pub fn create_secret(
+        ctx: &Context,
+        w: &WalletClient,
+        name: &str,
+        password: crate::SecretString,
+        language: &str,
+        announce: &dyn Fn(&str),
+        cancel: &CancelToken,
+    ) -> Result<Created, Error> {
+        crate::wallet_dir::require_new(ctx, name)?;
         let _lock = crate::send::take_send_lock(ctx)?;
         crate::send::refuse_if_send_in_flight(ctx)?;
         crate::settings::validate_seed_language(language)?;
@@ -149,7 +174,12 @@ pub mod wallet_session {
             ctx.timeouts.unit_probe,
             cancel,
         )?;
-        let created = w.create_wallet(name, &password.0, language);
+        crate::wallet_dir::require_new(ctx, name)?;
+        if cancel.is_cancelled() {
+            return Err(Error::Interrupted);
+        }
+        crate::state::clear_last_open(ctx)?;
+        let created = w.create_wallet(name, password.expose_secret(), language);
         drop(password);
         created?;
         let hint = seed_backup_hint(ctx, name);
@@ -159,6 +189,7 @@ pub mod wallet_session {
         // report `wallet.open: true` with `wallet.name: null`, and every wallet→daemon call
         // would 401 (§4.1).
         let net = install_daemon_and_record(ctx, w, name)?;
+        let _ = crate::capabilities::note(w, crate::capabilities::WalletKind::Deterministic);
         Ok(Created {
             unit_started,
             name: name.to_string(),
@@ -170,7 +201,7 @@ pub mod wallet_session {
     /// `set_daemon` carrying the node credential, then `auto_refresh`, then
     /// `state::set_last_open`. **In that order**: `on_set_daemon` answers `-13 NOT_OPEN` with
     /// no wallet loaded (`wallet_rpc_server.cpp:4692`), so it can only come after the open.
-    fn install_daemon_and_record(
+    pub(crate) fn install_daemon_and_record(
         ctx: &Context,
         w: &WalletClient,
         name: &str,
@@ -179,13 +210,13 @@ pub mod wallet_session {
         // `units::render_wallet_unit` reads, so the unit and the call cannot disagree (§2m.3,
         // §5b). In **remote** mode the credential is `None`, always: fmonero's `rpc-login`
         // belongs to fmonero's own node and means nothing to a stranger's.
-        let target = crate::units::daemon_target(ctx);
+        let connection = crate::transport::DaemonConnection::for_running_wallet(ctx)?;
         let login = if ctx.settings.node.mode.is_remote() {
             None
         } else {
             crate::rpc::Login::from_monerod_conf(&ctx.paths.monerod_conf())?
         };
-        if let Err(e) = w.set_daemon(&target.address, target.trusted, login.as_ref(), target.ssl) {
+        if let Err(e) = w.set_connection(&connection, login.as_ref()) {
             // §4.2 exempts exactly TWO failures, and the second one **only in local mode**.
             //
             // * a transport failure (`reason: unreachable`) — nothing answered the call; the
@@ -210,7 +241,13 @@ pub mod wallet_session {
             // credential — the step §4.2 calls the one "whose omission means the wallet can
             // never sync".
             let rejected = e.reason() == Some("remote_address_rejected");
-            if rejected && ctx.settings.node.mode.is_remote() {
+            if rejected
+                && (ctx.settings.node.mode.is_remote()
+                    || ctx.settings.node.proxy.is_some()
+                    || ctx.settings.node.tls != crate::transport::TlsPolicy::Auto
+                    || ctx.settings.node.ca_file.is_some()
+                    || ctx.settings.node.fingerprint.is_some())
+            {
                 return Err(e);
             }
             if !rejected && e.reason() != Some("unreachable") {
@@ -223,7 +260,24 @@ pub mod wallet_session {
         w.auto_refresh(true, AUTO_REFRESH_PERIOD_SEC)?;
         // The wallet's OWN nettype, from its own primary address — the §2a.6 send-path
         // authority, which cannot drift from the daemon the way `settings.node.network` can.
-        let net = crate::address::parse(&w.get_address(ctx.settings.wallet.account)?.primary)?.net;
+        // Account zero is the wallet identity regardless of the previous wallet's
+        // selection. Validate the persisted selection against this engine before
+        // reporting Ready; reload first to preserve concurrent unrelated settings.
+        let net = crate::address::parse(&w.get_address(0)?.primary)?.net;
+        let mut settings = crate::Settings::load(&ctx.paths)?;
+        if settings.wallet.account != 0 {
+            let accounts = w.get_accounts()?;
+            if !accounts
+                .iter()
+                .any(|a| a.account_index == settings.wallet.account)
+            {
+                if !accounts.iter().any(|a| a.account_index == 0) {
+                    return Err(Error::backend("Monero did not return the primary account."));
+                }
+                settings.wallet.account = 0;
+                settings.save(ctx)?;
+            }
+        }
         crate::state::set_last_open(ctx, name, net)?;
         Ok(net)
     }
@@ -551,6 +605,7 @@ pub mod node_mode {
         let mut next_ctx = ctx.clone();
         next_ctx.settings = next.clone();
         let target = units::daemon_target(&next_ctx);
+        let connection = crate::transport::DaemonConnection::for_running_wallet(&next_ctx)?;
         let done = |actions: Vec<FileAction>,
                     changed: bool,
                     wallet_unit_restarted: bool,
@@ -601,7 +656,7 @@ pub mod node_mode {
             } else {
                 crate::rpc::Login::from_monerod_conf(&next_ctx.paths.monerod_conf())?
             };
-            match w.set_daemon(&target.address, target.trusted, login.as_ref(), target.ssl) {
+            match w.set_connection(&connection, login.as_ref()) {
                 Ok(()) => {
                     // The target changed even if enabling refresh subsequently fails.
                     if settings_changed {

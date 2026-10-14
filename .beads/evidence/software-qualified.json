@@ -1,0 +1,76 @@
+{
+  "schema": 1,
+  "version": "0.2.0",
+  "binary_sha256": "e13ebee5f5751c7e265c50da0a01de2d57e4ddf61d6566cd951e4a307157af04",
+  "workspace": {
+    "passed": 490,
+    "failed": 0,
+    "binary": 204,
+    "core": 283,
+    "mock": 3
+  },
+  "e2e": {
+    "passed": 906,
+    "failed": 0,
+    "skipped": [
+      "Monero installed makes native not_installed scenario unavailable",
+      "TUI non-TTY JSON exemption; separately207 actual PTY checks",
+      "robot-docs plain-text exemption; structural contract checked"
+    ]
+  },
+  "strict_clippy": true,
+  "fmt": true,
+  "structural_gates": true,
+  "actual_pty": {
+    "passed": 207,
+    "failed": 0,
+    "scope": "synthetic scratch protocol peers, real PTY and SGR parser; no physical mouse certification"
+  },
+  "native_regtest": {
+    "checks": 23,
+    "report": "native-regtest-qualified.json",
+    "valued_public_network": false,
+    "desktop_delivery": "private failing helper only; native baseline/batch dedup/no-replay verified, no real desktop alert sent"
+  },
+  "native_transport": {
+    "checks": 18,
+    "report": "native-transport-qualified.json",
+    "scope": "real native proxy/TLS/pin configuration acknowledgements and mismatch refusal"
+  },
+  "native_tls": {
+    "report": "native-tls-qualified.json",
+    "untrusted_refused_without_plaintext": true,
+    "trusted_http_over_tls": true,
+    "blockchain_qualified": false
+  },
+  "widget": {
+    "static_passed": 86,
+    "js_model": true,
+    "actual_windowless_policy": true,
+    "installed_live_reload": false
+  },
+  "installation": {
+    "binary_installed": true,
+    "repeat_setup_actions": [
+      "unchanged",
+      "unchanged",
+      "unchanged",
+      "unchanged",
+      "unchanged",
+      "unchanged",
+      "unchanged"
+    ],
+    "desktop_launch_verified": false,
+    "blocker": "Omarchy refuses shell restart while the desktop session is locked"
+  },
+  "remaining_acceptance": [
+    "unlocked installed desktop launch and fresh live widget reload",
+    "physical hardware-wallet acceptance",
+    "valued public-network payment acceptance"
+  ],
+  "build": {
+    "jobs": 2,
+    "shared_target": true,
+    "cleaned": false
+  }
+}

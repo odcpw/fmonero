@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "engine_rpc_version": 65568,
+  "binary_sha256": "e13ebee5f5751c7e265c50da0a01de2d57e4ddf61d6566cd951e4a307157af04",
+  "scope": "isolated native proxy/TLS configuration acknowledgements; no remote contact or certificate handshake",
+  "checks": [
+    "native_seed_restore_preserves_identity_and_opens_wallet",
+    "native_exact_empty_balance",
+    "native_labeled_subaddress_creation",
+    "native_subaddress_validation",
+    "native_address_payment_request_exact_integer_unicode_roundtrip",
+    "native_account_create_rename_select",
+    "native_contact_add_edit_remove",
+    "native_message_sign_verify_tamper_rejection_private_artifact",
+    "native_exact_empty_history_private_export",
+    "native_encrypted_recovery_generation_password_reopen_identity",
+    "native_output_key_image_private_exports",
+    "native_view_only_creation_output_exchange_account_reset",
+    "native_password_change_protected_reopen_identity",
+    "native_owned_proxy_attestation_https_pin_set_daemon_ack_and_mismatch_refusal_no_contact",
+    "restore_refuses_existing_wallet_before_secret_input",
+    "shared_privacy_in_local_app_status",
+    "disabled_closed_notifications_claim_nothing",
+    "owner_service_state_unchanged"
+  ],
+  "elapsed_sec": 4.46,
+  "cleanup_complete": true,
+  "owner_service_state_unchanged": true
+}

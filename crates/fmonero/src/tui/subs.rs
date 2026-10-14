@@ -34,7 +34,21 @@ use super::Msg;
 /// the password nobody zeroes, and a derived `Debug` puts it into any panic message. The
 /// `Debug` below is hand-written and prints the password as `<redacted>`, exactly as §5b's
 /// `BuiltTx::metadata` does.
-pub enum Action {
+pub(super) enum Action {
+    Annotation(super::annotations::Job),
+    Native(Box<super::native::Job>),
+    PrepareTool(super::advanced::Tool),
+    Advanced(super::advanced::Job),
+    Accounts(super::accounts::Job),
+    NewAddressForm {
+        account: u32,
+    },
+    NewAddress {
+        wallet: fmonero_core::wallet_ops::WalletIdentity,
+        account: u32,
+        label: String,
+    },
+    Restore(fmonero_core::restore::RestoreRequest),
     /// → `node_session::up` (§5b), never `units::start`: the §2i single-writer precondition
     /// exists in exactly one place and the TUI's copy would be the one nobody reviews.
     NodeUp,
@@ -44,13 +58,14 @@ pub enum Action {
     /// whose absence means the wallet can never sync (§4.2).
     WalletOpen {
         name: String,
-        password: String,
+        password: fmonero_core::SecretString,
     },
     WalletRefresh {
         start_height: u64,
     },
     /// → `send::build` (§5b). The TUI never calls `build_transfer` itself (§2a.3).
     BuildTx(SendRequest),
+    BuildSweep(send::SweepRequest),
     /// → `send::relay`, with the **same** plan that was displayed (§2a.3).
     Relay(send::Plan),
     // ---- v5.5 -----------------------------------------------------------------
@@ -61,7 +76,7 @@ pub enum Action {
     /// `WalletOpen`'s is.
     WalletCreate {
         name: String,
-        password: String,
+        password: fmonero_core::SecretString,
         language: String,
     },
     /// → `units::ensure_running(wallet.unit)` (§7a.5) — the same function `wallet open` uses,
@@ -98,6 +113,14 @@ pub enum Action {
 impl std::fmt::Debug for Action {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Action::Native(_) => f.write_str("Native(<protected>)"),
+            Action::Annotation(_) => f.write_str("Annotation"),
+            Action::PrepareTool(_) => f.write_str("PrepareTool"),
+            Action::Advanced(_) => f.write_str("Advanced"),
+            Action::Accounts(_) => f.write_str("Accounts"),
+            Action::NewAddressForm { .. } => f.write_str("NewAddressForm"),
+            Action::NewAddress { .. } => f.write_str("NewAddress"),
+            Action::Restore(_) => f.write_str("Restore(<protected>)"),
             Action::NodeUp => f.write_str("NodeUp"),
             Action::NodeDown => f.write_str("NodeDown"),
             Action::WalletOpen { name, .. } => f
@@ -109,6 +132,7 @@ impl std::fmt::Debug for Action {
                 .debug_struct("WalletRefresh")
                 .field("start_height", start_height)
                 .finish(),
+            Action::BuildSweep(_) => f.write_str("BuildSweep"),
             Action::BuildTx(_) => f.write_str("BuildTx"),
             Action::Relay(_) => f.write_str("Relay"),
             Action::WalletCreate { name, language, .. } => f
@@ -141,10 +165,19 @@ impl Action {
     /// The label the status line shows while this runs.
     pub fn label(&self) -> String {
         match self {
+            Action::Native(job) => job.label().into(),
+            Action::Annotation(_) => "Reading or updating wallet annotation".into(),
+            Action::PrepareTool(_) => "Reading wallet identity".into(),
+            Action::Advanced(_) => "Running wallet tool".into(),
+            Action::Accounts(_) => "Updating accounts and contacts".into(),
+            Action::NewAddressForm { .. } => "Reading wallet identity".into(),
+            Action::NewAddress { .. } => "Creating receiving address".into(),
+            Action::Restore(_) => "Restoring wallet".into(),
             Action::NodeUp => "Starting your node".into(),
             Action::NodeDown => "Stopping your node".into(),
             Action::WalletOpen { name, .. } => format!("Opening {name}"),
             Action::WalletRefresh { .. } => "Checking for payments".into(),
+            Action::BuildSweep(_) => "Preparing send-all fee".into(),
             Action::BuildTx(_) => "Checking the fee".into(),
             Action::Relay(_) => "Sending".into(),
             Action::WalletCreate { name, .. } => format!("Creating {name}"),
@@ -160,10 +193,24 @@ impl Action {
     /// The deadline the status line counts against, so `12s / 120s` is honest.
     pub fn deadline_sec(&self, ctx: &Context) -> u64 {
         match self {
+            Action::Native(job) => {
+                if job.held() {
+                    15 * 60
+                } else {
+                    ctx.timeouts.open.as_secs()
+                }
+            }
             Action::NodeUp | Action::NodeDown => ctx.timeouts.unit_probe.as_secs(),
-            Action::WalletOpen { .. } => ctx.timeouts.open.as_secs(),
+            Action::WalletOpen { .. }
+            | Action::Restore(_)
+            | Action::NewAddress { .. }
+            | Action::NewAddressForm { .. }
+            | Action::Accounts(_)
+            | Action::Annotation(_)
+            | Action::PrepareTool(_)
+            | Action::Advanced(_) => ctx.timeouts.open.as_secs(),
             Action::WalletRefresh { .. } => ctx.timeouts.refresh.as_secs(),
-            Action::BuildTx(_) => ctx.timeouts.transfer.as_secs(),
+            Action::BuildTx(_) | Action::BuildSweep(_) => ctx.timeouts.transfer.as_secs(),
             Action::Relay(_) => ctx.timeouts.relay.as_secs(),
             // A create waits on the new wallet's first `set_daemon`/`auto_refresh`, which in
             // remote mode is over the internet — the same deadline `wallet open` uses (§5b.2).
@@ -188,6 +235,7 @@ impl Action {
     /// record is the mechanism that covers it.
     pub fn cancellable(&self) -> bool {
         !matches!(self, Action::Relay(_))
+            && !matches!(self, Action::Native(job) if job.submitting())
     }
 
     /// Would this action explain a wallet-RPC poll that does not answer? The status badge asks, so
@@ -205,7 +253,26 @@ impl Action {
 }
 
 /// What an action produced, in the form the model needs to go on.
-pub enum Outcome {
+pub(super) enum Outcome {
+    AnnotationForm {
+        what: super::Prompt,
+        title: String,
+        field: String,
+        value: String,
+    },
+    Native(super::native::Reply),
+    ToolReady(
+        super::advanced::Tool,
+        fmonero_core::wallet_ops::WalletIdentity,
+    ),
+    Advanced(super::advanced::ResultView),
+    Accounts(super::accounts::Reply),
+    NewAddressForm {
+        wallet: fmonero_core::wallet_ops::WalletIdentity,
+        account: u32,
+    },
+    AddressCreated(fmonero_core::receive::ReceivingAddress),
+    Restored(fmonero_core::restore::Restored),
     /// A note for the status line (node up/down, wallet refresh).
     Note(String),
     /// The wallet that was opened, so the model can reload its screens.
@@ -215,9 +282,10 @@ pub enum Outcome {
     /// The relayed txids, in relay order.
     Relayed(Vec<String>),
     // ---- v5.5 -----------------------------------------------------------------
-    /// The wallet that was created, and the `seed_backup_hint` core printed with it — the SAME
-    /// string the CLI prints, so the modal is not a second wording (§2b.2, §7a.5).
-    Created { name: String, hint: String },
+    /// A successful create opens guided encrypted recovery in the presentation layer.
+    Created {
+        name: String,
+    },
     /// A refreshed list, for the picker to render.
     NodeList(Box<NodeList>),
     /// The probes, in the order the targets were given.
@@ -294,6 +362,34 @@ pub fn execute(
     };
     let run = || -> Result<Outcome, Error> {
         match action {
+            Action::Native(job) => (*job).execute(ctx, cancel).map(Outcome::Native),
+            Action::Annotation(job) => job.execute(ctx),
+            Action::PrepareTool(tool) => {
+                let w = WalletClient::from_ctx(ctx)?;
+                fmonero_core::wallet_ops::identity(ctx, &w)
+                    .map(|identity| Outcome::ToolReady(tool, identity))
+            }
+            Action::Advanced(job) => job.execute(ctx, cancel).map(Outcome::Advanced),
+            Action::Accounts(job) => job.execute(ctx).map(Outcome::Accounts),
+            Action::NewAddressForm { account } => {
+                let w = WalletClient::from_ctx(ctx)?;
+                fmonero_core::wallet_ops::identity(ctx, &w)
+                    .map(|wallet| Outcome::NewAddressForm { wallet, account })
+            }
+            Action::NewAddress {
+                wallet,
+                account,
+                label,
+            } => {
+                let w = WalletClient::from_ctx(ctx)?;
+                fmonero_core::receive::new_address(ctx, &w, &wallet, account, &label)
+                    .map(Outcome::AddressCreated)
+            }
+            Action::Restore(request) => {
+                let ctx = ctx.clone().with_wallet_probe_at_refresh();
+                let w = WalletClient::from_ctx(&ctx)?;
+                fmonero_core::restore::restore(&ctx, &w, request, cancel).map(Outcome::Restored)
+            }
             Action::NodeUp => {
                 let s = node_session::up(ctx, None, cancel)?;
                 Ok(Outcome::Note(if s.already_running {
@@ -309,7 +405,7 @@ pub fn execute(
             Action::WalletOpen { name, password } => {
                 let ctx = ctx.clone().with_wallet_probe_at_refresh();
                 let w = WalletClient::from_ctx(&ctx)?;
-                let opened = wallet_session::open(&ctx, &w, &name, password, cancel)?;
+                let opened = wallet_session::open_secret(&ctx, &w, &name, password, cancel)?;
                 Ok(Outcome::Opened(opened.name))
             }
             Action::WalletRefresh { start_height } => {
@@ -341,6 +437,24 @@ pub fn execute(
                     None => send::NodeGate::Remote,
                 };
                 let plan = send::build(ctx, &w, gate, &req, cancel)?;
+                send::check_max_fee(&plan)?;
+                Ok(Outcome::Built(Box::new(plan)))
+            }
+            Action::BuildSweep(req) => {
+                let w = WalletClient::from_ctx(ctx)?;
+                // No node client in remote mode — `from_ctx` refuses (§2c) — and step 7 is a
+                // bounded `refresh` instead (§2m.3).
+                let n = match fmonero_core::NodeClient::from_ctx(ctx) {
+                    Ok(n) => Some(n),
+                    Err(e) if e.reason() == Some("remote_node") => None,
+                    Err(e) => return Err(e),
+                };
+                let gate = match n.as_ref() {
+                    Some(n) => send::NodeGate::Local(n),
+                    None => send::NodeGate::Remote,
+                };
+                let plan = send::build_sweep(ctx, &w, gate, &req, cancel)?;
+                send::check_max_fee(&plan)?;
                 Ok(Outcome::Built(Box::new(plan)))
             }
             Action::Relay(plan) => {
@@ -360,12 +474,10 @@ pub fn execute(
                 // `create_wallet`, then the last three steps of `wallet_session::open` on the
                 // wallet `create_wallet` left open (`wallet_rpc_server.cpp:3639`). The TUI adds
                 // no step and skips none, which is why this is one core call and not four.
-                let created =
-                    wallet_session::create(&ctx, &w, &name, password, &language, &say, cancel)?;
-                Ok(Outcome::Created {
-                    name: created.name,
-                    hint: created.seed_backup_hint,
-                })
+                let created = wallet_session::create_secret(
+                    &ctx, &w, &name, password, &language, &say, cancel,
+                )?;
+                Ok(Outcome::Created { name: created.name })
             }
             Action::WalletDaemonStart => {
                 let w = WalletClient::from_ctx(ctx)?;
@@ -444,6 +556,7 @@ pub struct ActionSub {
     /// The slot the model owns; `run` moves the action out of it exactly once (§7a).
     pub slot: Arc<Mutex<Option<Action>>>,
     pub announce: Arc<Mutex<Vec<String>>>,
+    pub cancel: CancelToken,
 }
 
 impl Subscription<Msg> for ActionSub {
@@ -455,7 +568,7 @@ impl Subscription<Msg> for ActionSub {
         let Some(action) = self.slot.lock().ok().and_then(|mut s| s.take()) else {
             return; // an empty slot: the runtime restarted an unchanged subscription
         };
-        let cancel = CancelToken::new();
+        let cancel = self.cancel.clone();
         let done = Arc::new(AtomicBool::new(false));
         let watcher = if action.cancellable() {
             let watched = cancel.clone();
@@ -479,7 +592,7 @@ impl Subscription<Msg> for ActionSub {
         if let Some(w) = watcher {
             let _ = w.join();
         }
-        let _ = tx.send(Msg::ActionDone(Box::new(outcome)));
+        let _ = tx.send(Msg::ActionFinished(self.id, Box::new(outcome)));
     }
 }
 
@@ -491,7 +604,7 @@ mod tests {
     fn debugging_an_open_never_prints_the_password() {
         let a = Action::WalletOpen {
             name: "w".into(),
-            password: "hunter2".into(),
+            password: fmonero_core::SecretString::new("hunter2".into()).unwrap(),
         };
         let shown = format!("{a:?}");
         assert!(!shown.contains("hunter2"), "{shown}");
@@ -527,7 +640,7 @@ mod tests {
         assert_eq!(
             Action::WalletOpen {
                 name: "main".into(),
-                password: String::new()
+                password: fmonero_core::SecretString::empty()
             }
             .label(),
             "Opening main"

@@ -203,14 +203,24 @@ impl Pipes {
 
 /// Read everything currently buffered on `fd`. Returns true when the pipe is at EOF
 /// (or is unreadable, which we treat the same way — there is nothing more to get).
+const MAX_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
+
 fn drain_fd(fd: libc::c_int, buf: &mut Vec<u8>) -> bool {
     let mut chunk = [0u8; 16 * 1024];
-    loop {
+    // Return to the supervisor even if a producer never stops writing, so its
+    // deadline/cancel checks cannot be starved by a continuously readable pipe.
+    for _ in 0..64 {
         let n = unsafe {
             libc::read(fd, chunk.as_mut_ptr() as *mut libc::c_void, chunk.len()) as isize
         };
         if n > 0 {
-            buf.extend_from_slice(&chunk[..n as usize]);
+            let keep = (MAX_OUTPUT_BYTES + 1)
+                .saturating_sub(buf.len())
+                .min(n as usize);
+            buf.extend_from_slice(&chunk[..keep]);
+            if buf.len() > MAX_OUTPUT_BYTES {
+                return true;
+            }
             continue;
         }
         if n == 0 {
@@ -221,6 +231,7 @@ fn drain_fd(fd: libc::c_int, buf: &mut Vec<u8>) -> bool {
             _ => true,                                       // broken/invalid: stop reading
         };
     }
+    false
 }
 
 /// Start `argv` and **do not wait for it**: stdout into `out`, no stdin, stderr discarded,
@@ -322,6 +333,7 @@ pub fn run_with_deadline(
 
     let mut timed_out = false;
     let mut cancelled = false;
+    let mut output_limited = false;
     let status = loop {
         match child.try_wait() {
             Ok(Some(st)) => break st,
@@ -333,7 +345,9 @@ pub fn run_with_deadline(
                 .with_detail(e.to_string()))
             }
         }
-        if cancel.map(|c| c.is_cancelled()).unwrap_or(false) {
+        if pipes.stdout.len() > MAX_OUTPUT_BYTES || pipes.stderr.len() > MAX_OUTPUT_BYTES {
+            output_limited = true;
+        } else if cancel.map(|c| c.is_cancelled()).unwrap_or(false) {
             cancelled = true;
         } else if started.elapsed() < timeout {
             pipes.pump(POLL);
@@ -381,6 +395,12 @@ pub fn run_with_deadline(
     if cancelled {
         return Err(Error::Interrupted);
     }
+    if output_limited || stdout.len() > MAX_OUTPUT_BYTES || stderr.len() > MAX_OUTPUT_BYTES {
+        return Err(Error::upstream(
+            "The external program exceeded its output limit and was stopped.",
+        )
+        .with_reason("output_limit"));
+    }
     Ok(Output {
         code: status.code(),
         signal: status.signal(),
@@ -398,6 +418,15 @@ mod tests {
 
     fn secs(f: f64) -> Duration {
         Duration::from_secs_f64(f)
+    }
+
+    #[test]
+    fn excessive_child_output_is_bounded_and_reported() {
+        let size = (MAX_OUTPUT_BYTES + 1).to_string();
+        let error = run_with_deadline(&["head", "-c", &size, "/dev/zero"], secs(5.0), None)
+            .err()
+            .unwrap();
+        assert_eq!(error.reason(), Some("output_limit"));
     }
 
     #[test]

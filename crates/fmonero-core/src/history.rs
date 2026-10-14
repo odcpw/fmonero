@@ -716,3 +716,30 @@ mod locked {
         assert_eq!(super::confirmations(&unconfirmed, Some(3_500_000)), Some(0));
     }
 }
+
+/// Update the reviewed note under the shared wallet/payment guard. An edited or
+/// replaced row requires a fresh review; callers must not acquire another send lock.
+pub fn set_note(
+    ctx: &crate::Context,
+    w: &crate::WalletClient,
+    wallet: &crate::wallet_ops::WalletIdentity,
+    txid: &str,
+    account: u32,
+    expected_note: &str,
+    note: &str,
+) -> Result<(), crate::Error> {
+    crate::wallet_ops::text(note)?;
+    if txid.len() != 64 || !txid.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(crate::Error::usage(
+            "Choose a complete transaction identifier.",
+        ));
+    }
+    let _lock = crate::wallet_ops::guard(ctx, w, wallet)?;
+    let row = w
+        .get_transfer_by_txid(txid, account)?
+        .ok_or_else(crate::wallet_ops::stale)?;
+    if row.txid != txid || row.subaddr_index.major != account || row.note != expected_note {
+        return Err(crate::wallet_ops::stale());
+    }
+    w.set_tx_notes(&[txid.to_owned()], &[note.to_owned()])
+}

@@ -6,6 +6,56 @@
 use crate::context::Context;
 use crate::error::Error;
 
+/// Validate a basename before any backend request; filesystem metadata only.
+pub fn validate_name(name: &str) -> Result<(), Error> {
+    if name.is_empty()
+        || name.len() > 128
+        || name.starts_with('.')
+        || name.ends_with(".keys")
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_- .".contains(&b))
+        || name.trim() != name
+    {
+        return Err(Error::usage(
+            "Use a wallet name of 1 to 128 letters, digits, spaces, underscores or dashes.",
+        )
+        .with_reason("bad_args")
+        .with_hint("fmonero wallet list"));
+    }
+    Ok(())
+}
+
+pub fn require_new(ctx: &Context, name: &str) -> Result<(), Error> {
+    validate_name(name)?;
+    for file in [
+        name.to_owned(),
+        format!("{name}.keys"),
+        format!("{name}.address.txt"),
+    ] {
+        let path = ctx.settings.wallet.dir.join(file);
+        match std::fs::symlink_metadata(&path) {
+            Ok(_) => {
+                return Err(
+                    Error::safety("A wallet already uses that name. Choose a new name.")
+                        .with_reason("wallet_exists")
+                        .with_hint("fmonero wallet list"),
+                )
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(Error::io(
+                    "inspect",
+                    "the new wallet destination",
+                    &path,
+                    &e,
+                ))
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The `*.keys` basenames in `settings.wallet.dir`, sorted.
 ///
 /// **No wallet bytes are read** (§2b.6): fmonero reads the *directory* and nothing else.

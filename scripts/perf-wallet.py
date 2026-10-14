@@ -84,6 +84,7 @@ with tempfile.TemporaryDirectory(prefix='fmonero-perf-') as directory:
     report = {'schema':1, 'binary_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),
               'clock':'perf_counter', 'scope':'isolated warm CLI, no owner wallet or service',
               'percentile_note':'p95 of the measured sample, not a production latency guarantee',
+              'rss_note':'wait4 child high-water RSS includes process-spawn overhead; it is not a heap/allocation profile',
               'results':results}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2)+'\n')

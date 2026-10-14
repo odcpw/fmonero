@@ -509,6 +509,19 @@ pub fn human(out: &Out, label: &str, value: &serde_json::Value) {
         "node list" => return nodes_human(out, value),
         "node info" => return node_info_human(out, value),
         "node log" => return log_human(out, value),
+        "wallet logs" => {
+            if let Some(reason) = value["unavailable"].as_str() {
+                out.line(reason);
+            }
+            if let Some(lines) = value["lines"].as_array() {
+                for line in lines {
+                    if let Some(line) = line.as_str() {
+                        out.row(line);
+                    }
+                }
+            }
+            return;
+        }
         "settings list" => return settings_human(out, value),
         "setup" => return setup_human(out, value),
         // v5.2: the two mode commands share one key set and therefore one renderer (§5c).
@@ -538,11 +551,52 @@ pub fn human(out: &Out, label: &str, value: &serde_json::Value) {
             return;
         }
         "wallet create" => return wallet_create_human(out, value),
+        "launch" => {
+            out.line("Opening fmonero…");
+            return;
+        }
+        "wallet restore" => {
+            out.line(match value["state"].as_str() {
+                Some("ready") => "Wallet restored and opened.",
+                Some("needs_setup") => "Wallet restored. Open it again to finish setup.",
+                _ => "Restoration outcome is unknown. Check the wallet list before trying again.",
+            });
+            if let Some(warning) = value["warning"].as_str() {
+                out.line(warning);
+            }
+            return;
+        }
+        "wallet request" => {
+            if let Some(uri) = value["uri"].as_str() {
+                out.row(uri);
+            }
+            out.line("Review the address, amount and fee before sending a payment.");
+            return;
+        }
         "wallet validate" => return validate_human(out, value),
         "wallet refresh" => return refresh_human(out, value),
         "wallet notes get" | "wallet notes set" => return notes_human(out, value),
         "wallet book list" => return book_list_human(out, value),
-        "wallet book add" | "wallet book remove" => return book_change_human(out, label, value),
+        "wallet book add" | "wallet book remove" | "wallet book edit" => {
+            return book_change_human(out, label, value)
+        }
+        "wallet tools" if value["good"].is_boolean() => {
+            let valid = value["good"].as_bool() == Some(true);
+            out.line(out.paint(
+                if valid {
+                    "Signature or proof is valid."
+                } else {
+                    "Signature or proof is invalid."
+                },
+                if valid { Paint::Green } else { Paint::Red },
+            ));
+            for key in ["received_xmr", "total_xmr", "spent_xmr"] {
+                if let Some(amount) = value[key].as_str() {
+                    out.line(format!("{key}: {amount} XMR"));
+                }
+            }
+            return;
+        }
         "wallet use-node" => return set_daemon_human(out, value),
         "wallet clear-pending" => return clear_pending_human(out, value),
         "settings get" => return settings_get_human(out, value),
@@ -1992,6 +2046,9 @@ fn validate_human(out: &Out, v: &serde_json::Value) {
         return;
     }
     out.line(out.paint("That is a Monero address.", Paint::Green));
+    if v["validation_source"].as_str() == Some("offline_checksum") {
+        out.line("Its checksum was verified locally, without the wallet service.");
+    }
     if v["integrated"] == serde_json::Value::Bool(true) {
         out.line("It carries a payment id inside it.");
     }

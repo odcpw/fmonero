@@ -242,10 +242,8 @@ impl std::str::FromStr for NodeMode {
 ///
 /// The wire spellings are epee's three and no others (`net_ssl.cpp:654-665`); they are also the
 /// three values of `--daemon-ssl` (`wallet2.cpp:253`), so one type serves the unit render and the
-/// `set_daemon` body. [`SslSupport::Enabled`] is never constructed by fmonero in v0.1: it throws
-/// at process start without a CA file, a fingerprint list or `--daemon-ssl-allow-any-cert`
-/// (`wallet2.cpp:416-432`), all three of which §0 cuts. It is a variant so that adding pinned TLS
-/// in v0.2 is a settings key rather than a new type.
+/// `set_daemon` body. Required TLS uses an explicit CA bundle or certificate fingerprint,
+/// validated by `transport::DaemonConnection` before startup or live configuration.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SslSupport {
@@ -277,6 +275,10 @@ pub const WALLET_UNIT: &str = "fmonero-wallet-rpc.service";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct NodeSettings {
+    pub tls: crate::transport::TlsPolicy,
+    pub ca_file: Option<PathBuf>,
+    pub fingerprint: Option<String>,
+    pub proxy: Option<String>,
     pub network: Network,
     /// §2m.1. `local` (the default) or `remote`.
     pub mode: NodeMode,
@@ -331,6 +333,10 @@ pub struct TimeoutSettings {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TuiSettings {
+    /// Shared presentation policy; reading it never contacts a daemon.
+    pub privacy: bool,
+    /// Explicit opt-in; candidates are displayed only while the wallet is active.
+    pub notifications: bool,
     pub poll_ms: u64,
     pub tick_ms: u64,
     /// v5.5, §7a.2: mouse capture. `false` starts the program with
@@ -352,6 +358,10 @@ pub struct Settings {
 impl Default for NodeSettings {
     fn default() -> Self {
         NodeSettings {
+            tls: crate::transport::TlsPolicy::Auto,
+            ca_file: None,
+            fingerprint: None,
+            proxy: None,
             network: Network::Mainnet,
             mode: NodeMode::Local,
             remote: String::new(),
@@ -398,11 +408,21 @@ impl Default for TimeoutSettings {
 impl Default for TuiSettings {
     fn default() -> Self {
         TuiSettings {
+            privacy: false,
+            notifications: false,
             poll_ms: 1000,
             tick_ms: 120,
             mouse: true,
         }
     }
+}
+
+/// Save the shared presentation policy without contacting wallet or node services.
+/// Reload first so a long-lived TUI does not overwrite unrelated newer settings.
+pub fn set_privacy(ctx: &crate::Context, enabled: bool) -> Result<(), Error> {
+    let mut settings = Settings::load(&ctx.paths)?;
+    settings.tui.privacy = enabled;
+    settings.save(ctx)
 }
 
 /// `(key, default, one-line doc)` — the §4 table, and the thing `settings list` prints.
@@ -561,6 +581,36 @@ const KEY_TABLE: &[(&str, &str, &str)] = &[
         "true",
         "true lets you click tabs, rows, fields and buttons. false gives the terminal its own \
          text selection back.",
+    ),
+    (
+        "tui.privacy",
+        "false",
+        "Hide wallet and payment details in the TUI and widget.",
+    ),
+    (
+        "tui.notifications",
+        "false",
+        "Opt in to generic incoming-payment desktop notifications while the wallet is active.",
+    ),
+    (
+        "node.tls",
+        "auto",
+        "Remote TLS policy: auto, required or disabled. HTTPS always requires TLS.",
+    ),
+    (
+        "node.ca_file",
+        "",
+        "Optional certificate authority file; mutually exclusive with fingerprint.",
+    ),
+    (
+        "node.fingerprint",
+        "",
+        "Optional SHA-256 certificate fingerprint; mutually exclusive with CA file.",
+    ),
+    (
+        "node.proxy",
+        "",
+        "Optional SOCKS proxy IP:port, used for wallet connections and node discovery/probes.",
     ),
 ];
 
@@ -915,6 +965,9 @@ impl Settings {
         s.node.data_dir = expand_tilde(&s.node.data_dir, &paths.home);
         s.node.log_file = expand_tilde(&s.node.log_file, &paths.home);
         s.wallet.dir = expand_tilde(&s.wallet.dir, &paths.home);
+        if let Some(path) = &s.node.ca_file {
+            s.node.ca_file = Some(expand_tilde(path, &paths.home));
+        }
         Ok(s)
     }
 
@@ -925,6 +978,15 @@ impl Settings {
             "node.mode" => self.node.mode.to_string(),
             "node.remote" => self.node.remote.clone(),
             "node.remote_trusted" => self.node.remote_trusted.to_string(),
+            "node.tls" => self.node.tls.to_string(),
+            "node.ca_file" => self
+                .node
+                .ca_file
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            "node.fingerprint" => self.node.fingerprint.clone().unwrap_or_default(),
+            "node.proxy" => self.node.proxy.clone().unwrap_or_default(),
             "node.url" => self.node.url.clone(),
             "node.unit" => self.node.unit.clone(),
             "node.data_dir" => self.node.data_dir.display().to_string(),
@@ -947,6 +1009,8 @@ impl Settings {
             "tui.poll_ms" => self.tui.poll_ms.to_string(),
             "tui.tick_ms" => self.tui.tick_ms.to_string(),
             "tui.mouse" => self.tui.mouse.to_string(),
+            "tui.privacy" => self.tui.privacy.to_string(),
+            "tui.notifications" => self.tui.notifications.to_string(),
             other => return Err(unknown_key(other, false)),
         })
     }
@@ -1022,6 +1086,38 @@ impl Settings {
                 }
             }
             "node.remote_trusted" => self.node.remote_trusted = parse_bool(key, value)?,
+            "node.tls" => self.node.tls = value.parse()?,
+            "node.ca_file" => {
+                if !value.is_empty() && self.node.fingerprint.is_some() {
+                    return Err(Error::usage(
+                        "Clear node.fingerprint before choosing a CA file.",
+                    ));
+                }
+                self.node.ca_file = if value.is_empty() {
+                    None
+                } else {
+                    Some(parse_dir(key, value)?)
+                };
+            }
+            "node.fingerprint" => {
+                if !value.is_empty() && self.node.ca_file.is_some() {
+                    return Err(Error::usage(
+                        "Clear node.ca_file before choosing a fingerprint.",
+                    ));
+                }
+                self.node.fingerprint = if value.is_empty() {
+                    None
+                } else {
+                    Some(crate::transport::normalize_fingerprint(value)?)
+                };
+            }
+            "node.proxy" => {
+                self.node.proxy = if value.is_empty() {
+                    None
+                } else {
+                    Some(crate::transport::validate_proxy(value)?)
+                }
+            }
             "node.url" => {
                 crate::rpc::require_loopback(value)?;
                 self.node.url = value.to_string();
@@ -1072,6 +1168,8 @@ impl Settings {
             "tui.poll_ms" => self.tui.poll_ms = parse_num(key, value, 100u64, 60_000u64)?,
             "tui.tick_ms" => self.tui.tick_ms = parse_num(key, value, 20u64, 5_000u64)?,
             "tui.mouse" => self.tui.mouse = parse_bool(key, value)?,
+            "tui.privacy" => self.tui.privacy = parse_bool(key, value)?,
+            "tui.notifications" => self.tui.notifications = parse_bool(key, value)?,
             other => return Err(unknown_key(other, true)),
         }
         Ok(())
@@ -1178,10 +1276,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_key_table_is_the_twenty_six_keys_of_the_design() {
-        // Twenty before v5.2; §2m.1's three remote-mode keys made it twenty-three; v5.5 adds
-        // node.remote_probe_sec, wallet.autostart and tui.mouse (§4, §5b.4 row 5).
-        assert_eq!(Settings::KEYS.len(), 26);
+    fn every_setting_roundtrips_and_transport_privacy_migrate() {
+        let keys: std::collections::BTreeSet<_> =
+            Settings::KEYS.iter().map(|(key, _, _)| *key).collect();
+        assert_eq!(keys.len(), Settings::KEYS.len(), "no duplicate keys");
+        for key in [
+            "node.tls",
+            "node.ca_file",
+            "node.fingerprint",
+            "node.proxy",
+            "tui.privacy",
+        ] {
+            assert!(keys.contains(key));
+        }
+        let old: Settings = toml::from_str(
+            "[tui]\nmouse=false\n[node]\nmode='remote'\nremote='https://node.example:18081'\n",
+        )
+        .unwrap();
+        assert!(!old.tui.privacy);
+        assert!(!old.tui.mouse);
+        assert_eq!(old.node.tls, crate::transport::TlsPolicy::Auto);
+        assert!(old.node.proxy.is_none());
+        assert!(old.node.ca_file.is_none());
+        assert!(old.node.fingerprint.is_none());
+        let connection =
+            crate::transport::DaemonConnection::for_address(&old.node, &old.node.remote, false)
+                .unwrap();
+        assert_eq!(
+            connection.ssl(),
+            SslSupport::Enabled,
+            "legacy HTTPS now requires TLS"
+        );
         let s = Settings::default();
         for (key, _, doc) in Settings::KEYS {
             assert!(s.get(key).is_ok(), "{key} must be readable");

@@ -1,6 +1,6 @@
 //! The **only** send orchestrator (DESIGN.md §2a, §5b).
 //!
-//! Types frozen at the Phase 1a gate; bodies are Phase 1b's (§8).
+//! Guarded multi-transaction preparation and explicit relay with durable uncertainty.
 //!
 //! [`build`] and [`relay`] are the only two functions in the codebase that may call
 //! `WalletClient::build_transfer`, `build_sweep_all` or `relay_tx`, and `relay` is the only
@@ -106,7 +106,7 @@ pub struct TransferRequest {
 
 impl TransferRequest {
     /// The `transfer` body for one recipient (§1b.4, §2a.8).
-    fn for_send(req: &SendRequest, dest: &str) -> TransferRequest {
+    pub(crate) fn for_send(req: &SendRequest, dest: &str) -> TransferRequest {
         TransferRequest {
             destinations: Some(vec![WireDest {
                 amount: req.amount,
@@ -115,8 +115,8 @@ impl TransferRequest {
             address: None,
             account_index: req.account_index,
             priority: req.priority,
-            get_tx_key: Some(false),
-            get_tx_keys: None,
+            get_tx_key: None,
+            get_tx_keys: Some(false),
             do_not_relay: true,
             get_tx_hex: false,
             get_tx_metadata: true,
@@ -187,6 +187,7 @@ pub struct Plan {
     /// exactly as long as the plan does, so a discarded plan, a `--dry-run` and a crash all
     /// release it with nothing to clean up.
     _lock: std::fs::File,
+    wallet_fingerprint: (Option<(String, crate::NetType)>, String),
 }
 
 impl Plan {
@@ -260,34 +261,23 @@ pub fn build(
     check_recipient(ctx, w, &dest)?;
     require_node_current(ctx, w, gate, cancel)?;
     // 8. The build, once, with do_not_relay (§2a.2, §2a.3).
-    let tx = w.build_transfer(&TransferRequest::for_send(req, &dest), cancel)?;
-    // **8a. The amount that was built must be the amount that was asked for** (round 4, S2).
-    //
-    // Every screen downstream of here renders `plan.total_amount` — the wallet service's own
-    // reply — and nothing compared it with `req.amount`, so the confirm a person types `send`
-    // into could show a different figure from the form he typed it on, in one frame, with
-    // nothing flagging the difference. A single-destination `transfer` returns the sum of its
-    // destinations (`wallet_rpc_server.cpp`'s `single_transfer_response.amount`), so for this
-    // request the two are equal or something is wrong with the answer — and §2a's rule is that
-    // fmonero refuses rather than sends what it cannot explain. Exit 3, before `--yes` is even
-    // consulted, and the message names both figures because which one is wrong is not ours to
-    // guess.
-    if tx.amount != req.amount {
+    let wallet_fingerprint = (state::last_open(ctx)?, w.get_address(0)?.primary);
+    let txs = w.build_transfer_split(&TransferRequest::for_send(req, &dest), cancel)?;
+    let (total_amount, total_fee, total_weight) = totals(&txs)?;
+    if total_amount != req.amount {
         return Err(Error::safety(format!(
-            "You asked to send {} XMR and the wallet service prepared {} XMR. Nothing has been \
-             sent.",
+            "You asked to send {} XMR and Monero prepared {} XMR. Nothing was sent.",
             req.amount.to_xmr_string(),
-            tx.amount.to_xmr_string()
+            total_amount.to_xmr_string()
         ))
         .with_reason("amount_mismatch")
-        .with_action("Press Esc, then check the amount and try again.")
         .with_hint("fmonero wallet balance"));
     }
     let plan = Plan {
-        total_amount: tx.amount,
-        total_fee: tx.fee,
-        total_weight: tx.weight,
-        txs: vec![tx],
+        total_amount,
+        total_fee,
+        total_weight,
+        txs,
         dest,
         account_index: req.account_index,
         priority: req.priority,
@@ -295,6 +285,7 @@ pub fn build(
         note: req.note.clone(),
         max_fee: req.max_fee,
         _lock: lock,
+        wallet_fingerprint,
     };
     // Step 9, `--max-fee`, is `check_max_fee(&plan)` in the caller — before its `--yes` check,
     // so a no-`--yes` run with `--max-fee` still says so, and with the plan in hand so §5c's
@@ -316,15 +307,9 @@ pub fn build_sweep(
     let dest = resolve_dest(w, &req.dest)?;
     check_recipient(ctx, w, &dest)?;
     require_node_current(ctx, w, gate, cancel)?;
+    let wallet_fingerprint = (state::last_open(ctx)?, w.get_address(0)?.primary);
     let txs = w.build_sweep_all(&TransferRequest::for_sweep(req, &dest), cancel)?;
-    let mut total_amount = Piconero(0);
-    let mut total_fee = Piconero(0);
-    let mut total_weight = 0u64;
-    for tx in &txs {
-        total_amount = total_amount.checked_add(tx.amount)?;
-        total_fee = total_fee.checked_add(tx.fee)?;
-        total_weight = total_weight.saturating_add(tx.weight);
-    }
+    let (total_amount, total_fee, total_weight) = totals(&txs)?;
     let plan = Plan {
         txs,
         total_amount,
@@ -337,6 +322,7 @@ pub fn build_sweep(
         note: None,
         max_fee: req.max_fee,
         _lock: lock,
+        wallet_fingerprint,
     };
     // Step 9 is `check_max_fee(&plan)` in the caller, as in `build` above (§2a.2, §5c).
     Ok(plan)
@@ -371,6 +357,9 @@ pub fn relay(
     // The enforcing gate: the caller checked it immediately after the build, so a caller that
     // built a plan by other means still cannot relay past it (§2a.2).
     check_max_fee(&plan)?;
+    if (state::last_open(ctx)?, w.get_address(0)?.primary) != plan.wallet_fingerprint {
+        return Err(crate::wallet_ops::stale());
+    }
     if cancel.is_cancelled() {
         return Err(Error::Interrupted);
     }
@@ -409,7 +398,27 @@ pub fn relay(
         match w.relay_tx(&tx.metadata) {
             Ok(hash) if hash == tx.txid => {
                 relayed.push(hash.clone());
-                state::mark_relayed(ctx, &hash)?;
+                if let Err(why) = state::mark_relayed(ctx, &hash) {
+                    // The initial whole-batch record was durable before any relay.
+                    // Keep it (or its visible replacement) and stop immediately:
+                    // losing the acknowledgement across a crash must never cause
+                    // us to repeat the already accepted payment or send the rest.
+                    return Err(Error::failure(format!(
+                        "The wallet accepted {} of {total} payments, but fmonero could not \
+                         confirm that their updated payment record is safely stored. \
+                         Money may already have moved. Do not send it again; the pending \
+                         record has been kept for inspection.",
+                        relayed.len()
+                    ))
+                    .with_detail(format!(
+                        "{why}; {}; acknowledged: {}",
+                        why.detail().unwrap_or_default(),
+                        relayed.join(", ")
+                    ))
+                    .with_reason("pending_send")
+                    .with_hint("fmonero wallet history --limit 5   # inspect before any further payment")
+                    .with_action("Inspect wallet history and the pending record before any further payment. Do not send it again."));
+                }
             }
             Ok(hash) => {
                 // §2a.9: the entry is NOT marked relayed, and this is the one exit-1 path
@@ -493,7 +502,7 @@ pub fn relay(
 /// entry check and the wallet-daemon probe, in that order and no other — the order is what
 /// decides the exit code, and it lives here rather than in `build` and `build_sweep`
 /// separately so the two cannot drift.
-fn preflight(
+pub(crate) fn preflight(
     ctx: &Context,
     w: &WalletClient,
     dest: &str,
@@ -567,7 +576,7 @@ fn resolve_record(ctx: &Context, w: &WalletClient) -> Result<Option<String>, Err
 /// Step 5a (§2a.1, §4): one `get_address_book` on the open wallet, matched
 /// case-insensitively against `description`. The resolved **address** — never the label — is
 /// what everything downstream carries.
-fn resolve_dest(w: &WalletClient, dest: &str) -> Result<String, Error> {
+pub(crate) fn resolve_dest(w: &WalletClient, dest: &str) -> Result<String, Error> {
     let Some(label) = dest.strip_prefix('@') else {
         return Ok(dest.to_string());
     };
@@ -603,7 +612,7 @@ fn resolve_dest(w: &WalletClient, dest: &str) -> Result<String, Error> {
 /// Step 6 (§2a.6): `validate_address { any_net_type: true, allow_openalias: false }`, then the
 /// nettype check against the **wallet's own** nettype — never against `settings.node.network`,
 /// which can disagree with the running daemon after a hand-edited config.
-fn check_recipient(ctx: &Context, w: &WalletClient, dest: &str) -> Result<(), Error> {
+pub(crate) fn check_recipient(ctx: &Context, w: &WalletClient, dest: &str) -> Result<(), Error> {
     let check = w.validate_address(dest)?;
     if !check.valid {
         return Err(
@@ -651,7 +660,7 @@ pub enum NodeGate<'a> {
 
 /// The one implementation of step 7, switching on the gate. Called by [`build`] and
 /// [`build_sweep`] and by nothing else.
-fn require_node_current(
+pub(crate) fn require_node_current(
     ctx: &Context,
     w: &WalletClient,
     gate: NodeGate<'_>,
@@ -844,6 +853,11 @@ fn announce_line(plan: &Plan) -> String {
 /// that relayed would say "not found" for a transaction that really was broadcast (§2a.4). One
 /// check, one message, three callers — the arrangement §2a.3 asks for.
 pub fn refuse_if_send_in_flight(ctx: &Context) -> Result<(), Error> {
+    if crate::native_tx::pending(ctx)?.is_some() {
+        return Err(Error::safety("A native submission may already have sent payments. Inspect its pending record and wallet history before starting another payment.")
+        .with_reason("pending_send").with_hint("fmonero wallet tools offline pending"));
+    }
+
     let Some(record) = state::pending_send(ctx)? else {
         return Ok(());
     };
@@ -1010,6 +1024,27 @@ fn short(address: &str) -> String {
         return address.to_string();
     }
     format!("{}…{}", &address[..10], &address[address.len() - 6..])
+}
+
+/// Check every monetary/weight sum; saturation would display a false review.
+pub(crate) fn totals(txs: &[BuiltTx]) -> Result<(Piconero, Piconero, u64), Error> {
+    let mut amount = Piconero(0);
+    let mut fee = Piconero(0);
+    let mut weight = 0u64;
+    for tx in txs {
+        amount = amount.checked_add(tx.amount)?;
+        fee = fee.checked_add(tx.fee)?;
+        weight = weight.checked_add(tx.weight).ok_or_else(|| {
+            Error::upstream("Prepared payment weights overflow their supported range.")
+        })?;
+    }
+    Ok((amount, fee, weight))
+}
+impl Drop for BuiltTx {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.metadata.zeroize();
+    }
 }
 
 #[cfg(test)]
@@ -1248,7 +1283,8 @@ mod tests {
         };
         let wire = serde_json::to_value(TransferRequest::for_send(&req, &req.dest)).unwrap();
         assert_eq!(wire["destinations"][0]["amount"], 10_000_000_000u64);
-        assert_eq!(wire["get_tx_key"], false);
+        assert_eq!(wire["get_tx_keys"], false);
+        assert!(wire.get("get_tx_key").is_none());
         for forbidden in [
             "address",
             "subaddr_indices_all",

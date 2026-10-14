@@ -18,6 +18,23 @@ function parseJson(raw) {
   }
 }
 
+// Plain-text external UI sinks also need control/markup neutralization when passed
+// to Omarchy components whose own Text implementation is outside this plugin.
+function safeText(value) {
+  return String(value || "").slice(0, 4096)
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-?]*[ -\/]*[@-~]/g, "")
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "")
+    .replace(/</g, "‹").replace(/>/g, "›")
+}
+
+function actionLine(progress, localError, lastError, privacy, failed) {
+  var error = String(localError || lastError || "")
+  if (privacy && ((failed && progress) || (!progress && error)))
+    return "A problem needs attention. Open fmonero to review it."
+  return safeText(progress || error)
+}
+
 // A Status document (DESIGN.md §5), or a marker the panel renders as "not answering".
 // `ok === true` plus a `node` object is the gate for every rendered value (§6.3).
 function parseStatus(raw) {

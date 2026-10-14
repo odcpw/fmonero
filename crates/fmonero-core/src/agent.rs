@@ -14,122 +14,25 @@ use crate::error::{EXIT_CODES, REASONS};
 use crate::settings::Settings;
 use crate::status::WARNING_IDS;
 
-/// What this build actually is. `version` is the crate version; this names the phase, so a
-/// `capabilities` dump can never be mistaken for a finished tool.
-pub const BUILD_STAGE: &str = "phase-4-verified-and-fixed";
+/// This build's scope and evidence, kept with the machine contract.
+pub const BUILD_STAGE: &str = "wallet-workflows-0.2";
 
-/// **What `fmonero version` tells a person**, in the register §2o asks for, and honest about the
-/// same thing [`BUILD_NOTE`] is honest about.
-///
-/// The round-4 reader's sixth serious item was that `version` printed `BUILD_NOTE` — fifty lines
-/// written for an agent, carrying nine `reason` ids, five section numbers, `monerod`,
-/// `monero-wallet-rpc`, `RPC`, `ProgramSimulator` and `crates/fmonero-mock` — under its three JSON
-/// keys as row labels. `BUILD_NOTE` is the machine's answer and is unchanged; this is the person's.
-/// It says the two things a person needs from a version command: how much of this has been seen
-/// working, and what has never been tried.
-///
-/// Both constants are in one file so they cannot drift: a claim added to one has to be reconciled
-/// with the other in the same edit.
-pub const BUILD_SUMMARY: &str = "\
-This is not a finished program, and it says so where it matters.
+pub const BUILD_SUMMARY: &str = "Wallet workflows 0.2: restore, labeled receiving addresses, payment requests, accounts, contacts, live logs, privacy, maintenance and advanced wallet tools.
 
-What has been seen working, on this machine and on a real wallet holding nothing: how things are, \
-your wallets, opening and closing one, the balance, your addresses, your payments, checking for \
-new blocks, the address book, notes, the settings, the doctor, the bar widget, and every screen of \
-the app, with your own node and with a public node someone else runs.
+Qualified with isolated software tests and real Monero 0.18.5.3 scratch wallets. Native restore, message signatures, encrypted recovery, view-only creation, artifact exchange and password reopening have passed. See docs/QUALIFICATION.md for the current evidence. Public-network payments with valued funds and physical hardware-wallet operation remain unqualified.";
 
-What has never happened: no payment has ever been sent from this version. Sending has only ever \
-been tried against a stand-in that answers the way a wallet does. Until that changes, treat a send \
-as untested, and send nothing you could not lose.";
+// copy-exempt-begin: BUILD_NOTE is the machine verification contract, not product UI copy.
+pub const BUILD_NOTE: &str = "GREEN — local checksum/URI/integer contracts, protected input, local status/presentation, bounded artifacts/logs and plugin structural checks are exercised by deterministic tests. Workspace tests, real PTY/QML checks and installation results are recorded in docs/QUALIFICATION.md with their scope.
 
-/// The §4b summary, in prose, and honest about the one thing that matters: **no build has ever
-/// broadcast a transaction.** Since 2026-09-17 one build *has* driven a real `monero-wallet-rpc`
-/// against a real public node, on a scratch wallet with no funds — that is §4b's LIVE class and it
-/// is named below as such. A local `monerod` has been started here exactly once, for thirty
-/// seconds on 2026-09-19, by a verification sandbox that missed its own `systemctl` fixture
-/// (DECISIONS: V18); it measured nothing, so every local-node row stays RED.
-// copy-exempt-begin: BUILD_NOTE is the machine's §4b answer, read by an agent through
-// `version --json` and never printed to a person — `BUILD_SUMMARY` above is the person's half.
-pub const BUILD_NOTE: &str = "\
-Integrated build (DESIGN.md §8, Phases 0 to 3 merged, reviewed and fixed in Phase 4, verified \
-by Phase 4's verifier on 2026-09-17, and the three defects that verification found fixed the \
-same day against design brief v5.1). What has actually been observed working:
+AMBER — protocol fixtures exercise exact request shapes, guards, split/partial/uncertain relay and injected directory durability failures. Real isolated Monero 0.18.5.3 wallets exercise seed restore, labeled subaddresses, account/contact changes, exact payment URIs, message signing and tamper rejection, encrypted recovery/password reopen, view-only creation, output/key-image export and password change. Scratch test results prove only those workflows and inputs.
 
-GREEN — verified end to end on a machine with no Monero installed: status with both daemons \
-absent, wallet list, wallet validate's structural path, settings list|get|set, capabilities, \
-robot-docs, version, setup --dry-run, wallet clear-pending, node log with no log file, every \
---help, every usage error, amount and address parsing, doctor (exit 11; since Monero was \
-installed here on 2026-09-17 the failing check is node_reachable, and every other node, wallet \
-and storage check skips or warns with a stated reason), doctor capabilities, the doctor undo latest \
-round trip, and tui opening, rendering every screen's empty state and quitting cleanly. Also \
-GREEN since Phase 4's verifier ran it: setup --all --yes for real, through \
-scripts/install.sh --yes, twice — the two systemd user units (written disabled), \
-~/.config/fmonero/monerod.conf at 0600 with its credential carried through unrotated, the \
-plugin symlink and the Omarchy menu entries; the bar widget loading in the live Omarchy shell \
-and polling this binary's own status --json; and the doctor's units, install and security \
-groups passing against the files that run actually wrote. GREEN since the v5.1 fix-up: node up, \
-node restart and wallet open on a machine whose units are installed and whose Monero is not \
-exit 4 not_installed in milliseconds rather than exit 8 after thirty seconds, and leave no unit \
-restarting; setup --units refuses below §1.3's 120 GB floor with full_chain_refused and \
---full-chain --yes overrides it; and the second setup --all --yes run reports every one of its \
-seven actions unchanged.
-
-AMBER — verified against crates/fmonero-mock serving fixtures DERIVED FROM THE MONERO SOURCE \
-at v0.18.5.1, which proves fmonero's wire format and parsing and proves NOTHING about a real \
-daemon: node info|peers|bans|ban|unban|limit, wallet open|close|balance|address|new-address|\
-history|refresh|book|notes|use-node|create, wallet send and sweep including the \
-do_not_relay build, the real fee, the no---yes refusal and the relay sequence, MD5 Digest \
-authentication, the wallet-RPC error map, the restricted-node degradation, the deadline, \
-breaker and --force paths, the TUI's ProgramSimulator send (one transfer, one relay_tx) and \
-every TUI screen rendered against the mock. The Quickshell bar widget loads in the live shell \
-and renders from the same status document.
-
-LIVE — run for the first time on 2026-09-17, against the real public node \
-xmr-node.cakewallet.com:18081, with a real monero-wallet-rpc and a scratch wallet holding no \
-funds, in remote node mode (DESIGN.md §2m): node remote --dry-run and --yes (idempotent), \
-wallet create, wallet open, wallet refresh (which fetched a real block), wallet balance, \
-wallet address, wallet history, wallet close, status, node info, the nine node commands that \
-need the local daemon each exiting 4 remote_node, the TUI's Node screen on a real pty, and \
-node local --yes. wallet send --dry-run reached exit 14 insufficient_funds AFTER the remote \
-refresh gate, relaying nothing. The two defects that run found are FIXED and re-checked live on \
-the same node: doctor --fix no longer rewrites node.mode on a correctly configured machine (it \
-plans nothing there), and three consecutive wallet create against the public node exit 0 \
-(4.7 s, 14.8 s, 6.8 s) with the seed backup hint printed on every path, including the paths \
-that fail. Both are recorded with their real output in DECISIONS.md.
-
-RED — never verified, and not claimed anywhere: a real node start, stop or restart, real sync \
-progress, real peers, and — against a local monerod, which has run here once for thirty seconds \
-by accident and measured nothing (V18) — a real balance, \
-a real refresh and a real open_wallet against a real wallet file. A REAL SEND OR SWEEP OF ANY \
-AMOUNT is RED in every mode, remote included: remote mode changes what a send is gated on, never \
-what a broadcast proves. Also RED: setup's system_unit refusal, the \
-120 GB disk floor as a NUMBER (it is an estimate; only the refusal it drives is exercised), \
-the warm timing target, and \
-every doctor check in the node, wallet and storage groups against a live daemon. \
-The owner turns these green by installing Monero and running the §4b command list.";
+RED — public-network payments with valued funds and physical Ledger/Trezor operation remain unqualified. Real owned node start, stop or restart; full-chain real sync progress and real peers; production funded balance, refresh and open_wallet scenarios; setup's system_unit refusal; the 120 GB disk floor as a capacity guarantee; production warm timing target; and every doctor check against a live production daemon remain outside this feature qualification. Local valueless regtest interoperability, when recorded, does not promote these production scenarios. Hardware workflows are implemented but physical acceptance is separate.";
 // copy-exempt-end
 
-/// Every command of [`COMMANDS`] that has a §4b **RED** scenario, and therefore carries
-/// `verified: "red"` — §4b's rule is that the class is "the *lowest* class any of its scenarios
-/// reaches", and the test below ties this list to `BUILD_NOTE`'s own RED sentence so the two
-/// halves of this file cannot disagree (§2j).
-///
-/// Each name is here because §4b's RED list names it: a real `node up`/`down`/`restart`; real
-/// sync progress and real peers (`status`, `node info`, `node peers`); a real balance
-/// (`wallet balance`, `status`); a real `refresh`; a real send or sweep; a real `open_wallet`
-/// against a real wallet file (`wallet open`, and `wallet create`, which finishes the same
-/// sequence on a wallet file no test has ever created); and every doctor check in the node,
-/// wallet and storage groups against a live daemon.
-///
-/// **`setup` is still here after Phase 4's verifier ran it for real**, and the reason has
-/// narrowed twice rather than gone away. `setup --all --yes` through `scripts/install.sh --yes`
-/// is GREEN — twice, with the artefacts byte-compared — and since v5.1 so is its refusal below
-/// §1.3's free-space floor, which is a local `statvfs` measurement and needed no daemon to
-/// exercise. **One** scenario has still never been exercised by anything: its refusal under
-/// §2i's `system_unit` layout, which needs Arch's own `monerod.service` on the machine.
-/// Promoting the row on the strength of the scenarios that did run would claim the one that
-/// did not.
+/// Conservative rows retain red when a production or physical scenario is unrun.
 const RED_COMMANDS: &[&str] = &[
+    "wallet tools care hardware",
+    "launch",
     "status",
     "node up",
     "node down",
@@ -375,16 +278,57 @@ const COMMANDS: &[Command] = &[
     cmd("wallet open", "NAME [--password-file P | --password-stdin]", true, false, false, false, false, "red"),
     cmd("wallet close", "", true, false, true, false, false, "amber"),
     cmd("app status", "", false, false, false, false, false, "green"),
+    cmd("app presentation", "", false, false, false, false, false, "green"),
     cmd("app stop", "--yes", true, true, false, false, false, "amber"),
     cmd("wallet stop", "--yes", true, true, false, false, false, "amber"),
     cmd(
         "wallet create",
-        "NAME [--language L] [--allow-empty-password] [--password-file P]",
+        "NAME [--language L] [--allow-empty-password] [--password-file P|--password-stdin]",
         true, true, false, false, false, "red",
     ),
     cmd("wallet balance", "[--account N] [--subaddresses]", false, false, true, false, false, "red"),
     cmd("wallet address", "[--account N] [--index N] [--qr]", false, false, true, false, false, "amber"),
     cmd("wallet new-address", "[--account N] [--label TEXT]", true, false, true, false, false, "amber"),
+    cmd("wallet restore", "NAME [--restore-height N] [--language L] [--seed-offset] [--secret-stdin] --yes", true, true, false, false, false, "amber"),
+    cmd("wallet request create", "[--address ADDRESS] [--account N] [--index N] [--amount AMOUNT] [--description TEXT] [--recipient-name TEXT] [--qr]", false, false, false, false, false, "amber"),
+    cmd("wallet request parse", "URI", false, false, false, false, false, "amber"),
+    cmd("wallet logs", "[--source wallet|node|wallet-service|node-service|application] [--lines N] [--grep TEXT]", false, false, false, false, false, "amber"),
+    cmd("wallet accounts list", "", false, false, true, false, false, "amber"),
+    cmd("wallet accounts create", "LABEL", true, false, true, false, false, "amber"),
+    cmd("wallet accounts rename", "INDEX LABEL", true, false, true, false, false, "amber"),
+    cmd("wallet accounts select", "INDEX", true, false, true, false, false, "amber"),
+    cmd("wallet book edit", "INDEX ADDRESS DESCRIPTION --yes", true, true, true, false, false, "amber"),
+    cmd("wallet notifications enable", "", true, false, false, false, false, "amber"),
+    cmd("wallet notifications disable", "", true, false, false, false, false, "amber"),
+    cmd("wallet notifications status", "", false, false, false, false, false, "green"),
+    cmd("wallet notifications poll", "", true, false, false, false, false, "amber"),
+    cmd("wallet tools care capabilities", "", false, false, true, false, false, "amber"),
+    cmd("wallet tools care rescan", "[--spent|--hard] --yes", true, true, true, false, false, "amber"),
+    cmd("wallet tools care password", "[--secret-stdin] --yes", true, true, true, false, false, "amber"),
+    cmd("wallet tools care backup", "DIRECTORY [--restore-height N] [--secret-stdin] --yes", true, true, true, false, false, "amber"),
+    cmd("wallet tools care view-only", "NAME ADDRESS [--restore-height N] [--secret-stdin] --yes", true, true, false, false, false, "amber"),
+    cmd("wallet tools care hardware", "NAME ledger|trezor [--restore-height N] [--secret-stdin] --yes", true, true, false, false, false, "red"),
+    cmd("wallet tools care export-outputs", "PATH --yes", true, true, true, false, false, "amber"),
+    cmd("wallet tools care import-outputs", "PATH --yes", true, true, true, false, false, "amber"),
+    cmd("wallet tools care export-key-images", "PATH --yes", true, true, true, false, false, "amber"),
+    cmd("wallet tools care import-key-images", "PATH --yes", true, true, true, false, false, "amber"),
+    cmd("wallet tools care export-history", "PATH [--format csv|json] [--account N] [--limit N] [--cached] --yes", true, true, false, false, false, "amber"),
+    cmd("wallet tools message sign", "DATA --output PATH [--account N] [--index N] [--view] --yes", true, true, true, false, false, "amber"),
+    cmd("wallet tools message verify", "ADDRESS DATA SIGNATURE", false, false, true, false, false, "amber"),
+    cmd("wallet tools proof transaction", "TXID ADDRESS --output PATH [--message PATH] --yes", true, true, true, false, false, "amber"),
+    cmd("wallet tools proof check-transaction", "TXID ADDRESS SIGNATURE [--message PATH]", false, false, true, false, false, "amber"),
+    cmd("wallet tools proof spend", "TXID --output PATH [--message PATH] --yes", true, true, true, false, false, "amber"),
+    cmd("wallet tools proof check-spend", "TXID SIGNATURE [--message PATH]", false, false, true, false, false, "amber"),
+    cmd("wallet tools proof reserve", "--output PATH (--all|--amount AMOUNT [--account N]) [--message PATH] --yes", true, true, true, false, false, "amber"),
+    cmd("wallet tools proof check-reserve", "ADDRESS SIGNATURE [--message PATH]", false, false, true, false, false, "amber"),
+    cmd("wallet tools offline prepare", "TO AMOUNT --output PATH [--account N] [--priority N] [--max-fee AMOUNT] --yes", true, true, true, true, false, "amber"),
+    cmd("wallet tools offline describe", "PATH", false, false, true, false, false, "amber"),
+    cmd("wallet tools offline sign", "PATH --output PATH [--secret-stdin] --yes", true, true, true, false, false, "amber"),
+    cmd("wallet tools offline submit", "PATH [--secret-stdin] [--max-fee AMOUNT] --yes", true, true, true, true, false, "amber"),
+    cmd("wallet tools offline pending", "", false, false, false, false, false, "green"),
+    cmd("wallet tools offline inspect-pending", "[--secret-stdin] --yes", true, true, false, false, false, "amber"),
+    cmd("wallet tools offline clear-pending", "--yes", true, true, false, false, false, "amber"),
+    cmd("launch", "[wallet|node|send|logs|receive|requests|new-address|restore|tools]", false, false, false, false, false, "red"),
     cmd(
         "wallet history",
         "[--account N] [--limit N] [--in] [--out] [--pending] [--failed] [--pool] [--since HEIGHT] [--cached]",
@@ -428,7 +372,7 @@ const COMMANDS: &[Command] = &[
     ),
     Command {
         name: "tui",
-        args: "[--node|--wallet|--send|--log]",
+        args: "[--node|--wallet|--send|--log|--receive|--requests|--new-address|--restore|--tools]",
         mutating: true,
         needs_yes: false,
         needs_wallet: false,
@@ -673,7 +617,18 @@ mod tests {
         );
         // Twenty before v5.2; §2m.1 added node.mode/node.remote/node.remote_trusted; v5.5 adds
         // node.remote_probe_sec, wallet.autostart and tui.mouse.
-        assert_eq!(Settings::KEYS.len(), 26);
+        for key in [
+            "tui.privacy",
+            "node.tls",
+            "node.ca_file",
+            "node.fingerprint",
+            "node.proxy",
+        ] {
+            assert!(
+                Settings::KEYS.iter().any(|row| row.0 == key),
+                "{key} must be discoverable"
+            );
+        }
         assert!(!v["reasons"].as_array().unwrap().is_empty());
         assert_eq!(v["warnings"].as_array().unwrap().len(), WARNING_IDS.len());
         assert!(!v["env"].as_array().unwrap().is_empty());
@@ -732,16 +687,16 @@ mod tests {
         for word in ["GREEN", "AMBER", "RED"] {
             assert!(BUILD_NOTE.contains(word), "the note must name {word}");
         }
-        // And it must not claim a real send: §4b's RED list is the one thing §2j is about.
+        // Local interoperability never establishes funded public-network qualification.
         assert!(
-            BUILD_NOTE.contains("A REAL SEND OR SWEEP OF ANY AMOUNT"),
-            "the note must say the send path has never been broadcast"
+            BUILD_NOTE.contains("public-network payments with valued funds"),
+            "the note must retain the funded public-network evidence limit"
         );
         assert!(
             COMMANDS
                 .iter()
                 .any(|c| c.name == "wallet send" && c.verified == "red"),
-            "`wallet send` is RED until a real broadcast has happened (§4b)"
+            "wallet send retains its unqualified production scenario"
         );
     }
 
@@ -782,10 +737,10 @@ mod tests {
             "node start, stop or restart",
             "real sync progress",
             "real peers",
-            "a real balance",
-            "a real refresh",
-            "A REAL SEND OR SWEEP OF ANY AMOUNT",
-            "a real open_wallet",
+            "funded balance",
+            "refresh and open_wallet",
+            "public-network payments with valued funds",
+            "physical Ledger/Trezor",
             "setup's system_unit refusal",
             "the 120 GB disk floor",
             "every doctor check",

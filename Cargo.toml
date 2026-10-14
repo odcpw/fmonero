@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/fmonero-core", "crates/fmonero", "crates/fmonero-mock"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/odcpw/fmonero"
@@ -29,6 +29,8 @@ sha2        = "0.10"                                 # doctor backup hashes; his
 jiff        = "0.2"                                  # RFC 3339 with a local offset; std has none
 qrcode      = { version = "0.14", default-features = false }   # receive QR on a Canvas; no image/svg deps
 md-5        = "0.10"                                 # §2c Digest; RustCrypto, digest 0.10 is already cached
+sha3        = "0.10"                                 # Monero uses Keccak-256, not SHA3-256
+zeroize     = { version = "1.8", features = ["alloc"] }
 
 [profile.release]
 opt-level = 3

@@ -176,13 +176,13 @@ fn a_send(dest: &str) -> SendRequest {
 /// A real, checksum-valid mainnet address from upstream's own test vectors — the same one
 /// `validate_address-standard.json` answers for (`_request_address`).
 const DEST: &str = "42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm";
-/// The txid `transfer-do-not-relay.json` builds and `relay_tx.json` echoes.
+/// The txid `transfer_split-do-not-relay.json` builds and `relay_tx.json` echoes.
 const BUILT_TXID: &str = "a1e7b3c05d928f4617ac0e3b85d2f719c46b0a8e3f512d7409bc6ea18d35047f";
 
 // ---- §2a.3: exactly one transfer and one relay_tx, with identical metadata ----
 
-/// The central §2a test: **the send path issues exactly one `transfer` and one `relay_tx`, and
-/// the `relay_tx.hex` is byte-identical to the `transfer` response's `tx_metadata`.**
+/// The central §2a test: **the send path issues exactly one `transfer_split` and one `relay_tx`, and
+/// the `relay_tx.hex` is byte-identical to the `transfer_split` response's `tx_metadata`.**
 ///
 /// `relay_tx`'s `hex` is hex of a serialized `wallet2::pending_tx` — **not** `tx_blob`
 /// (§1b.4) — so relaying anything else is a send that silently does nothing.
@@ -218,7 +218,11 @@ fn the_send_path_builds_once_and_relays_that_exact_transaction() {
     .expect("the relay must succeed");
     assert_eq!(txids, vec![BUILT_TXID.to_string()]);
 
-    assert_eq!(w.count(&w.wallet_log, "transfer"), 1, "exactly one build");
+    assert_eq!(
+        w.count(&w.wallet_log, "transfer_split"),
+        1,
+        "exactly one build"
+    );
     assert_eq!(w.count(&w.wallet_log, "relay_tx"), 1, "exactly one relay");
     let relayed = w.bodies(&w.wallet_log, "relay_tx");
     assert_eq!(
@@ -243,7 +247,7 @@ fn the_send_path_builds_once_and_relays_that_exact_transaction() {
 ///
 /// Until this check the confirm screen a person types `send` into rendered `plan.total_amount` —
 /// the service's own reply — while the form two columns away showed what he had typed, and nothing
-/// anywhere compared the two. `--scenario amount-mismatch` is a `transfer` answer for 0.2 XMR to a
+/// anywhere compared the two. `--scenario amount-mismatch` is a `transfer_split` answer for 0.2 XMR to a
 /// request for 0.1, which no correct wallet-rpc gives; the build refuses with exit 3, names both
 /// figures, and nothing is relayed.
 #[test]
@@ -264,7 +268,7 @@ fn a_build_that_comes_back_with_a_different_amount_is_refused_before_anything_is
     let text = e.to_string();
     assert!(text.contains("0.1000"), "the amount asked for: {text}");
     assert!(text.contains("0.2000"), "the amount prepared: {text}");
-    assert!(text.contains("Nothing has been sent"), "{text}");
+    assert!(text.contains("Nothing was sent"), "{text}");
     assert_eq!(
         w.count(&w.wallet_log, "relay_tx"),
         0,
@@ -307,7 +311,7 @@ fn the_recorded_bodies_carry_no_forbidden_field_and_every_sweep_is_indices_all()
     assert_eq!(plan.txs.len(), 2, "sweep_all.json carries two transactions");
     drop(plan);
 
-    for method in ["transfer", "sweep_all"] {
+    for method in ["transfer_split", "sweep_all"] {
         let bodies = w.bodies(&w.wallet_log, method);
         assert!(!bodies.is_empty(), "{method} was never recorded");
         for b in &bodies {
@@ -336,10 +340,16 @@ fn the_recorded_bodies_carry_no_forbidden_field_and_every_sweep_is_indices_all()
             "there is no selector to disable it (§2a.10)"
         );
     }
-    // `transfer` sends one destination and never asks for the transaction secret key.
-    let t = &w.bodies(&w.wallet_log, "transfer")[0];
+    // `transfer_split` sends one destination and never asks for the transaction secret key.
+    let t = &w.bodies(&w.wallet_log, "transfer_split")[0];
     assert_eq!(t["destinations"][0]["address"], DEST);
-    assert_eq!(t["get_tx_key"], false, "§2a.2, §2b.2");
+    assert_eq!(t["get_tx_keys"], false, "§2a.2, §2b.2");
+    assert!(t.get("get_tx_key").is_none(), "split uses the plural field");
+    assert_eq!(
+        w.count(&w.wallet_log, "transfer"),
+        0,
+        "no legacy build fallback"
+    );
 }
 
 // ---- §2a.4: the record, and what blocks ----
@@ -379,9 +389,86 @@ fn an_unrelayed_record_blocks_the_next_send_with_reason_pending_send() {
     assert_eq!(e.reason(), Some("pending_send"));
     assert!(e.hint().contains("clear-pending"), "{}", e.hint());
     // Nothing was built: the refusal is at step 4, before the daemon is asked for anything.
-    assert_eq!(w.count(&w.wallet_log, "transfer"), 0);
+    assert_eq!(w.count(&w.wallet_log, "transfer_split"), 0);
     // And the record is still there: a check that cleared it would disarm the interlock.
     assert!(state::pending_send(&w.ctx).unwrap().is_some());
+}
+
+#[test]
+fn empty_or_whitespace_payment_ledger_blocks_send_and_sweep_until_cleared() {
+    let world = World::new("empty-ledger-payments", &[], &[]);
+    let client = world.wallet();
+    let node = world.node();
+    let cancel = CancelToken::new();
+    let path = world.ctx.paths.pending_file();
+    let sweep = SweepRequest {
+        dest: DEST.to_string(),
+        account_index: 0,
+        priority: 2,
+        below: None,
+        max_fee: None,
+    };
+    assert!(state::pending_send(&world.ctx).unwrap().is_none());
+    send::refuse_if_send_in_flight(&world.ctx).unwrap();
+
+    for bytes in [b"".as_slice(), b" \t\r\n".as_slice()] {
+        crate::write_private(&path, bytes).unwrap();
+        let send_error = send::build(
+            &world.ctx,
+            &client,
+            send::NodeGate::Local(&node),
+            &a_send(DEST),
+            &cancel,
+        )
+        .unwrap_err();
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        let sweep_error = send::build_sweep(
+            &world.ctx,
+            &client,
+            send::NodeGate::Local(&node),
+            &sweep,
+            &cancel,
+        )
+        .unwrap_err();
+        for error in [send_error, sweep_error] {
+            assert_eq!(error.exit_code(), 3);
+            assert_eq!(error.reason(), Some("pending_send"));
+        }
+        for method in ["transfer_split", "sweep_all", "relay_tx"] {
+            assert_eq!(world.count(&world.wallet_log, method), 0, "{method}");
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+
+        state::clear_pending_send(&world.ctx).unwrap();
+        assert!(!path.exists());
+        assert!(state::pending_send(&world.ctx).unwrap().is_none());
+        send::refuse_if_send_in_flight(&world.ctx).unwrap();
+    }
+
+    // Explicit recovery restores normal preparation; neither plan is relayed.
+    drop(
+        send::build(
+            &world.ctx,
+            &client,
+            send::NodeGate::Local(&node),
+            &a_send(DEST),
+            &cancel,
+        )
+        .unwrap(),
+    );
+    drop(
+        send::build_sweep(
+            &world.ctx,
+            &client,
+            send::NodeGate::Local(&node),
+            &sweep,
+            &cancel,
+        )
+        .unwrap(),
+    );
+    assert_eq!(world.count(&world.wallet_log, "transfer_split"), 1);
+    assert_eq!(world.count(&world.wallet_log, "sweep_all"), 1);
+    assert_eq!(world.count(&world.wallet_log, "relay_tx"), 0);
 }
 
 /// A **fully relayed** record whose txid the wallet reports resolves itself: the send goes
@@ -609,7 +696,11 @@ fn a_fee_above_max_refuses_and_relays_nothing() {
     assert_eq!(plan.total_fee, Piconero(30_720_000));
     drop(plan);
     assert_eq!(w.count(&w.wallet_log, "relay_tx"), 0);
-    assert_eq!(w.count(&w.wallet_log, "transfer"), 1, "it did build first");
+    assert_eq!(
+        w.count(&w.wallet_log, "transfer_split"),
+        1,
+        "it did build first"
+    );
 
     // And `relay` re-checks it, so a plan built by other means still cannot get past it.
     let mut req = a_send(DEST);
@@ -852,7 +943,11 @@ fn the_refusal_order_decides_the_exit_code() {
     .unwrap_err();
     assert_eq!(e.exit_code(), 15);
     assert!(e.to_string().contains("stagenet"), "{e}");
-    assert_eq!(w.count(&w.wallet_log, "transfer"), 0, "nothing was built");
+    assert_eq!(
+        w.count(&w.wallet_log, "transfer_split"),
+        0,
+        "nothing was built"
+    );
 
     // 5a. `@label`: zero matches is exit 6, several is exit 7, one resolves to the ADDRESS.
     let e = send::build(
@@ -899,7 +994,7 @@ fn the_refusal_order_decides_the_exit_code() {
     assert_eq!(last["allow_openalias"], false);
 
     // 7. A node that is not synchronized is exit 10 — and nothing is built.
-    let before = w.count(&w.wallet_log, "transfer");
+    let before = w.count(&w.wallet_log, "transfer_split");
     let syncing = World::new("order-syncing", &["--scenario", "syncing"], &[]);
     let e = send::build(
         &syncing.ctx,
@@ -910,8 +1005,8 @@ fn the_refusal_order_decides_the_exit_code() {
     )
     .unwrap_err();
     assert_eq!(e.exit_code(), 10);
-    assert_eq!(syncing.count(&syncing.wallet_log, "transfer"), 0);
-    assert_eq!(w.count(&w.wallet_log, "transfer"), before);
+    assert_eq!(syncing.count(&syncing.wallet_log, "transfer_split"), 0);
+    assert_eq!(w.count(&w.wallet_log, "transfer_split"), before);
 }
 
 /// §2a.1: **a valid address with the wallet daemon down is exit 4, not the no-`--yes` 3** —
@@ -1133,7 +1228,7 @@ fn the_status_hot_path_is_three_calls_closed_and_five_open() {
         "refresh",
         "open_wallet",
         "close_wallet",
-        "transfer",
+        "transfer_split",
         "relay_tx",
     ] {
         assert!(
@@ -1532,11 +1627,19 @@ fn a_rejected_remote_address_fails_the_open_where_a_local_one_does_not() {
             .expect_err("remote mode does not swallow it (§2m.3)");
     assert_eq!(e.exit_code(), 4);
     assert_eq!(e.reason(), Some("remote_address_rejected"));
-    assert!(e.to_string().contains("Unable to set daemon"), "{e}");
+    assert!(
+        e.to_string()
+            .contains("Monero refused the configured wallet connection."),
+        "{e}"
+    );
+    assert!(
+        !e.to_string().contains("Unable to set daemon"),
+        "protected peer text must not be echoed"
+    );
     assert_eq!(
         e.hint(),
-        "fmonero node remote node.example.com:18089 --yes",
-        "the hint is the command that would fix it"
+        "fmonero settings list",
+        "transport refusal directs the user to its complete policy"
     );
     // The wallet IS open on the daemon — the refusal is about the daemon it was given — so the
     // recorded name is not written, because `install_daemon_and_record` never reached it.
@@ -1583,7 +1686,7 @@ fn set_daemon_is_governed_by_the_refresh_deadline_not_the_probe_deadline() {
     assert_eq!(e.reason(), Some("killed_at_deadline"));
 }
 
-/// §2m.3's send gate: **one bounded `refresh` before the `transfer`**, and nothing else changes.
+/// §2m.3's send gate: **one bounded `refresh` before the `transfer_split`**, and nothing else changes.
 ///
 /// On the pre-v5.2 code the gate was `get_info.synchronized` against a local node, which in
 /// remote mode does not exist: the send refused with exit 4 `unreachable` and no `refresh` was
@@ -1608,9 +1711,9 @@ fn the_remote_send_gate_is_one_refresh_before_the_build() {
     let order: Vec<String> = read_log(&w.wallet_log)
         .iter()
         .map(|l| l["method"].as_str().unwrap_or_default().to_string())
-        .filter(|m| m == "refresh" || m == "transfer")
+        .filter(|m| m == "refresh" || m == "transfer_split")
         .collect();
-    assert_eq!(order, vec!["refresh", "transfer"], "{order:?}");
+    assert_eq!(order, vec!["refresh", "transfer_split"], "{order:?}");
     assert_eq!(
         w.count(&w.wallet_log, "refresh"),
         1,
@@ -1625,7 +1728,7 @@ fn the_remote_send_gate_is_one_refresh_before_the_build() {
 }
 
 /// §2m.3: a `-38` (or a transport failure) from that refresh is exit **4 `unreachable`**, with
-/// **zero** `transfer` calls — the remote daemon did not answer, so there is no tip to build on.
+/// **zero** `transfer_split` calls — the remote daemon did not answer, so there is no tip to build on.
 #[test]
 fn a_refresh_that_cannot_reach_the_remote_node_refuses_the_send() {
     let w = World::new(
@@ -1646,7 +1749,11 @@ fn a_refresh_that_cannot_reach_the_remote_node_refuses_the_send() {
     .expect_err("the gate must refuse");
     assert_eq!(e.exit_code(), 4);
     assert_eq!(e.reason(), Some("unreachable"));
-    assert_eq!(w.count(&w.wallet_log, "transfer"), 0, "nothing was built");
+    assert_eq!(
+        w.count(&w.wallet_log, "transfer_split"),
+        0,
+        "nothing was built"
+    );
 }
 
 /// §2m.3 and §2d: a refresh killed at `timeouts.refresh_sec` is exit **10
@@ -1671,7 +1778,11 @@ fn a_refresh_killed_at_its_deadline_is_exit_ten_and_arms_no_breaker() {
     .expect_err("the deadline must be enforced");
     assert_eq!(e.exit_code(), 10, "{e}");
     assert_eq!(e.reason(), Some("wallet_catching_up"));
-    assert_eq!(w.count(&w.wallet_log, "transfer"), 0, "nothing was built");
+    assert_eq!(
+        w.count(&w.wallet_log, "transfer_split"),
+        0,
+        "nothing was built"
+    );
     assert!(
         state::stall_remaining(&ctx, state::Daemon::Wallet)
             .unwrap()
@@ -1990,11 +2101,11 @@ fn reap(pid: i32) {
 fn selecting_a_node_preserves_the_open_wallet_and_updates_its_live_connection() {
     let mut world = World::new("switch-preserves-wallet", &[], &[]);
     let fixture = world.dir.join("systemctl.txt");
-    std::fs::write(
-        &fixture,
-        "fmonero-wallet-rpc.service active disabled yes 51002\n",
-    )
-    .unwrap();
+    // spawn_for_test is an in-process RPC thread, not a monero-wallet-rpc
+    // systemd process. There is no owned MainPID/global proxy to inherit.
+    // Unknown *present* PIDs are covered by the refusal test below.
+    let fixture_text = "fmonero-wallet-rpc.service active disabled yes -\n";
+    std::fs::write(&fixture, fixture_text).unwrap();
     world.ctx.systemctl = crate::context::Systemctl::Fixture(fixture.clone());
     state::set_last_open(&world.ctx, "main", crate::address::NetType::Mainnet).unwrap();
     let changed = crate::node_mode::set_remote(
@@ -2008,9 +2119,7 @@ fn selecting_a_node_preserves_the_open_wallet_and_updates_its_live_connection() 
     assert!(!changed.wallet_unit_restarted);
     assert!(changed.wallet_must_reopen.is_none());
     assert_eq!(state::last_open(&world.ctx).unwrap().unwrap().0, "main");
-    assert!(std::fs::read_to_string(fixture)
-        .unwrap()
-        .contains("active disabled yes 51002"));
+    assert_eq!(std::fs::read_to_string(fixture).unwrap(), fixture_text);
     let calls: Vec<_> = read_log(&world.wallet_log)
         .into_iter()
         .filter(|l| l["method"] == "set_daemon" && l["status"] == 200)
@@ -2019,6 +2128,7 @@ fn selecting_a_node_preserves_the_open_wallet_and_updates_its_live_connection() 
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0]["address"], "node.example:18081");
     assert_eq!(calls[0]["trusted"], false);
+    assert_eq!(calls[0]["proxy"], "");
     assert!(calls[0].get("username").is_none());
     assert_eq!(
         world.bodies(&world.wallet_log, "auto_refresh")[0]["enable"],
@@ -2040,7 +2150,7 @@ fn a_synced_local_node_does_not_make_a_behind_wallet_ready_to_send() {
     )
     .unwrap_err();
     assert_eq!(error.reason(), Some("wallet_catching_up"));
-    assert_eq!(world.count(&world.wallet_log, "transfer"), 0);
+    assert_eq!(world.count(&world.wallet_log, "transfer_split"), 0);
     assert_eq!(world.count(&world.wallet_log, "relay_tx"), 0);
 }
 
@@ -2095,7 +2205,8 @@ fn a_rejected_node_change_keeps_the_previous_selection_and_service_settings() {
     let fixture = world.dir.join("systemctl.txt");
     std::fs::write(
         &fixture,
-        "fmonero-wallet-rpc.service active disabled yes 51002\n",
+        // The actual mock is an in-process RPC thread, with no unit MainPID.
+        "fmonero-wallet-rpc.service active disabled yes -\n",
     )
     .unwrap();
     world.ctx.systemctl = crate::context::Systemctl::Fixture(fixture);
@@ -2118,10 +2229,93 @@ fn a_rejected_node_change_keeps_the_previous_selection_and_service_settings() {
     .unwrap_err();
     assert_eq!(error.reason(), Some("remote_address_rejected"));
     assert_eq!(
+        read_log(&world.wallet_log)
+            .iter()
+            .filter(|row| row["method"] == "set_daemon" && row["status"] == 200)
+            .count(),
+        1,
+        "the authenticated engine request reaches the injected rejection"
+    );
+    assert_eq!(world.count(&world.wallet_log, "auto_refresh"), 0);
+    assert_eq!(
         std::fs::read(world.ctx.paths.config_file()).unwrap(),
         config
     );
     assert_eq!(std::fs::read(unit_path).unwrap(), unit);
+}
+
+#[test]
+fn an_unattested_owned_process_refuses_node_change_before_rpc_or_settings_writes() {
+    let mut world = World::new("switch-unattested-pid", &[], &[]);
+    let fixture = world.dir.join("systemctl.txt");
+    // This is the REAL mock host process. Its executable is the test harness,
+    // not Monero, so it must not become evidence for an inherited global proxy.
+    let fixture_text = format!(
+        "fmonero-wallet-rpc.service active disabled yes {}\n",
+        std::process::id()
+    );
+    std::fs::write(&fixture, &fixture_text).unwrap();
+    world.ctx.systemctl = crate::context::Systemctl::Fixture(fixture.clone());
+    world.ctx.settings.node.proxy = Some("127.0.0.1:9050".into());
+    world.ctx.settings.save(&world.ctx).unwrap();
+    let before = std::fs::read(world.ctx.paths.config_file()).unwrap();
+    let error = crate::node_mode::set_remote(
+        &world.ctx,
+        "node.example:18081",
+        false,
+        false,
+        &CancelToken::new(),
+    )
+    .unwrap_err();
+    assert_eq!(error.reason(), Some("transport_policy"));
+    assert_eq!(
+        std::fs::read(world.ctx.paths.config_file()).unwrap(),
+        before
+    );
+    assert_eq!(std::fs::read_to_string(fixture).unwrap(), fixture_text);
+    assert!(
+        read_log(&world.wallet_log).is_empty(),
+        "no RPC on unknown proxy ownership"
+    );
+}
+
+#[test]
+fn an_unmanaged_mock_receives_the_explicit_proxy_without_claiming_inheritance() {
+    let mut world = World::new("switch-explicit-proxy", &[], &[]);
+    let fixture = world.dir.join("systemctl.txt");
+    std::fs::write(
+        &fixture,
+        "fmonero-wallet-rpc.service active disabled yes -\n",
+    )
+    .unwrap();
+    world.ctx.systemctl = crate::context::Systemctl::Fixture(fixture);
+    world.ctx.settings.node.proxy = Some("127.0.0.1:9050".into());
+    crate::node_mode::set_remote(
+        &world.ctx,
+        "node.example:18081",
+        false,
+        false,
+        &CancelToken::new(),
+    )
+    .unwrap();
+    let requests = world.bodies(&world.wallet_log, "set_daemon");
+    assert!(!requests.is_empty());
+    // Digest may first challenge the client; every wire request carries the
+    // same explicit policy, and only one authenticated mutation is attempted.
+    for request in &requests {
+        assert_eq!(request["proxy"], "127.0.0.1:9050");
+        assert_eq!(request["ssl_support"], "enabled");
+    }
+    assert_eq!(
+        read_log(&world.wallet_log)
+            .iter()
+            .filter(|row| row["method"] == "set_daemon" && row["status"] == 200)
+            .count(),
+        1,
+        "no retry without the requested proxy"
+    );
+    assert_eq!(world.count(&world.wallet_log, "close_wallet"), 0);
+    assert_eq!(world.count(&world.wallet_log, "open_wallet"), 0);
 }
 
 #[test]
@@ -2278,4 +2472,767 @@ fn wallet_controls_refuse_pending_payments_and_stop_preserves_the_node() {
             .active
     );
     assert!(state::last_open(&world.ctx).unwrap().is_none());
+}
+
+#[test]
+fn successful_open_validates_account_selection_and_preserves_other_settings() {
+    let world = World::new("open-account-reset", &[], &[]);
+    let mut settings = world.ctx.settings.clone();
+    settings.wallet.account = 1;
+    settings.tui.privacy = true;
+    settings.tui.notifications = true;
+    settings.save(&world.ctx).unwrap();
+    crate::wallet_session::open_secret(
+        &world.ctx,
+        &world.wallet(),
+        "new-scratch",
+        crate::SecretString::new("test-only".into()).unwrap(),
+        &CancelToken::new(),
+    )
+    .unwrap();
+    let saved = crate::Settings::load(&world.ctx.paths).unwrap();
+    assert_eq!(saved.wallet.account, 0);
+    assert!(saved.tui.privacy);
+    assert!(saved.tui.notifications);
+    assert_eq!(saved.wallet.url, settings.wallet.url);
+    assert_eq!(world.count(&world.wallet_log, "get_accounts"), 1);
+    assert!(world
+        .bodies(&world.wallet_log, "get_address")
+        .iter()
+        .all(|p| p["account_index"] == 0));
+}
+
+#[test]
+fn failed_account_validation_never_claims_a_ready_wallet_or_rewrites_selection() {
+    let world = World::new(
+        "open-account-fail",
+        &[],
+        &["--fail", "get_accounts=-1:unavailable"],
+    );
+    let mut settings = world.ctx.settings.clone();
+    settings.wallet.account = 7;
+    settings.save(&world.ctx).unwrap();
+    assert!(crate::wallet_session::open_secret(
+        &world.ctx,
+        &world.wallet(),
+        "new-scratch",
+        crate::SecretString::new("test-only".into()).unwrap(),
+        &CancelToken::new()
+    )
+    .is_err());
+    assert_eq!(
+        crate::Settings::load(&world.ctx.paths)
+            .unwrap()
+            .wallet
+            .account,
+        7
+    );
+    assert!(state::last_open(&world.ctx).unwrap().is_none());
+}
+
+#[test]
+fn unconfirmed_restore_clears_previous_identity_and_never_retries_or_configures() {
+    let world = World::new(
+        "restore-unknown",
+        &[],
+        &["--fail", "restore_deterministic_wallet=-1:refused"],
+    );
+    state::set_last_open(&world.ctx, "previous", crate::NetType::Mainnet).unwrap();
+    let request = crate::restore::RestoreRequest {
+        name: "new-scratch".into(),
+        seed: crate::SecretString::new(crate::rpc::random_hex(16).unwrap()).unwrap(),
+        password: crate::SecretString::new(crate::rpc::random_hex(16).unwrap()).unwrap(),
+        seed_offset: None,
+        restore_height: 456,
+        language: Some("English".into()),
+    };
+    let result =
+        crate::restore::restore(&world.ctx, &world.wallet(), request, &CancelToken::new()).unwrap();
+    assert_eq!(result.state, crate::restore::RestoreState::Unknown);
+    assert!(state::last_open(&world.ctx).unwrap().is_none());
+    assert_eq!(
+        world.count(&world.wallet_log, "restore_deterministic_wallet"),
+        1
+    );
+    assert_eq!(world.count(&world.wallet_log, "set_daemon"), 0);
+    assert_eq!(world.count(&world.wallet_log, "relay_tx"), 0);
+    let bodies = world.bodies(&world.wallet_log, "restore_deterministic_wallet");
+    assert_eq!(bodies[0]["restore_height"], 456);
+    assert_eq!(bodies[0]["autosave_current"], true);
+    assert_eq!(bodies[0]["enable_multisig_experimental"], false);
+}
+
+#[test]
+fn restore_local_preconditions_refuse_before_any_rpc() {
+    let world = World::new("restore-preconditions", &[], &[]);
+    std::fs::create_dir_all(&world.ctx.settings.wallet.dir).unwrap();
+    std::fs::write(
+        world.ctx.settings.wallet.dir.join("existing.keys"),
+        b"test metadata only",
+    )
+    .unwrap();
+    let request = crate::restore::RestoreRequest {
+        name: "existing".into(),
+        seed: crate::SecretString::empty(),
+        password: crate::SecretString::empty(),
+        seed_offset: None,
+        restore_height: 0,
+        language: None,
+    };
+    assert!(
+        crate::restore::restore(&world.ctx, &world.wallet(), request, &CancelToken::new()).is_err()
+    );
+    assert!(read_log(&world.wallet_log).is_empty());
+}
+
+#[test]
+fn split_payment_preserves_every_metadata_item_and_rejects_inconsistent_arrays() {
+    // Isolated wire-format fault cases derived from the checked-in Monero response
+    // schema; these are not evidence of transaction creation by a real backend.
+    let (scratch, split) = split_send_fixtures();
+    let file = scratch.join("wallet/transfer_split-splitcase.json");
+    let scratch_text = scratch.to_string_lossy().into_owned();
+    let world = World::new(
+        "split-two",
+        &[],
+        &["--fixtures", &scratch_text, "--scenario", "splitcase"],
+    );
+    let client = world.wallet();
+    let node = world.node();
+    let cancel = CancelToken::new();
+    let plan = send::build(
+        &world.ctx,
+        &client,
+        send::NodeGate::Local(&node),
+        &a_send(DEST),
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!(plan.txs.len(), 2);
+    assert_eq!(plan.total_amount, Piconero(100_000_000_000));
+    let expected: Vec<_> = plan
+        .txs
+        .iter()
+        .map(|tx| (tx.txid.clone(), tx.metadata.clone()))
+        .collect();
+    let txids = send::relay(&world.ctx, &client, plan, &|_| {}, &cancel).unwrap();
+    assert_eq!(
+        txids,
+        expected.iter().map(|p| p.0.clone()).collect::<Vec<_>>()
+    );
+    let relayed = world.bodies(&world.wallet_log, "relay_tx");
+    assert_eq!(relayed.len(), 2);
+    for (body, (_, metadata)) in relayed.iter().zip(&expected) {
+        assert_eq!(body["hex"].as_str(), Some(metadata.as_str()));
+    }
+    assert_eq!(world.count(&world.wallet_log, "transfer_split"), 1);
+    assert_eq!(world.count(&world.wallet_log, "transfer"), 0);
+    drop(world);
+    for case in [
+        "short-metadata",
+        "duplicate-id",
+        "fee-overflow",
+        "weight-overflow",
+    ] {
+        let mut bad = split.clone();
+        match case {
+            "short-metadata" => {
+                bad["tx_metadata_list"].as_array_mut().unwrap().pop();
+            }
+            "duplicate-id" => bad["tx_hash_list"][1] = bad["tx_hash_list"][0].clone(),
+            "fee-overflow" => bad["fee_list"] = serde_json::json!([u64::MAX, 1]),
+            "weight-overflow" => bad["weight_list"] = serde_json::json!([u64::MAX, 1]),
+            _ => unreachable!(),
+        }
+        std::fs::write(&file, serde_json::to_vec(&bad).unwrap()).unwrap();
+        let world = World::new(
+            case,
+            &[],
+            &["--fixtures", &scratch_text, "--scenario", "splitcase"],
+        );
+        assert!(
+            send::build(
+                &world.ctx,
+                &world.wallet(),
+                send::NodeGate::Local(&world.node()),
+                &a_send(DEST),
+                &CancelToken::new()
+            )
+            .is_err(),
+            "{case}"
+        );
+        assert_eq!(world.count(&world.wallet_log, "transfer_split"), 1);
+        assert_eq!(world.count(&world.wallet_log, "relay_tx"), 0);
+    }
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+fn split_send_fixtures() -> (PathBuf, serde_json::Value) {
+    let scratch = std::env::temp_dir().join(format!(
+        "fmonero-split-fixtures-{}-{}",
+        std::process::id(),
+        crate::rpc::random_hex(8).unwrap()
+    ));
+    let wallet_dir = scratch.join("wallet");
+    std::fs::create_dir_all(&wallet_dir).unwrap();
+    for entry in std::fs::read_dir(fixtures().join("wallet")).unwrap() {
+        let entry = entry.unwrap();
+        if entry.file_type().unwrap().is_file() {
+            std::fs::copy(entry.path(), wallet_dir.join(entry.file_name())).unwrap();
+        }
+    }
+    let mut split: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(wallet_dir.join("sweep_all.json")).unwrap()).unwrap();
+    split["amount_list"] = serde_json::json!([60_000_000_000u64, 40_000_000_000u64]);
+    let file = wallet_dir.join("transfer_split-splitcase.json");
+    std::fs::write(&file, serde_json::to_vec(&split).unwrap()).unwrap();
+    (scratch, split)
+}
+
+#[test]
+fn label_and_note_mutations_refuse_changed_review_state() {
+    let world = World::new("stale-reviewed-edits", &[], &[]);
+    state::set_last_open(&world.ctx, "scratch", crate::NetType::Mainnet).unwrap();
+    let client = world.wallet();
+    let identity = crate::wallet_ops::identity(&world.ctx, &client).unwrap();
+    let mut receiving = crate::receive::select(&world.ctx, &client, &identity, 0, 0).unwrap();
+    receiving.label.push_str(" changed since review");
+    assert!(crate::receive::rename(&world.ctx, &client, &receiving, "new label").is_err());
+    assert_eq!(world.count(&world.wallet_log, "label_address"), 0);
+    assert!(crate::history::set_note(
+        &world.ctx,
+        &client,
+        &identity,
+        BUILT_TXID,
+        0,
+        "a prior note that the fixture does not have",
+        "replacement"
+    )
+    .is_err());
+    assert_eq!(world.count(&world.wallet_log, "set_tx_notes"), 0);
+}
+
+fn one_off_world(name: &str) -> World {
+    let mut world = World::new(name, &[], &[]);
+    let fixture = world.dir.join("systemctl.txt");
+    // The mock is an in-process server, not an owned Monero unit/global proxy.
+    std::fs::write(
+        &fixture,
+        "fmonero-wallet-rpc.service active disabled yes -\n",
+    )
+    .unwrap();
+    world.ctx.systemctl = crate::context::Systemctl::Fixture(fixture);
+    world.wallet().open_wallet("scratch", "").unwrap();
+    state::set_last_open(&world.ctx, "scratch", crate::NetType::Mainnet).unwrap();
+    world.ctx.settings.save(&world.ctx).unwrap();
+    world
+}
+
+#[test]
+fn one_off_node_change_normalizes_local_auth_and_never_persists_settings() {
+    let mut world = one_off_world("one-off-auth");
+    crate::write_private(
+        &world.ctx.paths.monerod_conf(),
+        b"rpc-login=scratch-node:fixture-only\n",
+    )
+    .unwrap();
+    let client = world.wallet();
+    let identity = crate::wallet_ops::identity(&world.ctx, &client).unwrap();
+    let config = std::fs::read(world.ctx.paths.config_file()).unwrap();
+    for address in [
+        "127.0.0.1:18081",
+        "http://127.0.0.1:18081",
+        "https://127.0.0.1:18081",
+        "http://[::1]:18081",
+    ] {
+        world.ctx.settings.node.fingerprint =
+            address.starts_with("https://").then(|| "ab".repeat(32));
+        let connection =
+            crate::transport::configure_once(&world.ctx, &client, &identity, address, true)
+                .unwrap();
+        assert_eq!(connection.address(), address);
+        let rows = read_log(&world.wallet_log);
+        let call = rows
+            .iter()
+            .rev()
+            .find(|r| r["method"] == "set_daemon" && r["status"] == 200)
+            .unwrap();
+        assert_eq!(call["body"]["params"]["username"], "scratch-node");
+        assert_eq!(call["body"]["params"]["password"], "fixture-only");
+        assert_eq!(
+            call["body"]["params"]["ssl_support"],
+            if address.starts_with("https://") {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        );
+        assert_eq!(
+            std::fs::read(world.ctx.paths.config_file()).unwrap(),
+            config
+        );
+    }
+    world.ctx.settings.node.fingerprint = None;
+    crate::transport::configure_once(&world.ctx, &client, &identity, "node.example:18081", false)
+        .unwrap();
+    let rows = read_log(&world.wallet_log);
+    let call = rows
+        .iter()
+        .rev()
+        .find(|r| r["method"] == "set_daemon" && r["status"] == 200)
+        .unwrap();
+    assert!(call["body"]["params"].get("username").is_none());
+    assert!(call["body"]["params"].get("password").is_none());
+    assert_eq!(
+        std::fs::read(world.ctx.paths.config_file()).unwrap(),
+        config
+    );
+    assert_eq!(state::last_open(&world.ctx).unwrap().unwrap().0, "scratch");
+    assert_eq!(world.count(&world.wallet_log, "close_wallet"), 0);
+}
+
+#[test]
+fn one_off_node_and_metadata_mutations_refuse_locks_pending_and_stale_identity() {
+    let world = one_off_world("one-off-guards");
+    let client = world.wallet();
+    let identity = crate::wallet_ops::identity(&world.ctx, &client).unwrap();
+    let refuse_all = || {
+        assert!(crate::transport::configure_once(
+            &world.ctx,
+            &client,
+            &identity,
+            "node.example:18081",
+            false
+        )
+        .is_err());
+        assert!(crate::receive::new_address(&world.ctx, &client, &identity, 0, "invoice").is_err());
+        assert!(crate::history::set_note(
+            &world.ctx, &client, &identity, BUILT_TXID, 0, "", "reviewed"
+        )
+        .is_err());
+        for method in ["set_daemon", "create_address", "set_tx_notes"] {
+            assert_eq!(
+                world.count(&world.wallet_log, method),
+                0,
+                "{method} must not mutate"
+            );
+        }
+    };
+    let held = send::take_send_lock(&world.ctx).unwrap();
+    refuse_all();
+    drop(held);
+    for name in ["pending.json", "native-pending.json"] {
+        let path = world.ctx.paths.state_dir.join(name);
+        std::fs::write(&path, b"unreadable transaction state").unwrap();
+        refuse_all();
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"unreadable transaction state"
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+    state::set_last_open(&world.ctx, "replacement", crate::NetType::Mainnet).unwrap();
+    refuse_all();
+    assert_eq!(
+        crate::receive::addresses(&world.ctx, &client, &identity, 0)
+            .unwrap_err()
+            .reason(),
+        Some("wallet_changed")
+    );
+}
+
+#[test]
+fn empty_or_whitespace_payment_ledger_blocks_metadata_mutations() {
+    let world = one_off_world("empty-ledger-metadata");
+    let client = world.wallet();
+    let identity = crate::wallet_ops::identity(&world.ctx, &client).unwrap();
+    let receiving = crate::receive::select(&world.ctx, &client, &identity, 0, 0).unwrap();
+    let path = world.ctx.paths.pending_file();
+
+    for bytes in [b"".as_slice(), b" \t\r\n".as_slice()] {
+        crate::write_private(&path, bytes).unwrap();
+        let before = read_log(&world.wallet_log).len();
+        let errors = [
+            crate::receive::new_address(&world.ctx, &client, &identity, 0, "invoice").unwrap_err(),
+            crate::receive::rename(&world.ctx, &client, &receiving, "reviewed").unwrap_err(),
+            crate::history::set_note(
+                &world.ctx, &client, &identity, BUILT_TXID, 0, "", "reviewed",
+            )
+            .unwrap_err(),
+        ];
+        for error in errors {
+            assert_eq!(error.exit_code(), 3);
+            assert_eq!(error.reason(), Some("pending_send"));
+        }
+        assert_eq!(read_log(&world.wallet_log).len(), before);
+        for method in ["create_address", "label_address", "set_tx_notes"] {
+            assert_eq!(world.count(&world.wallet_log, method), 0, "{method}");
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+
+        state::clear_pending_send(&world.ctx).unwrap();
+        assert!(!path.exists());
+        drop(crate::wallet_ops::guard(&world.ctx, &client, &identity).unwrap());
+    }
+}
+
+#[test]
+fn one_off_node_change_enforces_real_process_proxy_attestation() {
+    let mut world = one_off_world("one-off-proxy");
+    let fixture = world.dir.join("systemctl.txt");
+    // Actual mock-host PID, deliberately not a monero-wallet-rpc executable.
+    std::fs::write(
+        &fixture,
+        format!(
+            "fmonero-wallet-rpc.service active disabled yes {}\n",
+            std::process::id()
+        ),
+    )
+    .unwrap();
+    world.ctx.settings.node.proxy = Some("127.0.0.1:9050".into());
+    world.ctx.settings.node.fingerprint = Some("ab".repeat(32));
+    let client = world.wallet();
+    let identity = crate::wallet_ops::identity(&world.ctx, &client).unwrap();
+    let config = std::fs::read(world.ctx.paths.config_file()).unwrap();
+    let error = crate::transport::configure_once(
+        &world.ctx,
+        &client,
+        &identity,
+        "https://node.example:18081",
+        false,
+    )
+    .unwrap_err();
+    assert_eq!(error.reason(), Some("transport_policy"));
+    assert_eq!(world.count(&world.wallet_log, "set_daemon"), 0);
+    assert_eq!(
+        std::fs::read(world.ctx.paths.config_file()).unwrap(),
+        config
+    );
+    // Without an owned MainPID this actual in-process mock gets explicit proxy
+    // parameters, never fabricated evidence for an inherited Monero global proxy.
+    std::fs::write(
+        &fixture,
+        "fmonero-wallet-rpc.service active disabled yes -\n",
+    )
+    .unwrap();
+    crate::transport::configure_once(
+        &world.ctx,
+        &client,
+        &identity,
+        "https://node.example:18081",
+        false,
+    )
+    .unwrap();
+    let calls: Vec<_> = read_log(&world.wallet_log)
+        .into_iter()
+        .filter(|r| r["method"] == "set_daemon" && r["status"] == 200)
+        .collect();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["body"]["params"]["proxy"], "127.0.0.1:9050");
+    assert_eq!(calls[0]["body"]["params"]["ssl_support"], "enabled");
+    assert_eq!(
+        std::fs::read(world.ctx.paths.config_file()).unwrap(),
+        config
+    );
+}
+
+#[test]
+fn payment_ledger_directory_failure_prevents_first_relay() {
+    use state::payment_io_fault::{self, Stage};
+    for stage in [Stage::Open, Stage::Sync] {
+        let world = World::new(&format!("ledger-first-{stage:?}"), &[], &[]);
+        let client = world.wallet();
+        let node = world.node();
+        let cancel = CancelToken::new();
+        let plan = send::build(
+            &world.ctx,
+            &client,
+            send::NodeGate::Local(&node),
+            &a_send(DEST),
+            &cancel,
+        )
+        .unwrap();
+        let _fault = payment_io_fault::inject(&world.ctx.paths.state_dir, stage, 0);
+        // Cache persistence retains its own behavior and cannot consume this gate.
+        state::note_refresh(&world.ctx).unwrap();
+        let error = send::relay(&world.ctx, &client, plan, &|_| {}, &cancel).unwrap_err();
+        assert!(
+            error.to_string().contains("payment record directory"),
+            "{error}"
+        );
+        assert!(error.detail().unwrap().contains("os error 5"));
+        assert_eq!(world.count(&world.wallet_log, "relay_tx"), 0);
+        assert_eq!(world.count(&world.wallet_log, "store"), 0);
+        // Rename happened, but its durability is unconfirmed: never erase the guard.
+        let record = state::pending_send(&world.ctx).unwrap().unwrap();
+        assert_eq!(record.txs.len(), 1);
+        assert_eq!(record.txs[0].txid, BUILT_TXID);
+        assert!(!record.txs[0].relayed);
+        assert!(record.txs[0].relayed_at.is_none());
+        assert_eq!(
+            send::refuse_if_send_in_flight(&world.ctx)
+                .unwrap_err()
+                .reason(),
+            Some("pending_send")
+        );
+        let before = world.count(&world.wallet_log, "transfer_split");
+        assert!(send::build(
+            &world.ctx,
+            &client,
+            send::NodeGate::Local(&node),
+            &a_send(DEST),
+            &cancel
+        )
+        .is_err());
+        assert_eq!(world.count(&world.wallet_log, "transfer_split"), before);
+        assert_eq!(world.count(&world.wallet_log, "relay_tx"), 0);
+    }
+}
+
+#[test]
+fn payment_ledger_directory_failure_after_ack_keeps_partial_state_and_stops_relay() {
+    use state::payment_io_fault::{self, Stage};
+    let (scratch, _) = split_send_fixtures();
+    let fixture_path = scratch.to_string_lossy().into_owned();
+    for stage in [Stage::Open, Stage::Sync] {
+        let world = World::new(
+            &format!("ledger-after-ack-{stage:?}"),
+            &[],
+            &["--fixtures", &fixture_path, "--scenario", "splitcase"],
+        );
+        let client = world.wallet();
+        let node = world.node();
+        let cancel = CancelToken::new();
+        let plan = send::build(
+            &world.ctx,
+            &client,
+            send::NodeGate::Local(&node),
+            &a_send(DEST),
+            &cancel,
+        )
+        .unwrap();
+        assert_eq!(plan.txs.len(), 2);
+        assert!(
+            !plan.is_sweep,
+            "ordinary split payment uses the same durable gate"
+        );
+        let ids: Vec<_> = plan.txs.iter().map(|t| t.txid.clone()).collect();
+        let metadata = plan.txs[0].metadata.clone();
+        // Let the entire initial record become durable. Fail the directory I/O
+        // only after Monero's first successful acknowledgement and the next rename.
+        let _fault = payment_io_fault::inject(&world.ctx.paths.state_dir, stage, 1);
+        let error = send::relay(&world.ctx, &client, plan, &|_| {}, &cancel).unwrap_err();
+        assert!(
+            error.to_string().contains("accepted 1 of 2 payments"),
+            "{error}"
+        );
+        assert!(error.to_string().contains("Do not send it again"));
+        assert_eq!(error.reason(), Some("pending_send"));
+        assert!(error.detail().unwrap().contains("os error 5"));
+        assert!(!error.hint().contains("clear-pending"));
+        assert!(error.action().unwrap().contains("Inspect wallet history"));
+        let relayed = world.bodies(&world.wallet_log, "relay_tx");
+        assert_eq!(relayed.len(), 1);
+        assert_eq!(relayed[0]["hex"].as_str(), Some(metadata.as_str()));
+        assert_eq!(world.count(&world.wallet_log, "store"), 0);
+        let bytes = std::fs::read(world.ctx.paths.pending_file()).unwrap();
+        let record = state::pending_send(&world.ctx).unwrap().unwrap();
+        assert_eq!(
+            record
+                .txs
+                .iter()
+                .map(|t| t.txid.clone())
+                .collect::<Vec<_>>(),
+            ids
+        );
+        assert!(record.txs[0].relayed);
+        assert!(record.txs[0].relayed_at.is_some());
+        assert!(!record.txs[1].relayed);
+        assert!(record.txs[1].relayed_at.is_none());
+        assert_eq!(
+            send::refuse_if_send_in_flight(&world.ctx)
+                .unwrap_err()
+                .reason(),
+            Some("pending_send")
+        );
+        assert!(send::build(
+            &world.ctx,
+            &client,
+            send::NodeGate::Local(&node),
+            &a_send(DEST),
+            &cancel
+        )
+        .is_err());
+        assert_eq!(world.count(&world.wallet_log, "transfer_split"), 1);
+        assert_eq!(world.count(&world.wallet_log, "relay_tx"), 1);
+        assert_eq!(
+            std::fs::read(world.ctx.paths.pending_file()).unwrap(),
+            bytes
+        );
+    }
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
+fn payment_ledger_directory_failure_during_clear_is_reported() {
+    use state::payment_io_fault::{self, Stage};
+    for stage in [Stage::Open, Stage::Sync] {
+        let world = World::new(&format!("ledger-clear-{stage:?}"), &[], &[]);
+        state::set_pending_send(
+            &world.ctx,
+            &PendingSend {
+                kind: PendingKind::Send,
+                account_index: 0,
+                dest: DEST.into(),
+                built_at: crate::now_unix(),
+                txs: vec![PendingTx {
+                    txid: BUILT_TXID.into(),
+                    amount: Piconero(100_000_000_000),
+                    fee: Piconero(30_720_000),
+                    relayed: true,
+                    relayed_at: Some(crate::now_unix()),
+                }],
+            },
+        )
+        .unwrap();
+        let _fault = payment_io_fault::inject(&world.ctx.paths.state_dir, stage, 0);
+        let error = state::clear_pending_send(&world.ctx).unwrap_err();
+        assert!(error.to_string().contains("payment record directory"));
+        assert!(error.detail().unwrap().contains("os error 5"));
+        // Unlink is visible, but durable removal is not reported as successful.
+        assert!(!world.ctx.paths.pending_file().exists());
+        assert_eq!(world.count(&world.wallet_log, "relay_tx"), 0);
+    }
+}
+
+#[test]
+fn native_empty_key_image_response_exports_an_explicit_empty_artifact() {
+    use std::os::unix::fs::PermissionsExt;
+    // Replay the offset-only schema observed in the isolated native 0.18.5.3
+    // harness through protected RPC and the actual guarded artifact exporter.
+    let scratch = std::env::temp_dir().join(format!(
+        "fmonero-empty-image-fixtures-{}-{}",
+        std::process::id(),
+        crate::rpc::random_hex(8).unwrap()
+    ));
+    let wallet_dir = scratch.join("wallet");
+    std::fs::create_dir_all(&wallet_dir).unwrap();
+    for entry in std::fs::read_dir(fixtures().join("wallet")).unwrap() {
+        let entry = entry.unwrap();
+        if entry.file_type().unwrap().is_file() {
+            std::fs::copy(entry.path(), wallet_dir.join(entry.file_name())).unwrap();
+        }
+    }
+    std::fs::write(
+        wallet_dir.join("export_key_images.json"),
+        br#"{"offset":0}"#,
+    )
+    .unwrap();
+    let fixture_path = scratch.to_string_lossy().into_owned();
+    let world = World::new("empty-key-images", &[], &["--fixtures", &fixture_path]);
+    state::set_last_open(&world.ctx, "scratch", crate::NetType::Mainnet).unwrap();
+    let client = world.wallet();
+    let identity = crate::wallet_ops::identity(&world.ctx, &client).unwrap();
+    let output = world.dir.join("empty-images.json");
+    crate::watch::export_key_images(&world.ctx, &client, &identity, &output).unwrap();
+    let artifact: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&output).unwrap()).unwrap();
+    assert_eq!(artifact["format"], "fmonero.key-images/1");
+    assert_eq!(artifact["address"], identity.primary_address);
+    assert_eq!(
+        artifact["images"],
+        serde_json::json!({"offset":0,"signed_key_images":[]})
+    );
+    assert_eq!(
+        std::fs::metadata(&output).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(
+        world.bodies(&world.wallet_log, "export_key_images"),
+        vec![serde_json::json!({"all":true})]
+    );
+    assert_eq!(world.count(&world.wallet_log, "import_key_images"), 0);
+    assert_eq!(world.count(&world.wallet_log, "relay_tx"), 0);
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
+fn wallet_unknown_error_refresh_preserves_upstream_cause_and_session() {
+    let world = World::new(
+        "refresh-unknown-error",
+        &[],
+        &[
+            "--fail",
+            "refresh=-1:Unexpected hard fork version v16 at height 1",
+        ],
+    );
+    state::set_last_open(&world.ctx, "scratch", crate::NetType::Mainnet).unwrap();
+    let error = world.wallet().refresh(0, &CancelToken::new()).unwrap_err();
+    assert_eq!(error.exit_code(), 5);
+    assert_eq!(error.reason(), Some("rpc_error"));
+    assert_eq!(
+        error.to_string(),
+        "Unexpected hard fork version v16 at height 1"
+    );
+    assert_eq!(state::last_open(&world.ctx).unwrap().unwrap().0, "scratch");
+    assert_eq!(
+        read_log(&world.wallet_log)
+            .iter()
+            .filter(|row| row["method"] == "refresh" && row["status"] == 200)
+            .count(),
+        1
+    );
+    assert_eq!(world.count(&world.wallet_log, "close_wallet"), 0);
+    assert_eq!(world.count(&world.wallet_log, "relay_tx"), 0);
+}
+
+#[test]
+fn wallet_unknown_error_protected_open_keeps_password_refusal_and_redaction() {
+    let secret = crate::SecretString::new(crate::rpc::random_hex(24).unwrap()).unwrap();
+    let failure = format!(
+        "open_wallet=-1:Failed to open wallet : {}",
+        secret.expose_secret()
+    );
+    let world = World::new("open-unknown-error", &[], &["--fail", &failure]);
+    let error = world
+        .wallet()
+        .open_wallet("scratch", secret.expose_secret())
+        .unwrap_err();
+    assert_eq!(error.exit_code(), 9);
+    assert_eq!(error.reason(), Some("bad_password"));
+    assert!(!format!("{error:?}").contains(secret.expose_secret()));
+    assert!(!error.to_string().contains(secret.expose_secret()));
+    assert!(!error.hint().contains(secret.expose_secret()));
+    assert_eq!(
+        read_log(&world.wallet_log)
+            .iter()
+            .filter(|row| row["method"] == "open_wallet" && row["status"] == 200)
+            .count(),
+        1
+    );
+    assert_eq!(world.count(&world.wallet_log, "set_daemon"), 0);
+    assert_eq!(world.count(&world.wallet_log, "auto_refresh"), 0);
+}
+
+#[test]
+fn wallet_unknown_error_protected_creation_is_not_a_password_failure() {
+    for (code, exit, reason) in [(-1, 5, "rpc_error"), (-22, 9, "bad_password")] {
+        let failure = format!("create_wallet={code}:private peer detail must not escape");
+        let world = World::new(&format!("create-error-{code}"), &[], &["--fail", &failure]);
+        let error = world
+            .wallet()
+            .create_wallet("scratch", "", "English")
+            .unwrap_err();
+        assert_eq!(error.exit_code(), exit);
+        assert_eq!(error.reason(), Some(reason));
+        assert!(!format!("{error:?}").contains("private peer detail must not escape"));
+        assert_eq!(
+            read_log(&world.wallet_log)
+                .iter()
+                .filter(|row| row["method"] == "create_wallet" && row["status"] == 200)
+                .count(),
+            1
+        );
+        assert_eq!(world.count(&world.wallet_log, "open_wallet"), 0);
+    }
 }

@@ -15,7 +15,7 @@ Panel {
   manageIpc: false
   visible: svc.appRunning
 
-  readonly property string panelVersion: "qml-d6a1f389"
+  readonly property string panelVersion: "qml-5315e243"
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent
@@ -151,6 +151,7 @@ Panel {
     if (problems.length > 0) s.push("problems")
     if (walletTargets > 0) s.push("wallet")
     if (svc.pending) s.push("pending")
+    s.push("quick")
     s.push("footer")
     return s
   }
@@ -161,6 +162,7 @@ Panel {
     if (name === "problems") return problems.length
     if (name === "wallet") return walletTargets
     if (name === "footer") return footerCount
+    if (name === "quick") return 7
     return 1
   }
   function isHorizontal(name) { return name === "footer" || name === "header" }
@@ -217,6 +219,7 @@ Panel {
     else if (focusSection === "problems") activateProblem(selectedIndex)
     else if (focusSection === "wallet") activateWallet(selectedIndex)
     else if (focusSection === "pending") { svc.openTui(); root.close() }
+    else if (focusSection === "quick") activateQuick(selectedIndex)
     else if (focusSection === "footer") activateFooter(selectedIndex)
   }
 
@@ -239,6 +242,15 @@ Panel {
     else svc.closeWallet()
   }
 
+  function activateQuick(index) {
+    if (index === 0) svc.togglePrivacy()
+    else if (index === 6) svc.toggleNotifications()
+    else {
+      var pages = ["", "receive", "new-address", "restore", "logs", "tools"]
+      if (index > 0 && index < pages.length) { svc.openPage(pages[index]); root.close() }
+    }
+  }
+
   function activateFooter(index) {
     if (index === 0) showWalletPicker()
     else if (index === 1) { svc.openNodeScreen(); root.close() }
@@ -249,6 +261,7 @@ Panel {
     if (name === "picker") return pickerRows
     if (name === "problems") return warningColumn
     if (name === "wallet") return walletActionColumn
+    if (name === "quick") return quickActions
     return null
   }
   function sectionAnchor(name) {
@@ -259,8 +272,14 @@ Panel {
   }
   function scrollCursorIntoView() {
     var col = sectionColumn(focusSection)
-    var item = col && selectedIndex >= 0 && selectedIndex < col.children.length
-      ? col.children[selectedIndex] : sectionAnchor(focusSection)
+    var item = null
+    if (col) {
+      for (var i = 0; i < col.children.length; i++) {
+        var child = col.children[i]
+        if (child.section === focusSection && child.idx === selectedIndex) { item = child; break }
+      }
+    }
+    if (!item) item = sectionAnchor(focusSection)
     scrollItemIntoView(item)
   }
   function scrollItemIntoView(item) {
@@ -374,13 +393,19 @@ Panel {
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(t) {
         var k = String(t).toLowerCase()
-        if (k === "n") { svc.openNodeScreen(); root.close() }
-        else if (k === "r") svc.refresh()
-        else if (k === "t") { svc.openTui(); root.close() }
+        if (k === "n") { svc.openPage("new-address"); root.close() }
+        else if (k === "r") { svc.openPage("receive"); root.close() }
+        else if (k === "f") svc.refresh()
+        else if (k === "t") { svc.openPage("tools"); root.close() }
         else if (k === "c") svc.copyAddress()
         else if (k === "d") { svc.openDoctor(); root.close() }
-        else if (k === "w") root.showWalletPicker()
+        else if (k === "w" || k === "o") root.showWalletPicker()
         else if (k === "q") root.powerAction()
+        else if (k === "p") svc.togglePrivacy()
+        else if (k === "e") { svc.openPage("receive"); root.close() }
+        else if (k === "a") { svc.openPage("new-address"); root.close() }
+        else if (k === "l") { svc.openPage("logs"); root.close() }
+        else if (k === "i") svc.toggleNotifications()
       }
 
       Flickable {
@@ -403,8 +428,8 @@ Panel {
           PanelHero {
             id: heroBlock
             width: parent.width
-            title: "Monero"
-            meta: svc.walletOpen && svc.wallet.name ? String(svc.wallet.name) : "Wallets"
+            title: "fmonero"
+            meta: svc.privacy ? "Private" : svc.walletOpen && svc.wallet.name ? Model.safeText(svc.wallet.name) : "Wallets"
             foreground: root.foreground
             fontFamily: root.fontFamily
             iconOpacity: svc.walletUp || svc.walletReachable ? 1 : 0.5
@@ -414,9 +439,9 @@ Panel {
             trailingControl: Component {
               Row {
                 spacing: Style.space(4)
-                HeaderAction { idx: 0; iconText: "󰖄"; tooltipText: "Open wallet (w)"; enabled: !svc.busy; onClicked: root.showWalletPicker() }
-                HeaderAction { idx: 1; iconText: "󰆍"; tooltipText: "More in the TUI (t)"; onClicked: { svc.openTui(); root.close() } }
-                HeaderAction { idx: 2; iconText: "󰑐"; tooltipText: "Refresh (r)"; enabled: !svc.busy; onClicked: root.activateHeader(2) }
+                HeaderAction { idx: 0; iconText: "󰖄"; tooltipText: "(O)pen wallet"; enabled: !svc.busy; onClicked: root.showWalletPicker() }
+                HeaderAction { idx: 1; iconText: "󰆍"; tooltipText: "Open fmonero"; onClicked: { svc.openTui(); root.close() } }
+                HeaderAction { idx: 2; iconText: "󰑐"; tooltipText: "Re(f)resh"; enabled: !svc.busy; onClicked: root.activateHeader(2) }
                 HeaderAction { idx: 3; iconText: "󰐥"; tooltipText: "Save and close fmonero (q)"; enabled: !svc.busy; onClicked: root.powerAction() }
               }
             }
@@ -440,7 +465,7 @@ Panel {
             visible: root.choosingWallet
             spacing: Style.space(8)
             PanelSeparator { foreground: root.foreground }
-            PanelSectionHeader { text: root.selectedWallet === "" ? "OPEN WALLET" : root.selectedWallet; foreground: root.foreground; fontFamily: root.fontFamily }
+            PanelSectionHeader { text: root.selectedWallet === "" ? "OPEN WALLET" : svc.privacy ? "Selected wallet" : Model.safeText(root.selectedWallet); foreground: root.foreground; fontFamily: root.fontFamily }
             Text {
               textFormat: Text.PlainText; width: parent.width
               visible: root.selectedWallet === "" && (svc.listingWallets || svc.walletListError !== "" || svc.wallets.length === 0)
@@ -458,7 +483,7 @@ Panel {
                   required property string modelData
                   required property int index
                   section: "picker"; idx: index; width: pickerRows.width
-                  title: modelData
+                  title: svc.privacy ? "Wallet " + (index + 1) : Model.safeText(modelData)
                   meta: svc.walletOpen && svc.wallet.name === modelData ? "Open" : "Open →"
                 }
               }
@@ -517,8 +542,7 @@ Panel {
 
           Text {
             textFormat: Text.PlainText; visible: text !== ""; width: parent.width
-            text: svc.actionStatus !== "" ? svc.actionStatus
-              : (svc.localError !== "" ? svc.localError : svc.lastError)
+            text: Model.actionLine(svc.actionStatus, svc.localError, svc.lastError, svc.privacy, svc.actionFailed)
             color: svc.actionStatus === "" && (svc.localError !== "" || svc.lastError !== "") ? root.urgent : root.dim
             font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall
             wrapMode: Text.WordWrap; maximumLineCount: 3; elide: Text.ElideRight
@@ -551,8 +575,8 @@ Panel {
                   section: "problems"
                   idx: index
                   width: warningColumn.width
-                  message: String(modelData.text || "")
-                  hint: String(modelData.panel_action || modelData.action || "")
+                  message: svc.privacy ? "Wallet or node needs attention" : Model.safeText(modelData.text || "")
+                  hint: svc.privacy ? "Open fmonero to review" : Model.safeText(modelData.panel_action || modelData.action || "")
                   severity: String(modelData.severity || "warn")
                 }
               }
@@ -599,7 +623,7 @@ Panel {
               ListRow {
                 visible: svc.alive && svc.walletOpen
                 section: "wallet"; idx: 0; width: parent.width
-                title: svc.walletOpen && svc.wallet.primary_address
+                title: svc.privacy ? "Address hidden" : svc.walletOpen && svc.wallet.primary_address
                   ? Model.shortAddr(svc.wallet.primary_address) : "no address yet"
                 meta: "copy (c)"
               }
@@ -677,6 +701,21 @@ Panel {
                 }
               }
             }
+          }
+
+          Column {
+            id: quickActions
+            visible: !root.choosingWallet
+            width: parent.width
+            spacing: Style.space(4)
+            PanelSectionHeader { text: "WALLET ACTIONS"; foreground: root.foreground; fontFamily: root.fontFamily }
+            ListRow { section: "quick"; idx: 0; width: parent.width; title: "(P)rivacy"; meta: svc.privacy ? "Hidden" : "Visible" }
+            ListRow { section: "quick"; idx: 1; width: parent.width; title: "(R)eceive / payment request"; meta: "Open →" }
+            ListRow { section: "quick"; idx: 2; width: parent.width; title: "(N)ew address"; meta: "Open →" }
+            ListRow { section: "quick"; idx: 3; width: parent.width; title: "Restore wallet"; meta: "Open →" }
+            ListRow { section: "quick"; idx: 4; width: parent.width; title: "(L)ive logs"; meta: "Open →" }
+            ListRow { section: "quick"; idx: 5; width: parent.width; title: "Advanced (T)ools"; meta: "Open →" }
+            ListRow { section: "quick"; idx: 6; width: parent.width; title: "(I)ncoming alerts"; meta: svc.notificationsEnabled ? "On · generic" : "Off" }
           }
 
           Column {

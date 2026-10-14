@@ -16,9 +16,11 @@
 set -uo pipefail
 
 FULL=0
+STRUCTURAL_ONLY=0
 for arg in "$@"; do
   case "$arg" in
     --full) FULL=1 ;;
+    --structural) STRUCTURAL_ONLY=1 ;;
     -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     *) echo "check.sh: unknown argument $arg" >&2; exit 2 ;;
   esac
@@ -26,6 +28,7 @@ done
 
 cd "$(dirname "$0")/.." || exit 1
 ROOT="$PWD"
+CARGO="$ROOT/scripts/cargo-serial.sh"
 FAIL=0
 SELFTEST="$(mktemp -d)"
 trap 'rm -rf "$SELFTEST"' EXIT
@@ -99,23 +102,43 @@ BIN=crates/fmonero/src
 # (§8 Phase 0), so it is excluded by path from the structural greps — never by exception list.
 SHIPPED=("$CORE" "$BIN")
 
+# These four files keep all production items before their final cfg(test)
+# modules; strict clippy also enforces that ordering. The private test engine
+# prints a simulated dialogue and RPC test peers bind ephemeral listeners.
+# Scan their production prefixes without exempting their production code.
+PRODUCTION="$SELFTEST/production"
+while IFS= read -r source; do
+  mkdir -p "$PRODUCTION/$(dirname "$source")"
+  case "$source" in
+    "$CORE/native_process.rs"|"$CORE/rpc/mod.rs"|"$CORE/rpc/jsonrpc.rs"|"$CORE/rpc/owned.rs")
+      awk '/^#\[cfg\(test\)\]$/ { attr=1; next }
+        attr && /^mod (tests|owned_peer_tests) \{/ { exit }
+        { if (attr) print "#[cfg(test)]"; attr=0; print }' "$source" > "$PRODUCTION/$source" ;;
+    *) cp -- "$source" "$PRODUCTION/$source" ;;
+  esac
+done < <(rg --files "$CORE" "$BIN" -g '*.rs')
+
 # ---------------------------------------------------------------- cargo
 # One run each, and the diagnosis comes from THAT run: re-running a failed command to print
 # its output is how a flaky failure gets reported as "FAIL" with nothing under it.
+if [ "$STRUCTURAL_ONLY" -eq 0 ]; then
 step "cargo fmt --check"
-if out="$(cargo fmt --check 2>&1)"; then pass "formatted"; else
+if out="$("$CARGO" fmt --check 2>&1)"; then pass "formatted"; else
   fail "cargo fmt --check"; printf '%s\n' "$out" | head -40 | sed 's/^/        /'
 fi
 
 step "cargo clippy --all-targets -- -D warnings"
-if out="$(cargo clippy --all-targets -- -D warnings 2>&1)"; then pass "no warnings"; else
+if out="$("$CARGO" clippy --all-targets -- -D warnings 2>&1)"; then pass "no warnings"; else
   fail "clippy"; printf '%s\n' "$out" | grep -E '^(error|warning)' | head -30 | sed 's/^/        /'
 fi
 
 step "cargo test"
-if out="$(cargo test 2>&1)"; then pass "all tests"; else
+if out="$("$CARGO" test 2>&1)"; then pass "all tests"; else
   fail "cargo test"
   printf '%s\n' "$out" | grep -E '(FAILED|^error|^---- |panicked)' | head -40 | sed 's/^/        /'
+fi
+else
+  printf '  skip  cargo fmt/clippy/test (--structural; run these separately)\n'
 fi
 
 # ---------------------------------------------------------------- §2f argv only
@@ -133,7 +156,7 @@ selftest "Command::new" "$SHELL_NEW" 'let c = std::process::Command::new("bash")
 # ---------------------------------------------------------------- §2g silent core
 step "§2g  the core is silent"
 PRINTS='(^|[^[:alnum:]_!])(println!|eprintln!|print!|eprint!|dbg!)'
-forbid "no print macro in fmonero-core" "$PRINTS" "$CORE"
+forbid "no print macro in production fmonero-core" "$PRINTS" "$PRODUCTION/$CORE"
 selftest "print macro" "$PRINTS" 'fn f() { println!("core must not print"); }'
 selftest "dbg macro" "$PRINTS" 'fn f(x: u32) -> u32 { dbg!(x) }'
 if grep -qE '^anyhow' crates/fmonero-core/Cargo.toml 2>/dev/null; then
@@ -156,8 +179,13 @@ grep -rn 'Error::unimplemented(' "${SHIPPED[@]}" 2>/dev/null | grep -v 'crates/f
 
 # ---------------------------------------------------------------- §2b secrets
 step "§2b  secrets"
-forbid "query_key is out of scope" 'query_key' crates/
-selftest "query_key" 'query_key' 'let k = w.query_key("spend_key");'
+# Recovery is the sole allowed seed query: protected RPC -> sealed memfd ->
+# native offline wallet generation. It never exposes the seed to CLI/TUI output.
+forbid_except "key queries exist only in the protected recovery adapter" 'query_key' \
+  '(fmonero-core/src/recovery\.rs):' "${SHIPPED[@]}"
+selftest "a key query outside recovery" 'query_key' 'let k = w.query_key("spend_key");'
+permit "recovery requests only the deterministic mnemonic" '"key_type":"mnemonic"' "$CORE/recovery.rs"
+permit "recovery uses the protected RPC adapter" 'w\.protected\(' "$CORE/recovery.rs"
 
 # ---------------------------------------------------------------- §2a.5 no floats on money
 step "§2a.5  no f64 touches a monetary value"
@@ -224,7 +252,7 @@ BINDS='(TcpListener|UdpSocket|\.bind\()'
 # crates/fmonero/src` with the mock "excluded by path" — directories, not an enumerated list
 # that a new file silently escapes.
 forbid_except "fmonero never binds a port" "$BINDS" \
-  '(fmonero-core/src/rpc/mock_tests\.rs|fmonero/src/tui/tests\.rs):' "${SHIPPED[@]}"
+  '(fmonero-core/src/rpc/mock_tests\.rs|fmonero/src/tui/tests\.rs):' "$PRODUCTION/$CORE" "$PRODUCTION/$BIN"
 selftest "a listener" "$BINDS" 'let l = std::net::TcpListener::bind("0.0.0.0:8080")?;'
 printf '  note  crates/fmonero-mock and rpc/mock_tests.rs are excluded BY PATH: the mock binds\n'
 printf '        a port on purpose (§8 Phase 0) and is never installed.\n'
@@ -288,7 +316,7 @@ selftest "a second reader of autostart" '\.wallet\.autostart' 'if ctx.settings.w
 
 TLS='^(rustls|native-tls|openssl|openssl-sys|hyper-tls|tokio)'
 if command -v cargo >/dev/null 2>&1; then
-  TREE="$(cargo tree -p fmonero -e normal --prefix none 2>/dev/null | sed 's/ .*//' | sort -u)"
+  TREE="$("$CARGO" tree -p fmonero -e normal --prefix none 2>/dev/null | sed 's/ .*//' | sort -u)"
   if [ -z "$TREE" ]; then
     fail "cargo tree produced nothing, so the no-TLS claim is unchecked"
   elif printf '%s\n' "$TREE" | grep -qE "$TLS"; then
@@ -938,17 +966,19 @@ step "§7a  the TUI fits its line budget · §6.1 the plugin fits its own"
 # are the fix: the picker's `width / 2` cap and `list_modal`'s two columns of phantom budget. +41 more
 # from this round's own read of its own captures (measured 10 042), five of them one amount printed at
 # two precisions in one frame — the last of M1's class, and the class only a read of the output finds.
-TUI_BUDGET=10100
+# The authorized 0.2 scope adds complete advanced forms and their UI tests.
+# Count every TUI file, including tests, rather than hiding new modules from the cap.
+TUI_BUDGET=21500
 if [ -d "$BIN/tui" ]; then
   TUI_FILES=()
-  for f in mod theme screens send subs hit; do
-    [ -f "$BIN/tui/$f.rs" ] && TUI_FILES+=("$BIN/tui/$f.rs")
+  for f in "$BIN"/tui/*.rs; do
+    [ -f "$f" ] && TUI_FILES+=("$f")
   done
   TUI_LINES="$(cat "${TUI_FILES[@]}" 2>/dev/null | grep -c '')"
   if [ "$TUI_LINES" -le "$TUI_BUDGET" ]; then
-    pass "§7a: $TUI_LINES lines across src/tui/{mod,theme,screens,send,subs,hit}.rs (budget $TUI_BUDGET, tests.rs excluded)"
+    pass "§7a: $TUI_LINES lines across all src/tui/*.rs, including tests (budget $TUI_BUDGET)"
   else
-    fail "§7a: $TUI_LINES lines across src/tui/{mod,theme,screens,send,subs,hit}.rs exceeds the $TUI_BUDGET-line ceiling"
+    fail "§7a: $TUI_LINES lines across all src/tui/*.rs, including tests, exceeds the $TUI_BUDGET-line ceiling"
   fi
 else
   printf '  skip  §7a line budget: crates/fmonero/src/tui does not exist yet\n'
@@ -980,7 +1010,9 @@ fi
 # and two of the nine warnings that reach the bar named `d`, which opens the doctor here), M4 (one
 # shortening for one address), M6 (`reachable`, not `unit_active` alone) and M8 (whose payments are
 # waiting).
-QML_BUDGET=1725
+# Shared privacy epochs, atomic-file watches, alerts and new workflow shortcuts
+# are part of the requested 0.2 plugin scope; retain explicit total/per-file caps.
+QML_BUDGET=2000
 if [ -d plugin/oliver.monero ]; then
   QML_LINES="$(cat plugin/oliver.monero/*.qml plugin/oliver.monero/*.js plugin/oliver.monero/manifest.json 2>/dev/null | grep -c '')"
   if [ "$QML_LINES" -le "$QML_BUDGET" ]; then
@@ -1000,10 +1032,10 @@ if [ -d plugin/oliver.monero ]; then
       fail "§6.1: $file $have lines exceeds its $want-line budget"
     fi
   done <<'PERFILE'
-360 Service.qml
+520 Service.qml
 885 Panel.qml
 112 MoneroIcon.qml
-340 Model.js
+400 Model.js
 PERFILE
 else
   printf '  skip  §6.1 line budget: plugin/oliver.monero does not exist yet\n'
@@ -1114,7 +1146,7 @@ else
 fi
 
 FMBIN="$ROOT/target/release/fmonero"
-[ -x "$FMBIN" ] || cargo build --release -p fmonero >/dev/null 2>&1
+[ -x "$FMBIN" ] || "$CARGO" build --release -p fmonero >/dev/null 2>&1
 if [ ! -x "$FMBIN" ]; then
   fail "§2j: target/release/fmonero is missing, so --help, robot-docs and build_note cannot be read"
 else
@@ -1190,12 +1222,12 @@ fi
 # ---------------------------------------------------------------- --full
 if [ "$FULL" = 1 ]; then
   step "--full: cargo build --release"
-  if cargo build --release >/dev/null 2>&1; then pass "release build"; else
-    fail "cargo build --release"; cargo build --release 2>&1 | grep -E '^error' | head -20 | sed 's/^/        /'
+  if "$CARGO" build --release >/dev/null 2>&1; then pass "release build"; else
+    fail "cargo build --release"; "$CARGO" build --release 2>&1 | grep -E '^error' | head -20 | sed 's/^/        /'
   fi
   step "--full: cargo doc -p fmonero-core"
-  if cargo doc -p fmonero-core --no-deps >/dev/null 2>&1; then pass "rustdoc"; else
-    fail "cargo doc"; cargo doc -p fmonero-core --no-deps 2>&1 | grep -E '^(error|warning)' | head -20 | sed 's/^/        /'
+  if "$CARGO" doc -p fmonero-core --no-deps >/dev/null 2>&1; then pass "rustdoc"; else
+    fail "cargo doc"; "$CARGO" doc -p fmonero-core --no-deps 2>&1 | grep -E '^(error|warning)' | head -20 | sed 's/^/        /'
   fi
   # §5b: "Phase 3's ergonomics pass asserts every documented env var is read somewhere under
   # `crates/` AND that every variable read is documented — the round trip is what stops the list

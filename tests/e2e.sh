@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 # fmonero's end-to-end tests, run against the real binary (DESIGN.md §4b, §5c, §8).
 #
-#   tests/e2e.sh            --fast (default): every GREEN row, every §5c key set, and the
-#                           mock-AMBER rows. Target < 20 s after the build.
+#   tests/e2e.sh            --fast (default): local/protocol cases, exact JSON key sets,
+#                           and explicitly labeled advanced refusal contracts.
 #   tests/e2e.sh --full     adds the §2d deadline, breaker and --force paths, the §2a
-#                           concurrency tests, and the §2l (a)/(b)/(d) timings. Target < 90 s.
+#                           concurrency tests, and the §2l (a)/(b)/(d) timings.
+#                           Delayed authenticated calls make this a several-minute run.
 #
 # **What these tests prove, and what they do not.** Every row that touches a daemon is served by
 # `crates/fmonero-mock` over fixtures DERIVED FROM THE MONERO SOURCE at v0.18.5.1 (§1.1). That
 # proves fmonero's wire format, its parsing and its own sequencing; it proves nothing about a real
 # `monerod` or `monero-wallet-rpc`, and §4b keeps those rows AMBER for exactly that reason. No
-# send has ever been broadcast from this build.
+# funded public-network payment is qualified by this mock harness.
 #
 # Every case runs in its own FMONERO_STATE_DIR / _CONFIG_DIR / _CACHE_DIR, so nothing here can
 # touch the owner's real configuration, units or wallets.
@@ -61,7 +62,7 @@ OWNER_SERVICES_BEFORE="$(owner_services)"
 
 # ---------------------------------------------------------------- build
 step "build"
-if out="$(cargo build --release 2>&1)"; then
+if out="$("$ROOT/scripts/cargo-serial.sh" build --release 2>&1)"; then
   ok "cargo build --release"
 else
   bad "cargo build --release" "$(printf '%s' "$out" | grep -E '^error' | head -5)"
@@ -123,6 +124,9 @@ sandbox() {
   # reads its mode, so a umask-mode directory would report `fail` for the wrong reason too.
   chmod 700 "$XDG_DATA_HOME/fmonero" "$XDG_DATA_HOME/fmonero/wallets" \
             "$XDG_DATA_HOME/fmonero/wallets/mainnet"
+  # Set all seven sandbox overrides before the first CLI call in this case.
+  systemctl_fixture none
+  export FMONERO_NODES_URL="http://127.0.0.1:1"
   # `node.data_dir` is the one remaining path that decides an OUTCOME from the machine: §1.3's
   # 120 GB floor is measured on the filesystem holding it (`fsinfo::free_bytes`, which walks up to
   # the nearest existing ancestor), and `setup --units` refuses below it — correctly. Left at
@@ -137,8 +141,6 @@ sandbox() {
   # lines against 200 of somebody else's monerod. A case named "with no log file" must own the path
   # it claims is empty.
   "$FM" settings set node.log_file "$ROOT/target/e2e-data/$CASE/bitmonero/bitmonero.log" >/dev/null
-  systemctl_fixture none
-  export FMONERO_NODES_URL="http://127.0.0.1:1"
 }
 
 OUT=""; ERR=""; RC=0
@@ -187,6 +189,7 @@ expect_contains() { # expect_contains <needle> <label>  (searches stdout AND std
 # §5c's gate: the top-level key set must be EXACTLY the documented one — no missing key, no
 # extra key. A superset would let a payload grow keys nothing documents; a subset would let one
 # quietly lose a key an agent parses.
+# A label ending in (refusal) checks the exact error envelope, not successful operation output.
 # Every label is recorded, so the coverage step near the end of this file can COMPARE the set of
 # commands asserted against the set of commands that exist. Without the tally that step printed a
 # reassuring title and two skips and asserted nothing — a new §4.1 command could arrive with no
@@ -274,6 +277,8 @@ logged() { # logged <log> <method>  -> count
 log_lines() { [ -f "$1" ] && wc -l < "$1" | tr -d ' ' || echo 0; }
 
 # A systemctl fixture (§2i): `<unit> <is-active> <is-enabled> <exists> <main-pid>`.
+# PID 0 deliberately means unmanaged/unknown; the mock is not an owned Monero process.
+# Inventing a live PID would correctly fail the running proxy attestation.
 systemctl_fixture() { # systemctl_fixture <layout>
   local f="$WORK/$CASE/systemctl.txt"
   mkdir -p "$(dirname "$f")"
@@ -302,7 +307,7 @@ expect_json '.node.reachable' 'false' "node.reachable is false, not an error (§
 expect_json '.wallet.reachable' 'false' "wallet.reachable is false"
 expect_json '.node.height' 'null' "node.height is null, never 0 (§5)"
 expect_json '[.warnings[].id] | contains(["wallet_down"])' 'true' "it warns rather than failing"
-expect_keys "status" "ok schema generated_at node wallet units pending warnings last_error staleness"
+expect_keys "status" "ok schema generated_at node wallet units pending warnings last_error staleness privacy"
 
 # §2e: `status` never starts anything. The systemctl fixture is the observable proof: a start
 # would flip the <is-active> column, and `units::{start,stop}` are the only things that do.
@@ -322,18 +327,23 @@ expect_contains "fmonero wallet create" "the empty list names the command that c
 expect_contains "restore-deterministic-wallet" "and the one that brings an existing seed back (§4.1)"
 
 fm wallet validate "$DEST" --json
-expect_rc 0 "wallet validate falls back to the structural verdict"
-expect_json '.structural_only' 'true' "and says so (§4.1)"
+expect_rc 0 "wallet validate checks the checksum without a daemon"
+expect_json '.structural_only' 'false' "offline validation includes Keccak checksum verification"
+expect_json '.validation_source' '"offline_checksum"' "the result names its offline authority"
+expect_json '.valid' 'true' "the upstream address vector passes its checksum"
 expect_json '.nettype' '"mainnet"' "the decoded prefix names the network"
-expect_keys "wallet validate" "ok schema address valid integrated subaddress nettype structural_only"
+expect_keys "wallet validate (offline)" "ok schema address valid integrated subaddress nettype structural_only validation_source"
+
+fm wallet validate "${DEST%?}n" --json
+expect_rc 15 "a one-character checksum corruption is refused while offline"
 
 fm wallet validate "not-an-address" --json
 expect_rc 15 "an unparsable address is exit 15"
 
 fm settings list --json
 expect_rc 0 "settings list"
-expect_json '.settings | length' '26' \
-  "the twenty-six keys of §4 (v5.2 added the three node.* remote keys; v5.5 node.remote_probe_sec, wallet.autostart and tui.mouse)"
+expect_json '.settings | length' '32' \
+  "32 settings include TLS/CA/pin/proxy policy and shared privacy/notification preferences"
 expect_keys "settings list" "ok schema settings"
 
 fm settings get wallet.priority --json
@@ -374,7 +384,8 @@ expect_keys "capabilities" "ok tool version schema contract_version build_stage 
 fm version --json
 expect_rc 0 "version"
 expect_keys "version" "ok schema version build_stage build_note"
-expect_contains "A REAL SEND OR SWEEP OF ANY AMOUNT" "§2j: the note says the send path has never been broadcast"
+expect_contains "public-network payments with valued funds" "the qualification note retains the funded public-network boundary"
+expect_contains "physical Ledger/Trezor operation remain unqualified" "physical hardware acceptance remains separate"
 
 if "$FM" robot-docs | head -1 | grep -q 'robot docs'; then ok "robot-docs prints plain text"; else
   bad "robot-docs"
@@ -561,7 +572,9 @@ hint_runs "fmonero node down --yes"            4 node down
 hint_runs "fmonero node restart --yes"         4 node restart
 hint_runs "fmonero wallet clear-pending --yes" 0 wallet clear-pending
 hint_runs "fmonero wallet book remove 3 --yes" 4 wallet book remove 3
-hint_runs "fmonero wallet use-node 127.0.0.1:18081 --yes" 4 wallet use-node 127.0.0.1:18081
+hint_runs "fmonero wallet use-node 127.0.0.1:18081 --yes" 3 wallet use-node 127.0.0.1:18081
+expect_contains "Open a wallet before using this tool." "the hint passes confirmation and reaches the missing-session guard"
+expect_json '.reason == "needs_yes"' 'false' "the repeated hint is not another confirmation refusal"
 # Last, because the password has to be in the environment for the hint's own run: `wallet
 # create` refuses BEFORE it asks for one (§4.1), so only the second invocation needs it.
 FMONERO_WALLET_PASSWORD=x hint_runs "fmonero wallet create zzhint --yes" 4 wallet create zzhint
@@ -787,6 +800,16 @@ sandbox amber
 mock_node_up
 mock_wallet_up
 
+# Guarded mutations require the session recorded by a successful CLI open.
+FMONERO_WALLET_PASSWORD=t3stpw fm --timeout 3 wallet open main --json
+expect_rc 0 "wallet open"
+expect_keys "wallet open" "ok schema name open unit_started nettype"
+ORDER="$(jq -rs '[.[] | select(.status==200) | .method] | map(select(. == "open_wallet" or . == "set_daemon" or . == "auto_refresh")) | join(",")' "$WALLET_LOG")"
+if [ "$ORDER" = "open_wallet,set_daemon,auto_refresh" ]; then
+  ok "§4.2: open_wallet, then set_daemon, then auto_refresh — the order is not free"
+else
+  bad "§4.2: the open sequence is out of order" "$ORDER"
+fi
 fm --timeout 3 status --json
 expect_rc 0 "status against both mocks"
 expect_json '.node.reachable' 'true' "the node answers"
@@ -861,6 +884,7 @@ expect_keys "wallet refresh" "ok schema blocks_fetched received_money"
 
 fm --timeout 3 wallet validate "$DEST" --json
 expect_rc 0 "wallet validate against the daemon"
+expect_keys "wallet validate (RPC)" "ok schema address valid integrated subaddress nettype structural_only"
 expect_json '.structural_only' 'false' "the daemon answered, so it is not structural-only"
 VAL_BODY="$(jq -s '[.[] | select(.method=="validate_address")] | last | .body.params' "$WALLET_LOG")"
 if printf '%s' "$VAL_BODY" | jq -e '.any_net_type == true and .allow_openalias == false' >/dev/null; then
@@ -868,17 +892,6 @@ if printf '%s' "$VAL_BODY" | jq -e '.any_net_type == true and .allow_openalias =
 else
   bad "§2a.6: the two validate_address flags are wrong" "$VAL_BODY"
 fi
-
-FMONERO_WALLET_PASSWORD=t3stpw fm --timeout 3 wallet open main --json
-expect_rc 0 "wallet open"
-expect_keys "wallet open" "ok schema name open unit_started nettype"
-ORDER="$(jq -rs '[.[] | select(.status==200) | .method] | map(select(. == "open_wallet" or . == "set_daemon" or . == "auto_refresh")) | join(",")' "$WALLET_LOG")"
-if [ "$ORDER" = "open_wallet,set_daemon,auto_refresh" ]; then
-  ok "§4.2: open_wallet, then set_daemon, then auto_refresh — the order is not free"
-else
-  bad "§4.2: the open sequence is out of order" "$ORDER"
-fi
-
 # §4.2 + upstream: `on_set_daemon` builds the optional login only from a non-empty
 # username/password (`wallet_rpc_server.cpp:4754-4757`) and `wallet2::set_daemon` then assigns
 # `m_daemon_login = std::move(daemon_login)` UNCONDITIONALLY (`wallet2.cpp:1393`) — so omitting
@@ -888,7 +901,9 @@ printf 'rpc-login=fmonero:0123456789abcdef0123456789abcdef\n' > "$FMONERO_CONFIG
 chmod 600 "$FMONERO_CONFIG_DIR/monerod.conf"
 fm --timeout 3 wallet use-node 127.0.0.1:18081 --trusted --yes --json
 expect_rc 0 "wallet use-node"
-expect_keys "wallet use-node" "ok schema address trusted ssl_support authenticated persistent"
+expect_keys "wallet use-node" "ok schema address trusted ssl_support authenticated persistent tls_policy proxy"
+expect_json '.tls_policy' '"auto"' "the effective transport policy is explicit"
+expect_json '.proxy' 'null' "no proxy is invented for the mock session"
 expect_json '.persistent' 'false' \
   "§5c: the payload says this is a one-off the next wallet open undoes (v5.2)"
 expect_json '.ssl_support' '"disabled"' \
@@ -905,6 +920,7 @@ else
   bad "§1b.4: set_daemon sent no ssl_support, which epee reads as autodetect" "$SD"
 fi
 fm --timeout 3 wallet use-node 10.0.0.5:18081 --trusted --yes --json
+expect_rc 0 "wallet use-node accepts the explicit remote destination"
 SD="$(jq -s '[.[] | select(.method=="set_daemon")] | last | .body.params' "$WALLET_LOG")"
 if printf '%s' "$SD" | jq -e 'has("username") | not' >/dev/null; then
   ok "§2c: and a REMOTE one still gets nothing — a remote node is monero-wallet-rpc's business"
@@ -923,6 +939,33 @@ expect_rc 2 "wallet use-node with no port is exit 2 (§2m.2)"
 expect_json '.reason' '"bad_remote_address"' "and it names the grammar that refused it"
 fm --timeout 3 wallet use-node 127.0.0.1:18081 --json
 expect_rc 3 "wallet use-node without --yes is exit 3"
+
+# A live setter must use the same strict policy as startup, never downgrade HTTPS.
+fm settings set node.tls required --json
+expect_rc 0 "required TLS can be selected"
+fm --timeout 3 wallet use-node https://node.example:18081 --yes --json
+expect_rc 0 "wallet use-node carries required TLS through the guarded live setter"
+expect_json '.ssl_support' '"enabled"' "HTTPS remains mandatory"
+expect_json '.tls_policy' '"required"' "the selected TLS policy is reported"
+SD="$(jq -s '[.[] | select(.method=="set_daemon")] | last | .body.params' "$WALLET_LOG")"
+if printf '%s' "$SD" | jq -e '.ssl_support == "enabled" and .ssl_allow_any_cert == false
+    and (has("username") | not) and (has("password") | not)' >/dev/null; then
+  ok "the remote wire request requires TLS verification and carries no local credentials"
+else
+  bad "the strict TLS wire contract was not preserved"
+fi
+fm settings set node.tls disabled --json
+expect_rc 0 "disabled TLS remains a distinct explicit policy"
+BEFORE="$(logged "$WALLET_LOG" set_daemon)"
+fm --timeout 3 wallet use-node https://node.example:18081 --yes --json
+expect_rc 2 "an HTTPS destination refuses a conflicting disabled TLS policy"
+if [ "$(logged "$WALLET_LOG" set_daemon)" = "$BEFORE" ]; then
+  ok "the conflicting policy issued no set_daemon and made no plaintext retry"
+else
+  bad "a conflicting policy reached set_daemon"
+fi
+fm settings set node.tls auto --json
+expect_rc 0 "restore the case's default transport policy"
 
 FMONERO_WALLET_PASSWORD=t3stpw fm --timeout 3 wallet create newone --yes --json
 expect_rc 0 "wallet create (the mock records the call; NO wallet file is ever created)"
@@ -993,7 +1036,7 @@ expect_rc 0 "node restart"
 expect_keys "node restart" "ok schema unit active reachable synchronized waited_sec already_running"
 fm --timeout 3 node down --json
 expect_rc 3 "node down without --yes is exit 3"
-unset FMONERO_SYSTEMCTL_FIXTURE
+systemctl_fixture none
 
 step "widget wallet controls"
 sandbox walletcontrols
@@ -1012,7 +1055,9 @@ step "on-demand application lifetime"
 sandbox appcontrols
 fm app status --json
 expect_rc 0 "application activity can be checked without a daemon"
-expect_keys "app status" "ok schema running frontend_running wallet_running node_running"
+expect_keys "app status" "ok schema running frontend_running wallet_running node_running privacy notifications"
+expect_json '.privacy' 'false' "shared privacy defaults to false"
+expect_json '.notifications' 'false' "desktop notifications default to opt-out"
 expect_json '.running' 'false' "fmonero is absent at login"
 fm app stop --json
 expect_rc 3 "application shutdown requires --yes"
@@ -1040,12 +1085,31 @@ expect_keys "wallet send (dry run)" "$SEND_KEYS"
 expect_json '.relayed' 'false' "it relayed nothing"
 expect_json '.dry_run' 'true' "and says it was a dry run"
 expect_json '.fee_xmr' '"0.00003072"' "the fee is the mock's REAL built fee (§2a.2)"
+expect_json '.amount_pico' '100000000000' "normal split preparation preserves the exact requested amount"
+expect_json '.fee_pico' '30720000' "the parallel fee list is summed as integer piconero"
+expect_json '.total_pico' '100030720000' "the exact total includes the fee"
+expect_json '.txs | length' '1' "the single-entry split response remains a one-transaction plan"
 SEND_DRY="$OUT"
 if [ "$(logged "$WALLET_LOG" relay_tx)" = "0" ]; then ok "§4: a dry run records zero relay_tx"; else
   bad "§4: a dry run relayed something"
 fi
-if [ "$(logged "$WALLET_LOG" transfer)" = "1" ]; then ok "and exactly one transfer"; else
-  bad "expected one transfer, got $(logged "$WALLET_LOG" transfer)"
+if [ "$(logged "$WALLET_LOG" transfer_split)" = "1" ]; then ok "and exactly one transfer_split"; else
+  bad "expected one transfer_split, got $(logged "$WALLET_LOG" transfer_split)"
+fi
+if jq -se '[.[] | select(.method=="transfer_split")] | length == 1' "$WALLET_LOG" >/dev/null && \
+   jq -se --arg dest "$DEST" 'all(.[] | select(.method=="transfer_split");
+      .body.params | .destinations == [{address:$dest,amount:100000000000}] and
+      .account_index == 0 and .priority == 2 and .do_not_relay == true and
+      .get_tx_keys == false and .get_tx_hex == false and .get_tx_metadata == true and
+      (has("get_tx_key") | not))' "$WALLET_LOG" >/dev/null; then
+  ok "transfer_split carries exact recipient/amount and plural key flags with do_not_relay"
+else
+  bad "the normal split preparation wire contract drifted"
+fi
+if [ "$(logged "$WALLET_LOG" transfer)" = 0 ]; then
+  ok "normal send never falls back to the obsolete singular transfer method"
+else
+  bad "a normal send used singular transfer"
 fi
 
 fm --timeout 3 wallet send "$DEST" 0.1 --dry-run --yes --json
@@ -1095,30 +1159,30 @@ expect_json '.relayed' 'true' "it relayed"
 expect_json '.txids | length' '1' "one txid"
 expect_json ".txids[0]" "\"$BUILT_TXID\"" "and it is the txid that was built (§2a.9)"
 SEND_RELAYED="$OUT"
-# §2a.3: the relay_tx hex is byte-identical to the metadata the `transfer` response carried.
-# The mock served `transfer-do-not-relay.json`, so that fixture's `tx_metadata` IS that value —
-# and `tx_blob` is deliberately a different (empty) field, so relaying the wrong one shows up.
+# §2a.3: the relay_tx hex is byte-identical to the metadata the `transfer_split` response carried.
+# The split response uses parallel lists. Its first tx_metadata_list item is the relay input;
+# tx_blob_list deliberately contains an empty string, so using the wrong list must fail.
 RELAY_HEX="$(jq -rs '[.[] | select(.method=="relay_tx")] | last | .body.params.hex' "$WALLET_LOG")"
-WANT_HEX="$(jq -r '.tx_metadata' "$ROOT/tests/fixtures/wallet/transfer-do-not-relay.json")"
+WANT_HEX="$(jq -r '.tx_metadata_list[0]' "$ROOT/tests/fixtures/wallet/transfer_split-do-not-relay.json")"
 if [ "$RELAY_HEX" = "$WANT_HEX" ]; then
-  ok "§2a.3: relay_tx.hex is byte-identical to the transfer response's tx_metadata"
+  ok "§2a.3: relay_tx.hex is byte-identical to the split response's tx_metadata_list item"
 else
   bad "§2a.3: relay_tx sent the wrong blob" "sent: ${RELAY_HEX:0:60}" "want: ${WANT_HEX:0:60}"
 fi
 # Six invocations have built so far in this sandbox (--dry-run, --dry-run --yes, no ---yes,
 # --max-fee, the --max-fee/--note hint case, --yes) and exactly ONE of them relayed: one build
 # per invocation, never two per send, and never a build whose plan is relayed twice (§2a.3).
-if [ "$(logged "$WALLET_LOG" transfer)" = "6" ] && [ "$(logged "$WALLET_LOG" relay_tx)" = "1" ]; then
-  ok "§2a.3: six builds, one relay — one transfer per invocation and one relay per plan"
+if [ "$(logged "$WALLET_LOG" transfer_split)" = "6" ] && [ "$(logged "$WALLET_LOG" relay_tx)" = "1" ]; then
+  ok "§2a.3: six builds, one relay — one transfer_split per invocation and one relay per plan"
 else
-  bad "§2a.3: expected 6 transfer and 1 relay_tx" \
-      "transfer=$(logged "$WALLET_LOG" transfer) relay_tx=$(logged "$WALLET_LOG" relay_tx)"
+  bad "§2a.3: expected 6 transfer_split and 1 relay_tx" \
+      "transfer_split=$(logged "$WALLET_LOG" transfer_split) relay_tx=$(logged "$WALLET_LOG" relay_tx)"
 fi
 if [ "$(logged "$WALLET_LOG" store)" -ge 1 ]; then ok "§2a.4: one wallet store after the last relay"; else
   bad "§2a.4: no store was issued, so a SIGKILL would lose the wallet's record"
 fi
 # §2a.8: no forbidden field in ANY recorded body.
-if jq -se 'all(.[] | select(.method=="transfer" or .method=="sweep_all");
+if jq -se 'all(.[] | select(.method=="transfer_split" or .method=="sweep_all");
               (.body.params | has("unlock_time") or has("payment_id") or has("ring_size")) | not)' \
         "$WALLET_LOG" >/dev/null; then
   ok "§2a.8: no unlock_time, payment_id or ring_size in any recorded body"
@@ -1226,7 +1290,7 @@ done
 if [ "$(log_lines "$NODE_LOG")" = "$BEFORE" ]; then ok "§2i: and the mock recorded ZERO requests"; else
   bad "§2i: a mutating call reached the node" "before $BEFORE, after $(log_lines "$NODE_LOG")"
 fi
-unset FMONERO_SYSTEMCTL_FIXTURE
+systemctl_fixture none
 
 # §2a's third --force case.
 fm settings set node.data_dir "$WORK/money/bitmonero" >/dev/null
@@ -1270,7 +1334,7 @@ expect_reason not_open "not_open"
 mocks_down
 sandbox errmap3
 mock_node_up
-mock_wallet_up --fail "transfer=-18:Transaction would be too large.  try /transfer_split."
+mock_wallet_up --fail "transfer_split=-18:Transaction would be too large.  try /transfer_split."
 fm --timeout 3 wallet send "$DEST" 0.1 --json
 expect_rc 16 "-18 TX_TOO_LARGE is exit 16"
 expect_reason too_large "too_large"
@@ -1278,9 +1342,44 @@ expect_contains "fmonero wallet sweep" "with its OWN hint naming sweep (§1b.4)"
 mocks_down
 sandbox errmap4
 mock_node_up
-mock_wallet_up --fail "transfer=-2:WRONG_ADDRESS"
+mock_wallet_up --fail "transfer_split=-2:WRONG_ADDRESS"
 fm --timeout 3 wallet send "$DEST" 0.1 --json
 expect_rc 15 "-2 WRONG_ADDRESS is exit 15"
+
+# These injected replies exercise the new plural response path, not the unused transfer RPC.
+sandbox split-amount-mismatch
+mock_node_up
+mock_wallet_up --scenario amount-mismatch
+fm --timeout 3 wallet send "$DEST" 0.1 --yes --json
+expect_rc 3 "a split response whose total differs from the request cannot be approved"
+expect_reason amount_mismatch "the actual built amount is checked before relay"
+if [ "$(logged "$WALLET_LOG" transfer_split)" = 1 ] && \
+   [ "$(logged "$WALLET_LOG" relay_tx)" = 0 ]; then
+  ok "the mismatched split plan was built once and never relayed"
+else
+  bad "the split mismatch guard did not stop relay"
+fi
+sandbox split-relay-mismatch
+mock_node_up
+mock_wallet_up --scenario mismatch
+fm --timeout 3 wallet send "$DEST" 0.1 --yes --json
+expect_rc 1 "an unexpected acknowledged hash is unresolved, not success"
+expect_reason txid_mismatch "relay must acknowledge the reviewed transaction hash"
+if jq -e --arg txid "$BUILT_TXID" '.txs | length == 1 and .[0].txid == $txid
+    and .[0].relayed == false' "$FMONERO_STATE_DIR/pending.json" >/dev/null 2>&1; then
+  ok "the reviewed transaction remains durably unresolved after a mismatched acknowledgement"
+else
+  bad "the hash mismatch lost its pending guard"
+fi
+fm --timeout 3 wallet send "$DEST" 0.1 --yes --force --json
+expect_rc 3 "a mismatched acknowledgement prevents an automatic rebuild/retry"
+expect_reason pending_send "uncertainty survives --force"
+if [ "$(logged "$WALLET_LOG" transfer_split)" = 1 ] && \
+   [ "$(logged "$WALLET_LOG" relay_tx)" = 1 ]; then
+  ok "uncertainty blocked a second build and a second relay"
+else
+  bad "an unresolved split payment was retried"
+fi
 mocks_down
 sandbox errmap5
 mock_node_up
@@ -1445,10 +1544,10 @@ if [ "$MODE" = full ]; then
   if [ "$BUSY_REASON" = send_in_progress ]; then ok "and the refusal is reason send_in_progress"; else
     bad "§2a.11: the refusal's reason was '$BUSY_REASON'"
   fi
-  if [ "$(logged "$WALLET_LOG" transfer)" = "1" ]; then
-    ok "and the mock recorded exactly ONE transfer: nothing was built twice"
+  if [ "$(logged "$WALLET_LOG" transfer_split)" = "1" ]; then
+    ok "and the mock recorded exactly ONE transfer_split: nothing was built twice"
   else
-    bad "§2a.11: $(logged "$WALLET_LOG" transfer) transfer calls — two builds select from one unspent set"
+    bad "§2a.11: $(logged "$WALLET_LOG" transfer_split) transfer_split calls — two builds select from one unspent set"
   fi
 
   step "--full: §2a.4's write order — a send killed mid-relay"
@@ -1458,9 +1557,11 @@ if [ "$MODE" = full ]; then
   mock_wallet_up --delay-ms 1500
   "$FM" --timeout 60 wallet sweep "$DEST" --yes --json >/dev/null 2>&1 &
   VICTIM=$!
-  # Wait until the record shows the first entry relayed and the second not, then kill.
+  # Identity reads add preflight RPCs. Observe the actual partial state within a bounded
+  # budget rather than killing after an obsolete count of delayed calls.
   SEEN=no
-  for _ in $(seq 200); do
+  OBSERVE_UNTIL=$((SECONDS + 65))
+  while [ "$SECONDS" -lt "$OBSERVE_UNTIL" ] && kill -0 "$VICTIM" 2>/dev/null; do
     if [ -f "$FMONERO_STATE_DIR/pending.json" ]; then
       R="$(jq '[.txs[] | select(.relayed)] | length' "$FMONERO_STATE_DIR/pending.json" 2>/dev/null || echo x)"
       T="$(jq '.txs | length' "$FMONERO_STATE_DIR/pending.json" 2>/dev/null || echo x)"
@@ -1478,7 +1579,8 @@ if [ "$MODE" = full ]; then
       bad "§2a.4: after the kill the record shows $R relayed"
     fi
   else
-    bad "§2a.4: the record never passed through the one-relayed state"
+    bad "§2a.4: the process exited or 65s elapsed before the one-relayed state" \
+        "sweep_all=$(logged "$WALLET_LOG" sweep_all) relay_tx=$(logged "$WALLET_LOG" relay_tx)"
   fi
   # And the next send BLOCKS on it.
   fm --timeout 5 wallet send "$DEST" 0.1 --yes --json
@@ -2049,8 +2151,8 @@ fm settings set node.remote "$REMOTE_ADDR" >/dev/null
 fm settings set node.mode remote >/dev/null
 fm --timeout 5 wallet send "$DEST" 0.1 --dry-run --json
 expect_rc 0 "wallet send --dry-run in remote mode"
-ORDER="$(jq -s -r '[.[] | select(.method=="refresh" or .method=="transfer") | .method] | join(",")' "$WALLET_LOG")"
-if [ "$ORDER" = "refresh,transfer" ]; then
+ORDER="$(jq -s -r '[.[] | select(.method=="refresh" or .method=="transfer_split") | .method] | join(",")' "$WALLET_LOG")"
+if [ "$ORDER" = "refresh,transfer_split" ]; then
   ok "§2m.3: exactly one refresh, BEFORE the transfer"
 else
   bad "§2m.3: the gate did not run before the build" "$ORDER"
@@ -2063,7 +2165,7 @@ fm settings set node.mode remote >/dev/null
 fm --timeout 5 wallet send "$DEST" 0.1 --dry-run --json
 expect_rc 4 "a refresh that cannot reach the remote node"
 expect_json '.reason' '"unreachable"' "  reason unreachable"
-if [ "$(logged "$WALLET_LOG" transfer)" = "0" ]; then
+if [ "$(logged "$WALLET_LOG" transfer_split)" = "0" ]; then
   ok "  and nothing was built"
 else
   bad "  a transfer was built against a node that did not answer"
@@ -2265,10 +2367,264 @@ else
 fi
 mocks_down
 
+# ================================================================ current additive CLI contracts
+# This inventory distinguishes successful local/mock results from explicit refusal envelopes.
+# Native artifact, restore, proof acceptance and hardware qualification do not come from these
+# refusal cases; the isolated native harness owns interoperability, and devices remain separate.
+step "current local presentation, requests, logs and notification contracts"
+sandbox additive-local
+mock_node_up
+mock_wallet_up
+LOCAL_NODE_BEFORE="$(log_lines "$NODE_LOG")"
+LOCAL_WALLET_BEFORE="$(log_lines "$WALLET_LOG")"
+LOCAL_UNITS_BEFORE="$(cat "$FMONERO_SYSTEMCTL_FIXTURE")"
+fm app presentation --json
+expect_rc 0 "local presentation needs no wallet session"
+expect_keys "app presentation" "ok schema privacy notifications"
+expect_json '.privacy or .notifications' 'false' "both shared preferences default to false"
+fm settings set tui.privacy true --json
+expect_rc 0 "shared privacy persists"
+fm app presentation --json
+expect_json '.privacy' 'true' "local presentation reads the new policy"
+fm app status --json
+expect_json '.privacy' 'true' "closed-app status shares the same policy"
+
+for verb in enable status disable; do
+  fm wallet notifications "$verb" --json
+  expect_rc 0 "notification $verb is a local preference operation"
+  expect_keys "wallet notifications $verb" "ok schema enabled content delivery"
+  expect_json '.content' '"generic"' "notification content is generic"
+  expect_json '.delivery' '"at_most_once"' "delivery reports its actual guarantee"
+  if [ "$verb" = disable ]; then
+    expect_json '.enabled' 'false' "explicit opt-out persists"
+  else
+    expect_json '.enabled' 'true' "explicit opt-in persists"
+  fi
+done
+fm wallet notifications poll --json
+expect_rc 0 "disabled notification polling is inert"
+expect_keys "wallet notifications poll (disabled)" "ok schema enabled claimed desktop_requests_accepted delivery"
+expect_json '.claimed + .desktop_requests_accepted' '0' "nothing is claimed or sent while disabled"
+fm wallet notifications enable --json
+fm wallet notifications poll --json
+expect_rc 0 "enabled polling stays inert while the app's wallet service is closed"
+expect_keys "wallet notifications poll (closed)" "ok schema enabled claimed desktop_requests_accepted delivery"
+expect_json '.claimed + .desktop_requests_accepted' '0' "a closed app emits no desktop alert"
+fm wallet notifications disable --json
+
+REQUEST_KEYS="ok schema uri address amount_pico amount_xmr description recipient_name network needs_payment_review"
+fm wallet request create --address "$DEST" --amount 0.000000000001 \
+  --description 'Invoice café' --recipient-name '友' --json
+expect_rc 0 "explicit-address requests are local and exact to one piconero"
+expect_keys "wallet request create" "$REQUEST_KEYS"
+expect_json '.amount_pico' '1' "one piconero is an integer"
+expect_json '.needs_payment_review' 'true' "a request never authorizes payment"
+REQUEST_URI="$(printf '%s' "$OUT" | jq -r .uri)"
+fm wallet request parse "$REQUEST_URI" --json
+expect_rc 0 "the exact Unicode payment request parses"
+expect_keys "wallet request parse" "$REQUEST_KEYS"
+expect_json '.amount_pico' '1' "round trip preserves the exact amount"
+expect_json '.description' '"Invoice café"' "round trip preserves the description"
+expect_json '.recipient_name' '"友"' "round trip preserves the recipient name"
+fm wallet request parse "monero:$DEST?tx_amount=1&tx_amount=2" --json
+expect_rc 2 "duplicate amount fields are refused"
+
+printf 'ordinary scratch log\n' > "$FMONERO_STATE_DIR/run/monero-wallet-rpc.log"
+fm wallet logs --source wallet --lines 5 --json
+expect_rc 0 "wallet log reads the case-owned file"
+expect_keys "wallet logs" "ok schema source lines truncated cursor rotated unavailable"
+expect_json '.lines' '["ordinary scratch log"]' "the bounded log result is exact"
+if [ "$(log_lines "$NODE_LOG")" = "$LOCAL_NODE_BEFORE" ] && \
+   [ "$(log_lines "$WALLET_LOG")" = "$LOCAL_WALLET_BEFORE" ] && \
+   [ "$(cat "$FMONERO_SYSTEMCTL_FIXTURE")" = "$LOCAL_UNITS_BEFORE" ]; then
+  ok "presentation, explicit requests, log reads and closed notifications made zero RPC/service changes"
+else
+  bad "a local-only contract contacted a backend or changed a service"
+fi
+
+ERROR_KEYS="ok schema code code_name error hint reason detail action"
+refusal_contract() { # refusal_contract <command label> <exit> <argv...>
+  local label="$1" expected="$2"; shift 2
+  fm --timeout 3 "$@" --json </dev/null
+  expect_rc "$expected" "$label refusal contract"
+  expect_keys "$label (refusal)" "$ERROR_KEYS"
+  expect_json '.ok' 'false' "a refusal is never reported as success"
+}
+
+step "advanced confirmation gates and closed-wallet refusal contracts"
+sandbox additive-guards
+mock_wallet_up
+BEFORE="$(log_lines "$WALLET_LOG")"
+refusal_contract "wallet restore" 3 wallet restore scratch-restore --secret-stdin
+expect_reason needs_yes "restoration asks for confirmation before reading protected input"
+refusal_contract "wallet book edit" 3 wallet book edit 0 "$DEST" changed
+expect_reason needs_yes "contact replacement requires explicit approval"
+for verb in rescan password backup view-only hardware export-outputs import-outputs \
+            export-key-images import-key-images export-history; do
+  case "$verb" in
+    rescan) args=(rescan) ;;
+    password) args=(password --secret-stdin) ;;
+    backup) args=(backup "$WORK/$CASE/new-backup" --secret-stdin) ;;
+    view-only) args=(view-only scratch-view "$DEST" --secret-stdin) ;;
+    hardware) args=(hardware scratch-device ledger --secret-stdin) ;;
+    *) args=("$verb" "$WORK/$CASE/not-published") ;;
+  esac
+  refusal_contract "wallet tools care $verb" 3 wallet tools care "${args[@]}"
+  expect_contains '--yes' "care $verb stops at explicit approval"
+done
+refusal_contract "wallet tools message sign" 3 wallet tools message sign \
+  "$WORK/$CASE/message" --output "$WORK/$CASE/signature"
+expect_contains '--yes' "message signing stops before private wallet access"
+refusal_contract "wallet tools proof transaction" 3 wallet tools proof transaction \
+  "$BUILT_TXID" "$DEST" --output "$WORK/$CASE/proof"
+refusal_contract "wallet tools proof spend" 3 wallet tools proof spend \
+  "$BUILT_TXID" --output "$WORK/$CASE/proof"
+refusal_contract "wallet tools proof reserve" 3 wallet tools proof reserve \
+  --all --output "$WORK/$CASE/proof"
+for verb in prepare describe sign submit; do
+  case "$verb" in
+    prepare) args=(prepare "$DEST" 0.1 --output "$WORK/$CASE/unsigned") ;;
+    describe) args=(describe "$WORK/$CASE/unsigned") ;;
+    sign) args=(sign "$WORK/$CASE/unsigned" --output "$WORK/$CASE/signed" --secret-stdin) ;;
+    submit) args=(submit "$WORK/$CASE/signed" --secret-stdin) ;;
+  esac
+  refusal_contract "wallet tools offline $verb" 3 wallet tools offline "${args[@]}"
+  expect_contains 'Open a wallet before using this tool.' "offline $verb requires a recorded wallet"
+done
+refusal_contract "wallet tools offline inspect-pending" 3 wallet tools offline inspect-pending --secret-stdin
+expect_contains '--yes' "inspection requires explicit approval while retaining uncertainty"
+fm wallet tools offline pending --json
+expect_rc 0 "native uncertainty inspection is local"
+expect_keys "wallet tools offline pending" "ok schema pending"
+expect_json '.pending' 'null' "this fresh sandbox has no native uncertainty"
+refusal_contract "wallet tools offline clear-pending" 3 wallet tools offline clear-pending
+fm wallet tools offline clear-pending --yes --json
+expect_rc 0 "clearing an absent native record needs only local state"
+expect_keys "wallet tools offline clear-pending (empty)" "ok schema native_pending_cleared"
+expect_json '.native_pending_cleared' 'true' "the explicit clear completed"
+if [ "$(log_lines "$WALLET_LOG")" = "$BEFORE" ]; then
+  ok "all advanced prerequisite/confirmation refusals made zero wallet requests"
+else
+  bad "a refused advanced operation reached the wallet"
+fi
+if [ ! -e "$WORK/$CASE/not-published" ] && [ ! -e "$WORK/$CASE/new-backup" ] && \
+   [ ! -e "$WORK/$CASE/signature" ] && [ ! -e "$WORK/$CASE/proof" ] && \
+   [ ! -e "$WORK/$CASE/unsigned" ] && [ ! -e "$WORK/$CASE/signed" ]; then
+  ok "none of the refused operations published an artifact"
+else
+  bad "a refused operation created an artifact"
+fi
+
+# Public checking must reach its typed RPC without opening a private wallet. The legacy mock
+# intentionally lacks these verification methods; its -32601 is availability, not valid proof.
+step "public proof checking does not require a private session"
+printf 'Exact public message bytes\n' > "$WORK/$CASE/message"
+printf 'synthetic-public-proof\n' > "$WORK/$CASE/public-proof"
+for kind in message transaction spend reserve; do
+  case "$kind" in
+    message) label='wallet tools message verify'; method=verify
+      args=(message verify "$DEST" "$WORK/$CASE/message" "$WORK/$CASE/public-proof") ;;
+    transaction) label='wallet tools proof check-transaction'; method=check_tx_proof
+      args=(proof check-transaction "$BUILT_TXID" "$DEST" "$WORK/$CASE/public-proof") ;;
+    spend) label='wallet tools proof check-spend'; method=check_spend_proof
+      args=(proof check-spend "$BUILT_TXID" "$WORK/$CASE/public-proof") ;;
+    reserve) label='wallet tools proof check-reserve'; method=check_reserve_proof
+      args=(proof check-reserve "$DEST" "$WORK/$CASE/public-proof") ;;
+  esac
+  refusal_contract "$label" 5 wallet tools "${args[@]}"
+  expect_reason rpc_error "unsupported verification is a backend failure, not a good proof"
+  # One authenticated operation follows the initial Digest challenge.
+  if [ "$(jq -s --arg m "$method" '[.[] | select(.method == $m and .status == 200)] | length' "$WALLET_LOG")" = 1 ]; then
+    ok "$label reached exactly its public verification RPC"
+  else
+    bad "$label did not reach its public RPC exactly once"
+  fi
+done
+if [ "$(logged "$WALLET_LOG" open_wallet)" = 0 ] && \
+   [ "$(logged "$WALLET_LOG" create_wallet)" = 0 ]; then
+  ok "public checking never opens or creates a private wallet"
+else
+  bad "public checking unexpectedly opened or created a wallet"
+fi
+
+step "recorded-session account and capability contracts"
+FMONERO_WALLET_PASSWORD=t3stpw fm --timeout 3 wallet open main --json
+expect_rc 0 "record a real CLI mock session for guarded account operations"
+fm wallet accounts list --json
+expect_rc 0 "account snapshot binds the recorded wallet"
+expect_keys "wallet accounts list" "ok schema wallet selected accounts contacts"
+expect_json '.wallet.name' '"main"' "account snapshot uses the actual recorded session"
+expect_json '.wallet.primary_address' "\"$DEST\"" "account snapshot binds the engine's primary address"
+fm wallet accounts select 0 --json
+expect_rc 0 "select the observed account"
+expect_keys "wallet accounts select" "ok schema account_index label selected"
+expect_json '.selected' 'true' "selection completed"
+refusal_contract "wallet accounts create" 2 wallet accounts create $'bad\nlabel'
+refusal_contract "wallet accounts rename" 6 wallet accounts rename 99 unknown
+if [ "$(logged "$WALLET_LOG" create_account)" = 0 ] && \
+   [ "$(logged "$WALLET_LOG" label_account)" = 0 ]; then
+  ok "invalid account text and an absent account never reach mutating RPC"
+else
+  bad "an invalid account mutation reached the engine"
+fi
+fm wallet tools care capabilities --json
+expect_rc 0 "capability observation tolerates absent optional provenance"
+expect_keys "wallet tools care capabilities" "ok schema wallet rpc_major rpc_minor release kind_hint spend_authority backend_decides native_cli_available"
+expect_json '.kind_hint' '"unknown"' "the old mock cannot establish wallet creation provenance"
+expect_json '.spend_authority' 'null' "unknown signing capability is not spend authorization"
+expect_json '.backend_decides' 'true' "the Monero backend decides actual support"
+
+# Shadow BOTH desktop helpers. This exercises argv and error propagation, never opens a window
+# or focuses an owner's existing terminal. Successful desktop delivery belongs to the GUI gates.
+step "desktop route contract through an isolated refusing helper"
+sandbox additive-launch
+mkdir -p "$WORK/$CASE/bin"
+fm version --json
+expect_rc 0 "read the binary version for its desktop class"
+LAUNCH_APP_ID="--app-id=org.odcpw.fmonero.v$(printf '%s' "$OUT" | jq -r '.version | split(".")[0:2] | join("_")')"
+LAUNCH_BINARY="$(readlink -f -- "$FM")"
+export FMONERO_E2E_LAUNCH_LOG="$WORK/$CASE/helper-argv"
+for helper in omarchy-launch-tui omarchy-launch-or-focus-tui; do
+  cat > "$WORK/$CASE/bin/$helper" <<'LAUNCH_SH'
+#!/bin/sh
+printf '%s\n' "${0##*/}" "$@" > "$FMONERO_E2E_LAUNCH_LOG"
+exit 1
+LAUNCH_SH
+  chmod +x "$WORK/$CASE/bin/$helper"
+done
+for intent in wallet node send logs receive requests new-address restore tools; do
+  PATH="$WORK/$CASE/bin:$PATH" refusal_contract "launch" 1 launch "$intent"
+  if [ ! -f "$FMONERO_E2E_LAUNCH_LOG" ]; then
+    bad "$intent did not reach the isolated desktop helper"
+    continue
+  fi
+  mapfile -t argv < "$FMONERO_E2E_LAUNCH_LOG"
+  flag="--$intent"; [ "$intent" != logs ] || flag=--log
+  if [ "$intent" = wallet ]; then
+    if [ "${#argv[@]}" = 4 ] && [ "${argv[0]}" = omarchy-launch-or-focus-tui ] && \
+       [ "${argv[2]}" = fmonero ] && [ "${argv[3]}" = tui ]; then
+      ok "default Wallet uses the focus-on-repeat helper with fixed argv"
+    else
+      bad "default desktop launch argv drifted"
+    fi
+  elif [ "${#argv[@]}" = 5 ] && [ "${argv[0]}" = omarchy-launch-tui ] && \
+       [ "${argv[2]}" = "$LAUNCH_BINARY" ] && [ "${argv[3]}" = tui ] && [ "${argv[4]}" = "$flag" ]; then
+    ok "$intent opens a specific fresh intent with exact argv"
+  else
+    bad "$intent desktop launch argv drifted"
+  fi
+  if [ "${argv[1]:-}" = "$LAUNCH_APP_ID" ]; then
+    ok "the desktop class is scoped to a major/minor binary version"
+  else
+    bad "the desktop class could focus an obsolete binary"
+  fi
+done
+unset FMONERO_E2E_LAUNCH_LOG
+
 # ================================================================ §5c coverage
 step "§5c: every command in §4.1 has been asserted, or is named as not covered"
 # `tui` and `robot-docs` are the two rows §5c marks exempt — the only two. Every other command of
-# §4.1 must have had its top-level key set asserted above, and this COMPARES the two sets rather
+# §4.1 must have its success or explicitly named refusal key set asserted above. This COMPARES the two sets rather
 # than asserting it in a step title: the command list comes from `capabilities`, which is
 # generated from the same table §4.1 defines, so a new command arrives here on its own.
 "$FM" capabilities --json | jq -r '.commands[].name' | grep -vE '^(tui|robot-docs)$' \
@@ -2282,7 +2638,7 @@ while read -r want; do
   grep -qE "^$want( |\$)" "$WORK/asserted-sorted.txt" || MISSING="$MISSING $want,"
 done < "$WORK/expected-commands.txt"
 if [ -z "${MISSING// /}" ]; then
-  ok "every §4.1 command has its top-level key set asserted ($(grep -c '' "$WORK/expected-commands.txt") of them)"
+  ok "every §4.1 command has an explicit success/refusal key-set contract ($(grep -c '' "$WORK/expected-commands.txt") of them)"
 else
   bad "§5c: a command of §4.1 has NO key-set assertion anywhere in this file" "missing: $MISSING"
 fi
@@ -2340,12 +2696,12 @@ fm -vv --timeout 3 wallet close --json
 # documented key of `wallet create` (§2b.2) and `pruning_seed` is a field of every peer row, so a
 # substring grep on `seed` would fail on correct output — and a grep that fails on correct output
 # is the grep the next agent relaxes. Both negative cases are self-tested below.
-FORBIDDEN_KEYS='"(seed|spend_key|view_key|tx_key|tx_metadata|password|login)"[[:space:]]*:'
+FORBIDDEN_KEYS='"(seed|spend_key|view_key|tx_key(_list)?|tx_metadata(_list)?|password|login)"[[:space:]]*:'
 if grep -nEq "$FORBIDDEN_KEYS" "$TRANSCRIPT"; then
   bad "§2b: a forbidden key name appears in this run's output" \
       "$(grep -nEo "$FORBIDDEN_KEYS" "$TRANSCRIPT" | sort -u | head -5)"
 else
-  ok "§2b: no seed/spend_key/view_key/tx_key/tx_metadata/password/login key in any output ($(wc -l < "$TRANSCRIPT") lines)"
+  ok "§2b: no secret key or singular/plural transaction metadata key in any output ($(wc -l < "$TRANSCRIPT") lines)"
 fi
 printf '{"tx_key":"deadbeef","password":"hunter2","tx_metadata" : "0100"}\n' > "$WORK/2b-positive"
 if grep -Eq "$FORBIDDEN_KEYS" "$WORK/2b-positive"; then
@@ -2353,6 +2709,14 @@ if grep -Eq "$FORBIDDEN_KEYS" "$WORK/2b-positive"; then
 else
   bad "self-test: the key-name grep does NOT fire on a payload carrying tx_key — it is vacuous"
 fi
+for private_key in tx_key_list tx_metadata_list; do
+  printf '{"%s":["synthetic-private-payload"]}\n' "$private_key" > "$WORK/2b-positive"
+  if grep -Eq "$FORBIDDEN_KEYS" "$WORK/2b-positive"; then
+    ok "self-test: the leak gate also catches split response field $private_key"
+  else
+    bad "self-test: the leak gate missed split response field $private_key"
+  fi
+done
 printf '{"seed_backup_hint":"run monero-wallet-cli","pruning_seed":384,"logins":2}\n' > "$WORK/2b-negative"
 if grep -Eq "$FORBIDDEN_KEYS" "$WORK/2b-negative"; then
   bad "self-test: the key-name grep fires on seed_backup_hint/pruning_seed, which are honest keys"

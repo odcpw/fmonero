@@ -1,9 +1,6 @@
-//! Structural address parsing and the one prefix table (DESIGN.md §1b.8, §2a.6, §5b).
+//! Offline Monero address decoding and Keccak checksum validation.
 //!
-//! **Structural only.** Length and base58 decodability decide, and the decoded prefix
-//! varint names the (network, kind). There is no checksum check: that needs Keccak-256,
-//! and §2a.6 gets a stronger guarantee from `validate_address` for free, so §3.1 drops
-//! the dependency. Every send validates twice — here, then on the open wallet.
+//! Every send still validates twice: locally, then against the open Monero wallet.
 //!
 //! `PREFIXES` is the **only** place an address form is described. Adding a Carrot form
 //! after the FCMP++ fork is one row here plus one object in
@@ -11,6 +8,7 @@
 //! adding one without the other fails the build (§1b.1).
 
 use serde::{Deserialize, Serialize};
+use sha3::{Digest, Keccak256};
 
 use crate::error::Error;
 
@@ -177,7 +175,7 @@ pub const PREFIXES: &[AddrForm] = &[
     },
 ];
 
-/// A structurally valid address.
+/// An address with a valid supported prefix, payload length and Keccak checksum.
 #[derive(Clone, Debug, Serialize)]
 pub struct Address {
     pub text: String,
@@ -283,8 +281,9 @@ pub fn parse(s: &str) -> Result<Address, Error> {
     }
     let decoded = base58_decode(s)
         .ok_or_else(|| invalid(s, "Those characters do not decode to an address."))?;
-    let prefix =
-        read_varint(&decoded).ok_or_else(|| invalid(s, "It does not decode to an address."))?;
+    let prefix = read_varint(&decoded)
+        .filter(|_| decoded[0] & 0x80 == 0)
+        .ok_or_else(|| invalid(s, "It does not have a canonical address prefix."))?;
     let Some(form) = PREFIXES.iter().find(|f| f.prefix == prefix) else {
         return Err(invalid(
             s,
@@ -301,6 +300,21 @@ pub fn parse(s: &str) -> Result<Address, Error> {
                 form.len,
                 s.len()
             ),
+        ));
+    }
+    let payload_len = if form.kind == AddrKind::Integrated {
+        73
+    } else {
+        65
+    };
+    if decoded.len() != payload_len + 4 {
+        return Err(invalid(s, "The decoded address has an invalid length."));
+    }
+    let checksum = Keccak256::digest(&decoded[..payload_len]);
+    if decoded[payload_len..] != checksum[..4] {
+        return Err(invalid(
+            s,
+            "Its checksum is wrong. Check the complete address.",
         ));
     }
     Ok(Address {
@@ -349,7 +363,9 @@ mod tests {
     fn synthetic(form: &AddrForm, fill: u8) -> String {
         let payload_len = if form.len == LEN_INTEGRATED { 77 } else { 69 };
         let mut bytes = vec![form.prefix as u8];
-        bytes.extend(std::iter::repeat_n(fill, payload_len - 1));
+        bytes.extend(std::iter::repeat_n(fill, payload_len - 5));
+        let checksum = Keccak256::digest(&bytes);
+        bytes.extend_from_slice(&checksum[..4]);
         base58_encode(&bytes)
     }
 
@@ -415,6 +431,11 @@ mod tests {
             PREFIXES.len(),
             "address::PREFIXES and tests/fixtures/address-forms.json must describe the same forms"
         );
+        for row in value.get("forms").and_then(|f| f.as_array()).unwrap() {
+            let parsed = parse(row["example"].as_str().unwrap()).unwrap();
+            assert_eq!(serde_json::to_value(parsed.net).unwrap(), row["net"]);
+            assert_eq!(serde_json::to_value(parsed.kind).unwrap(), row["kind"]);
+        }
     }
 
     #[test]
@@ -463,6 +484,27 @@ mod tests {
         assert_eq!(a.net, NetType::Mainnet);
         assert_eq!(a.kind, AddrKind::Subaddress);
         assert_eq!(a.text, addr);
+    }
+
+    #[test]
+    fn keccak_is_not_sha3_and_a_public_address_checksum_mutation_fails() {
+        // Public Keccak-256 empty-input vector, independent of address encoding.
+        let expected = [
+            0xc5, 0xd2, 0x46, 0x01, 0x86, 0xf7, 0x23, 0x3c, 0x92, 0x7e, 0x7d, 0xb2, 0xdc, 0xc7,
+            0x03, 0xc0, 0xe5, 0x00, 0xb6, 0x53, 0xca, 0x82, 0x27, 0x3b, 0x7b, 0xfa, 0xd8, 0x04,
+            0x5d, 0x85, 0xa4, 0x70,
+        ];
+        assert_eq!(&Keccak256::digest([])[..], &expected);
+        let good = "888tNkZrPN6JsEgekjMnABU4TBzc2Dt29EPAvkRxbANsAnjyPbb3iQ1YBRk1UXcdRsiKc9dhwMVgN5S9cQUiyoogDavup3H";
+        let mut wrong = good.to_owned();
+        wrong.replace_range(wrong.len() - 1.., "J");
+        assert!(parse(good).is_ok());
+        assert_eq!(parse(&wrong).unwrap_err().exit_code(), 15);
+        for form in PREFIXES {
+            let mut bytes = base58_decode(&synthetic(form, 0x42)).unwrap();
+            bytes[4] ^= 1;
+            assert!(parse(&base58_encode(&bytes)).is_err());
+        }
     }
 
     #[test]

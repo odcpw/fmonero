@@ -597,11 +597,9 @@ impl Error {
             )
             .with_reason("rpc_error")
             .with_hint("fmonero status --json"),
-            // -1 from `open_wallet` means a bad password or unreadable keys, because
-            // `on_open_wallet` overwrites whatever code was mapped (§1b.4). The caller
-            // pre-checks that `<wallet.dir>/<NAME>.keys` exists (exit 6), which is what
-            // makes that reading unambiguous.
-            -1 => Error::wallet_locked(msg).with_reason("bad_password"),
+            // UNKNOWN_ERROR (-1) is shared by refresh and many other operations.
+            // Only the method-aware open_wallet boundary may reinterpret it as a
+            // password/open failure; the generic code alone does not establish that.
             _ => Error::upstream(msg).with_reason("rpc_error"),
         }
     }
@@ -763,7 +761,7 @@ mod tests {
     }
 
     #[test]
-    fn the_wallet_rpc_map_is_the_one_in_the_design() {
+    fn the_wallet_rpc_map_preserves_method_independent_codes() {
         for (code, exit) in [
             (-2, 15),
             (-4, 16),
@@ -786,7 +784,7 @@ mod tests {
             (-50, 1),
             (-51, 9),
             (-52, 9),
-            (-1, 9),
+            (-1, 5),
             (-999, 5),
         ] {
             let e = Error::from_wallet_rpc(code, "upstream text");
@@ -805,6 +803,11 @@ mod tests {
             Error::from_wallet_rpc(-18, "Transaction would be too large.").reason(),
             Some("too_large")
         );
+        let message = "Unexpected hard fork version v16 at height 1";
+        let unknown = Error::from_wallet_rpc(-1, message);
+        assert_eq!(unknown.exit_code(), 5);
+        assert_eq!(unknown.reason(), Some("rpc_error"));
+        assert_eq!(unknown.to_string(), message);
     }
 
     #[test]

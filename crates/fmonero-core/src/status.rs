@@ -22,6 +22,8 @@ use crate::units;
 /// The whole §5 document.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Status {
+    #[serde(default)]
+    pub privacy: bool,
     pub ok: bool,
     pub schema: u32,
     pub generated_at: String,
@@ -775,6 +777,7 @@ pub fn status(ctx: &Context) -> Result<Status, Error> {
     };
 
     let mut status = Status {
+        privacy: ctx.settings.tui.privacy,
         ok: true,
         schema: crate::SCHEMA_VERSION,
         generated_at: crate::now_rfc3339(),

@@ -117,7 +117,7 @@ trap cleanup EXIT
   exit "$E_FAIL"
 }
 
-if ! command -v cargo >/dev/null 2>&1; then
+if [ ! -x "${FMONERO_CARGO:-$HOME/.cargo/bin/cargo}" ] && ! command -v cargo >/dev/null 2>&1; then
   err "cargo is not on PATH; fmonero is built from source"
   echo "hint: omarchy pkg add rustup && rustup default stable" >&2
   exit "$E_BACKEND"
@@ -208,7 +208,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
   plan "cargo build --release -p fmonero   (in $REPO)"
 else
   info "cargo build --release -p fmonero"
-  (cd -- "$REPO" && cargo build --release -p fmonero) || {
+  "$REPO/scripts/cargo-serial.sh" build --release -p fmonero || {
     err "the build failed; nothing was installed"
     exit "$E_FAIL"
   }
@@ -298,7 +298,7 @@ if [ "$QUIET" -eq 0 ]; then
     printf '%s\n' "  binary   $DEST"
     printf '%s\n' "  next     fmonero doctor            # what is healthy on this machine"
     printf '%s\n' "           fmonero node up --wait    # start monerod and wait for it to catch up"
-    printf '%s\n' "           fmonero tui               # Node · Wallet · Send · Log"
+    printf '%s\n' "           fmonero launch wallet     # Wallet · Receive · Send · Tools · Logs"
     printf '%s\n' "  kept     your wallets, ~/.bitmonero, Monero's own binaries, any system monerod.service"
     printf '%s\n' "  undo     $REPO/scripts/uninstall.sh"
   fi

@@ -45,6 +45,55 @@ pub(super) enum HitPane {
 /// cannot silently re-point a button (§7a.2's "two affordances, one label").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Button {
+    Search,
+    SetupUnits,
+    DialogUp,
+    DialogDown,
+    DetailUp,
+    DetailDown,
+    DetailClose,
+    Privacy,
+    NativeReveal,
+    NativeFocus,
+    TrackReceipts,
+    ReceiptDetails,
+    LogSource,
+    LogInfo,
+    LogFollow,
+    LogSearch,
+    LogNext,
+    LogPrevious,
+    NewAddress,
+    Accounts,
+    Tool(super::advanced::Tool),
+    ToolGroup(usize),
+    ToolsUp,
+    ToolsDown,
+    Notifications,
+    ResultUp,
+    ResultDown,
+    ResultCopy,
+    AccountSwitch,
+    AccountInfo,
+    AccountNew,
+    AccountEdit,
+    AccountDelete,
+    CreateRequest,
+    ParseRequest,
+    RequestUp,
+    RequestDown,
+    RequestQr,
+    LabelAddress,
+    CopyAddress,
+    PaymentNote,
+    PreparePayment,
+    SendAll,
+    SendBook,
+    RevealPayment,
+    ReviewFocus,
+    ReviewUp,
+    ReviewDown,
+    Restore,
     OpenWallet,
     CreateWallet,
     CloseWallet,
@@ -71,6 +120,8 @@ pub(super) enum Button {
     /// a shell command no TUI surface named (§2o.1).
     ClearPending,
     Help,
+    HelpUp,
+    HelpDown,
     NextScreen,
 }
 
@@ -83,9 +134,6 @@ pub(super) enum Target {
     Row { pane: HitPane, row: usize },
     /// A Send form input, by its index in the form's own order.
     Field(usize),
-    /// A priority chip. Clicking one **selects that priority** rather than cycling, which is
-    /// also more discoverable than four presses of `p` (§7a.2, revision 6).
-    Priority(u32),
     /// One arrow of a `◂ value ▸` selector: `-1` or `+1` (§7a.2, revision 6). Every control the
     /// keymap reaches with `←→` renders its two arrows as hit targets.
     Arrow { which: Selector, delta: i32 },
@@ -102,6 +150,7 @@ pub(super) enum Target {
 /// Which `◂ value ▸` selector an [`Target::Arrow`] belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Selector {
+    Priority,
     /// The Send screen's account row.
     Account,
     /// The create-wallet modal's seed language.
@@ -130,12 +179,11 @@ pub(super) struct Map {
     panes: RefCell<Vec<PaneGeom>>,
     buttons: RefCell<Vec<(Button, Rect)>>,
     fields: RefCell<Vec<(usize, Rect)>>,
-    priorities: RefCell<Vec<(u32, Rect)>>,
     arrows: RefCell<Vec<(Selector, i32, Rect)>>,
     /// The focused modal's own box. A click **outside** it is [`Target::Backdrop`].
     modal: Cell<Option<Rect>>,
     modal_buttons: RefCell<Vec<Rect>>,
-    /// The `?` overlay is up: any click anywhere closes it, so it short-circuits everything.
+    /// The `?` overlay owns its scroll controls; other clicks close it.
     overlay: Cell<bool>,
     /// The status line's two labelled segments.
     help: Cell<Option<Rect>>,
@@ -150,7 +198,6 @@ impl Map {
         self.panes.borrow_mut().clear();
         self.buttons.borrow_mut().clear();
         self.fields.borrow_mut().clear();
-        self.priorities.borrow_mut().clear();
         self.arrows.borrow_mut().clear();
         self.modal_buttons.borrow_mut().clear();
         self.modal.set(None);
@@ -177,14 +224,22 @@ impl Map {
     pub fn field(&self, index: usize, area: Rect) {
         self.fields.borrow_mut().push((index, area));
     }
-    pub fn priority(&self, level: u32, area: Rect) {
-        self.priorities.borrow_mut().push((level, area));
-    }
     pub fn arrow(&self, which: Selector, delta: i32, area: Rect) {
         self.arrows.borrow_mut().push((which, delta, area));
     }
     pub fn modal(&self, area: Rect) {
+        if self.modal.get() != Some(area) {
+            self.fields.borrow_mut().clear();
+            self.buttons.borrow_mut().clear();
+            self.arrows.borrow_mut().clear();
+            self.panes.borrow_mut().clear();
+            self.modal_buttons.borrow_mut().clear();
+        }
         self.modal.set(Some(area));
+    }
+    #[cfg(test)]
+    pub(super) fn modal_area(&self) -> Option<Rect> {
+        self.modal.get()
     }
     pub fn modal_button(&self, area: Rect) {
         self.modal_buttons.borrow_mut().push(area);
@@ -208,10 +263,29 @@ impl Map {
         // 1. the `?` overlay — a click anywhere closes it. An overlay that covers the screen and
         //    ignores clicks is a screen the user cannot leave with the device that opened it.
         if self.overlay.get() {
+            if let Some(up) = scroll {
+                return Some(Target::Button(if up {
+                    Button::HelpUp
+                } else {
+                    Button::HelpDown
+                }));
+            }
+            for (button, rect) in self.buttons.borrow().iter().rev() {
+                if matches!(button, Button::Help | Button::HelpUp | Button::HelpDown)
+                    && contains(*rect, x, y)
+                {
+                    return Some(Target::Button(*button));
+                }
+            }
             return Some(Target::Button(Button::Help));
         }
         // 2. an open modal — its buttons, then its own list; outside its box is the backdrop.
         if let Some(box_) = self.modal.get() {
+            for (b, r) in self.buttons.borrow().iter().rev() {
+                if scroll.is_none() && contains(*r, x, y) {
+                    return Some(Target::Button(*b));
+                }
+            }
             if let Some(up) = scroll {
                 return self
                     .pane_at(x, y)
@@ -266,11 +340,6 @@ impl Map {
         for (i, r) in self.fields.borrow().iter() {
             if contains(*r, x, y) {
                 return Some(Target::Field(*i));
-            }
-        }
-        for (level, r) in self.priorities.borrow().iter() {
-            if contains(*r, x, y) {
-                return Some(Target::Priority(*level));
             }
         }
         for (which, delta, r) in self.arrows.borrow().iter() {
@@ -404,10 +473,16 @@ mod tests {
     fn every_arrow_controlled_selector_is_a_target() {
         let m = Map::default();
         m.begin();
-        m.priority(3, r(20, 8, 6, 1));
+        m.arrow(Selector::Priority, 1, r(20, 8, 1, 1));
         m.arrow(Selector::Account, -1, r(10, 9, 1, 1));
         m.arrow(Selector::Account, 1, r(16, 9, 1, 1));
-        assert_eq!(m.at(22, 8, None), Some(Target::Priority(3)));
+        assert_eq!(
+            m.at(20, 8, None),
+            Some(Target::Arrow {
+                which: Selector::Priority,
+                delta: 1
+            })
+        );
         assert_eq!(
             m.at(10, 9, None),
             Some(Target::Arrow {

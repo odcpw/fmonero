@@ -400,6 +400,9 @@ fn run_unit_verb(ctx: &Context, verb: &str, unit: &str, cancel: &CancelToken) ->
 /// [`tests::preflight_wants_a_unit_file_and_a_binary`] drives (2) directly, so it is not
 /// exempt from being tested.
 pub fn preflight(ctx: &Context, unit: &str, binary: &str) -> Result<(), Error> {
+    if unit == ctx.settings.wallet.unit {
+        crate::transport::DaemonConnection::from_context(ctx)?;
+    }
     if !unit_file_exists(ctx, unit)? {
         return Err(Error::backend(format!(
             "fmonero has not set up the {} yet.",
@@ -619,13 +622,22 @@ pub fn render_node_conf(ctx: &Context, login: &Login) -> String {
 /// setting literally.
 // copy-exempt-begin: file content, not prose — these are the bytes systemd and monerod read
 pub fn render_wallet_unit(ctx: &Context) -> String {
+    let connection = match crate::transport::DaemonConnection::from_context(ctx) {
+        Ok(connection) => connection,
+        Err(why) => return format!("# Refused wallet unit rendering: {why}\n"),
+    };
+    let daemon_args = connection
+        .daemon_args()
+        .iter()
+        .map(|arg| crate::transport::systemd_arg(arg))
+        .collect::<Vec<_>>()
+        .join(" ");
     let net = ctx.settings.node.network;
     let extra = match net {
         crate::settings::Network::Mainnet => "",
         crate::settings::Network::Stagenet => "  --stagenet \\\n",
         crate::settings::Network::Testnet => "  --testnet \\\n",
     };
-    let target = daemon_target(ctx);
     format!(
         "\
 [Unit]
@@ -644,9 +656,7 @@ ExecStart=/usr/bin/monero-wallet-rpc \\
   --rpc-bind-ip 127.0.0.1 \\
   --rpc-bind-port {port} \\
   --wallet-dir {dir} \\
-  --daemon-address {daemon} \\
-  {trust_flag} \\
-  --daemon-ssl {ssl} \\
+  {daemon_args} \\
 {extra}  --non-interactive \\
   --log-file %S/fmonero/run/monero-wallet-rpc.log \\
   --log-level 0 \\
@@ -660,9 +670,6 @@ WantedBy=default.target
         node_unit = ctx.settings.node.unit,
         port = ctx.settings.wallet.port,
         dir = ctx.settings.wallet.dir.display(),
-        daemon = target.address,
-        trust_flag = target.trust_flag(),
-        ssl = target.ssl,
     )
 }
 // copy-exempt-end
@@ -711,7 +718,9 @@ pub fn daemon_target(ctx: &Context) -> DaemonTarget {
     } else {
         (host_port(&n.url), true)
     };
-    let ssl = ssl_for_address(&address);
+    let ssl = crate::transport::DaemonConnection::from_context(ctx)
+        .map(|c| c.ssl())
+        .unwrap_or(SslSupport::Enabled);
     DaemonTarget {
         address,
         trusted,
@@ -719,8 +728,10 @@ pub fn daemon_target(ctx: &Context) -> DaemonTarget {
     }
 }
 
-/// `--daemon-ssl` / `set_daemon`'s `ssl_support`, **derived from the address rather than from
-/// the mode** (§2m.3): `Disabled` for a loopback literal host, `Autodetect` otherwise.
+/// Address-only TLS default: `Enabled` for explicit HTTPS, `Disabled` for a loopback
+/// literal host, `Autodetect` otherwise. Full startup/live policy, including user
+/// TLS selection, CA/pin and proxy prerequisites, is resolved by
+/// [`crate::transport::DaemonConnection`].
 ///
 /// In local mode `node.url` is loopback-validated (§2c), so it is always `Disabled` — which is
 /// also a correction: the flag's default is `autodetect` (`wallet2.cpp:253`), so until v5.2 our
@@ -729,11 +740,10 @@ pub fn daemon_target(ctx: &Context) -> DaemonTarget {
 /// ourselves in the clear. Keying it on the mode instead would send `autodetect` to loopback for
 /// anyone testing remote mode locally, and would leave `wallet set-daemon` — whose address is in
 /// neither key — with a rule of its own.
-///
-/// `Enabled` is never returned: it throws at process start without a CA file, a fingerprint list
-/// or `--daemon-ssl-allow-any-cert` (`wallet2.cpp:416-432`), all three of which §0 cuts.
 pub fn ssl_for_address(address: &str) -> SslSupport {
-    if crate::settings::is_loopback_host(crate::settings::remote_host(address)) {
+    if address.starts_with("https://") {
+        SslSupport::Enabled
+    } else if crate::settings::is_loopback_host(crate::settings::remote_host(address)) {
         SslSupport::Disabled
     } else {
         SslSupport::Autodetect
@@ -816,6 +826,7 @@ pub fn install_rotating(ctx: &Context, dry_run: bool) -> Result<Vec<FileAction>,
 }
 
 fn install_with(ctx: &Context, dry_run: bool, rotate: bool) -> Result<Vec<FileAction>, Error> {
+    crate::transport::DaemonConnection::from_context(ctx)?;
     // §4.2: a test never installs a **real** unit. A dry run writes nothing, so it is allowed
     // to run anywhere — which is what lets `tests/e2e.sh` assert the diff and the CreateDir
     // action in its own state dir instead of against $HOME. The deviation is in DECISIONS.md.
@@ -1512,6 +1523,62 @@ mod tests {
         // (§2m.5 step 8).
         let node = render_node_unit(&ctx);
         assert!(node.contains("--config-file"), "{node}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn proxy_startup_wallet_unit_keeps_plaintext_loopback_and_explicit_ca() {
+        let dir =
+            std::env::temp_dir().join(format!("fmonero-units-proxy-ca-{}", std::process::id()));
+        let mut ctx = ctx_in(&dir);
+        ctx.settings.node.proxy = Some("127.0.0.1:9050".into());
+        for mode in [
+            crate::settings::NodeMode::Local,
+            crate::settings::NodeMode::Remote,
+        ] {
+            ctx.settings.node.mode = mode;
+            ctx.settings.node.remote = "127.0.0.1:18081".into();
+            for tls in [
+                crate::transport::TlsPolicy::Auto,
+                crate::transport::TlsPolicy::Disabled,
+            ] {
+                ctx.settings.node.tls = tls;
+                let connection = crate::transport::DaemonConnection::from_context(&ctx).unwrap();
+                let ca = connection
+                    .ca_file
+                    .as_ref()
+                    .expect("proxy startup requires a CA");
+                let unit = render_wallet_unit(&ctx);
+                assert!(
+                    unit.contains("ExecStart=/usr/bin/monero-wallet-rpc"),
+                    "{unit}"
+                );
+                assert!(unit.contains("--daemon-address 127.0.0.1:18081"), "{unit}");
+                assert!(unit.contains("--daemon-ssl disabled"), "{unit}");
+                assert!(
+                    unit.contains(&format!("--daemon-ssl-ca-certificates {}", ca.display())),
+                    "{unit}"
+                );
+                assert_eq!(unit.matches("--daemon-ssl-ca-certificates").count(), 1);
+                assert!(unit.contains("--proxy 127.0.0.1:9050"), "{unit}");
+                assert!(!unit.contains("--daemon-ssl-allow-any-cert"));
+                assert!(!unit.contains("--daemon-ssl-allowed-fingerprints"));
+            }
+        }
+        ctx.settings.node.tls = crate::transport::TlsPolicy::Auto;
+        ctx.settings.node.remote = "https://node.example:18081".into();
+        let https = render_wallet_unit(&ctx);
+        assert!(https.contains("--daemon-ssl enabled"), "{https}");
+        assert!(https.contains("--daemon-ssl-ca-certificates"), "{https}");
+        assert!(!https.contains("--daemon-ssl-allow-any-cert"));
+
+        ctx.settings.node.tls = crate::transport::TlsPolicy::Disabled;
+        ctx.settings.node.remote = "walletnode.onion:18081".into();
+        let hidden = render_wallet_unit(&ctx);
+        assert!(hidden.contains("--daemon-ssl disabled"), "{hidden}");
+        assert!(hidden.contains("--proxy 127.0.0.1:9050"), "{hidden}");
+        assert!(!hidden.contains("--daemon-ssl-ca-certificates"));
+        assert!(!hidden.contains("--daemon-ssl-allow-any-cert"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

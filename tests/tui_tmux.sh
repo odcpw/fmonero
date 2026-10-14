@@ -1,647 +1,511 @@
 #!/usr/bin/env bash
-# tests/tui_tmux.sh — the TUI on a REAL pty (DESIGN.md §7a, §8 Phase 2 "tui").
-#
-# `fmonero tui` refuses a non-TTY stdout (exit 2, main.rs), so the only honest smoke test
-# drives it through a pty. Two modes:
-#
-#   tests/tui_tmux.sh                 # the gate: open, visit 1 2 3 4, ?, quit cleanly
-#   tests/tui_tmux.sh --capture DIR   # the same, against fmonero-mock, writing one
-#                                     # capture-pane text file per screen into DIR
-#
-# The capture mode is what fills decisions/phase2-tui.md, and it runs against
-# `fmonero-mock` serving tests/fixtures/ ONLY — never a real wallet (§8's tui gate: the
-# Wallet screen renders a balance, a primary address and counterparty addresses, and §2b.2
-# keeps real ones out of the decisions log).
-#
-# Requires tmux. `script -qc` would also give a pty, but tmux can send keys and read the
-# screen back, which is what turns "it started" into "every screen rendered".
+# Actual PTY qualification against scratch fixtures only. Never builds.
+# Root first builds fmonero + fmonero-mock with scripts/cargo-serial.sh.
+# Run: tests/tui_tmux.sh [--bin PATH] [--mock PATH] [--capture NEW_DIRECTORY]
+# SGR mouse injection exercises the real application parser and hit regions.
+# It does not certify desktop terminal mouse delivery or native Monero behavior.
 set -euo pipefail
-
+umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CAPTURE=""
-[ "${1:-}" = "--capture" ] && { CAPTURE="${2:?--capture needs a directory}"; mkdir -p "$CAPTURE"; }
-
-PASS=0; FAIL=0
-ok()  { PASS=$((PASS+1)); printf '  ok    %s\n' "$1"; }
-bad() { FAIL=$((FAIL+1)); printf '  FAIL  %s\n' "$1"; shift; for l in "$@"; do printf '        %s\n' "$l"; done; }
-
-command -v tmux >/dev/null || { echo "tui_tmux.sh: tmux is required" >&2; exit 1; }
-
-printf '\n== build\n'
-( cd "$ROOT" && cargo build --release >/dev/null 2>&1 ) || { echo "cargo build --release failed" >&2; exit 1; }
 FM="$ROOT/target/release/fmonero"
 MOCK="$ROOT/target/release/fmonero-mock"
-ok "cargo build --release"
-
-WORK="$(mktemp -d)"
-SESSION="fmonero-tui-$$"
-REMOTE_SESSION="fmonero-tui-remote-$$"
-MOCKS=()
-cleanup() {
-  tmux kill-session -t "$SESSION" 2>/dev/null || true
-  tmux kill-session -t "$REMOTE_SESSION" 2>/dev/null || true
-  for pid in "${MOCKS[@]:-}"; do [ -n "$pid" ] && kill "$pid" 2>/dev/null || true; done
-  rm -rf "$WORK"
+CAPTURE=""
+while (($#)); do
+  case "$1" in
+    --bin) FM="${2:?--bin requires a prebuilt binary}"; shift 2 ;;
+    --mock) MOCK="${2:?--mock requires a prebuilt mock}"; shift 2 ;;
+    --capture) CAPTURE="${2:?--capture requires a new directory}"; shift 2 ;;
+    -h|--help) sed -n '2,6p' "$0"; exit 0 ;;
+    *) printf 'Unknown argument: %s\n' "$1" >&2; exit 2 ;;
+  esac
+done
+for program in tmux python3 timeout realpath; do
+  command -v "$program" >/dev/null || { printf 'Required: %s\n' "$program" >&2; exit 2; }
+done
+[[ -x "$FM" && -x "$MOCK" ]] || {
+  echo "Prebuilt fmonero and fmonero-mock required; this harness never builds." >&2; exit 2;
 }
-trap cleanup EXIT
-
-export FMONERO_STATE_DIR="$WORK/state"
-export FMONERO_CONFIG_DIR="$WORK/config"
-export FMONERO_CACHE_DIR="$WORK/cache"
-# **`XDG_DATA_HOME` too** (round 4 iteration 3). `wallet.dir` defaults to
-# `$XDG_DATA_HOME/fmonero/wallets/<network>` (§3), and without this the pane read the OWNER's wallet
-# folder: this gate's own "the empty state" assertions ran against a screen listing his `moneroli`,
-# which is the shape V18 fixed for `node.log_file` and W21 for `node.data_dir`. Nothing here writes
-# a wallet — `wallet_dir::list` reads `*.keys` basenames and no wallet bytes — but a gate that
-# asserts an EMPTY state has to own the folder it calls empty.
-export XDG_DATA_HOME="$WORK/data"
-# **And the two the §2i seam needs** (round 5, V18/S11's structural half, and the rule now in
-# `CLAUDE.md`). `FMONERO_STATE_DIR` moves fmonero's own files; it does **not** move
-# `systemctl --user`. Without these two, `detect_layout` read the OWNER's real unit files and asked
-# his real manager whether they were active — so this gate's `Layout` was whatever his machine
-# happened to be in, and on 2026-09-19 a sandbox that made the same omission started his real
-# `monerod` for thirty seconds (DECISIONS: V18). The fixture is empty, which is exactly this
-# scenario: no unit is installed and nothing is running, so `Layout::None` — the first state a
-# fresh machine is in, and the one round 5's S10 is about.
-export FMONERO_SYSTEMD_USER_DIR="$WORK/systemd/user"
-export FMONERO_SYSTEMCTL_FIXTURE="$WORK/systemctl.fixture"
-# And nothing may reach monero.fail: `f` in the picker fetches, and the §2n.5 notice is the only
-# thing standing in front of it. A local `--static` mock is the belt to that braces.
-export FMONERO_NODES_URL="http://127.0.0.1:18295/nodes.json"
-mkdir -p "$FMONERO_STATE_DIR/run" "$FMONERO_CONFIG_DIR" "$FMONERO_CACHE_DIR" \
-         "$XDG_DATA_HOME/fmonero/wallets/mainnet" "$FMONERO_SYSTEMD_USER_DIR"
-: > "$FMONERO_SYSTEMCTL_FIXTURE"
-chmod 700 "$FMONERO_STATE_DIR" "$FMONERO_CONFIG_DIR" "$FMONERO_CACHE_DIR"
-chmod 700 "$XDG_DATA_HOME/fmonero" "$XDG_DATA_HOME/fmonero/wallets" \
-          "$XDG_DATA_HOME/fmonero/wallets/mainnet"
-
-NODE_PORT=18291
-WALLET_PORT=18293
-SCENARIO="both daemons absent"
-
-# The mocks, and the login file §2c requires BEFORE the first fmonero invocation: with none the
-# client sends unauthenticated requests, the mock answers 401 twice and every wallet row is
-# exit 4 `auth_refused` instead of the thing it names.
-if [ -n "$CAPTURE" ]; then
-  [ -x "$MOCK" ] || { echo "tui_tmux.sh: $MOCK is missing" >&2; exit 1; }
-  "$MOCK" --role node   --port "$NODE_PORT"   --fixtures "$ROOT/tests/fixtures" \
-          --log "$WORK/node.jsonl" >/dev/null 2>&1 & MOCKS+=("$!")
-  "$MOCK" --role wallet --port "$WALLET_PORT" --fixtures "$ROOT/tests/fixtures" \
-          --log "$WORK/wallet.jsonl" --auth fmonero:t3st >/dev/null 2>&1 & MOCKS+=("$!")
-  # §2n.7's own mode, so `FMONERO_NODES_URL` points at this machine and a stray `f` cannot reach
-  # monero.fail. Nothing in this script presses Enter on the notice, so nothing fetches either way.
-  "$MOCK" --static "$ROOT/tests/fixtures/nodes" --port 18295 \
-          --log "$WORK/nodes.jsonl" >/dev/null 2>&1 & MOCKS+=("$!")
-  # **Our** mocks must own those ports.` bind` failing is silent — the process exits and a
-  # listener left over from another run answers in its place, serving the same fixtures from a
-  # log this run cannot read. Everything on screen then looks right while every "the mock
-  # recorded N requests" assertion reads an empty file, which is the shape of a test that cannot
-  # fail. Probe each port and require the answer to land in OUR log.
-  for spec in "$NODE_PORT:$WORK/node.jsonl" "$WALLET_PORT:$WORK/wallet.jsonl"; do
-    port="${spec%%:*}"; log="${spec#*:}"
-    for _ in $(seq 60); do
-      curl -s -o /dev/null --connect-timeout 1 --max-time 1 -d '{}' "127.0.0.1:$port/get_height" \
-        && break
-      sleep 0.05
-    done
-    if [ ! -s "$log" ]; then
-      echo "tui_tmux.sh: port $port is served by a process that is not this run's mock" >&2
-      echo "             (nothing reached $log) — stop it and re-run" >&2
-      exit 1
-    fi
-  done
-  printf 'fmonero:t3st' > "$FMONERO_STATE_DIR/run/monero-wallet-rpc.$WALLET_PORT.login"
-  chmod 600 "$FMONERO_STATE_DIR/run/monero-wallet-rpc.$WALLET_PORT.login"
-  "$FM" settings set node.url   "http://127.0.0.1:$NODE_PORT"   >/dev/null
-  "$FM" settings set wallet.url "http://127.0.0.1:$WALLET_PORT" >/dev/null
-  "$FM" settings set wallet.port "$WALLET_PORT" >/dev/null
-  # A synthetic daemon log for the Log screen, and a wallet name for the open modal.
-  mkdir -p "$WORK/wallets/mainnet"
-  : > "$WORK/wallets/mainnet/main.keys"
-  "$FM" settings set wallet.dir "$WORK/wallets/mainnet" >/dev/null
-  { echo "2026-09-16 14:02:09.114 I Monero 'Fluorine Fermi' (v0.18.5.1-release) started";
-    echo "2026-09-16 14:02:10.002 I Synced 3541122/3541122";
-    echo "2026-09-16 14:02:11.771 I [127.0.0.1:18080 OUT] NEW BLOCK 3541122"; } > "$WORK/bitmonero.log"
-  "$FM" settings set node.log_file "$WORK/bitmonero.log" >/dev/null
-  SCENARIO="fmonero-mock --role node/--role wallet --auth over tests/fixtures/ (no real daemon, no real wallet)"
-  for _ in $(seq 60); do
-    curl -s -o /dev/null --connect-timeout 1 --max-time 1 -d '{}' \
-      "127.0.0.1:$WALLET_PORT/get_height" && break
+FM="$(realpath "$FM")"
+MOCK="$(realpath "$MOCK")"
+if [[ -n "$CAPTURE" ]]; then
+  mkdir -m 700 -- "$CAPTURE" # Refuse overwrite of previous evidence or arbitrary directories.
+  CAPTURE="$(cd "$CAPTURE" && pwd)"
+fi
+WORK="$(mktemp -d -t fmonero-pty.XXXXXXXX)"
+SOCKET="$WORK/tmux.sock"
+MOCKS=()
+PASS=0
+PHASE=setup
+PANE=""
+FRAME=""
+tm() { timeout -k 1s 3s tmux -S "$SOCKET" -f /dev/null "$@"; }
+cleanup() {
+  # This socket belongs to this fresh private directory, never the owner's server.
+  tm kill-session -t gate >/dev/null 2>&1 || true
+  for pid in "${MOCKS[@]}"; do kill "$pid" 2>/dev/null || true; done
+  for ((i=0; i<20; i++)); do
+    live=0
+    for pid in "${MOCKS[@]}"; do kill -0 "$pid" 2>/dev/null && live=1; done
+    ((live)) || break
     sleep 0.05
   done
-fi
-
-printf '\n== the TUI on a pty (%s)\n' "$SCENARIO"
-# stdout MUST be the pty: `fmonero tui` refuses a redirected stdout with exit 2 (main.rs), so
-# only stderr is captured and the screen is read back with capture-pane.
-#
-# **The sandbox is forced into the pane with `env`, and that is not belt-and-braces.** A new
-# session created inside an ALREADY-RUNNING tmux server inherits the SERVER's environment, not
-# this shell's — so every `export FMONERO_*` above was invisible to the TUI whenever the owner
-# (or another agent) had a tmux server up. The TUI then ran against `~/.config/fmonero`,
-# 127.0.0.1:18081/18083 and the owner's real wallet: the gate passed vacuously in non-capture
-# mode (the words "Node", "Balance", "cheapest", "Log", "Keys" all render in the empty state),
-# and in `--capture` mode it typed a mainnet address and `0.01` into the Send form and pressed
-# Enter, which is `send::build` taking the owner's real `send.lock` and issuing a real
-# `transfer`. Worse, the "nothing was relayed" assertion counts `relay_tx` in the MOCK's log,
-# which is empty precisely when nothing reached the mock — passing in exactly the case it exists
-# for. Verified on this machine: with a server already running, `tmux new-session -d 'echo
-# [$FMONERO_STATE_DIR]'` prints `[]`.
-tmux new-session -d -s "$SESSION" -x 120 -y 40 \
-  "env FMONERO_STATE_DIR=$FMONERO_STATE_DIR FMONERO_CONFIG_DIR=$FMONERO_CONFIG_DIR FMONERO_CACHE_DIR=$FMONERO_CACHE_DIR XDG_DATA_HOME=$XDG_DATA_HOME FMONERO_SYSTEMD_USER_DIR=$FMONERO_SYSTEMD_USER_DIR FMONERO_SYSTEMCTL_FIXTURE=$FMONERO_SYSTEMCTL_FIXTURE FMONERO_NODES_URL=$FMONERO_NODES_URL $FM tui 2>$WORK/tui.err; echo \$? > $WORK/rc"
-sleep 2
-
-# And the sandbox is asserted, not assumed: if the pane is not in it, everything below is a test
-# of the owner's own machine.
-if [ -n "$CAPTURE" ]; then
-  sleep 1
-  if grep -q '"method":"get_info"' "$WORK/node.jsonl" 2>/dev/null; then
-    ok "the TUI is talking to the sandbox's node mock"
-  else
-    bad "the TUI reached no mock — it is NOT running in this test's sandbox" \
-        "node.jsonl is empty, so every assertion below is about the owner's real configuration"
-  fi
-fi
-
-if tmux has-session -t "$SESSION" 2>/dev/null; then ok "fmonero tui opened on a pty"; else
-  bad "fmonero tui did not stay open" "stderr: $(head -3 "$WORK/tui.err" 2>/dev/null)"
-fi
-
-pane() { tmux capture-pane -p -t "$SESSION" 2>/dev/null || true; }
-# `visit <key> <label> <needle>[|<needle>…] [capture-file]` — a `|`-separated needle list, because
-# one screen has two correct shapes: the Wallet screen shows ` Balance ` with a wallet open and the
-# §7a.5 empty-state panel without one, and v5.6.1 deleted the balance pane from the second (V12).
-# A needle that matched both would have to be the tab strip, which every screen carries.
-visit() { # visit <key> <label> <needle>[|<needle>…] [capture-file]
-  tmux send-keys -t "$SESSION" "$1" 2>/dev/null || true
-  sleep 1
-  local text hit needle; text="$(pane)"; hit=""
-  local IFS='|'
-  for needle in $3; do
-    case "$text" in *"$needle"*) hit="$needle"; break ;; esac
+  for pid in "${MOCKS[@]}"; do
+    kill -KILL "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
   done
-  unset IFS
-  if [ -n "$hit" ]; then
-    ok "$2 renders ($hit)"
-  else
-    bad "$2 did not render" "expected one of '$3' in the pane" "$(printf '%s' "$text" | head -4)"
+  rm -rf -- "$WORK"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# Unicode terminal-cell coordinates and structured request counts. No request
+# bodies are printed, and exported screens redact even synthetic secret canaries.
+cat > "$WORK/read.py" <<'PY'
+import json, pathlib, re, sys, unicodedata
+mode, *args = sys.argv[1:]
+if mode == "count":
+    path, method, *status = args
+    rows = pathlib.Path(path).read_text().splitlines() if pathlib.Path(path).exists() else []
+    calls = [json.loads(row) for row in rows]
+    print(sum(r.get("method") == method and
+              (not status or r.get("status") == int(status[0])) for r in calls))
+elif mode == "prepared":
+    rows = [json.loads(row) for row in pathlib.Path(args[0]).read_text().splitlines()]
+    calls = [r for r in rows if r.get("method") == "transfer_split" and r.get("status") == 200]
+    assert len(calls) == 1, "exactly one answered preparation must reach our mock"
+    p = calls[0]["body"]["params"]
+    assert p["do_not_relay"] is True and p["get_tx_metadata"] is True
+    assert p["destinations"] == [{"address": args[1], "amount": 10_000_000_000}]
+elif mode == "locate":
+    needle, row = args
+    matches = []
+    for y, line in enumerate(sys.stdin.read().splitlines()):
+        if row not in ("any", "first") and y != int(row):
+            continue
+        at = line.find(needle)
+        if at >= 0:
+            x = sum(0 if unicodedata.combining(c) else
+                    2 if unicodedata.east_asian_width(c) in ("W", "F") else 1
+                    for c in line[:at])
+            matches.append((x + max(0, len(needle)//2), y))
+    if not matches or (row != "first" and len(matches) != 1):
+        sys.exit(1)
+    print(*matches[0])
+elif mode == "masked":
+    lines = sys.stdin.read().splitlines()
+    for label in ("Password", "Again"):
+        values = [m.group(1) for line in lines
+                  if (m := re.search(r"(?:^|[ >])" + label + r"\s+([^│]*)", line))]
+        if len(values) != 1 or "•" not in values[0] or any(c.isalnum() for c in values[0]):
+            sys.exit(1)
+elif mode == "safe":
+    text = sys.stdin.read()
+    for token in ("PTY_SECRET_qvorn123456_A", "PTY_SECRET_qvorn123456_B", "PTY_LOG_SECRET_8372"):
+        text = text.replace(token, "[synthetic secret redacted]")
+    # A broken masked editor might expose only a horizontally clipped suffix.
+    text = re.sub(r"((?:^|[ >])(?:Password|Again)\s+)[^│\n]*",
+                  r"\1[protected field]", text, flags=re.M)
+    print(text, end="")
+PY
+safe() { python3 "$WORK/read.py" safe; }
+ok() { PASS=$((PASS+1)); printf '  ok  [%s] %s\n' "$PHASE" "$1"; }
+fail() {
+  printf '  FAIL [%s] %s\n' "$PHASE" "$1" >&2
+  if [[ -n "$PANE" ]]; then
+    tm capture-pane -p -t "$PANE" 2>/dev/null | safe >&2 || true
   fi
-  [ -n "$CAPTURE" ] && [ -n "${4:-}" ] && printf '%s\n' "$text" > "$CAPTURE/$4"
-  return 0
+  [[ ! -s "$WORK/$PHASE.err" ]] || safe < "$WORK/$PHASE.err" >&2
+  exit 1
+}
+frame() { FRAME="$(tm capture-pane -p -t "$PANE")" || fail "PTY disappeared"; }
+wait_text() {
+  local label="$1" needle="$2"
+  for ((attempt=0; attempt<80; attempt++)); do
+    frame
+    if [[ "$FRAME" == *"$needle"* ]]; then ok "$label"; return; fi
+    [[ ! -f "$WORK/$PHASE.rc" ]] || fail "$label: TUI exited early"
+    sleep 0.1
+  done
+  fail "$label: expected visible '$needle' within 8 seconds"
+}
+absent() {
+  frame
+  [[ "$FRAME" != *"$2"* ]] || fail "$1"
+  ok "$1"
+}
+wait_absent() {
+  local label="$1" needle="$2"
+  for ((attempt=0; attempt<80; attempt++)); do
+    frame
+    if [[ "$FRAME" != *"$needle"* ]]; then ok "$label"; return; fi
+    sleep 0.1
+  done
+  fail "$label: '$needle' remained visible"
+}
+masked() {
+  for ((attempt=0; attempt<80; attempt++)); do
+    frame
+    for sentinel in PTY_SECRET_qvorn123456_A PTY_SECRET_qvorn123456_B 123456_A 123456_B; do
+      [[ "$FRAME" != *"$sentinel"* ]] || fail "protected input appeared in the PTY"
+    done
+    if printf '%s\n' "$FRAME" | python3 "$WORK/read.py" masked; then
+      ok "both protected editors render masks and no plaintext"
+      return
+    fi
+    sleep 0.1
+  done
+  fail "both visible protected fields must contain masks, never letters/digits"
+}
+save_frame() {
+  frame
+  [[ -z "$CAPTURE" ]] || printf '%s\n' "$FRAME" | safe > "$CAPTURE/$PHASE-$1.txt"
+}
+keys() {
+  local key
+  for key in "$@"; do
+    tm send-keys -t "$PANE" -- "$key"
+    # ESC immediately followed by a digit is an Alt-digit terminal sequence.
+    # Separate an intentional Escape key before sending the next gesture.
+    [[ "$key" != Escape ]] || sleep 0.15
+  done
+}
+literal() { tm send-keys -t "$PANE" -l -- "$1"; }
+click_text() {
+  local needle="$1" row="${2:-any}" point x y bytes
+  frame
+  point="$(printf '%s\n' "$FRAME" | python3 "$WORK/read.py" locate "$needle" "$row")" \
+    || fail "mouse target '$needle' missing or ambiguous"
+  read -r x y <<< "$point"
+  printf -v bytes '\033[<0;%d;%dM\033[<0;%d;%dm' "$((x+1))" "$((y+1))" "$((x+1))" "$((y+1))"
+  literal "$bytes"
+}
+resize() {
+  local width="$1" height="$2"
+  tm resize-window -t gate:0 -x "$width" -y "$height"
+  for ((attempt=0; attempt<40; attempt++)); do
+    [[ "$(tm display-message -p -t "$PANE" '#{pane_width}x#{pane_height}')" == "$width"x"$height" ]] && break
+    sleep 0.05
+  done
+  [[ "$(tm display-message -p -t "$PANE" '#{pane_width}x#{pane_height}')" == "$width"x"$height" ]] \
+    || fail "tmux did not deliver requested ${width}x${height}"
+  sleep 0.2 # Allow SIGWINCH through the real event loop; callers assert redraw content.
+  ok "actual pane resized to ${width}x${height}"
+}
+count() { python3 "$WORK/read.py" count "$@"; }
+zero_calls() {
+  local log="$1"; shift
+  for method in "$@"; do
+    [[ "$(count "$log" "$method")" == 0 ]] || fail "unexpected $method RPC attempt"
+  done
+}
+start_mock() {
+  local name="$1"; shift
+  "$MOCK" "$@" --port 0 --log "$WORK/$name.jsonl" >"$WORK/$name.out" 2>"$WORK/$name.boot" &
+  MOCKS+=("$!")
+  MOCK_PORT=""
+  for ((attempt=0; attempt<80; attempt++)); do
+    kill -0 "${MOCKS[-1]}" 2>/dev/null || fail "scratch mock $name exited before binding"
+    MOCK_PORT="$(sed -nE 's/.* on 127\.0\.0\.1:([0-9]+)$/\1/p' "$WORK/$name.boot")"
+    [[ "$MOCK_PORT" =~ ^[0-9]+$ ]] && return
+    sleep 0.05
+  done
+  fail "scratch mock $name did not bind within 4 seconds"
+}
+start_mock node --role node --fixtures "$ROOT/tests/fixtures"
+NODE_PORT="$MOCK_PORT"
+start_mock wallet --role wallet --fixtures "$ROOT/tests/fixtures" --auth fmonero:t3st
+WALLET_PORT="$MOCK_PORT"
+start_mock closed --role wallet --fixtures "$ROOT/tests/fixtures" --auth fmonero:t3st \
+  --fail 'get_height=-13:No wallet file' --fail 'get_address=-13:No wallet file'
+CLOSED_PORT="$MOCK_PORT"
+start_mock nodes --static "$ROOT/tests/fixtures/nodes"
+NODES_PORT="$MOCK_PORT"
+
+configure() {
+  PHASE="$1"
+  local port="$2"
+  BASE="$WORK/$PHASE"
+  SANDBOX=(
+    "FMONERO_STATE_DIR=$BASE/state"
+    "FMONERO_CONFIG_DIR=$BASE/config"
+    "FMONERO_CACHE_DIR=$BASE/cache"
+    "XDG_DATA_HOME=$BASE/data"
+    "FMONERO_SYSTEMD_USER_DIR=$BASE/systemd/user"
+    "FMONERO_SYSTEMCTL_FIXTURE=$BASE/systemctl.fixture"
+    "FMONERO_NODES_URL=http://127.0.0.1:$NODES_PORT/nodes.json"
+  )
+  mkdir -p "$BASE/state/run" "$BASE/config" "$BASE/cache" "$BASE/data" "$BASE/systemd/user" "$BASE/wallets"
+  : > "$BASE/systemctl.fixture"
+  printf 'fmonero:t3st' > "$BASE/state/run/monero-wallet-rpc.$port.login"
+  cli settings set node.url "http://127.0.0.1:$NODE_PORT" >/dev/null
+  cli settings set wallet.url "http://127.0.0.1:$port" >/dev/null
+  cli settings set wallet.port "$port" >/dev/null
+  cli settings set wallet.dir "$BASE/wallets" >/dev/null
+  cli settings set node.data_dir "$BASE/chain" >/dev/null
+  cli settings set node.log_file "$BASE/node.log" >/dev/null
+  cli settings set tui.privacy false >/dev/null
+  cli settings set tui.notifications false >/dev/null
+  printf 'PTY_NODE_LOG ordinary fixture event\n' > "$BASE/node.log"
+  printf 'PTY_WALLET_LOG ordinary fixture event\npassword: PTY_LOG_SECRET_8372\n' > "$BASE/state/run/monero-wallet-rpc.log"
+}
+cli() { timeout -k 2s 20s env "${SANDBOX[@]}" "$FM" "$@"; }
+cat > "$WORK/pane.sh" <<'SH'
+#!/usr/bin/env bash
+set -uo pipefail
+fm="$1"; result="$2"; errors="$3"; proof="$4"; shift 4
+for key in FMONERO_STATE_DIR FMONERO_CONFIG_DIR FMONERO_CACHE_DIR XDG_DATA_HOME \
+           FMONERO_SYSTEMD_USER_DIR FMONERO_SYSTEMCTL_FIXTURE FMONERO_NODES_URL; do
+  [[ -n "${!key:-}" ]] || exit 98
+  printf '%s=%s\n' "$key" "${!key}"
+done > "$proof"
+"$fm" tui "$@" 2>"$errors"
+rc=$?
+printf '%s\n' "$rc" > "$result"
+exit "$rc"
+SH
+launch() {
+  PANE="$(tm new-session -d -P -F '#{pane_id}' -s gate -x 120 -y 40 \
+    env "${SANDBOX[@]}" TERM=xterm-256color LC_ALL=C.UTF-8 \
+    bash "$WORK/pane.sh" "$FM" "$WORK/$PHASE.rc" "$WORK/$PHASE.err" "$WORK/$PHASE.env" "$@")"
+  tm set-option -t gate status off
+  tm set-window-option -t gate:0 window-size manual
+  tm set-option -t gate history-limit 0
+  for ((attempt=0; attempt<50; attempt++)); do
+    [[ -f "$WORK/$PHASE.env" ]] && break
+    sleep 0.05
+  done
+  printf '%s\n' "${SANDBOX[@]}" > "$WORK/expected.env"
+  cmp -s "$WORK/expected.env" "$WORK/$PHASE.env" || fail "pane did not inherit all seven exact sandbox variables"
+  resize 120 40
+  ok "all seven sandbox variables verified inside the private PTY"
+}
+finish() {
+  keys q
+  for ((attempt=0; attempt<80; attempt++)); do
+    [[ -f "$WORK/$PHASE.rc" ]] && break
+    sleep 0.1
+  done
+  [[ -f "$WORK/$PHASE.rc" && "$(cat "$WORK/$PHASE.rc")" == 0 ]] || fail "q did not exit cleanly within 8 seconds"
+  [[ ! -s "$WORK/$PHASE.err" ]] || fail "TUI wrote to stderr"
+  [[ ! -s "$BASE/systemctl.fixture" ]] || fail "service fixture was mutated"
+  PANE=""
+  tm kill-session -t gate >/dev/null 2>&1 || true
+  ok "clean exit, empty stderr, unchanged service fixture"
 }
 
-visit 1 "Node screen"   "Node"     "node.txt"
-# v5.6.1, V12: with no wallet open there is no ` Balance ` pane to find — it rendered
-# `— XMR   unlocked — XMR` above the empty state and is gone. The pane that IS there is the empty
-# state's own, and `No wallet is open.` is its first line.
-visit 2 "Wallet screen" "No wallet is open.| Balance "  "wallet.txt"
-visit 3 "Send screen"   "cheapest" "send.txt"
-# The Send form owns printable keys while it is focused (otherwise an address typed into the
-# To field would switch screens), so `Esc` leaves it first — which is what its own hint line
-# and the help overlay say. This sequence is the documented rule, asserted.
-tmux send-keys -t "$SESSION" Escape 2>/dev/null || true
-sleep 0.4
-visit 4 "Log screen"    "Log"      "log.txt"
-visit "?" "help overlay" "Keys"    "help.txt"
-tmux send-keys -t "$SESSION" Escape 2>/dev/null || true
-sleep 0.4
-
-# The two overlays that matter most, against the mock only: the receive QR and the send
-# confirm modal — the whole safety surface. Nothing is broadcast: the modal wants the word
-# "send" typed and Esc discards the built transaction (do_not_relay never committed it, §2a.3).
-if [ -n "$CAPTURE" ]; then
-  DEST=42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm
-  tmux send-keys -t "$SESSION" 2 2>/dev/null || true; sleep 0.6
-  visit "Q" "receive QR" "Receive" "qr.txt"
-  tmux send-keys -t "$SESSION" Escape 2>/dev/null || true; sleep 0.4
-  tmux send-keys -t "$SESSION" 3 2>/dev/null || true; sleep 0.6
-  tmux send-keys -t "$SESSION" -l "$DEST" 2>/dev/null || true
-  # **`Down`, not `Tab`.** v5.5 made `Tab` switch SCREENS in every focus state (§7a.1) and the
-  # fields move with `↑↓` — this line still sent `Tab`, so the amount was typed into the Log
-  # screen and the build never happened. The same script asserts the new rule forty lines below,
-  # which is how a capture run came to contradict its own suite.
-  tmux send-keys -t "$SESSION" Down 2>/dev/null || true
-  tmux send-keys -t "$SESSION" -l "0.01" 2>/dev/null || true
-  sleep 0.4
-  tmux send-keys -t "$SESSION" Enter 2>/dev/null || true   # validate, then build
-  sleep 3
-  text="$(pane)"
-  case "$text" in
-    *'Type "send"'*) ok "the send confirm modal shows the built fee and wants the word"
-                     printf '%s\n' "$text" > "$CAPTURE/send-confirm.txt" ;;
-    *) bad "the confirm modal did not appear" "$(printf '%s' "$text" | sed -n '10,14p')" ;;
-  esac
-  # Esc discards: the built transaction is dropped, which releases the §2a.11 send.lock.
-  tmux send-keys -t "$SESSION" Escape 2>/dev/null || true
-  sleep 0.6
-  # POSITIVELY first: the mock must have seen the build, or "zero relay_tx" is the answer an
-  # empty log gives and proves nothing (that is exactly how the sandbox leak hid itself).
-  BUILT="$(grep -c '"method":"transfer"' "$WORK/wallet.jsonl" 2>/dev/null || true)"
-  RELAYED="$(grep -c '"method":"relay_tx"' "$WORK/wallet.jsonl" 2>/dev/null || true)"
-  if [ "${BUILT:-0}" -ge 1 ]; then
-    ok "the build reached the wallet mock ($BUILT transfer request(s))"
-  else
-    bad "no transfer reached the mock, so the relay assertion below would be vacuous"
-  fi
-  [ "${RELAYED:-0}" = "0" ] && ok "nothing was relayed (the capture run never broadcasts)" \
-    || bad "a relay_tx reached the mock during a capture run"
-  # And the Node capture is the fixture's height, not whatever the owner's node happens to say —
-  # **grouped**, because every block number on every surface is (W7).
-  if grep -q '3 541 122' "$CAPTURE/node.txt" 2>/dev/null; then
-    ok "the Node capture carries the fixture height 3 541 122"
-  else
-    bad "the Node capture does not show the fixture height — it is not the mock's data" \
-        "$(sed -n '3,6p' "$CAPTURE/node.txt" 2>/dev/null)"
-  fi
-  tmux send-keys -t "$SESSION" Escape 2>/dev/null || true
-  sleep 0.4
-fi
-
-
-# ---------------------------------------------------------------- §7a.1/§7a.4/§7a.5 (v5.5)
-#
-# The three flows a ProgramSimulator cannot prove, because what is being tested is that the
-# TERMINAL delivers the key to us rather than to the emulator, and that the screen a user looks at
-# says what the program does.
-printf '\n== v5.5: Tab out of a focused field, the picker, and the wallet empty state\n'
-
-# 1. §7a.1, and it is the owner's first complaint on a real pty: type an address into the Send
-#    form's To field — which is exactly where `Tab` used to be swallowed — and press Tab. The
-#    rendered TAB STRIP must show Log.
-tmux send-keys -t "$SESSION" 3 2>/dev/null || true; sleep 0.8
-tmux send-keys -t "$SESSION" -l "42ey1afDFnn4886T7196doS9GPMzex" 2>/dev/null || true; sleep 0.4
-tmux send-keys -t "$SESSION" Tab 2>/dev/null || true; sleep 1
-TABTEXT="$(pane)"
-case "$TABTEXT" in
-  *"[ 4 Log ]"*) ok "§7a.1: Tab out of a focused Send field reaches Log on a real pty" ;;
-  *) bad "Tab was captured by the Send field — the owner's first complaint" \
-         "$(printf '%s' "$TABTEXT" | head -2)" ;;
-esac
-# And the status bar states the rule from wherever the user is.
-case "$TABTEXT" in
-  *"⇥ screens"*) ok "and the status bar says so on every screen" ;;
-  *) bad "the status bar does not carry '⇥ screens'" "$(printf '%s' "$TABTEXT" | tail -2)" ;;
-esac
-# Shift+Tab goes back, which is the other half of the rule.
-tmux send-keys -t "$SESSION" BTab 2>/dev/null || true; sleep 1
-case "$(pane)" in
-  *"[ 3 Send ]"*) ok "and ⇧Tab goes back" ;;
-  *) bad "⇧Tab did not return to Send" "$(printf '%s' "$(pane)" | head -2)" ;;
-esac
-# `Esc` then unfocuses the form. **`1 2 3 4` are legal base58 characters**, so a focused To field
-# keeps them — which is why §7a.1's answer to "I cannot change screens" is `Tab` and not the
-# digits: `Tab` is the one key that works without leaving the field first, and from here on this
-# script navigates with it.
-tmux send-keys -t "$SESSION" Escape 2>/dev/null || true; sleep 0.6
-
-# 2. §7a.4's picker, with NO cache: the panel, the chip and the disclosure — not an empty table
-#    under a footer rendered against a `fetched_at` that does not exist (revision 8).
-tmux send-keys -t "$SESSION" 1 2>/dev/null || true; sleep 1.2
-PTEXT="$(pane)"
-[ -n "$CAPTURE" ] && printf '%s\n' "$PTEXT" > "$CAPTURE/picker-empty.txt"
-case "$PTEXT" in
-  *"No list of public nodes yet."*) ok "§7a.4: the no-cache panel renders" ;;
-  *) bad "the picker's no-cache panel is missing" "$(printf '%s' "$PTEXT" | tail -14)" ;;
-esac
-case "$PTEXT" in
-  *"[f] Get the list"*) ok "with the chip that fetches it" ;;
-  *) bad "the [f] chip is missing" "$(printf '%s' "$PTEXT" | tail -14)" ;;
-esac
-case "$PTEXT" in
-  *"tells monero.fail your IP address"*) ok "and the one line saying what that discloses" ;;
-  *) bad "the disclosure line is missing from the panel" "$(printf '%s' "$PTEXT" | tail -14)" ;;
-esac
-case "$PTEXT" in
-  *"list  old"*|*"0 nodes ·"*) bad "the footer must be SUPPRESSED with no cache, not rendered empty" ;;
-  *) ok "and no footer is rendered against a fetched_at that does not exist" ;;
-esac
-# **Round 5, S10: the first state a fresh machine is in, on a real pty.** With no unit written and
-# nothing running, `may_mutate_node` answered `u`, `d` and `L` with *"Another program on this machine
-# runs this node"* — about a node that does not exist — while the hero two rows above invited `u`.
-# The hero's own line is only reachable when nothing is answering: with a node up — which is what
-# `--capture` has, because the mock answers — the hero shows the sync instead, correctly. So the
-# sentence is asserted in the default mode, where there is no daemon of any kind, and the KEY is
-# asserted in both: `u` refuses on the layout, not on whether something answered.
-if [ -z "$CAPTURE" ]; then
-  case "$PTEXT" in
-    *"has not set up your node yet"*) ok "S10: the hero says nobody has set this node up" ;;
-    *) bad "the hero does not name the state this sandbox is in" "$(printf '%s' "$PTEXT" | sed -n '2,6p')" ;;
-  esac
-else
-  printf '  skip  S10 the hero: the capture run has a node answering, so the hero shows its sync\n'
-fi
-tmux send-keys -t "$SESSION" u 2>/dev/null || true; sleep 1
-UTEXT="$(pane)"
-# Two true sentences, and which one depends on whether anything is answering — round 5's own read of
-# its own captures found the wrong one: with the mock up, `fmonero has not set up your node yet` sat
-# under a hero reading `● Synced`. Both were true and a reader cannot hold them together.
-if [ -n "$CAPTURE" ]; then
-  WANT="Something else is answering on that port"
-else
-  WANT="has not set up your node yet"
-fi
-case "$UTEXT" in
-  *"$WANT"*) ok "S10: and so does u, instead of blaming another program" ;;
-  *) bad "u did not name the true state (wanted '$WANT')" "$(printf '%s' "$UTEXT" | tail -3)" ;;
-esac
-case "$UTEXT" in
-  *"Another program"*) bad "u still claims another program runs a node that does not exist" ;;
-  *) ok "S10: and it no longer claims another program owns it" ;;
-esac
-# **Round 5, S6: the consent modal's own control line, at the size the owner runs.** `grep -c
-# "Enter continues"` over all seventy-eight of round 4's captures returned 0: the overlay asked for
-# ten rows and the six sentences needed eleven. Esc cancels, so nothing is fetched here.
-tmux send-keys -t "$SESSION" f 2>/dev/null || true; sleep 1
-NTEXT="$(pane)"
-[ -n "$CAPTURE" ] && printf '%s
-' "$NTEXT" > "$CAPTURE/notice.txt"
-case "$NTEXT" in
-  *"Before contacting anyone"*) ok "S6: f shows the §2n.5 notice before anything is contacted" ;;
-  *) bad "the notice did not appear" "$(printf '%s' "$NTEXT" | sed -n '8,18p')" ;;
-esac
-case "$NTEXT" in
-  *"Enter continues · Esc cancels"*) ok "S6: and its keys are ON SCREEN at 120x40" ;;
-  *) bad "the notice's own control line is off screen" "$(printf '%s' "$NTEXT" | sed -n '8,20p')" ;;
-esac
-tmux send-keys -t "$SESSION" Escape 2>/dev/null || true; sleep 0.6
-if [ -s "$WORK/nodes.jsonl" ]; then
-  bad "Esc on the notice fetched a list anyway" "$(head -2 "$WORK/nodes.jsonl")"
-else
-  ok "S6: Esc contacted nothing (the static mock's log is empty)"
-fi
-
-# 3. The picker WITH a cache: two column groups, a health ratio beside its sample size, and the
-#    footer that surfaces `skipped_no_port`. The cache is written here, so nothing is fetched.
-cat > "$FMONERO_CACHE_DIR/public-nodes.json" <<JSON
-{"schema":1,"fetched_at":$(date +%s),"source":"https://monero.fail","skipped_no_port":37,
- "skipped_invalid":0,"notice_ack":$(date +%s),
- "nodes":[{"url":"http://pty.example:18081","address":"pty.example:18081","scheme":"http",
-           "web_compatible":false,"custom":false,"health_available":true,"health_ratio":0.72,
-           "health_checks":18,"health_last_height":3765172,
-           "health_checked_at_text":"Fri, 18 Sep 2026 05:12:02 GMT",
-           "health_checked_at":$(( $(date +%s) - 600 )),
-           "probe":{"reachable":true,"height":3765172,"synchronized":true,"restricted":true,
-                    "nettype":"mainnet","version":null,"latency_ms":100,"reason":null,
-                    "probed_at":$(date +%s)}}]}
-JSON
-tmux send-keys -t "$SESSION" 4 2>/dev/null || true; sleep 0.5
-tmux send-keys -t "$SESSION" 1 2>/dev/null || true; sleep 1.2
-CTEXT="$(pane)"
-[ -n "$CAPTURE" ] && printf '%s\n' "$CTEXT" > "$CAPTURE/picker.txt"
-case "$CTEXT" in
-  *"pty.example:18081"*) ok "§7a.4: the cached row renders, address first and never elided" ;;
-  *) bad "the picker did not render the cached row" "$(printf '%s' "$CTEXT" | tail -14)" ;;
-esac
-case "$CTEXT" in
-  *"72% of 18"*) ok "with the health ratio BESIDE its sample size (§2n.1)" ;;
-  *) bad "the ratio must carry its sample size" "$(printf '%s' "$CTEXT" | tail -14)" ;;
-esac
-# W6: the footer says what was skipped, pluralises, and **wraps** rather than being cut — so the
-# assertion is on the clause's first half, which is what a single pane row can hold here.
-case "$CTEXT" in
-  *"37 without a port"*) ok "and the footer says what was left out of the list (W6)" ;;
-  *) bad "the footer does not say what was left out" "$(printf '%s' "$CTEXT" | tail -4)" ;;
-esac
-
-# 4. §7a.5's wallet empty state: three chips and a service line, with no wallet open.
-#
-# **Under `--capture` this screen is not reachable, and the block says so instead of failing.** The
-# mock serves an open wallet and is *stateless by design* (see its own header): `x` really issues
-# `close_wallet` and the fixture really answers, but `get_address` and `get_balance` keep answering
-# too, so `status` goes on reporting a wallet that is open and the empty state never renders. The
-# close is asserted on what IS observable — the toast — and the four empty-state needles are
-# skipped with the reason, because a test that fails on a correct program is a test that gets
-# deleted.
-tmux send-keys -t "$SESSION" 2 2>/dev/null || true; sleep 1.2
-if [ -n "$CAPTURE" ]; then
-  tmux send-keys -t "$SESSION" x 2>/dev/null || true; sleep 1.5
-  case "$(pane)" in
-    *"Wallet closed"*) ok "§7a.5: x closes the open wallet on a real pty (the toast says so)" ;;
-    *) bad "x did not report closing the wallet" "$(printf '%s' "$(pane)" | tail -3)" ;;
-  esac
-  printf '%s\n' "$(pane)" > "$CAPTURE/wallet-empty.txt"
-  printf '  skip  §7a.5 the empty state: the mock is stateless, so a closed wallet still answers\n'
-else
-  WTEXT="$(pane)"
-  # X36 (v5.6.3): the chips are in one style — a verb, an article, no ellipsis, and the note in
-  # brackets. `[c] Create wallet…` carried an ellipsis and no article beside `[o] Open a wallet`,
-  # which had an article and none.
-  #
-  # **Only the chips that can act** (round 4 iteration 3): `[W] Start the wallet service  (not
-  # needed: opening a wallet starts it)` was a control whose own label told the reader not to press
-  # it, and it is not drawn in that state. The key is unchanged and the `?` overlay still explains
-  # both halves of it, which is what the next assertion reads.
-  for needle in "[c] Create a wallet" "wallet service:"; do
-    case "$WTEXT" in
-      *"$needle"*) ok "§7a.5: the empty state carries '$needle'" ;;
-      *) bad "the empty state is missing '$needle'" "$(printf '%s' "$WTEXT" | sed -n '5,12p')" ;;
-    esac
+# Both input modalities reach the same local refusal. The deliberately closed
+# mock returns -13, so a stateless success fixture cannot fake the empty state.
+configure closed "$CLOSED_PORT"
+launch
+wait_text "Wallet is the default screen" "No wallet is open."
+[[ "$(count "$WORK/closed.jsonl" get_height 200)" -gt 0 ]] || fail "no positive scratch-wallet contact"
+[[ "$(count "$WORK/node.jsonl" get_info 200)" -gt 0 ]] || fail "no positive scratch-node contact"
+for size in '40 10' '80 24' '120 40'; do
+  read -r width height <<< "$size"
+  resize "$width" "$height"
+  for mode in keyboard mouse; do
+    wait_text "create control survives resize" "(C)reate"
+    if [[ "$mode" == keyboard ]]; then keys c; else click_text "(C)reate"; fi
+    wait_text "$mode opens create form at ${width}x${height}" "Create encrypted wallet"
+    literal PTY_FORM_nrocqv123456
+    keys Tab
+    literal PTY_SECRET_qvorn123456_A
+    keys Tab
+    literal PTY_SECRET_qvorn123456_B
+    keys Tab
+    wait_text "Tab remains in the modal" "Language"
+    masked
+    if [[ "$mode" == keyboard ]]; then keys Enter; else click_text "(Enter)"; fi
+    wait_text "mismatched secrets are refused inline" "passwords do not match"
+    masked
+    save_frame "create-$width-$mode"
+    if [[ "$mode" == keyboard ]]; then keys Escape; else click_text "(Esc) Cancel"; fi
+    wait_absent "$mode cancel dismisses the create modal" "Create encrypted wallet"
+    wait_text "$mode cancel returns to wallet" "No wallet is open."
+    keys c
+    wait_text "reopening creates an empty form" "Create encrypted wallet"
+    absent "cancel discarded the prior form name" "PTY_FORM_nrocqv123456"
+    keys Escape
+    wait_absent "empty form dismissed" "Create encrypted wallet"
   done
-  case "$WTEXT" in
-    *"not needed: opening a wallet starts it"*)
-      bad "a chip whose own label says not to press it is still drawn" \
-          "$(printf '%s' "$WTEXT" | sed -n '5,12p')" ;;
-    *) ok "§7a.5: no chip on this screen tells the reader not to press it" ;;
-  esac
-fi
+done
+zero_calls "$WORK/closed.jsonl" create_wallet open_wallet restore_deterministic_wallet query_key \
+  transfer transfer_split sweep_all relay_tx submit_transfer
+ok "invalid/cancelled forms sent no wallet mutation or secret-query RPC"
+finish
 
-# 5. §7a.1 revision 1, the blocker's own flow: fill ALL FOUR create-wallet controls from the
-#    keyboard alone and reach the seed-backup modal. It is refused before anything is sent — the
-#    name already exists in `wallet.dir` under --capture — so this asserts the modal is REACHABLE
-#    and that its refusal is inline, which is the half a trap would fail.
-tmux send-keys -t "$SESSION" c 2>/dev/null || true; sleep 0.8
-CRTEXT="$(pane)"
-case "$CRTEXT" in
-  *"Create a wallet"*) ok "§7a.5: c opens the create modal (it was close, not create, before v5.5)" ;;
-  *) bad "c did not open the create modal" "$(printf '%s' "$CRTEXT" | sed -n '10,18p')" ;;
-esac
-tmux send-keys -t "$SESSION" -l "ptywallet" 2>/dev/null || true
-tmux send-keys -t "$SESSION" Down 2>/dev/null || true
-tmux send-keys -t "$SESSION" -l "pw1" 2>/dev/null || true
-tmux send-keys -t "$SESSION" Down 2>/dev/null || true
-tmux send-keys -t "$SESSION" -l "pw2" 2>/dev/null || true
-tmux send-keys -t "$SESSION" Down 2>/dev/null || true
-sleep 0.8
-FILLED="$(pane)"
-[ -n "$CAPTURE" ] && printf '%s\n' "$FILLED" > "$CAPTURE/create-filled.txt"
-case "$FILLED" in
-  *"ptywallet"*) ok "and ↑↓ reach every control: the name survived three Downs" ;;
-  *) bad "the name field lost its text while moving between controls" \
-         "$(printf '%s' "$FILLED" | sed -n '10,18p')" ;;
-esac
-case "$FILLED" in
-  *pw1*|*pw2*) bad "a password field is NOT masked (§2b.4)" ;;
-  *) ok "and both password fields are masked" ;;
-esac
-tmux send-keys -t "$SESSION" Enter 2>/dev/null || true; sleep 1
-case "$(pane)" in
-  *"do not match"*) ok "a mismatched pair is refused INLINE, with nothing sent" ;;
-  *) bad "the mismatch refusal did not render" "$(printf '%s' "$(pane)" | sed -n '10,20p')" ;;
-esac
-# And `Tab` is held here, which is the one documented exception — said in the modal itself.
-tmux send-keys -t "$SESSION" Tab 2>/dev/null || true; sleep 0.8
-case "$(pane)" in
-  # X34: `Press Esc to discard first.` named no second thing — first before what? **M23 (round 4):
-  # so did X34's replacement**, and what Tab normally does is change screens, so that is what the
-  # line says it cannot do here.
-  *"Tab cannot change screens while this is open."*) ok "§7a.1: the create modal holds Tab and says so in the modal" ;;
-  *) bad "the create modal must consume Tab" "$(printf '%s' "$(pane)" | tail -4)" ;;
-esac
-tmux send-keys -t "$SESSION" Escape 2>/dev/null || true; sleep 0.5
-
-# q quits, and the exit code is the TUI's own (0 on a clean quit, §7a).
-tmux send-keys -t "$SESSION" q 2>/dev/null || true
-for _ in $(seq 50); do [ -f "$WORK/rc" ] && break; sleep 0.1; done
-if [ -f "$WORK/rc" ]; then
-  RC="$(cat "$WORK/rc")"
-  [ "$RC" = "0" ] && ok "q quits cleanly (exit 0)" || bad "q quit with exit $RC"
-else
-  bad "the TUI did not exit within 5 s of q"
-fi
-# §7a: no print macro anywhere under src/tui — the runtime owns the terminal, and a stray
-# `println!` corrupts the frame rather than appearing anywhere a test could read it. Asserted
-# on the source, because on a pty the runtime's own writes are indistinguishable from a print.
-if grep -rnE '\b(println!|print!|eprintln!|eprint!|dbg!)' "$ROOT/crates/fmonero/src/tui"; then
-  bad "a print macro reached src/tui (§7a)"
-else
-  ok "no print macro under src/tui"
-fi
-# And stderr stays empty on a clean run: a panic or an anyhow message would land there.
-if [ -s "$WORK/tui.err" ]; then
-  bad "the TUI wrote to stderr" "$(head -3 "$WORK/tui.err")"
-else
-  ok "the TUI wrote nothing to stderr"
-fi
-
-# ---------------------------------------------------------------- §2m remote node mode
-#
-# The verifier's finding: the Node screen's remote rendering and the status bar's remote marker
-# were covered by unit tests and by one hand-made pty capture pasted into DECISIONS.md, and by
-# nothing that runs in a gate. This is that case. It needs **no daemon of any kind** — in remote
-# mode `status` constructs no node client and makes no node call (§2m.3) — so it runs in the
-# default mode as well as under `--capture`, which is the point: the screen a remote-mode owner
-# looks at is now asserted on every run.
-printf '\n== the TUI in remote mode (no daemon, §2m.3)\n'
-R_STATE="$WORK/remote/state"; R_CONFIG="$WORK/remote/config"; R_CACHE="$WORK/remote/cache"
-mkdir -p "$R_STATE/run" "$R_CONFIG" "$R_CACHE"
-chmod 700 "$R_STATE" "$R_STATE/run" "$R_CONFIG" "$R_CACHE"
-REMOTE_ADDR="node.example.com:18089"
-# Written with the CLI, so the settings the TUI reads are the ones §2m.1's invariant accepts —
-# and the order is the invariant's: the address first, then the mode.
-env FMONERO_STATE_DIR="$R_STATE" FMONERO_CONFIG_DIR="$R_CONFIG" FMONERO_CACHE_DIR="$R_CACHE" \
-  "$FM" settings set node.remote "$REMOTE_ADDR" >/dev/null
-env FMONERO_STATE_DIR="$R_STATE" FMONERO_CONFIG_DIR="$R_CONFIG" FMONERO_CACHE_DIR="$R_CACHE" \
-  "$FM" settings set node.mode remote >/dev/null
-tmux new-session -d -s "$REMOTE_SESSION" -x 120 -y 40 \
-  "env FMONERO_STATE_DIR=$R_STATE FMONERO_CONFIG_DIR=$R_CONFIG FMONERO_CACHE_DIR=$R_CACHE XDG_DATA_HOME=$XDG_DATA_HOME FMONERO_SYSTEMD_USER_DIR=$FMONERO_SYSTEMD_USER_DIR FMONERO_SYSTEMCTL_FIXTURE=$FMONERO_SYSTEMCTL_FIXTURE FMONERO_NODES_URL=$FMONERO_NODES_URL $FM tui 2>$WORK/tui-remote.err; echo \$? > $WORK/rc-remote"
-sleep 2
-tmux send-keys -t "$REMOTE_SESSION" 1 2>/dev/null || true
-sleep 1.5
-RTEXT="$(tmux capture-pane -p -t "$REMOTE_SESSION" 2>/dev/null || true)"
-[ -n "$CAPTURE" ] && printf '%s\n' "$RTEXT" > "$CAPTURE/node-remote.txt"
-# **v5.6 (§7a.3): the screen shows what IS known instead of two panes of what is not.** The two
-# panes that read `not available with a remote node` are gone, and one ` This node ` pane carries
-# the cached check — here in its honest empty state, because nothing has checked this address yet.
-case "$RTEXT" in
-  *"This node"*) ok "the Node screen renders the public-node facts pane (§7a.3)" ;;
-  *) bad "the Node screen did not render ' This node '" \
-         "$(printf '%s' "$RTEXT" | sed -n '1,8p')" ;;
-esac
-case "$RTEXT" in
-  *"not available"*) bad "a pane still says 'not available'" \
-         "$(printf '%s' "$RTEXT" | sed -n '1,12p')" ;;
-  *) ok "no pane says 'not available' any more (§2o)" ;;
-esac
-case "$RTEXT" in
-  *"public node"*) ok "the status bar names the public node" ;;
-  *) bad "the status bar does not say 'public node'" \
-         "$(printf '%s' "$RTEXT" | tail -3)" ;;
-esac
-case "$RTEXT" in
-  *"$REMOTE_ADDR"*) ok "and the address in force is on screen ($REMOTE_ADDR)" ;;
-  *) bad "the remote address is not shown anywhere" "$(printf '%s' "$RTEXT" | sed -n '1,8p')" ;;
-esac
-# `u` says so and names the two keys that do something about it; it must never run systemctl
-# (§2m.3) and — from v5.6 — **must never print a shell command** (§2o.1). That refusal was the
-# single worst instance of the rule the owner asked for: *"I don't want to manage the CLI."*
-tmux send-keys -t "$REMOTE_SESSION" u 2>/dev/null || true
-sleep 1
-RTEXT2="$(tmux capture-pane -p -t "$REMOTE_SESSION" 2>/dev/null || true)"
-case "$RTEXT2" in
-  # W14: the toast fits whole at 120 columns — the old sentence was cut to `You are using a public
-  # node. Press…`, which named neither route. **X5 (v5.6.3): the situation comes first, and each of
-  # the three keys states its own.** One shared 40-column toast was rule 11's hint standing in for
-  # the sentence, and `L` was told to choose a node and never told why its own key was refused.
-  # **M13 (round 4): `f` gets a fresh list; it does not choose a node.** Choosing one needs a
-  # selection and Enter, and this refusal was the third of three descriptions of one key.
-  *"there is no node here to start. Pick a node below and press Enter, or press l to"*)
-    ok "u states its own situation and names both ways out, whole (§2o.1, W14, X5, M13)" ;;
-  *) bad "u did not name the in-app way out" "$(printf '%s' "$RTEXT2" | tail -3)" ;;
-esac
-case "$RTEXT2" in
-  *"fmonero node local"*) bad "u printed a shell command at a user who cannot type it (§2o.1)" \
-         "$(printf '%s' "$RTEXT2" | tail -3)" ;;
-  *) ok "and prints no shell command" ;;
-esac
-# v5.6, §7a.4: `l` is the in-app way back, and it asks first.
-tmux send-keys -t "$REMOTE_SESSION" l 2>/dev/null || true
-sleep 1
-RTEXT3="$(tmux capture-pane -p -t "$REMOTE_SESSION" 2>/dev/null || true)"
-[ -n "$CAPTURE" ] && printf '%s\n' "$RTEXT3" > "$CAPTURE/node-remote-local.txt"
-case "$RTEXT3" in
-  *"Use your own node"*) ok "l opens the confirm that switches back (§7a.4)" ;;
-  *) bad "l did not open the 'Use your own node' confirm" "$(printf '%s' "$RTEXT3" | sed -n '1,12p')" ;;
-esac
-tmux send-keys -t "$REMOTE_SESSION" Escape 2>/dev/null || true
-sleep 0.5
-tmux send-keys -t "$REMOTE_SESSION" q 2>/dev/null || true
-for _ in $(seq 50); do [ -f "$WORK/rc-remote" ] && break; sleep 0.1; done
-if [ -f "$WORK/rc-remote" ]; then
-  RC="$(cat "$WORK/rc-remote")"
-  [ "$RC" = "0" ] && ok "q quits cleanly in remote mode (exit 0)" || bad "remote-mode q quit with exit $RC"
-else
-  bad "the remote-mode TUI did not exit within 5 s of q"
-fi
-if [ -s "$WORK/tui-remote.err" ]; then
-  bad "the remote-mode TUI wrote to stderr" "$(head -3 "$WORK/tui-remote.err")"
-else
-  ok "the remote-mode TUI wrote nothing to stderr"
-fi
-
-# W7, over the CAPTURES rather than over the source: every block number fmonero renders is grouped,
-# so a bare run of seven or more digits on a screen is a number that got past a formatter. Three
-# exclusions, each by construction rather than by convenience: the Log screen shows **monerod's own
-# bytes** and may not rewrite them (`Synced 3541122/3541122` is the file's text); a run preceded by a
-# `.` or another digit is inside an amount (`1.234567891234`); a run preceded by `:` is a timestamp;
-# and a run followed by ` piconero` is the send confirm's exact integer amount, which §2o.2 puts there
-# on purpose and which grouping would corrupt. A grep over the source cannot make this assertion — `h.to_string()` is what it would
-# have to find, and there is no shape to look for.
-if [ -n "$CAPTURE" ]; then
-  # `|| true` on both greps: this script runs under `set -e`, and "no match" is the answer this
-  # assertion wants rather than a failure of the script.
-  BARE_DIGITS=""
-  # **The count is the number of files this loop actually read** (round 4). It was
-  # `ls "$CAPTURE"/*.txt | wc -l`, which counts two files the assertion never examines: `log.txt`,
-  # skipped two lines below because it carries the node's own bytes, and `scenario.txt`, which this
-  # script writes itself and which is therefore present on every run after the first. So the passing
-  # message claimed one or two more screens than were read — a number nobody could reproduce by
-  # counting the captures, in the one message that says how much the assertion covered.
-  SCREENS=0
-  for f in "$CAPTURE"/*.txt; do
-    case "$f" in *"/log.txt" | *"/scenario.txt") continue ;; esac
-    SCREENS=$((SCREENS + 1))
-    hit="$( { grep -oE '(^|[^0-9.:])[0-9]{7,}( piconero)?' "$f" || true; } \
-            | { grep -v piconero || true; } | { grep -oE '[0-9]{7,}' || true; } \
-            | sort -u | tr '\n' ' ')"
-    if [ -n "$hit" ]; then BARE_DIGITS="$BARE_DIGITS$f: $hit"$'\n'; fi
+# Record identity via the real guarded opener, against a scratch stateless mock.
+configure open "$WALLET_PORT"
+: > "$BASE/wallets/main.keys"
+printf '\n' | cli wallet open main --password-stdin --json > "$WORK/open-result.json"
+[[ "$(count "$WORK/wallet.jsonl" open_wallet 200)" == 1 ]] || fail "guarded mock open was not observed"
+launch
+wait_text "open wallet fixture rendered" "Balance"
+declare -a names=("" Node Wallet Send Logs Receive Tools)
+declare -a bodies=("" Synced Balance "Send · prepare" "log ·" "(N)ew address" "Restore wallet")
+for size in '40 10' '80 24' '120 40'; do
+  read -r width height <<< "$size"
+  resize "$width" "$height"
+  for key in 1 2 3 4 5 6; do
+    keys Escape "$key"
+    wait_text "key $key reaches ${names[$key]} at ${width}x${height}" "${bodies[$key]}"
+    save_frame "${names[$key]}-$width"
+    # Leave the target first: an inert mouse must not pass by coincidence.
+    keys Escape
+    if [[ "$key" == 1 ]]; then keys 2; else keys 1; fi
+    wait_text "leave target before mouse parity" "$([[ "$key" == 1 ]] && echo Balance || echo Synced)"
+    click_text " $key " 0
+    wait_text "mouse tab reaches ${names[$key]} at ${width}x${height}" "${bodies[$key]}"
   done
-  if [ -z "$BARE_DIGITS" ]; then
-    ok "W7: no ungrouped block number in any capture ($SCREENS screens read)"
-  else
-    bad "an ungrouped number reached a screen" $BARE_DIGITS
+done
+resize 80 24
+keys Escape 3
+wait_text "Send field active" "Recipient"
+literal "nrocqv123456"
+keys Tab
+literal "0.01"
+wait_text "Tab advances to amount without navigating away" "0.01"
+absent "typed v did not toggle shared privacy" "Privacy on"
+keys BTab C-a
+literal "EDITED"
+wait_text "Shift+Tab returns to recipient" "EDITED"
+keys Escape 4
+wait_text "Escape releases input for screen navigation" "Wallet log"
+wait_text "own synthetic wallet log is visible" "PTY_WALLET_LOG"
+absent "secret-bearing log line is redacted" "PTY_LOG_SECRET_8372"
+keys /
+literal "qv123456"
+wait_text "log search owns navigation and quit keys" "qv123456"
+keys C-a BSpace Escape s
+wait_text "log source changes to local node" "Local node log"
+wait_text "own node log is visible" "PTY_NODE_LOG"
+save_frame logs-source
+
+keys Escape 6
+wait_text "Tools groups are discoverable" "Offline"
+keys Enter
+wait_text "keyboard Tools workflow opens restore fields" "Seed words"
+keys Escape
+wait_absent "restore cancelled by keyboard" "Seed words"
+click_text "Restore wallet"
+wait_text "mouse Tools workflow opens same restore fields" "Seed words"
+keys Escape
+wait_absent "second restore cancelled without backend work" "Seed words"
+for size in '40 10' '80 24' '120 40'; do
+  read -r width height <<< "$size"
+  resize "$width" "$height"
+  keys '?'
+  wait_text "help opens at ${width}x${height}" "Keys ·"
+  before="$(tm capture-pane -p -t "$PANE" | sed '1d;$d')"
+  # The modal is above the inert Tools footer, which uses the same label.
+  click_text "(↓) More" first
+  sleep 0.2
+  frame
+  if [[ "$width" == 40 ]]; then
+    [[ "$(printf '%s\n' "$FRAME" | sed '1d;$d')" != "$before" ]] || fail "short help More did not scroll"
   fi
-  printf '%s\n' "$SCENARIO" > "$CAPTURE/scenario.txt"
-  printf '\n  captures in %s\n' "$CAPTURE"
+  # Reach a late binding through actual scrolling; a changed footer alone is insufficient.
+  for ((step=0; step<160; step++)); do
+    frame
+    [[ "$FRAME" == *"Mouse"* ]] && break
+    keys Down
+    sleep 0.05
+  done
+  wait_text "help retains late mouse/accessibility binding" "Mouse"
+  click_text "(Esc) Close"
+  wait_absent "help close dismisses overlay" "Keys ·"
+  wait_text "help mouse close returns to Tools" "Offline"
+done
+
+# Exact fixture-backed prepare/review/cancel. Never type the confirmation word.
+resize 120 40
+keys 3
+wait_text "Send form before preparation" "Recipient"
+click_text "Recipient"
+keys C-a
+literal "42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm"
+keys Tab C-a
+literal "0.01"
+keys Enter
+wait_text "prepared payment requires immutable review" "Review payment"
+wait_text "review requires typed confirmation" "Type send to confirm"
+wait_text "review exposes exact amount" "0.010000000000 XMR"
+save_frame payment-review
+python3 "$WORK/read.py" prepared "$WORK/wallet.jsonl" \
+  "42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm" \
+  || fail "preparation did not preserve do_not_relay, exact amount and recipient"
+for size in '40 10' '80 24' '120 40'; do
+  read -r width height <<< "$size"
+  resize "$width" "$height"
+  wait_text "payment review survives resize" "Review payment"
+  wait_text "payment Cancel remains visible" "(Esc) Cancel"
+done
+keys Enter # Empty confirmation must not submit, even after a complete review was visible.
+wait_text "Enter alone cannot approve a payment" "Review payment"
+click_text "(Esc) Cancel"
+wait_absent "cancel discards immutable review" "Review payment"
+wait_text "mouse Cancel returns to Send form" "Send · prepare"
+zero_calls "$WORK/wallet.jsonl" relay_tx submit_transfer create_wallet restore_deterministic_wallet query_key
+ok "one answered mock preparation, zero relay/submit attempts"
+keys Escape 2
+cli settings set tui.privacy true >/dev/null
+wait_text "external privacy policy masks active TUI" "Privacy on"
+absent "privacy hides fixture address" "42ey1afD"
+keys 5
+wait_text "navigation keeps shared privacy enabled" "Privacy on"
+keys v
+wait_text "explicit privacy toggle restores Receive" "(N)ew address"
+keys Escape
+finish
+
+# The remote address is our own mock: accidental probes are observable locally.
+configure remote "$CLOSED_PORT"
+cli settings set node.remote "127.0.0.1:$NODE_PORT" >/dev/null
+cli settings set node.mode remote >/dev/null
+before_entry="$(count "$WORK/node.jsonl" get_info 200)"
+before_set="$(count "$WORK/closed.jsonl" set_daemon)"
+launch --node
+wait_text "remote facts are shown" "This node"
+wait_text "configured public node is shown" "127.0.0.1:$NODE_PORT"
+# Entering an active Node page deliberately refreshes its configured node once.
+# The later cancelled confirmations must not add requests or fetch a node list.
+for ((attempt=0; attempt<50; attempt++)); do
+  [[ "$(count "$WORK/node.jsonl" get_info 200)" -gt "$before_entry" ]] && break
+  sleep 0.1
+done
+[[ "$(count "$WORK/node.jsonl" get_info 200)" == "$((before_entry+1))" ]] \
+  || fail "active remote entry did not issue exactly one configured-node query"
+before_node="$(wc -l < "$WORK/node.jsonl")"
+ok "active remote entry queried only its configured node once"
+keys l
+wait_text "connection change requires confirmation" "Use your own node"
+for size in '40 10' '80 24' '120 40'; do
+  read -r width height <<< "$size"
+  resize "$width" "$height"
+  wait_text "connection Cancel remains visible" "(Esc) Cancel"
+done
+click_text "(Esc) Cancel"
+wait_absent "cancel dismisses connection review" "Use your own node"
+wait_text "cancelling keeps remote mode" "This node"
+keys f
+wait_text "fetch asks before contacting the list" "Before contacting anyone"
+click_text "(Esc) Cancel"
+wait_absent "cancel dismisses fetch consent" "Before contacting anyone"
+wait_text "cancelled fetch returns to remote view" "This node"
+[[ ! -s "$WORK/nodes.jsonl" ]] || fail "cancelled consent contacted node-list mock"
+[[ "$(wc -l < "$WORK/node.jsonl")" == "$before_node" ]] || fail "cancelled remote confirmation made an additional node query"
+[[ "$(count "$WORK/closed.jsonl" set_daemon)" == "$before_set" ]] || fail "cancelled connection changed daemon"
+ok "cancelled confirmations issued no additional node/list/connection requests"
+save_frame node-remote
+finish
+
+if [[ -n "$CAPTURE" ]]; then
+  printf '%s\n' \
+    "Fixture-only actual PTY run; no native wallet, funded payment or device qualification." \
+    "SGR injection tests the app parser/hit regions, not terminal-emulator mouse delivery." \
+    "Seven sandbox variables checked per pane; private tmux socket and ephemeral mock ports." \
+    "Only synthetic/redacted screen captures retained; no secret or owner-state goldens." \
+    > "$CAPTURE/scenario.txt"
 fi
-printf '\n== %s passed, %s failed\n' "$PASS" "$FAIL"
-[ "$FAIL" = "0" ]
+printf '\nPTY CHECKS: %s passed. Fixture-backed terminal evidence only.\n' "$PASS"
