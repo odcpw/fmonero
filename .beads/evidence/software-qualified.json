@@ -61,7 +61,8 @@
       "unchanged"
     ],
     "desktop_launch_verified": false,
-    "blocker": "Omarchy refuses shell restart while the desktop session is locked"
+    "blocker": "Omarchy refuses shell restart while the desktop session is locked",
+    "tested_installed_binary_matches": true
   },
   "remaining_acceptance": [
     "unlocked installed desktop launch and fresh live widget reload",
@@ -71,6 +72,21 @@
   "build": {
     "jobs": 2,
     "shared_target": true,
-    "cleaned": false
-  }
+    "cleaned": true,
+    "removed_files": 3405,
+    "removed_mib": 1019.5,
+    "target_remaining": false
+  },
+  "source_commit": "00a290c",
+  "hardware_protocol": {
+    "checks": 14,
+    "report": "hardware-protocol-qualified.json",
+    "simulated_software_only": true,
+    "physical_hardware_qualified": false
+  },
+  "open_queue": [
+    "fm-8ef.17",
+    "fm-8ef.18",
+    "fm-8ef"
+  ]
 }

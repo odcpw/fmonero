@@ -179,7 +179,7 @@ done < <(jq -r '.barWidget.defaults | keys[]' "$M")
 # constant literal "--send" that opens the TUI's Send *screen* passes while a real
 # ["fmonero","wallet","send"] cannot — a substring grep would fail on this design's own widget, and
 # a grep that fails on correct code is a grep the first agent to hit it relaxes.
-MONEY_ARGV='"(send|sweep|create|restore|transfer|relay)"'
+MONEY_ARGV='"wallet"[[:space:]]*,[[:space:]]*"(send|sweep|create|restore|transfer|relay)"'
 forbid "no money argv element" "$MONEY_ARGV"
 fires  "money argv" "$MONEY_ARGV" 'Quickshell.execDetached(["fmonero","wallet","send"])'
 silent "money argv" "$MONEY_ARGV" 'Quickshell.execDetached(["fmonero","tui","--send"])'
@@ -187,6 +187,8 @@ silent "money argv" "$MONEY_ARGV" 'Quickshell.execDetached(["fmonero","tui","--s
 # silent: `--wallet` and `--node` are FLAGS, and the forbidden elements are the bare words.
 silent "money argv" "$MONEY_ARGV" 'Quickshell.execDetached(["fmonero","tui","--wallet"])'
 silent "money argv" "$MONEY_ARGV" 'Quickshell.execDetached(["fmonero","tui","--node"])'
+silent "page route is not a wallet mutation" "$MONEY_ARGV" 'Quickshell.execDetached(["fmonero","launch","restore"])'
+fires "direct wallet restore is forbidden" "$MONEY_ARGV" 'runAction(["wallet", "restore", "name"])'
 
 # v5.5, §6.3 and §6.7: **the widget reaches systemd only through fmonero.** There is deliberately
 # no "start the wallet daemon" button, because fmonero has no `wallet up` — the unit is started by
@@ -386,7 +388,7 @@ fi
 # nine warnings that reach this panel named a key it does not bind — two of them naming `d`, which
 # opens the doctor here and stops your node there. §5 carries both sentences; `action` stays as the
 # fallback for a document an older binary wrote, and `hint` is still never rendered.
-if grep -q 'String(modelData.panel_action || modelData.action || "")' "$PLUGIN/Panel.qml" &&
+if grep -q 'Model.safeText(modelData.panel_action || modelData.action || "")' "$PLUGIN/Panel.qml" &&
    ! grep -q 'modelData.hint' "$PLUGIN/Panel.qml"; then
   ok "a problem row renders the warning's panel_action and never its hint (§2o.1, S7)"
 else
