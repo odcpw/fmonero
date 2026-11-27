@@ -18,8 +18,7 @@ impl Tui {
         }
     }
     pub(super) fn policy_current(&self) -> bool {
-        self.config_valid
-            && super::settings_stamp(&self.ctx.paths.config_file()) == self.config_mtime
+        self.config_valid && super::file_stamp(&self.ctx.paths.config_file()) == self.config_mtime
     }
     pub(super) fn privacy(&self) -> bool {
         self.ctx.settings.tui.privacy || !self.policy_current()
@@ -31,7 +30,7 @@ impl Tui {
             settings.set("tui.notifications", if enabled { "true" } else { "false" })?;
             settings.save(&self.ctx)?;
             self.ctx.settings = settings;
-            self.config_mtime = super::settings_stamp(&self.ctx.paths.config_file());
+            self.config_mtime = super::file_stamp(&self.ctx.paths.config_file());
             Ok(enabled)
         })();
         match change {
@@ -52,7 +51,7 @@ impl Tui {
         match fmonero_core::settings::set_privacy(&self.ctx, enabled) {
             Ok(()) => {
                 self.ctx.settings.tui.privacy = enabled;
-                self.config_mtime = super::settings_stamp(&self.ctx.paths.config_file());
+                self.config_mtime = super::file_stamp(&self.ctx.paths.config_file());
                 self.revoke_review_authorization();
                 self.note(
                     if enabled {
@@ -102,12 +101,7 @@ pub(super) fn toggle(m: &Tui, area: Rect, frame: &mut Frame) {
 
 pub(super) fn view(m: &Tui, frame: &mut Frame) {
     let b = frame.bounds();
-    screens::tab_strip(
-        m,
-        Rect::new(b.x, b.y, b.width, 1),
-        frame,
-        screens::tier_of(b),
-    );
+    screens::tab_strip(m, Rect::new(b.x, b.y, b.width, 1), frame);
     let body = Rect::new(b.x, b.y + 2, b.width, b.height.saturating_sub(4));
     line(
         m,

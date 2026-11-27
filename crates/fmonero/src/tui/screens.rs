@@ -3,10 +3,11 @@
 //! screen blank — each empty, error and hang state has its own text.
 
 use ftui::layout::{Constraint, Flex, Rect, Sides};
+use ftui::render::cell::Cell;
 use ftui::text::wrap::WrapMode;
 use ftui::text::{Line, Span, Text};
 use ftui::widgets::block::Block;
-use ftui::widgets::borders::BorderType;
+use ftui::widgets::borders::{BorderType, Borders};
 use ftui::widgets::input::TextInput;
 use ftui::widgets::paragraph::Paragraph;
 use ftui::widgets::progress::{MiniBar, MiniBarColors};
@@ -61,6 +62,7 @@ pub(super) fn view(m: &Tui, frame: &mut Frame) {
         return;
     }
     let th = &m.theme;
+    frame.buffer.fill(b, Cell::from_char(' ').with_bg(th.page));
     m.send.review_visible.set(false);
     let tier = tier_of(b);
     if tier == Tier::Tiny {
@@ -103,7 +105,7 @@ pub(super) fn view(m: &Tui, frame: &mut Frame) {
     // the window over it. A modal states its own situation, which is what makes the toast beneath
     // it stale by definition. [`toast_hidden`] is the one predicate, so the status bar's copy and
     // this row cannot disagree.
-    let toast_lines: Vec<String> = if toast_hidden(m) || note_fits(m, b.width) {
+    let toast_lines: Vec<String> = if toast_hidden(m) || note_fits(m, b.width.saturating_sub(16)) {
         Vec::new()
     } else {
         // Two rows at most: a toast is a sentence, and a third row of one is a panel.
@@ -121,7 +123,10 @@ pub(super) fn view(m: &Tui, frame: &mut Frame) {
             Constraint::Fixed(1),
         ])
         .split(b);
-    tab_strip(m, rows[0], frame, tier);
+    tab_strip(m, rows[0], frame);
+    frame
+        .buffer
+        .fill(rows[4], Cell::from_char(' ').with_bg(th.panel));
     if banner > 0 {
         pending_banner(m, rows[1], frame);
     }
@@ -305,38 +310,53 @@ pub(super) fn view(m: &Tui, frame: &mut Frame) {
 
 // ---------------------------------------------------------------- chrome
 
-pub(super) fn tab_strip(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
+pub(super) fn tab_strip(m: &Tui, area: Rect, frame: &mut Frame) {
     let th = &m.theme;
+    frame
+        .buffer
+        .fill(area, Cell::from_char(' ').with_bg(th.panel));
+    let gutter = if area.width < 45 { 1 } else { 3 };
+    let brand = "▥  FMONERO";
+    para(brand, th.accented(), false).render(
+        Rect::new(area.x + gutter, area.y, brand.width() as u16, 1),
+        frame,
+    );
     let compact = area.width < 76;
-    let mut x = area.x;
+    let destinations: u16 = Screen::ALL
+        .iter()
+        .map(|screen| {
+            if compact {
+                3
+            } else {
+                4 + screen.name().width() as u16
+            }
+        })
+        .sum();
+    let mut x = if compact {
+        area.x + gutter + brand.width() as u16 + 2
+    } else {
+        area.right().saturating_sub(gutter + destinations)
+    };
     for (i, screen) in Screen::ALL.iter().enumerate() {
+        let active = *screen == m.screen;
         let label = if compact {
             format!(" {} ", i + 1)
         } else {
-            format!(" {} {} ", i + 1, screen.name())
+            let marker = if active { '▌' } else { ' ' };
+            format!("{marker}{} {} ", i + 1, screen.name())
         };
         let w = label.width() as u16;
         let rect = Rect::new(x, area.y, w.min(area.right().saturating_sub(x)), 1);
-        para(
-            label,
-            if *screen == m.screen {
-                th.selected()
-            } else {
-                th.dimmed()
-            },
-            false,
-        )
-        .render(rect, frame);
+        para(label, if active { th.selected() } else { th.text() }, false).render(rect, frame);
         m.hits.tab(i, rect);
         x += w;
     }
     if compact {
-        para(m.screen.name(), th.title(), false).render(
+        para(format!("▌ {}", m.screen.name()), th.accented(), false).render(
             Rect::new(x, area.y, area.right().saturating_sub(x), 1),
             frame,
         );
     }
-    let _ = tier;
 }
 
 /// The §7a banner's text, in one place so that `view` can measure what `pending_banner` draws.
@@ -513,7 +533,16 @@ fn status_line(m: &Tui, area: Rect, frame: &mut Frame) {
     let rw = right.width() as u16;
     if area.width > rw {
         let x = area.right() - rw;
-        para(right.to_string(), th.dimmed(), false).render(Rect::new(x, area.y, rw, 1), frame);
+        line_at(
+            vec![
+                Span::styled("⇥", th.key()),
+                Span::styled(" screens  ", th.text()),
+                Span::styled("?", th.key()),
+                Span::styled(" help", th.text()),
+            ],
+            Rect::new(x, area.y, rw, 1),
+            frame,
+        );
         m.hits.status(
             Rect::new(x + rw - 6, area.y, 6, 1),
             Rect::new(x, area.y, 9, 1),
@@ -911,6 +940,8 @@ fn picker_pane(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
         .highlight_style(th.selected());
     let mut state = m.picker.table.borrow_mut();
     StatefulWidget::render(&t, rows[0], frame, &mut state);
+    let data = rows[0].inner(Sides::new(1, 0, 0, 0));
+    mark_selected(th, data, state.selected, state.offset, frame);
     // One place computes a row index, and it is `hit.rs` — given the geometry recorded here
     // (§7a.2). `+1` for the header row the table draws above its first data row.
     m.hits.pane(
@@ -2229,7 +2260,7 @@ fn subaddress_pane(m: &Tui, area: Rect, frame: &mut Frame) {
             para(
                 format!(
                     "{} Address {} · details hidden",
-                    if index == selected { ">" } else { " " },
+                    if index == selected { "▌" } else { " " },
                     index + 1
                 ),
                 if index == selected {
@@ -2637,6 +2668,7 @@ fn history_pane(m: &Tui, area: Rect, frame: &mut Frame, wide: bool) {
         .fixed_height(1);
     let mut lst = m.wallet.list.borrow_mut();
     StatefulWidget::render(&list, rows[2], frame, &mut lst);
+    mark_selected(th, rows[2], lst.selected, lst.scroll_offset(), frame);
     m.hits.pane(
         HitPane::History,
         rows[2],
@@ -2691,7 +2723,7 @@ fn detail_modal(m: &Tui, frame: &mut Frame) {
     ) else {
         return;
     };
-    let bg = th.selection;
+    let bg = th.panel;
     let (dim, text) = (th.dimmed().bg(bg), th.text().bg(bg));
     // **Capitalised, like every other label in the program** (round 4 iteration 3): the send
     // confirm says `Address`, `Amount`, `Fee`, `Total`, `Account`, the create modal says `Name`
@@ -2983,7 +3015,7 @@ pub(super) fn list_modal(
             }
             let rect = Rect::new(inner.x, y, inner.width, 1);
             para(
-                format!("{} {part}", if index == sel { ">" } else { " " }),
+                format!("{} {part}", if index == sel { "▌" } else { " " }),
                 if index == sel {
                     m.theme.selected()
                 } else {
@@ -3021,6 +3053,17 @@ pub(super) fn list_modal(
     );
 }
 
+/// The keyboard hint and verb share one label and one hit target.
+fn draw_chip(th: &Theme, label: &str, rect: Rect, frame: &mut Frame) {
+    let end = label.find(')').map_or(0, |offset| offset + 1);
+    let (key, verb) = label.split_at(end);
+    let spans = vec![
+        Span::styled(key.to_owned(), th.key()),
+        Span::styled(verb.to_owned(), th.text()),
+    ];
+    line_at(spans, rect, frame);
+}
+
 /// A row of `[key] Label` chips, each with a hit rect (§7a.2).
 ///
 /// **The design rule, in one function**: *if a screen tells the user to press a key, that text is
@@ -3037,7 +3080,7 @@ fn chips(m: &Tui, area: Rect, items: &[(Button, &str, &str)], frame: &mut Frame)
         let text = mnemonic(key, label);
         let w = (text.width() as u16).min(area.width);
         let rect = Rect::new(area.x, y, w, 1);
-        para(text, th.key(), false).render(rect, frame);
+        draw_chip(th, &text, rect, frame);
         m.hits.button(*button, rect);
     }
 }
@@ -3080,7 +3123,7 @@ pub(super) fn chip_row(m: &Tui, area: Rect, items: &[(Button, &str, &str)], fram
             return;
         }
         let rect = Rect::new(x, y, w - 1, 1);
-        para(text, th.key(), false).render(rect, frame);
+        draw_chip(th, &text, rect, frame);
         m.hits.button(*button, rect);
         x += w;
     }
@@ -3154,7 +3197,7 @@ pub(super) fn create_modal(m: &Tui, form: &super::CreateForm, frame: &mut Frame)
         } else {
             let label = ["Name", "Password", "Again"][index];
             para(
-                format!("{}{label:<9}", if form.field == index { ">" } else { " " }),
+                format!("{}{label:<9}", if form.field == index { "▌" } else { " " }),
                 m.theme.dimmed(),
                 false,
             )
@@ -3268,7 +3311,7 @@ fn use_node_modal(m: &Tui, address: &str, wallet_open: Option<&str>, frame: &mut
         return;
     };
     m.hits.modal(inner);
-    let bg = th.selection;
+    let bg = th.panel;
     let mut lines = vec![
         Line::styled(address.to_string(), th.accented().bg(bg)),
         Line::styled(
@@ -3421,7 +3464,7 @@ fn node_power_modal(m: &Tui, up: bool, frame: &mut Frame) {
         return;
     };
     m.hits.modal(inner);
-    let bg = th.selection;
+    let bg = th.panel;
     let lines: Vec<Line> = text
         .into_iter()
         .flat_map(|(t, style)| {
@@ -3493,7 +3536,7 @@ fn clear_pending_modal(m: &Tui, frame: &mut Frame) {
         return;
     };
     m.hits.modal(inner);
-    let bg = th.selection;
+    let bg = th.panel;
     let lines: Vec<Line> = text
         .into_iter()
         .flat_map(|(t, style)| {
@@ -3571,7 +3614,7 @@ fn log_level_modal(m: &Tui, from: Option<i8>, to: i8, frame: &mut Frame) {
         return;
     };
     m.hits.modal(inner);
-    let bg = th.selection;
+    let bg = th.panel;
     let lines: Vec<Line> = std::mem::take(&mut text)
         .into_iter()
         .flat_map(|(t, style)| {
@@ -3655,7 +3698,7 @@ fn local_node_modal(m: &Tui, frame: &mut Frame) {
         return;
     };
     m.hits.modal(inner);
-    let bg = th.selection;
+    let bg = th.panel;
     let lines: Vec<Line> = text
         .into_iter()
         .flat_map(|(t, style)| {
@@ -3694,7 +3737,7 @@ fn add_node_modal(m: &Tui, input: &TextInput, frame: &mut Frame) {
         return;
     };
     m.hits.modal(inner);
-    let bg = th.selection;
+    let bg = th.panel;
     let rows = Flex::vertical()
         .constraints([
             Constraint::Fixed(1),
@@ -3788,9 +3831,9 @@ fn notice_modal(m: &Tui, frame: &mut Frame) {
     let mut lines: Vec<Line> = Vec::new();
     for (text, dim) in body {
         let style = if dim {
-            th.dimmed().bg(th.selection)
+            th.dimmed().bg(th.panel)
         } else {
-            th.text().bg(th.selection)
+            th.text().bg(th.panel)
         };
         if text.is_empty() {
             lines.push(Line::styled(String::new(), style));
@@ -3858,7 +3901,7 @@ fn qr_modal(m: &Tui, address: &str, frame: &mut Frame) {
         inner.width,
         inner.height.saturating_sub(1),
     );
-    para(which, th.accented().bg(th.selection), false)
+    para(which, th.accented().bg(th.panel), false)
         .render(Rect::new(inner.x, inner.y, inner.width, 1), frame);
     let inner = Rect::new(
         inner.x,
@@ -3926,13 +3969,13 @@ fn qr_modal(m: &Tui, address: &str, frame: &mut Frame) {
         // The address is never elided: it is what the sender will copy.
         let mut lines: Vec<Line> = wrapped(address, rest.width as usize)
             .into_iter()
-            .map(|l| Line::styled(l, th.text().bg(th.selection)))
+            .map(|l| Line::styled(l, th.text().bg(th.panel)))
             .collect();
         // M30: what the code is for. Money arriving at an address nobody was given is the one
         // thing this modal cannot produce.
         lines.push(Line::styled(
             "Show this to be paid.",
-            th.dimmed().bg(th.selection),
+            th.dimmed().bg(th.panel),
         ));
         lines_at(lines, rest, false, frame);
     }
@@ -3960,21 +4003,21 @@ pub(super) fn help(m: &Tui, frame: &mut Frame) {
                 lines.push(Line::from_spans([
                     Span::styled(
                         crate::output::pad(if i == 0 { key } else { "" }, key_width),
-                        th.key().bg(th.selection),
+                        th.key().bg(th.panel),
                     ),
-                    Span::styled(part.clone(), th.text().bg(th.selection)),
+                    Span::styled(part.clone(), th.text().bg(th.panel)),
                 ]));
             }
         } else {
             lines.extend(
                 wrap_words(key, body_width)
                     .into_iter()
-                    .map(|s| Line::styled(s, th.key().bg(th.selection))),
+                    .map(|s| Line::styled(s, th.key().bg(th.panel))),
             );
             lines.extend(
                 wrap_words(action, body_width)
                     .into_iter()
-                    .map(|s| Line::styled(s, th.text().bg(th.selection))),
+                    .map(|s| Line::styled(s, th.text().bg(th.panel))),
             );
         }
     }
@@ -4059,19 +4102,8 @@ fn kv(th: &Theme, label: &str, value: impl Into<String>) -> Line<'static> {
     ])
 }
 
-pub(super) fn panel<'a>(th: &Theme, title: &'a str, focused: bool) -> Block<'a> {
-    Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(if focused {
-            th.border_focused()
-        } else {
-            th.border()
-        })
-        .title(title)
-        .padding(Sides::horizontal(1))
-}
-
-/// Draw a bordered panel and return its interior, or `None` when there is no room for one.
+/// The top and left rules define the section. Keeping the gutters in the block geometry
+/// leaves the full data and button widths available at each existing resize tier.
 pub(super) fn framed(
     area: Rect,
     th: &Theme,
@@ -4082,10 +4114,42 @@ pub(super) fn framed(
     if area.height < 3 || area.width < 8 {
         return None;
     }
-    let block = panel(th, title, focused);
+    let block = Block::new()
+        .borders(Borders::TOP | Borders::LEFT)
+        .border_style(th.border())
+        .title(title)
+        .padding(Sides::new(0, 2, 1, 1));
     let inner = block.inner(area);
     block.render(area, frame);
+    let title_width = title.width().min((area.width - 2) as usize) as u16;
+    let title_area = Rect::new(area.x + 1, area.y, title_width, 1);
+    let label = fit(title, title_area.width as usize);
+    para(
+        label,
+        if focused { th.accented() } else { th.title() },
+        false,
+    )
+    .render(title_area, frame);
     (inner.height > 0).then_some(inner)
+}
+
+/// The marker lives in the existing gutter so balances and addresses keep their full columns.
+fn mark_selected(
+    th: &Theme,
+    rows: Rect,
+    selected: Option<usize>,
+    offset: usize,
+    frame: &mut Frame,
+) {
+    if let Some(row) = selected
+        .and_then(|i| i.checked_sub(offset))
+        .filter(|&i| i < rows.height as usize)
+    {
+        para("▌", th.accented(), false).render(
+            Rect::new(rows.x.saturating_sub(1), rows.y + row as u16, 1, 1),
+            frame,
+        );
+    }
 }
 
 /// Older connection confirmations share scrollable explanations and real pinned buttons.
@@ -4102,7 +4166,7 @@ pub(super) fn dialog_body(m: &Tui, lines: Vec<Line<'static>>, inner: Rect, frame
     m.dialog_max.set(lines.len().saturating_sub(room));
     let start = m.dialog_scroll.get().min(m.dialog_max.get());
     for (row, text) in lines.iter().skip(start).take(room).enumerate() {
-        para(text, m.theme.text().bg(m.theme.selection), false).render(
+        para(text, m.theme.text().bg(m.theme.panel), false).render(
             Rect::new(inner.x, inner.y + row as u16, inner.width, 1),
             frame,
         );
@@ -4135,12 +4199,10 @@ pub(super) fn overlay(m: &Tui, frame: &mut Frame, w: u16, h: u16, title: &str) -
         return None;
     }
     let area = Rect::new(b.x + (b.width - w) / 2, b.y + (room - h) / 2, w, h);
-    let blank = Text::from_lines((0..area.height).map(|_| {
-        Line::styled(
-            " ".repeat(area.width as usize),
-            Style::new().bg(th.selection),
-        )
-    }));
+    let blank = Text::from_lines(
+        (0..area.height)
+            .map(|_| Line::styled(" ".repeat(area.width as usize), Style::new().bg(th.panel))),
+    );
     Paragraph::new(blank)
         .wrap(WrapMode::None)
         .render(area, frame);
@@ -4149,7 +4211,7 @@ pub(super) fn overlay(m: &Tui, frame: &mut Frame, w: u16, h: u16, title: &str) -
         .border_style(th.border_focused())
         .title(title)
         .padding(Sides::all(1))
-        .style(Style::new().bg(th.selection));
+        .style(Style::new().bg(th.panel));
     let inner = block.inner(area);
     block.render(area, frame);
     (inner.height > 0).then_some(inner)
@@ -4170,9 +4232,11 @@ fn table(
         widths.push(Constraint::Fill);
     }
     widths.push(Constraint::Fill);
+    let Some(inner) = framed(area, th, title, false, frame) else {
+        return;
+    };
     let t = Table::new(rows, widths)
         .header(TableRow::new(header.to_vec()).style(th.dimmed()))
-        .block(panel(th, title, false))
         .style(th.text())
         .highlight_style(th.selected());
     let (state, pane) = if matches!(m.screen, Screen::Wallet | Screen::Receive) {
@@ -4181,7 +4245,14 @@ fn table(
         (&m.node.table, HitPane::NodeList)
     };
     let mut st = state.borrow_mut();
-    StatefulWidget::render(&t, area, frame, &mut st);
+    StatefulWidget::render(&t, inner, frame, &mut st);
+    mark_selected(
+        th,
+        inner.inner(Sides::new(1, 0, 0, 0)),
+        st.selected,
+        st.offset,
+        frame,
+    );
     // §7a.2: the geometry, so `hit.rs` can turn a y back into a row. `+2` skips the panel's top
     // border and the header row; the last row is inside the bottom border.
     if area.height > 3 {

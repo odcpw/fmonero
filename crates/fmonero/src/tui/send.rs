@@ -18,14 +18,14 @@ use ftui::text::{Line, Span, Text};
 use ftui::widgets::input::TextInput;
 use ftui::widgets::paragraph::Paragraph;
 use ftui::widgets::Widget;
-use ftui::{Event, KeyCode, KeyEvent, Style};
+use ftui::{Event, KeyCode, KeyEvent};
 
 use unicode_width::UnicodeWidthStr;
 
 use fmonero_core::rpc::wallet::BookEntry;
 use fmonero_core::{address, send::Plan, Piconero, SendRequest};
 
-use super::screens::{fit, panel, short_addr, wrapped, Tier};
+use super::screens::{fit, framed, short_addr, wrapped, Tier};
 use super::theme::Theme;
 use super::{next_fee_level, prev_fee_level, Tui};
 
@@ -502,7 +502,7 @@ fn field_input(th: &Theme) -> TextInput {
     TextInput::new()
         .with_max_length(16 * 1024)
         .with_style(th.text())
-        .with_cursor_style(Style::new().bg(th.accent).fg(th.selection))
+        .with_cursor_style(th.cursor())
 }
 
 // ---------------------------------------------------------------- render
@@ -518,9 +518,15 @@ pub(super) fn view(m: &Tui, area: Rect, frame: &mut ftui::Frame, tier: Tier) {
     } else {
         (area, None)
     };
-    let panel = panel(th, " Send · prepare, review, then confirm ", s.editing);
-    let inner = panel.inner(body);
-    panel.render(body, frame);
+    let Some(inner) = framed(
+        body,
+        th,
+        " Send · prepare, review, then confirm ",
+        s.editing,
+        frame,
+    ) else {
+        return;
+    };
     if inner.height < 3 {
         return;
     }
@@ -634,12 +640,9 @@ pub(super) fn view(m: &Tui, area: Rect, frame: &mut ftui::Frame, tier: Tier) {
 
 fn view_preview(m: &Tui, area: Rect, frame: &mut ftui::Frame) {
     let th = &m.theme;
-    let block = panel(th, " Preview ", false);
-    let inner = block.inner(area);
-    block.render(area, frame);
-    if inner.height == 0 {
+    let Some(inner) = framed(area, th, " Preview ", false, frame) else {
         return;
-    }
+    };
     let s = &m.send;
     let mut lines = vec![Line::styled("To".to_string(), th.dimmed())];
     // The recipient is never elided: an elided address is how you send to the wrong one. **And an

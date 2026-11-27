@@ -1,29 +1,21 @@
-//! Colours from the active Omarchy theme (`~/.local/state/omarchy/current/theme/colors.toml`),
-//! with a neutral fallback when not on Omarchy.
-//!
-//! The loader is copied verbatim from `fproton/crates/fproton/src/tui/theme.rs`
-//! (DESIGN.md §7a) and carries two fmonero-specific styles: [`Theme::badge`] — the §7a
-//! status badge — and [`Theme::qr`], the receive QR's own black-on-white. **No literal
-//! colour appears anywhere else in `src/tui/**`** (§7a); this file is the exception that
-//! makes the rule checkable.
+//! Leafline surface, ink and focus colours derived from the active Omarchy theme.
+//! Node and wallet states keep their semantic colours. The receive QR uses dark ink on light paper.
 
 use ftui::{PackedRgba, Style};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
 pub struct Theme {
+    pub page: PackedRgba,
+    pub panel: PackedRgba,
     pub fg: PackedRgba,
     pub dim: PackedRgba,
     pub accent: PackedRgba,
-    pub selection: PackedRgba,
-    pub muted: PackedRgba,
+    rule: PackedRgba,
+    selection: PackedRgba,
     pub red: PackedRgba,
     pub green: PackedRgba,
     pub yellow: PackedRgba,
-    pub blue: PackedRgba,
-    pub cyan: PackedRgba,
-    pub magenta: PackedRgba,
-    pub name: String,
 }
 
 /// A QR is only scannable as dark-on-light, whatever the terminal's own palette is, so the
@@ -33,134 +25,130 @@ const QR_DARK: PackedRgba = PackedRgba::rgb(0x00, 0x00, 0x00);
 
 impl Default for Theme {
     fn default() -> Self {
-        Self {
-            fg: PackedRgba::rgb(0xca, 0xcc, 0xcc),
-            dim: PackedRgba::rgb(0x70, 0x78, 0x80),
-            accent: PackedRgba::rgb(0xca, 0xcc, 0xcc),
-            selection: PackedRgba::rgb(0x2a, 0x2e, 0x33),
-            muted: PackedRgba::rgb(0x70, 0x78, 0x80),
-            red: PackedRgba::rgb(0xa5, 0x55, 0x55),
-            green: PackedRgba::rgb(0x8a, 0xa8, 0x72),
-            yellow: PackedRgba::rgb(0xc9, 0xa5, 0x54),
-            blue: PackedRgba::rgb(0x6c, 0x8e, 0xbf),
-            cyan: PackedRgba::rgb(0x6f, 0xa8, 0xa8),
-            magenta: PackedRgba::rgb(0xa0, 0x7a, 0xb0),
-            name: "default".into(),
-        }
+        Self::from_colors(&toml::Table::new(), false)
     }
 }
 
 pub fn colors_path() -> PathBuf {
-    dirs::home_dir()
+    dirs::state_dir()
+        .or_else(|| dirs::home_dir().map(|dir| dir.join(".local/state")))
         .unwrap_or_default()
-        .join(".local/state/omarchy/current/theme/colors.toml")
+        .join("omarchy/current/theme/colors.toml")
 }
 
 pub fn parse_hex(s: &str) -> Option<PackedRgba> {
-    let h = s.trim().trim_start_matches('#');
-    if h.len() < 6 {
-        return None;
-    }
-    let r = u8::from_str_radix(&h[0..2], 16).ok()?;
-    let g = u8::from_str_radix(&h[2..4], 16).ok()?;
-    let b = u8::from_str_radix(&h[4..6], 16).ok()?;
-    Some(PackedRgba::rgb(r, g, b))
+    let hex = s.trim().trim_start_matches('#').get(..6)?;
+    let n = u32::from_str_radix(hex, 16).ok()?;
+    Some(PackedRgba::rgb((n >> 16) as u8, (n >> 8) as u8, n as u8))
+}
+
+fn mix(a: PackedRgba, b: PackedRgba, percent: u16) -> PackedRgba {
+    let channel = |a: u8, b: u8| ((a as u16 * (100 - percent) + b as u16 * percent) / 100) as u8;
+    PackedRgba::rgb(
+        channel(a.r(), b.r()),
+        channel(a.g(), b.g()),
+        channel(a.b(), b.b()),
+    )
 }
 
 impl Theme {
     pub fn load() -> Self {
-        let mut t = Theme::default();
-        let Ok(raw) = std::fs::read_to_string(colors_path()) else {
-            return t;
-        };
-        let Ok(v) = raw.parse::<toml::Table>() else {
-            return t;
-        };
-        let get = |k: &str| v.get(k).and_then(|x| x.as_str()).and_then(parse_hex);
-        if let Some(c) = get("foreground") {
-            t.fg = c;
-        }
-        if let Some(c) = get("accent") {
-            t.accent = c;
-        }
-        if let Some(c) = get("selection") {
-            t.selection = c;
-        }
-        if let Some(c) = get("muted") {
-            t.muted = c;
-            t.dim = c;
-        }
-        if let Some(c) = get("dark_foreground") {
-            t.dim = c;
-        }
-        if let Some(c) = get("red") {
-            t.red = c;
-        }
-        if let Some(c) = get("green") {
-            t.green = c;
-        }
-        if let Some(c) = get("yellow") {
-            t.yellow = c;
-        }
-        if let Some(c) = get("blue") {
-            t.blue = c;
-        }
-        if let Some(c) = get("cyan") {
-            t.cyan = c;
-        }
-        if let Some(c) = get("magenta") {
-            t.magenta = c;
-        }
-        t.name = std::fs::read_link(colors_path().parent().unwrap_or(&PathBuf::from("/")))
+        let colors = std::fs::read_to_string(colors_path())
             .ok()
-            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-            .unwrap_or_else(|| "omarchy".into());
-        t
+            .and_then(|s| s.parse::<toml::Table>().ok())
+            .unwrap_or_default();
+        Self::from_colors(&colors, std::env::var_os("NO_COLOR").is_some())
+    }
+
+    fn from_colors(colors: &toml::Table, monochrome: bool) -> Self {
+        let get = |name: &str, fallback| {
+            colors
+                .get(name)
+                .and_then(|v| v.as_str())
+                .and_then(parse_hex)
+                .unwrap_or(fallback)
+        };
+        let page = get("background", PackedRgba::rgb(0x11, 0x1a, 0x17));
+        let fg = get("foreground", PackedRgba::rgb(0xe4, 0xe9, 0xdc));
+        let accent = get("accent", PackedRgba::rgb(0xaf, 0xd2, 0xa4));
+        let ink = |value| {
+            if monochrome {
+                PackedRgba::TRANSPARENT
+            } else {
+                value
+            }
+        };
+        Self {
+            page: ink(page),
+            panel: ink(mix(page, fg, 6)),
+            fg: ink(fg),
+            dim: ink(mix(page, fg, 68)),
+            accent: ink(accent),
+            rule: ink(mix(page, fg, 27)),
+            selection: ink(mix(page, accent, 24)),
+            red: ink(get("red", PackedRgba::rgb(0xd4, 0x83, 0x83))),
+            green: ink(get("green", PackedRgba::rgb(0xa0, 0xbd, 0x90))),
+            yellow: ink(get("yellow", PackedRgba::rgb(0xda, 0xbd, 0x79))),
+        }
+    }
+
+    fn ink(&self, color: PackedRgba) -> Style {
+        if color == PackedRgba::TRANSPARENT {
+            Style::new()
+        } else {
+            Style::new().fg(color)
+        }
     }
 
     pub fn text(&self) -> Style {
-        Style::new().fg(self.fg)
+        self.ink(self.fg)
     }
     pub fn dimmed(&self) -> Style {
-        Style::new().fg(self.dim)
+        self.ink(self.dim)
     }
     pub fn accented(&self) -> Style {
-        Style::new().fg(self.accent).bold()
+        self.ink(self.accent).bold()
     }
     pub fn selected(&self) -> Style {
-        Style::new().bg(self.selection).fg(self.fg).bold()
+        if self.page == PackedRgba::TRANSPARENT {
+            Style::new().bold().reverse()
+        } else {
+            self.text().bg(self.selection).bold()
+        }
     }
     pub fn border(&self) -> Style {
-        Style::new().fg(self.dim)
+        self.ink(self.rule)
     }
     pub fn border_focused(&self) -> Style {
-        Style::new().fg(self.accent)
+        self.ink(self.accent)
     }
     pub fn title(&self) -> Style {
-        Style::new().fg(self.fg).bold()
+        self.text().bold()
     }
     pub fn ok(&self) -> Style {
-        Style::new().fg(self.green)
+        self.ink(self.green)
     }
     pub fn warn(&self) -> Style {
-        Style::new().fg(self.yellow)
+        self.ink(self.yellow)
     }
     pub fn err(&self) -> Style {
-        Style::new().fg(self.red)
+        self.ink(self.red)
     }
     pub fn key(&self) -> Style {
-        Style::new().fg(self.accent).bold()
+        self.accented()
     }
-
+    pub fn cursor(&self) -> Style {
+        self.text().reverse()
+    }
     /// The §7a badge: green for synced / wallet open, yellow for syncing / wallet closed,
     /// dim for down, red for an error or an unresolved `pending_send`. Anything
     /// unrecognised is dim, never uncoloured.
     pub fn badge(&self, s: &str) -> Style {
         match s {
-            "up" => Style::new().fg(self.green).bold(),
-            "syncing" => Style::new().fg(self.yellow).bold(),
-            "error" => Style::new().fg(self.red).bold(),
-            _ => Style::new().fg(self.dim).bold(),
+            "up" => self.ok().bold(),
+            "syncing" => self.warn().bold(),
+            "error" => self.err().bold(),
+            _ => self.dimmed().bold(),
         }
     }
 
@@ -185,6 +173,15 @@ mod tests {
         assert_eq!(t.badge("error").fg, Some(t.red));
         assert_eq!(t.badge("down").fg, Some(t.dim));
         assert_eq!(t.badge("nonsense").fg, Some(t.dim));
+    }
+
+    #[test]
+    fn monochrome_keeps_selection_distinct_on_a_light_or_dark_terminal() {
+        let theme = Theme::from_colors(&toml::Table::new(), true);
+        assert_eq!(theme.text(), Style::new());
+        assert_eq!(theme.selected(), Style::new().bold().reverse());
+        assert_eq!(theme.cursor(), Style::new().reverse());
+        assert_ne!(theme.qr().fg, theme.qr().bg);
     }
 
     #[test]

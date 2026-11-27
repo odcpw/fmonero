@@ -36,7 +36,7 @@ use ftui::widgets::virtualized::VirtualizedListState;
 use ftui::widgets::{LogViewer, LogViewerState, LogWrapMode, TabsState};
 use ftui::{
     App, Cmd, Event, KeyCode, KeyEvent, KeyEventKind, Model, Modifiers, MouseButton, MouseEvent,
-    MouseEventKind, Style,
+    MouseEventKind,
 };
 
 use fmonero_core::nodes::{self, ProbeTarget};
@@ -558,7 +558,7 @@ impl From<Event> for Msg {
 }
 
 // Include inode and size: atomic saves can share an mtime on coarse clocks.
-fn settings_stamp(path: &std::path::Path) -> Option<(SystemTime, u64, u64)> {
+fn file_stamp(path: &std::path::Path) -> Option<(SystemTime, u64, u64)> {
     use std::os::unix::fs::MetadataExt;
     let m = std::fs::metadata(path).ok()?;
     Some((m.modified().ok()?, m.ino(), m.len()))
@@ -569,7 +569,7 @@ struct Tui {
     session: Option<fmonero_core::app::Session>,
     exit: Arc<AtomicI32>,
     theme: Theme,
-    theme_mtime: Option<SystemTime>,
+    theme_stamp: Option<(SystemTime, u64, u64)>,
     /// Settings reload stamp for changes outside this window (§7a.7).
     config_mtime: Option<(SystemTime, u64, u64)>,
     config_valid: bool,
@@ -667,10 +667,8 @@ impl Tui {
         }
         Tui {
             session: None,
-            theme_mtime: std::fs::metadata(theme::colors_path())
-                .and_then(|m| m.modified())
-                .ok(),
-            config_mtime: settings_stamp(&ctx.paths.config_file()),
+            theme_stamp: file_stamp(&theme::colors_path()),
+            config_mtime: file_stamp(&ctx.paths.config_file()),
             config_valid: true,
             read_epoch: 0,
             history_seq: 0,
@@ -1486,7 +1484,7 @@ impl Tui {
         self.config_valid = true;
         self.ctx.settings = settings;
         self.ctx.timeouts = timeouts;
-        self.config_mtime = settings_stamp(&self.ctx.paths.config_file());
+        self.config_mtime = file_stamp(&self.ctx.paths.config_file());
         self.logs.path = self.ctx.settings.node.log_file.clone();
         Ok(())
     }
@@ -1498,7 +1496,7 @@ impl Tui {
     /// the settings that name them, and — the reason the return value exists at all — an action
     /// armed in the same tick would overwrite the toast this raised with its own label.
     fn maybe_reload_settings(&mut self) -> bool {
-        let m = settings_stamp(&self.ctx.paths.config_file());
+        let m = file_stamp(&self.ctx.paths.config_file());
         if m == self.config_mtime {
             return self.config_valid;
         }
@@ -1531,12 +1529,11 @@ impl Tui {
     }
 
     fn maybe_reload_theme(&mut self) {
-        let m = std::fs::metadata(theme::colors_path())
-            .and_then(|m| m.modified())
-            .ok();
-        if m != self.theme_mtime {
-            self.theme_mtime = m;
+        let stamp = file_stamp(&theme::colors_path());
+        if stamp != self.theme_stamp {
+            self.theme_stamp = stamp;
             self.theme = Theme::load();
+            self.picker.filter = restyle(&self.picker.filter, &self.theme);
             self.wallet.filter = restyle(&self.wallet.filter, &self.theme);
             self.logs.search = restyle(&self.logs.search, &self.theme);
             self.send.restyle(&self.theme);
@@ -3489,7 +3486,7 @@ fn text_input(th: &Theme) -> TextInput {
     TextInput::new()
         .with_max_length(16 * 1024)
         .with_style(th.text())
-        .with_cursor_style(Style::new().bg(th.accent).fg(th.selection))
+        .with_cursor_style(th.cursor())
 }
 
 fn restyle(old: &TextInput, th: &Theme) -> TextInput {

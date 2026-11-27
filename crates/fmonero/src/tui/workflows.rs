@@ -749,12 +749,20 @@ pub(super) fn tools(m: &Tui, area: Rect, frame: &mut ftui::Frame) {
         let text = if area.width >= 100 {
             format!(
                 "{} {title:<29} {description}",
-                if index == m.tools_selected { ">" } else { " " }
+                if index == m.tools_selected {
+                    "▌"
+                } else {
+                    " "
+                }
             )
         } else {
             format!(
                 "{} {title}",
-                if index == m.tools_selected { ">" } else { " " }
+                if index == m.tools_selected {
+                    "▌"
+                } else {
+                    " "
+                }
             )
         };
         Paragraph::new(text)

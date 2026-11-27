@@ -341,12 +341,16 @@ fn a_zero_area_frame_renders_nothing_and_does_not_panic() {
 #[test]
 fn the_narrow_tier_collapses_the_tab_strip() {
     let m = offline_model(Screen::Wallet);
-    let text = screen_text(&m, 50, 16);
-    assert!(
-        flowed(&text).contains("1 2 3 4 5 6"),
-        "collapsed tabs missing:\n{text}"
-    );
-    assert!(text.contains("Wallet"), "{text}");
+    for (cols, rows) in [(50, 16), (40, 10)] {
+        let strip = render(&m, cols, rows).remove(0);
+        assert!(strip.contains("▥  FMONERO"), "{strip}");
+        assert!(flowed(&strip).contains("1 2 3 4 5 6"), "{strip}");
+        assert!(strip.contains("▌ Wallet"), "{strip}");
+        for (i, label) in ["1", "2", "3", "4", "5", "6"].into_iter().enumerate() {
+            let x = cell_col(&strip, label).expect("visible destination");
+            assert_eq!(m.hits.at(x, 0, None), Some(Target::Tab(i)));
+        }
+    }
 }
 
 #[test]

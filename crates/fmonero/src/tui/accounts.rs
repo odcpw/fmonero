@@ -354,7 +354,7 @@ pub(super) fn view(m: &Tui, panel: &Panel, frame: &mut Frame) {
         let row = Rect::new(inner.x, inner.y + slot as u16, inner.width, 1);
         Paragraph::new(format!(
             "{} {value}",
-            if index == panel.selected { ">" } else { " " }
+            if index == panel.selected { "▌" } else { " " }
         ))
         .style(if index == panel.selected {
             m.theme.selected()
