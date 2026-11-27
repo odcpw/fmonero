@@ -247,8 +247,8 @@ impl Map {
     pub fn overlay(&self) {
         self.overlay.set(true);
     }
-    pub fn status(&self, help: Rect, next_screen: Rect) {
-        self.help.set(Some(help));
+    pub fn status(&self, help: Option<Rect>, next_screen: Rect) {
+        self.help.set(help);
         self.next_screen.set(Some(next_screen));
     }
 

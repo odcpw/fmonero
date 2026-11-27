@@ -355,7 +355,7 @@ for size in '40 10' '80 24' '120 40'; do
     keys Escape
     if [[ "$key" == 1 ]]; then keys 2; else keys 1; fi
     wait_text "leave target before mouse parity" "$([[ "$key" == 1 ]] && echo Balance || echo Synced)"
-    click_text " $key " 0
+    click_text " $key " first
     wait_text "mouse tab reaches ${names[$key]} at ${width}x${height}" "${bodies[$key]}"
   done
 done

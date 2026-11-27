@@ -1,7 +1,7 @@
 //! Leafline surface, ink and focus colours derived from the active Omarchy theme.
 //! Node and wallet states keep their semantic colours. The receive QR uses dark ink on light paper.
 
-use ftui::{PackedRgba, Style};
+use ftui::{PackedRgba, Style, TableTheme};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
@@ -136,6 +136,16 @@ impl Theme {
     }
     pub fn key(&self) -> Style {
         self.accented()
+    }
+    pub fn table(&self) -> TableTheme {
+        TableTheme::default()
+            .with_border(self.border())
+            .with_header(self.dimmed().bold())
+            .with_row(self.text())
+            .with_row_alt(self.text())
+            .with_row_selected(self.selected())
+            .with_row_hover(self.text())
+            .with_divider(self.border())
     }
     pub fn cursor(&self) -> Style {
         self.text().reverse()

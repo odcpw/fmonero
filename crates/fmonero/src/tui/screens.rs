@@ -14,7 +14,7 @@ use ftui::widgets::progress::{MiniBar, MiniBarColors};
 use ftui::widgets::sparkline::Sparkline;
 use ftui::widgets::table::{Row as TableRow, Table};
 use ftui::widgets::virtualized::{RenderItem, VirtualizedList};
-use ftui::widgets::{StatefulWidget, StatusItem, StatusLine, Widget};
+use ftui::widgets::{StatefulWidget, Widget};
 use ftui::{Frame, Style};
 use ftui_extras::canvas::{Canvas, Mode, Painter};
 use qrcode::{Color as QrColor, QrCode};
@@ -105,7 +105,11 @@ pub(super) fn view(m: &Tui, frame: &mut Frame) {
     // the window over it. A modal states its own situation, which is what makes the toast beneath
     // it stale by definition. [`toast_hidden`] is the one predicate, so the status bar's copy and
     // this row cannot disagree.
-    let toast_lines: Vec<String> = if toast_hidden(m) || note_fits(m, b.width.saturating_sub(16)) {
+    let header = Rect::new(b.x, b.y, b.width, header_height(b));
+    let header_has_keys = tab_strip(m, header, frame);
+    let footer = Rect::new(b.x, b.bottom() - 1, b.width, 1);
+    let toast_fits = status_line(m, footer, header_has_keys, frame);
+    let toast_lines: Vec<String> = if toast_hidden(m) || toast_fits {
         Vec::new()
     } else {
         // Two rows at most: a toast is a sentence, and a third row of one is a panel.
@@ -116,17 +120,13 @@ pub(super) fn view(m: &Tui, frame: &mut Frame) {
     let toast = toast_lines.len() as u16;
     let rows = Flex::vertical()
         .constraints([
-            Constraint::Fixed(1),
+            Constraint::Fixed(header.height),
             Constraint::Fixed(banner),
             Constraint::Fill,
             Constraint::Fixed(toast),
             Constraint::Fixed(1),
         ])
         .split(b);
-    tab_strip(m, rows[0], frame);
-    frame
-        .buffer
-        .fill(rows[4], Cell::from_char(' ').with_bg(th.panel));
     if banner > 0 {
         pending_banner(m, rows[1], frame);
     }
@@ -150,27 +150,6 @@ pub(super) fn view(m: &Tui, frame: &mut Frame) {
         Screen::Log => log_screen(m, rows[2], frame),
         Screen::Tools => super::workflows::tools(m, rows[2], frame),
     }
-    let privacy_w = 15.min(rows[4].width);
-    status_line(
-        m,
-        Rect::new(
-            rows[4].x,
-            rows[4].y,
-            rows[4].width.saturating_sub(privacy_w + 1),
-            1,
-        ),
-        frame,
-    );
-    super::privacy::toggle(
-        m,
-        Rect::new(
-            rows[4].right().saturating_sub(privacy_w),
-            rows[4].y,
-            privacy_w,
-            1,
-        ),
-        frame,
-    );
     match &m.modal {
         Some(Modal::Native(review)) => super::native::view(m, review, frame),
         Some(Modal::Result(result)) => super::advanced::result_view(m, result, frame),
@@ -310,33 +289,26 @@ pub(super) fn view(m: &Tui, frame: &mut Frame) {
 
 // ---------------------------------------------------------------- chrome
 
-pub(super) fn tab_strip(m: &Tui, area: Rect, frame: &mut Frame) {
+pub(super) fn header_height(bounds: Rect) -> u16 {
+    if bounds.height >= 20 && bounds.width >= 60 {
+        3
+    } else {
+        1
+    }
+}
+
+pub(super) fn tab_strip(m: &Tui, area: Rect, frame: &mut Frame) -> bool {
     let th = &m.theme;
     frame
         .buffer
         .fill(area, Cell::from_char(' ').with_bg(th.panel));
     let gutter = if area.width < 45 { 1 } else { 3 };
+    let y = area.y + area.height / 2;
     let brand = "▥  FMONERO";
-    para(brand, th.accented(), false).render(
-        Rect::new(area.x + gutter, area.y, brand.width() as u16, 1),
-        frame,
-    );
+    let brand_area = Rect::new(area.x + gutter, y, brand.width() as u16, 1);
+    para(brand, th.accented(), false).render(brand_area, frame);
     let compact = area.width < 76;
-    let destinations: u16 = Screen::ALL
-        .iter()
-        .map(|screen| {
-            if compact {
-                3
-            } else {
-                4 + screen.name().width() as u16
-            }
-        })
-        .sum();
-    let mut x = if compact {
-        area.x + gutter + brand.width() as u16 + 2
-    } else {
-        area.right().saturating_sub(gutter + destinations)
-    };
+    let mut x = brand_area.right() + if compact { 2 } else { 5 };
     for (i, screen) in Screen::ALL.iter().enumerate() {
         let active = *screen == m.screen;
         let label = if compact {
@@ -346,17 +318,35 @@ pub(super) fn tab_strip(m: &Tui, area: Rect, frame: &mut Frame) {
             format!("{marker}{} {} ", i + 1, screen.name())
         };
         let w = label.width() as u16;
-        let rect = Rect::new(x, area.y, w.min(area.right().saturating_sub(x)), 1);
-        para(label, if active { th.selected() } else { th.text() }, false).render(rect, frame);
+        let rect = Rect::new(x, y, w, 1);
+        para(
+            label,
+            if active { th.selected() } else { th.dimmed() },
+            false,
+        )
+        .render(rect, frame);
         m.hits.tab(i, rect);
         x += w;
     }
     if compact {
-        para(format!("▌ {}", m.screen.name()), th.accented(), false).render(
-            Rect::new(x, area.y, area.right().saturating_sub(x), 1),
-            frame,
-        );
+        let current = format!("▌ {}", m.screen.name());
+        let rect = Rect::new(x, y, current.width() as u16, 1);
+        para(current, th.accented(), false).render(rect, frame);
+        x = rect.right();
     }
+    let keys = "?  Keys";
+    let keys_area = Rect::new(
+        area.right() - gutter - keys.width() as u16,
+        y,
+        keys.width() as u16,
+        1,
+    );
+    let help_fits = keys_area.x > x;
+    if help_fits {
+        para(keys, th.key(), false).render(keys_area, frame);
+        m.hits.button(Button::Help, keys_area);
+    }
+    help_fits
 }
 
 /// The §7a banner's text, in one place so that `view` can measure what `pending_banner` draws.
@@ -513,63 +503,49 @@ fn toast_hidden(m: &Tui) -> bool {
         || matches!(m.send.stage, super::send::Stage::Built(_))
 }
 
-/// Does the whole toast fit on the status bar beside the badges (W14)?
-///
-/// The same arithmetic `status_line` lays out with: `19` is the width of the `⇥ screens  ? help`
-/// segment on the right, and the left segment is measured rather than estimated — its width
-/// depends on the node's address, the balance and whether an action is running.
-fn note_fits(m: &Tui, width: u16) -> bool {
-    let avail = (width.saturating_sub(19) as usize).saturating_sub(status_left_width(m) + 2);
-    m.note.width() <= avail
-}
-
-fn status_line(m: &Tui, area: Rect, frame: &mut Frame) {
+/// Draw the persistent controls first so the toast can use exactly the space left for it.
+fn status_line(m: &Tui, area: Rect, header_has_keys: bool, frame: &mut Frame) -> bool {
     let th = &m.theme;
-    // **`⇥ screens` is §7a.1's rule, stated on every screen and in every focus state** (v5.5).
-    // The rule's whole value is that it is true everywhere, and a user who has just been trapped
-    // in a field needs to read it from where they are. Both segments are hit targets, because
-    // they are the two things on this line already labelled like controls (§7a.2).
-    let right = "⇥ screens  ? help";
-    let rw = right.width() as u16;
-    if area.width > rw {
-        let x = area.right() - rw;
-        line_at(
-            vec![
-                Span::styled("⇥", th.key()),
-                Span::styled(" screens  ", th.text()),
-                Span::styled("?", th.key()),
-                Span::styled(" help", th.text()),
-            ],
-            Rect::new(x, area.y, rw, 1),
-            frame,
-        );
-        m.hits.status(
-            Rect::new(x + rw - 6, area.y, 6, 1),
-            Rect::new(x, area.y, 9, 1),
-        );
+    frame
+        .buffer
+        .fill(area, Cell::from_char(' ').with_bg(th.panel));
+    let privacy = Rect::new(area.right() - 15, area.y, 15, 1);
+    super::privacy::toggle(m, privacy, frame);
+    let mut right = privacy.x - 1;
+    let help = if header_has_keys {
+        None
     } else {
-        StatusLine::new()
-            .style(th.dimmed())
-            .right(StatusItem::key_hint("?", "help"))
-            .render(area, frame);
-    }
+        let label = "? help";
+        let width = label.width() as u16;
+        let rect = Rect::new(right - width, area.y, width, 1);
+        para(label, th.key(), false).render(rect, frame);
+        right = rect.x - 2;
+        Some(rect)
+    };
+    let label = "⇥ screens";
+    let width = label.width() as u16;
+    let next = Rect::new(right - width, area.y, width, 1);
+    line_at(
+        vec![
+            Span::styled("⇥", th.key()),
+            Span::styled(" screens", th.text()),
+        ],
+        next,
+        frame,
+    );
+    m.hits.status(help, next);
+    let space = next.x.saturating_sub(area.x + 2);
+    let fits = m.note.width() <= (space as usize).saturating_sub(status_left_width(m) + 2);
     let mut spans = status_left(m);
-    // **V15: the toast is cut with an ellipsis, at a word boundary.** This line is rendered
-    // `WrapMode::None` into the width left of `⇥ screens  ? help`, so the terminal used to cut the
-    // last span wherever it happened to land: `A wallet is open. Press x to close i` is a complete
-    // sentence about a key that does not exist.
-    let avail = area.width.saturating_sub(19) as usize;
-    // W14: only when the whole sentence fits. When it does not, `view` has given it a row of its
-    // own above this one, and printing a cut copy here as well would be the same sentence twice,
-    // one of them false.
-    if !toast_hidden(m) && note_fits(m, area.width) {
+    if !toast_hidden(m) && fits {
         spans.push(Span::styled("│ ", th.dimmed()));
         spans.push(Span::styled(
             m.note.clone(),
             if m.note_err { th.err() } else { th.ok() },
         ));
     }
-    line_at(spans, Rect::new(area.x, area.y, avail as u16, 1), frame);
+    line_at(spans, Rect::new(area.x, area.y, space, 1), frame);
+    fits
 }
 
 // ---------------------------------------------------------------- Node
@@ -935,9 +911,8 @@ fn picker_pane(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
         widths.push(Constraint::Fixed(COL));
     }
     let t = Table::new(table_rows, widths)
-        .header(TableRow::new(header.clone()).style(th.dimmed()))
-        .style(th.text())
-        .highlight_style(th.selected());
+        .header(TableRow::new(header.clone()))
+        .theme(th.table());
     let mut state = m.picker.table.borrow_mut();
     StatefulWidget::render(&t, rows[0], frame, &mut state);
     let data = rows[0].inner(Sides::new(1, 0, 0, 0));
@@ -1950,9 +1925,11 @@ fn wallet_screen(m: &Tui, area: Rect, frame: &mut Frame, tier: Tier) {
             subaddress_pane(m, cols[0], frame);
             history_pane(m, cols[1], frame, true);
         }
-        Tier::Medium => {
+        Tier::Medium if body[0].height >= 9 => {
+            // Leave space for the filter, column names and at least one payment.
+            let address_height = body[0].height.saturating_sub(6).clamp(4, 8);
             let split = Flex::vertical()
-                .constraints([Constraint::Fixed(8), Constraint::Fill])
+                .constraints([Constraint::Fixed(address_height), Constraint::Fill])
                 .split(body[0]);
             subaddress_pane(m, split[0], frame);
             history_pane(m, split[1], frame, false);
@@ -4236,9 +4213,8 @@ fn table(
         return;
     };
     let t = Table::new(rows, widths)
-        .header(TableRow::new(header.to_vec()).style(th.dimmed()))
-        .style(th.text())
-        .highlight_style(th.selected());
+        .header(TableRow::new(header.to_vec()))
+        .theme(th.table());
     let (state, pane) = if matches!(m.screen, Screen::Wallet | Screen::Receive) {
         (&m.wallet.table, HitPane::Subaddresses)
     } else {

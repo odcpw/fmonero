@@ -101,12 +101,18 @@ pub(super) fn toggle(m: &Tui, area: Rect, frame: &mut Frame) {
 
 pub(super) fn view(m: &Tui, frame: &mut Frame) {
     let b = frame.bounds();
-    screens::tab_strip(m, Rect::new(b.x, b.y, b.width, 1), frame);
-    let body = Rect::new(b.x, b.y + 2, b.width, b.height.saturating_sub(4));
+    let header = screens::header_height(b);
+    screens::tab_strip(m, Rect::new(b.x, b.y, b.width, header), frame);
+    let body = Rect::new(
+        b.x,
+        b.y + header + 1,
+        b.width,
+        b.height.saturating_sub(header + 3),
+    );
     line(
         m,
         "Privacy on · personal data hidden",
-        Rect::new(b.x, b.y + 1, b.width, 1),
+        Rect::new(b.x, b.y + header, b.width, 1),
         frame,
     );
     match m.screen {

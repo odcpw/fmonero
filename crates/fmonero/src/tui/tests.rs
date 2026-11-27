@@ -319,7 +319,7 @@ fn every_screen_renders_at_every_tier_with_both_daemons_absent() {
                 "{screen:?} at {w}x{h} lost its status badge:\n{text}"
             );
             assert!(
-                text.contains("help"),
+                text.contains("?  Keys") || text.contains("? help"),
                 "{screen:?} at {w}x{h} lost the ? hint:\n{text}"
             );
         }
@@ -1578,8 +1578,8 @@ fn nothing_on_the_wallet_screen_is_drawn_outside_a_frame() {
             "{cols}x{rows}: decision 7's lines are not on screen at all:\n{text}"
         );
         for (y, line) in lines.iter().enumerate() {
-            // Row 0 is the tab strip and the last row is the status bar: chrome, by design.
-            if y == 0 || y + 1 >= lines.len() {
+            // The masthead and its padding occupy three rows on these large frames.
+            if y < 3 || y + 1 >= lines.len() {
                 continue;
             }
             let t = line.trim_start();
@@ -2181,12 +2181,17 @@ fn a_click_on_a_tab_label_lands_on_that_tab_and_never_on_its_neighbour() {
             // misaligned rect selects is where we already are: "nothing happened" must fail.
             let from = Screen::from_index(i + 2);
             let mut s = sim(offline_model(from));
-            let strip = render(s.model(), w, h).remove(0);
-            let at = cell_col(&strip, title).unwrap_or_else(|| {
+            let rows = render(s.model(), w, h);
+            let (strip_y, strip) = rows
+                .iter()
+                .enumerate()
+                .find(|(_, row)| row.contains("▥  FMONERO"))
+                .expect("rendered masthead");
+            let at = cell_col(strip, title).unwrap_or_else(|| {
                 panic!("`{title}` is not in the strip drawn at {w}x{h}: {strip:?}")
             });
             let last = at + title.chars().count() as u16 - 1;
-            s.inject_event(click(last, 0));
+            s.inject_event(click(last, strip_y as u16));
             assert_eq!(
                 s.model().screen,
                 Screen::from_index(i),
@@ -2200,11 +2205,11 @@ fn a_click_on_a_tab_label_lands_on_that_tab_and_never_on_its_neighbour() {
             // its leading decoration cell, two columns left of its title (the `[`/space `Tabs`
             // draws, plus the literal's own leading space).
             let next = titles[i + 1];
-            let nat = cell_col(&strip, next).expect("the next title");
+            let nat = cell_col(strip, next).expect("the next title");
             let first = if narrow { nat } else { nat - 1 };
             let mut s2 = sim(offline_model(Screen::from_index(i + 3)));
             let _ = render(s2.model(), w, h);
-            s2.inject_event(click(first, 0));
+            s2.inject_event(click(first, strip_y as u16));
             assert_eq!(
                 s2.model().screen,
                 Screen::from_index(i + 1),
@@ -3042,17 +3047,12 @@ fn the_open_wallet_modal_renders_a_248_character_path_character_complete() {
     let mut m = model(&ctx, Screen::Wallet);
     let _ = m.on_key(KeyEvent::new(KeyCode::Char('o')));
     for (w, h) in [(120u16, 32u16), (150, 40)] {
-        let text = screen_text(&m, w, h);
-        // Every character of the path, in order, with the wrapping and the modal's own padding
-        // removed — which is what `flowed` does, and the hanging indent is spaces.
-        let flat: String = text
-            .chars()
-            .filter(|c| !c.is_whitespace() && *c != '│' && *c != '╭' && *c != '╮')
-            .collect();
-        let want: String = path.chars().filter(|c| !c.is_whitespace()).collect();
+        let text = modal_text(&m, w, h);
+        // Join the wrapped lines inside the dialog. Columns outside it belong to the wallet.
+        let flat: String = text.lines().map(str::trim).collect();
         assert!(
-            flat.contains(&want),
-            "the modal lost characters of the path at {w}x{h}.\nwant: {want}\ngot:  {flat}\n{text}"
+            flat.contains(&path),
+            "the modal lost characters of the path at {w}x{h}.\nwant: {path}\ngot:  {flat}\n{text}"
         );
     }
     let _ = std::fs::remove_dir_all(&dir);
@@ -3259,6 +3259,22 @@ fn the_payments_ledger_carries_the_year_at_the_owners_widths() {
             "{cw}x{ch}: the note column went:\n{text}"
         );
     }
+    let compact = sim_text(&s, 64, 20);
+    assert!(
+        compact.contains(&stamp),
+        "compact wallet hid the payment ledger:\n{compact}"
+    );
+    assert!(
+        find(s.model(), 64, 20, |target| matches!(
+            target,
+            Target::Row {
+                pane: HitPane::History,
+                row: 0
+            }
+        ))
+        .is_some(),
+        "first payment is visible and clickable"
+    );
     // The detail view and the note modal title, which are the other two readings of the same fact.
     s.inject_event(key(KeyCode::Enter));
     let detail = sim_text(&s, 120, 32);
@@ -3613,6 +3629,18 @@ fn restore_form_owns_mnemonics_and_secrets_at_every_supported_size() {
 fn six_screen_tabs_have_exact_click_regions_after_resize() {
     for (width, height) in [(40, 10), (60, 20), (120, 40)] {
         let m = offline_model(Screen::Wallet);
+        let rows = render(&m, width, height);
+        let nav_y = if width == 40 { 0 } else { 1 };
+        assert!(rows[nav_y].contains("▥  FMONERO"));
+        if width >= 60 {
+            let keys = cell_col(&rows[nav_y], "?  Keys").expect("the masthead help control");
+            for x in keys..keys + 7 {
+                assert_eq!(
+                    m.hits.at(x, nav_y as u16, None),
+                    Some(Target::Button(Button::Help))
+                );
+            }
+        }
         for index in 0..6 {
             assert!(
                 find(&m, width, height, |t| t == Target::Tab(index)).is_some(),
